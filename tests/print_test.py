@@ -25,6 +25,20 @@ def test_print_cards_fpdf(example_images: list[str], tmp_path: Path) -> None:
     print_cards_fpdf(example_images, out_file)
 
     assert out_file.is_file()
+    assert not (tmp_path / "decklist_1.pdf").exists()
+    assert not (tmp_path / "decklist_2.pdf").exists()
+
+
+def test_print_cards_fpdf_split_pages(example_images: list[str], tmp_path: Path) -> None:
+    from mtg_proxies import print_cards_fpdf
+
+    out_file = tmp_path / "decklist.pdf"
+    images = example_images * 6
+    print_cards_fpdf(images, out_file, split_pages=1)
+
+    assert not out_file.exists()
+    assert (tmp_path / "decklist_1.pdf").is_file()
+    assert (tmp_path / "decklist_2.pdf").is_file()
 
 
 def test_print_cards_matplotlib_pdf(example_images: list[str], tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Literal
 
 import requests
 
@@ -9,7 +10,9 @@ from mtg_proxies.decklists.sanitizing import validate_card_name, validate_print
 
 
 def parse_decklist(
-    manastack_id: str, zones: Sequence[str] = ("commander", "mainboard")
+    manastack_id: str,
+    zones: Sequence[str] = ("commander", "mainboard"),
+    art_preference: Literal["standard", "wild"] = "standard",
 ) -> tuple[Decklist, bool, list[ParseWarning]]:
     """Parse a decklist from manastack.
 
@@ -23,7 +26,7 @@ def parse_decklist(
 
     r = requests.get(f"https://manastack.com/api/decklist?format=json&id={manastack_id}")
     if r.status_code != 200:
-        raise (ValueError(f"Manastack returned statuscode {r.status_code}"))
+        raise ValueError(f"Manastack returned statuscode {r.status_code}")
 
     data = r.json()
     for zone in zones:
@@ -45,7 +48,12 @@ def parse_decklist(
                     continue
 
                 # Validate card print
-                card, warnings_print = validate_print(card_name, set_id, collector_number)
+                card, warnings_print = validate_print(
+                    card_name,
+                    set_id,
+                    collector_number,
+                    art_preference=art_preference,
+                )
 
                 decklist.append_card(count, card)
                 warnings.extend(warnings_name + warnings_print)

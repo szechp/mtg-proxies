@@ -108,6 +108,7 @@ def print_cards_fpdf(
     border_crop: int = 14,
     background_color: tuple[int, int, int] | None = None,
     cropmarks: bool = True,
+    split_pages: int | None = None,
 ) -> None:
     """Print a list of cards to a pdf file.
 
@@ -127,16 +128,30 @@ def print_cards_fpdf(
     if N[0] == 0 or N[1] == 0:
         raise ValueError(f"Paper size too small: {papersize}")
     cards_per_sheet = np.prod(N)
+    cards_per_file = None if split_pages is None else cards_per_sheet * split_pages
     offset = (papersize - _occupied_space(cardsize, N, border_crop, closed=True)) / 2
 
     # Ensure directory exists
     filepath = Path(filepath)
     filepath.parent.mkdir(parents=True, exist_ok=True)
 
-    # Initialize PDF
-    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    def output_filepath(file_index: int) -> Path:
+        if split_pages is None:
+            return filepath
+        return filepath.with_name(f"{filepath.stem}_{file_index + 1}{filepath.suffix}")
+
+    def init_pdf() -> FPDF:
+        return FPDF(orientation="P", unit="mm", format="A4")
+
+    pdf = init_pdf()
 
     for i, image in enumerate(tqdm(images, desc="Plotting cards")):
+        if cards_per_file is not None and i > 0 and i % cards_per_file == 0:
+            current_path = output_filepath(i // cards_per_file - 1)
+            tqdm.write(f"Writing to {current_path}")
+            pdf.output(current_path)
+            pdf = init_pdf()
+
         if i % cards_per_sheet == 0:  # Startign a new sheet
             pdf.add_page()
             if background_color is not None:
@@ -178,5 +193,8 @@ def print_cards_fpdf(
                     pdf.line(mark[0] - 0.5, mark[1], mark[0] + 0.5, mark[1])
                     pdf.line(mark[0], mark[1] - 0.5, mark[0], mark[1] + 0.5)
 
-    tqdm.write(f"Writing to {filepath}")
-    pdf.output(filepath)
+    current_path = filepath
+    if cards_per_file is not None and len(images) > 0:
+        current_path = output_filepath((len(images) - 1) // cards_per_file)
+    tqdm.write(f"Writing to {current_path}")
+    pdf.output(current_path)

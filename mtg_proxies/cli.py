@@ -1,6 +1,7 @@
 import argparse
 from collections.abc import Container
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 
@@ -11,7 +12,11 @@ from mtg_proxies.decklists.decklist import Decklist
 from mtg_proxies.tokens import get_tokens
 
 
-def parse_decklist_spec(decklist_spec: str, warn_levels: Container[str] = ("ERROR", "WARNING", "COSMETIC")) -> Decklist:
+def parse_decklist_spec(
+    decklist_spec: str,
+    warn_levels: Container[str] = ("ERROR", "WARNING", "COSMETIC"),
+    art_preference: Literal["standard", "wild"] = "standard",
+) -> Decklist:
     """Attempt to parse a decklist from different locations.
 
     Args:
@@ -20,15 +25,15 @@ def parse_decklist_spec(decklist_spec: str, warn_levels: Container[str] = ("ERRO
     """
     print("Parsing decklist ...")
     if Path(decklist_spec).is_file():  # Decklist is file
-        decklist, ok, warnings = parse_decklist(decklist_spec)
+        decklist, ok, warnings = parse_decklist(decklist_spec, art_preference=art_preference)
     elif decklist_spec.lower().startswith("manastack:") and decklist_spec.split(":")[-1].isdigit():
         # Decklist on Manastack
         manastack_id = decklist_spec.split(":")[-1]
-        decklist, ok, warnings = manastack.parse_decklist(manastack_id)
+        decklist, ok, warnings = manastack.parse_decklist(manastack_id, art_preference=art_preference)
     elif decklist_spec.lower().startswith("archidekt:") and decklist_spec.split(":")[-1].isdigit():
         # Decklist on Archidekt
         archidekt_id = decklist_spec.split(":")[-1]
-        decklist, ok, warnings = archidekt.parse_decklist(archidekt_id)
+        decklist, ok, warnings = archidekt.parse_decklist(archidekt_id, art_preference=art_preference)
     else:
         print(f"Cant find decklist '{decklist_spec}'")
         quit()
@@ -124,6 +129,19 @@ def main() -> None:
         choices=["all", "front", "back"],
         default="all",
     )
+    print_parser.add_argument(
+        "--split-pages",
+        help="split PDF output into a new file every N pages; ignored for non-pdf output",
+        type=int,
+        default=None,
+        metavar="N",
+    )
+    print_parser.add_argument(
+        "--art-preference",
+        help="art recommendation style (default: %(default)s)",
+        choices=["standard", "wild"],
+        default="standard",
+    )
 
     # Convert tool
     convert_parser = subparsers.add_parser(
@@ -140,6 +158,12 @@ def main() -> None:
         "--format", help="output format (default: %(default)s)", choices=["arena", "text"], default="arena"
     )
     convert_parser.add_argument("--clean", action="store_true", help="remove all non-card lines")
+    convert_parser.add_argument(
+        "--art-preference",
+        help="art recommendation style (default: %(default)s)",
+        choices=["standard", "wild"],
+        default="standard",
+    )
 
     # Tokens tool
     tokens_parser = subparsers.add_parser(
@@ -176,7 +200,7 @@ def main() -> None:
     match args.command:
         case "print":
             # Parse decklist
-            decklist = parse_decklist_spec(args.decklist)
+            decklist = parse_decklist_spec(args.decklist, art_preference=args.art_preference)
 
             # Fetch scans
             images = fetch_scans_scryfall(decklist, faces=args.faces)
@@ -197,6 +221,7 @@ def main() -> None:
                     border_crop=args.border_crop,
                     background_color=background_color,
                     cropmarks=args.cropmarks,
+                    split_pages=args.split_pages,
                 )
             else:
                 print_cards_matplotlib(
@@ -211,7 +236,11 @@ def main() -> None:
 
         case "convert":
             # Parse decklist
-            decklist = parse_decklist_spec(args.decklist, warn_levels=["ERROR", "WARNING"])
+            decklist = parse_decklist_spec(
+                args.decklist,
+                warn_levels=["ERROR", "WARNING"],
+                art_preference=args.art_preference,
+            )
 
             # Write decklist
             decklist.save(args.outfile, fmt=args.format)

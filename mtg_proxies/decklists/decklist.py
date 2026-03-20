@@ -116,7 +116,10 @@ class Decklist:
         return decklist
 
 
-def parse_decklist(filepath: str | Path) -> tuple[Decklist, bool, list[ParseWarning]]:
+def parse_decklist(
+    filepath: str | Path,
+    art_preference: Literal["standard", "wild"] = "standard",
+) -> tuple[Decklist, bool, list[ParseWarning]]:
     """Parse card information from a decklist in text or MtG Arena (or mixed) format.
 
     E.g.:
@@ -133,7 +136,7 @@ def parse_decklist(filepath: str | Path) -> tuple[Decklist, bool, list[ParseWarn
         warnings: List of warnings and error encountered during parsing
     """
     with open(filepath, encoding="utf-8") as f:
-        decklist, ok, warnings = parse_decklist_stream(f)
+        decklist, ok, warnings = parse_decklist_stream(f, art_preference=art_preference)
 
     # Use file name without extension as name
     decklist.name = Path(filepath).stem
@@ -141,7 +144,9 @@ def parse_decklist(filepath: str | Path) -> tuple[Decklist, bool, list[ParseWarn
     return decklist, ok, warnings
 
 
-def parse_decklist_stream(stream: TextIO) -> tuple[Decklist, bool, list[ParseWarning]]:
+def parse_decklist_stream(
+    stream: TextIO, art_preference: Literal["standard", "wild"] = "standard"
+) -> tuple[Decklist, bool, list[ParseWarning]]:
     """Parse card information from a decklist in text or MtG Arena (or mixed) format from a stream.
 
     See:
@@ -168,7 +173,12 @@ def parse_decklist_stream(stream: TextIO) -> tuple[Decklist, bool, list[ParseWar
                 continue
 
             # Validate card print
-            card, warnings_print = validate_print(card_name, set_id, collector_number)
+            card, warnings_print = validate_print(
+                card_name,
+                set_id,
+                collector_number,
+                art_preference=art_preference,
+            )
 
             decklist.append_card(count, card)
             warnings.extend(warnings_name + warnings_print)

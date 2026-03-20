@@ -87,7 +87,12 @@ def get_print_warnings(card: dict) -> list[str]:
     return warnings
 
 
-def validate_print(card_name: str, set_id: str, collector_number: str) -> tuple[dict, list[ParseWarning]]:
+def validate_print(
+    card_name: str,
+    set_id: str,
+    collector_number: str,
+    art_preference: Literal["standard", "wild"] = "standard",
+) -> tuple[dict, list[ParseWarning]]:
     """Validate a print against the Scryfall database.
 
     Assumes card name is valid.
@@ -99,7 +104,7 @@ def validate_print(card_name: str, set_id: str, collector_number: str) -> tuple[
     warnings: list[ParseWarning] = []
 
     if set_id is None:
-        card = scryfall.recommend_print(card_name=card_name)
+        card = scryfall.recommend_print(card_name=card_name, art_preference=art_preference)
         # Warn for tokens, as they are not unique by name
         if card["layout"] in ["token", "double_faced_token"]:
             warnings.append(
@@ -111,7 +116,7 @@ def validate_print(card_name: str, set_id: str, collector_number: str) -> tuple[
         card = scryfall.get_card(card_name, set_id, collector_number)
         if card is None:  # No exact match
             # Find alternative print
-            card = scryfall.recommend_print(card_name=card_name)
+            card = scryfall.recommend_print(card_name=card_name, art_preference=art_preference)
             warnings.append(
                 ParseWarning(
                     "WARNING",
@@ -124,7 +129,7 @@ def validate_print(card_name: str, set_id: str, collector_number: str) -> tuple[
     quality_warnings = get_print_warnings(card)
     if len(quality_warnings) > 0:
         # Get recommendation
-        recommendation = scryfall.recommend_print(card)
+        recommendation = scryfall.recommend_print(card, art_preference=art_preference)
 
         # Format warnings string
         quality_warnings = listing(quality_warnings, ", ", " and ").capitalize()

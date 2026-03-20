@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import requests
+from typing import Literal
 
 from mtg_proxies.decklists import Decklist, ParseWarning
 from mtg_proxies.decklists.sanitizing import validate_card_name, validate_print
 
 
-def parse_decklist(archidekt_id: str) -> tuple[Decklist, bool, list[ParseWarning]]:
+def parse_decklist(
+    archidekt_id: str,
+    art_preference: Literal["standard", "wild"] = "standard",
+) -> tuple[Decklist, bool, list[ParseWarning]]:
     """Parse a decklist from manastack.
 
     Args:
@@ -19,7 +23,7 @@ def parse_decklist(archidekt_id: str) -> tuple[Decklist, bool, list[ParseWarning
 
     r = requests.get(f"https://archidekt.com/api/decks/{archidekt_id}/")
     if r.status_code != 200:
-        raise (ValueError(f"Archidekt returned statuscode {r.status_code}"))
+        raise ValueError(f"Archidekt returned statuscode {r.status_code}")
 
     data = r.json()
 
@@ -43,7 +47,12 @@ def parse_decklist(archidekt_id: str) -> tuple[Decklist, bool, list[ParseWarning
             continue
 
         # Validate card print
-        card, warnings_print = validate_print(card_name, set_id, collector_number)
+        card, warnings_print = validate_print(
+            card_name,
+            set_id,
+            collector_number,
+            art_preference=art_preference,
+        )
 
         decklist.append_card(count, card)
         warnings.extend(warnings_name + warnings_print)
