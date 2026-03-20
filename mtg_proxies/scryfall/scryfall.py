@@ -202,12 +202,114 @@ def get_faces(card: dict) -> list[dict]:
     raise ValueError(f"Unknown layout {card['layout']}")
 
 
+def _standard_art_penalty(card: dict) -> int:
+    """Penalty for printings that are less likely to use standard in-universe art."""
+    penalty = 0
+
+    set_name = card.get("set_name", "").lower()
+    keywords = {
+        "fallout",
+        "doctor who",
+        "transformers",
+        "fortnite",
+        "jurassic",
+        "jurassic world",
+        "street fighter",
+        "walking dead",
+        "stranger things",
+        "warhammer",
+        "warhammer 40,000",
+        "assassin's creed",
+        "final fantasy",
+        "ninja turtles",
+        "teenage mutant ninja turtles",
+    }
+    if any(keyword in set_name for keyword in keywords):
+        penalty += 256
+    if card.get("set") == "sld" or "secret lair" in set_name:
+        penalty += 256
+    if card.get("set") == "plst" or set_name == "the list":
+        penalty += 24
+
+    # Scryfall marks many crossover releases as funny sets.
+    if card.get("set_type") == "funny":
+        penalty += 64
+    if card.get("set_type") == "promo":
+        penalty += 40
+    if card.get("digital"):
+        penalty += 80
+
+    # Prefer regular card treatments over obvious alternates.
+    frame_effects = set(card.get("frame_effects", []))
+    if {"extendedart", "showcase", "shatteredglass", "upside_down", "inverted", "borderless"} & frame_effects:
+        penalty += 16
+
+    promo_types = set(card.get("promo_types", []))
+    if "universesbeyond" in promo_types:
+        penalty += 256
+    if {"boosterfun", "bundle", "concept", "galaxyfoil", "halofoil", "poster", "serialized", "surgefoil"} & promo_types:
+        penalty += 16
+    if {"datestamped", "prerelease", "promopack", "setpromo", "stamped"} & promo_types:
+        penalty += 40
+
+    return penalty
+
+
+def _has_flashy_treatment(card: dict) -> bool:
+    frame_effects = set(card.get("frame_effects", []))
+    promo_types = set(card.get("promo_types", []))
+    return bool(
+        {"extendedart", "showcase", "shatteredglass", "upside_down", "inverted", "borderless"} & frame_effects
+        or "boosterfun" in promo_types
+    )
+
+
+def _is_stamped_promo(card: dict) -> bool:
+    promo_types = set(card.get("promo_types", []))
+    return bool({"datestamped", "prerelease", "promopack", "setpromo", "stamped"} & promo_types)
+
+
+def _select_standard_fallback(alternatives: list[dict], scores: list[int]) -> dict:
+    highres_candidates = [card for card in alternatives if card["highres_image"]]
+    if not highres_candidates:
+        return alternatives[int(np.argmax(scores))]
+
+    indexed_scores = {card["id"]: score for card, score in zip(alternatives, scores, strict=True)}
+
+    def rank(card: dict) -> tuple[int, int, int, int, int, int]:
+        penalty = _standard_art_penalty(card)
+        clean_alternate = (
+            not card.get("digital")
+            and card.get("set_type") != "promo"
+            and not _is_stamped_promo(card)
+            and penalty < 128
+            and _has_flashy_treatment(card)
+        )
+        clean_nonpromo = (
+            not card.get("digital")
+            and card.get("set_type") != "promo"
+            and not _is_stamped_promo(card)
+            and penalty < 128
+        )
+        return (
+            0 if clean_alternate else 1,
+            0 if clean_nonpromo else 1,
+            0 if not card.get("digital") else 1,
+            0 if not _is_stamped_promo(card) else 1,
+            0 if card.get("set_type") != "promo" else 1,
+            -indexed_scores[card["id"]],
+        )
+
+    return min(highres_candidates, key=rank)
+
+
 @overload
 def recommend_print(
     current: dict | None = None,
     *,
     card_name: str | None = None,
     oracle_id: str | None = None,
+    art_preference: Literal["standard", "wild"] = "standard",
     mode: Literal["best"] = "best",
 ) -> dict: ...
 
@@ -218,6 +320,7 @@ def recommend_print(
     *,
     card_name: str | None = None,
     oracle_id: str | None = None,
+    art_preference: Literal["standard", "wild"] = "standard",
     mode: Literal["all", "choices"],
 ) -> list[dict]: ...
 
@@ -227,6 +330,7 @@ def recommend_print(
     *,
     card_name: str | None = None,
     oracle_id: str | None = None,
+    art_preference: Literal["standard", "wild"] = "standard",
     mode: Literal["best", "all", "choices"] = "best",
 ) -> dict | list[dict]:
     """Recommend a (better) print of a card."""
@@ -241,6 +345,16 @@ def recommend_print(
 
     def score(card: dict) -> int:
         points = 0
+        frame_effects = set(card.get("frame_effects", []))
+        promo_types = set(card.get("promo_types", []))
+        flashy_effects = {
+            "extendedart",
+            "showcase",
+            "shatteredglass",
+            "upside_down",
+            "inverted",
+            "borderless",
+        }
         if card["set"] != "mb1" and card["border_color"] != "gold":
             points += 1
         if card["frame"] == "2015":
@@ -248,7 +362,7 @@ def recommend_print(
         if not card["digital"]:
             points += 4
         if card["border_color"] == "black" and (
-            mode != "best" or "frame_effects" not in card or "extendedart" not in card["frame_effects"]
+            mode != "best" or "extendedart" not in frame_effects
         ):
             points += 8
         if card["collector_number"][-1] not in ["p", "s"] and card["nonfoil"]:
@@ -258,16 +372,36 @@ def recommend_print(
         if card["lang"] == "en":
             points += 64
 
+        if art_preference == "standard":
+            return points - _standard_art_penalty(card)
+
+        if _has_flashy_treatment(card):
+            points += 48
+        if {"boosterfun", "concept", "galaxyfoil", "halofoil", "poster", "serialized", "surgefoil"} & promo_types:
+            points += 24
+        if card.get("set") == "sld":
+            points += 12
+        if card.get("set") == "plst":
+            points -= 24
+        if card.get("set_type") == "funny":
+            points -= 16
+
         return points
 
     scores = [score(card) for card in alternatives]
 
     if mode == "best":
-        if current is not None and scores[alternatives.index(current)] == np.max(scores):
+        best_index = int(np.argmax(scores))
+        best_card = alternatives[best_index]
+
+        if art_preference == "standard" and not best_card["highres_image"]:
+            best_card = _select_standard_fallback(alternatives, scores)
+
+        if current is not None and current["id"] == best_card["id"]:
             return current  # No better recommendation
 
         # Return print with highest score
-        return alternatives[np.argmax(scores)]
+        return best_card
     if mode == "all":
         recommendations = list(np.array(alternatives)[np.argsort(scores)][::-1])
 
