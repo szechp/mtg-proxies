@@ -76,8 +76,10 @@ def validate_card_name(card_name: str) -> tuple[str | None, list[ParseWarning]]:
 def get_print_warnings(card: dict) -> list[str]:
     """Return warnings for low-resolution scans."""
     warnings = []
-    if not card["highres_image"] or card["digital"]:
+    if not card["highres_image"]:
         warnings.append("low resolution scan")
+    if card["digital"]:
+        warnings.append("digital print")
     if card["collector_number"][-1] in ["p", "s"]:
         warnings.append("promo")
     if card["lang"] != "en":
@@ -132,12 +134,17 @@ def validate_print(
         recommendation = scryfall.recommend_print(card, art_preference=art_preference)
 
         # Format warnings string
-        quality_warnings = listing(quality_warnings, ", ", " and ").capitalize()
+        if quality_warnings == ["digital print"]:
+            quality_warning_text = "To avoid low resolution scans, a digital print was chosen"
+        elif quality_warnings == ["low resolution scan", "digital print"]:
+            quality_warning_text = "Low resolution scan and digital print"
+        else:
+            quality_warning_text = listing(quality_warnings, ", ", " and ").capitalize()
 
         warnings.append(
             ParseWarning(
                 "COSMETIC",
-                f"{quality_warnings} for {format_print(card)!r}."
+                f"{quality_warning_text} for {format_print(card)!r}."
                 + (f" Maybe you want {format_print(recommendation)!r}?" if recommendation != card else ""),
             )
         )

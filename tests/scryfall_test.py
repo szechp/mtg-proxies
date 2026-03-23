@@ -5,6 +5,8 @@ def _test_card(
     card_id: str,
     *,
     highres_image: bool,
+    name: str = "Test Card",
+    artist: str = "Test Artist",
     digital: bool = False,
     set_type: str = "expansion",
     border_color: str = "black",
@@ -19,6 +21,8 @@ def _test_card(
 ) -> dict:
     return {
         "id": card_id,
+        "name": name,
+        "artist": artist,
         "oracle_id": "oracle",
         "set": set_code,
         "set_name": set_name,
@@ -187,4 +191,105 @@ def test_recommend_print_standard_fallback_uses_promo_when_no_clean_alternate_ex
 
     card = scryfall.recommend_print(card_name="Test Card")
 
+    assert card["id"] == "digital-highres"
+
+
+def test_recommend_print_standard_fallback_keeps_lowres_standard_when_only_promo_highres_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mtg_proxies.scryfall import scryfall
+
+    lowres_standard = _test_card("lowres-standard", highres_image=False)
+    stamped_promo = _test_card(
+        "stamped-promo",
+        highres_image=True,
+        set_type="promo",
+        promo_types=["prerelease", "datestamped"],
+        set_code="ptst",
+        set_name="Test Promos",
+    )
+
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [lowres_standard, stamped_promo])
+
+    card = scryfall.recommend_print(card_name="Test Card")
+
     assert card["id"] == "stamped-promo"
+
+
+def test_recommend_print_standard_devalues_flashy_anime_variants(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mtg_proxies.scryfall import scryfall
+
+    plain_english_print = _test_card(
+        "plain-english-print",
+        highres_image=True,
+        artist="Chris Seaman",
+        set_type="expansion",
+        promo_types=[],
+        set_code="m21",
+        set_name="Core Set 2021",
+    )
+    flashy_anime_variant = _test_card(
+        "flashy-anime-variant",
+        highres_image=True,
+        artist="Canata Katana",
+        set_code="j22",
+        set_name="Jumpstart 2022",
+    )
+
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [plain_english_print, flashy_anime_variant])
+
+    card = scryfall.recommend_print(card_name="Test Card")
+
+    assert card["id"] == "plain-english-print"
+
+
+def test_recommend_print_standard_accepts_plain_ub_mainset_over_ub_promo(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mtg_proxies.scryfall import scryfall
+
+    plain_ub_mainset = _test_card(
+        "plain-ub-mainset",
+        highres_image=False,
+        set_type="draft_innovation",
+        promo_types=["universesbeyond"],
+        set_code="ltr",
+        set_name="The Lord of the Rings: Tales of Middle-earth",
+    )
+    ub_promo = _test_card(
+        "ub-promo",
+        highres_image=True,
+        set_type="promo",
+        promo_types=["universesbeyond", "prerelease", "datestamped"],
+        set_code="pltr",
+        set_name="Tales of Middle-earth Promos",
+    )
+
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [plain_ub_mainset, ub_promo])
+
+    card = scryfall.recommend_print(card_name="Test Card")
+
+    assert card["id"] == "ub-promo"
+
+
+def test_get_print_warnings_distinguishes_digital_from_lowres() -> None:
+    from mtg_proxies.decklists.sanitizing import get_print_warnings
+
+    digital_highres = _test_card("digital-highres", highres_image=True, digital=True)
+    lowres_paper = _test_card("lowres-paper", highres_image=False)
+
+    assert get_print_warnings(digital_highres) == ["digital print"]
+    assert get_print_warnings(lowres_paper) == ["low resolution scan"]
+
+
+def test_validate_print_explains_digital_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mtg_proxies.decklists.sanitizing import validate_print
+    import mtg_proxies.decklists.sanitizing as sanitizing
+
+    digital_highres = _test_card("digital-highres", highres_image=True, digital=True)
+
+    monkeypatch.setattr(sanitizing.scryfall, "get_card", lambda *args, **kwargs: digital_highres)
+    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: digital_highres)
+
+    _, warnings = validate_print("Test Card", "TST", "1")
+
+    assert len(warnings) == 1
+    assert warnings[0].message == "To avoid low resolution scans, a digital print was chosen for 'Test Card (TST) 1'."

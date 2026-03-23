@@ -207,6 +207,9 @@ def _standard_art_penalty(card: dict) -> int:
     penalty = 0
 
     set_name = card.get("set_name", "").lower()
+    frame_effects = set(card.get("frame_effects", []))
+    promo_types = set(card.get("promo_types", []))
+    lang = card.get("lang", "en")
     keywords = {
         "fallout",
         "doctor who",
@@ -240,13 +243,13 @@ def _standard_art_penalty(card: dict) -> int:
         penalty += 80
 
     # Prefer regular card treatments over obvious alternates.
-    frame_effects = set(card.get("frame_effects", []))
     if {"extendedart", "showcase", "shatteredglass", "upside_down", "inverted", "borderless"} & frame_effects:
         penalty += 16
+    if card.get("artist") == "Canata Katana" and card.get("set") == "j22":
+        penalty += 128
 
-    promo_types = set(card.get("promo_types", []))
     if "universesbeyond" in promo_types:
-        penalty += 256
+        penalty += 64 if not _has_flashy_treatment(card) and card.get("set_type") != "promo" else 256
     if {"boosterfun", "bundle", "concept", "galaxyfoil", "halofoil", "poster", "serialized", "surgefoil"} & promo_types:
         penalty += 16
     if {"datestamped", "prerelease", "promopack", "setpromo", "stamped"} & promo_types:
@@ -274,33 +277,43 @@ def _select_standard_fallback(alternatives: list[dict], scores: list[int]) -> di
     if not highres_candidates:
         return alternatives[int(np.argmax(scores))]
 
+    standard_best = alternatives[int(np.argmax(scores))]
     indexed_scores = {card["id"]: score for card, score in zip(alternatives, scores, strict=True)}
 
-    def rank(card: dict) -> tuple[int, int, int, int, int, int]:
-        penalty = _standard_art_penalty(card)
-        clean_alternate = (
-            not card.get("digital")
-            and card.get("set_type") != "promo"
-            and not _is_stamped_promo(card)
-            and penalty < 128
-            and _has_flashy_treatment(card)
-        )
-        clean_nonpromo = (
-            not card.get("digital")
-            and card.get("set_type") != "promo"
-            and not _is_stamped_promo(card)
-            and penalty < 128
-        )
+    def rank(card: dict) -> tuple[int, int]:
+        promo_types = set(card.get("promo_types", []))
+        universes_beyond = "universesbeyond" in promo_types
+        is_promo = card.get("set_type") == "promo" or _is_stamped_promo(card)
+        clean_fallback = not card.get("digital") and not is_promo and not universes_beyond
         return (
-            0 if clean_alternate else 1,
-            0 if clean_nonpromo else 1,
-            0 if not card.get("digital") else 1,
-            0 if not _is_stamped_promo(card) else 1,
-            0 if card.get("set_type") != "promo" else 1,
+            0 if clean_fallback and _has_flashy_treatment(card) else 1,
             -indexed_scores[card["id"]],
         )
 
-    return min(highres_candidates, key=rank)
+    clean_candidates = [
+        card
+        for card in highres_candidates
+        if not card.get("digital")
+        and card.get("set_type") != "promo"
+        and not _is_stamped_promo(card)
+        and "universesbeyond" not in set(card.get("promo_types", []))
+    ]
+    if clean_candidates:
+        return min(clean_candidates, key=rank)
+
+    digital_candidates = [
+        card
+        for card in highres_candidates
+        if card.get("digital") and card.get("set_type") != "promo" and not _is_stamped_promo(card)
+    ]
+    if digital_candidates:
+        return min(digital_candidates, key=lambda card: -indexed_scores[card["id"]])
+
+    promo_candidates = [card for card in highres_candidates if card.get("set_type") == "promo" or _is_stamped_promo(card)]
+    if promo_candidates:
+        return min(promo_candidates, key=lambda card: -indexed_scores[card["id"]])
+
+    return standard_best
 
 
 @overload
