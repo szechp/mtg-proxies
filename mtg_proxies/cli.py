@@ -1,8 +1,10 @@
 import argparse
 from collections.abc import Container
 from pathlib import Path
+import tempfile
 from typing import Literal
 
+import matplotlib.pyplot as plt
 import numpy as np
 
 from mtg_proxies import fetch_scans_scryfall, print_cards_fpdf, print_cards_matplotlib
@@ -11,6 +13,7 @@ from mtg_proxies.decklists import archidekt, manastack, parse_decklist
 from mtg_proxies.decklists.decklist import Decklist
 from mtg_proxies.tokens import get_tokens
 
+DEFAULT_CUSTOM_ART_BLEED_CROP_PERCENT = 4.0
 
 def parse_decklist_spec(
     decklist_spec: str,
@@ -67,6 +70,32 @@ def papersize(string: str) -> np.ndarray:
     raise argparse.ArgumentTypeError()
 
 
+def _normalize_custom_art_images(
+    custom_folder: Path, bleed_crop_percent: float = 0.0, output_dir: Path | None = None
+) -> list[str]:
+    images = sorted(custom_folder.glob("*.png"))
+    if bleed_crop_percent <= 0:
+        return [str(path) for path in images]
+
+    if output_dir is None:
+        raise ValueError("output_dir must be provided when custom art bleed crop is positive")
+
+    normalized_images = []
+    for image_path in images:
+        image = plt.imread(image_path)
+        height, width = image.shape[:2]
+        crop_x = round(width * bleed_crop_percent / 100)
+        crop_y = round(height * bleed_crop_percent / 100)
+        if crop_x * 2 >= width or crop_y * 2 >= height:
+            raise ValueError(f"Custom art bleed crop too large for '{image_path}'")
+        cropped = image[crop_y : height - crop_y, crop_x : width - crop_x]
+        normalized_image_path = output_dir / image_path.name
+        plt.imsave(normalized_image_path, cropped)
+        normalized_images.append(str(normalized_image_path))
+
+    return normalized_images
+
+
 def main() -> None:
     """Run mtg-proxies CLI."""
     parser = argparse.ArgumentParser("mtg-proxies", description="Create high quality MtG proxies from your decklist.")
@@ -80,6 +109,8 @@ def main() -> None:
     )
     print_parser.add_argument(
         "decklist",
+        nargs="?",
+        default=None,
         help="path to a decklist in text/arena format, or manastack:{manastack_id}, or archidekt:{archidekt_id}",
     )
     print_parser.add_argument("outfile", help="output file. Supports pdf, png and jpg.")
@@ -128,6 +159,20 @@ def main() -> None:
         help="which faces to print (default: %(default)s)",
         choices=["all", "front", "back"],
         default="all",
+    )
+    print_parser.add_argument(
+        "--custom-art",
+        help="folder with custom art images to append to the PDF",
+        type=str,
+        default=None,
+        metavar="FOLDER",
+    )
+    print_parser.add_argument(
+        "--custom-art-bleed-crop",
+        help="percent to trim from each edge of custom art images before printing (default: %(default)s)",
+        type=float,
+        default=DEFAULT_CUSTOM_ART_BLEED_CROP_PERCENT,
+        metavar="PERCENT",
     )
     print_parser.add_argument(
         "--split-pages",
@@ -199,40 +244,71 @@ def main() -> None:
 
     match args.command:
         case "print":
-            # Parse decklist
-            decklist = parse_decklist_spec(args.decklist, art_preference=args.art_preference)
+            images = []
+            custom_art_dir: tempfile.TemporaryDirectory[str] | None = None
 
-            # Fetch scans
-            images = fetch_scans_scryfall(decklist, faces=args.faces)
+            if args.decklist:
+                decklist = parse_decklist_spec(args.decklist, art_preference=args.art_preference)
+                images = fetch_scans_scryfall(decklist, faces=args.faces)
 
-            # Plot cards
-            if args.outfile.endswith(".pdf"):
-                import matplotlib.colors as colors
+            if args.custom_art:
+                custom_folder = Path(args.custom_art)
+                if not custom_folder.exists():
+                    print(f"Error: custom art folder '{args.custom_art}' does not exist")
+                    raise SystemExit(1)
 
-                background_color = args.background
-                if background_color is not None:
-                    background_color = (np.array(colors.to_rgb(background_color)) * 255).astype(int)
+                try:
+                    if args.custom_art_bleed_crop > 0:
+                        custom_art_dir = tempfile.TemporaryDirectory()
+                        custom_images = _normalize_custom_art_images(
+                            custom_folder,
+                            bleed_crop_percent=args.custom_art_bleed_crop,
+                            output_dir=Path(custom_art_dir.name),
+                        )
+                    else:
+                        custom_images = _normalize_custom_art_images(custom_folder)
+                except ValueError as exc:
+                    print(f"Error: {exc}")
+                    raise SystemExit(1) from exc
+                if not custom_images:
+                    print(f"Warning: no PNG files found in '{args.custom_art}'")
+                images.extend(custom_images)
 
-                print_cards_fpdf(
-                    images,
-                    args.outfile,
-                    papersize=args.paper * 25.4,
-                    cardsize=np.array([2.5, 3.5]) * 25.4 * args.scale,
-                    border_crop=args.border_crop,
-                    background_color=background_color,
-                    cropmarks=args.cropmarks,
-                    split_pages=args.split_pages,
-                )
-            else:
-                print_cards_matplotlib(
-                    images,
-                    args.outfile,
-                    papersize=args.paper,
-                    cardsize=np.array([2.5, 3.5]) * args.scale,
-                    dpi=args.dpi,
-                    border_crop=args.border_crop,
-                    background_color=args.background,
-                )
+            if not images:
+                print("Error: must provide either a decklist or --custom-art folder with images")
+                raise SystemExit(1)
+
+            try:
+                if args.outfile.endswith(".pdf"):
+                    import matplotlib.colors as colors
+
+                    background_color = args.background
+                    if background_color is not None:
+                        background_color = (np.array(colors.to_rgb(background_color)) * 255).astype(int)
+
+                    print_cards_fpdf(
+                        images,
+                        args.outfile,
+                        papersize=args.paper * 25.4,
+                        cardsize=np.array([2.5, 3.5]) * 25.4 * args.scale,
+                        border_crop=args.border_crop,
+                        background_color=background_color,
+                        cropmarks=args.cropmarks,
+                        split_pages=args.split_pages,
+                    )
+                else:
+                    print_cards_matplotlib(
+                        images,
+                        args.outfile,
+                        papersize=args.paper,
+                        cardsize=np.array([2.5, 3.5]) * args.scale,
+                        dpi=args.dpi,
+                        border_crop=args.border_crop,
+                        background_color=args.background,
+                    )
+            finally:
+                if custom_art_dir is not None:
+                    custom_art_dir.cleanup()
 
         case "convert":
             # Parse decklist
