@@ -55,9 +55,9 @@ def test_parsing(data_dir: Path) -> None:
         ),
         (  # Wrong collector number
             "1 Forbidden Friendship (IKO) 120",
-            "1 Forbidden Friendship (IKO) 367",
+            "1 Forbidden Friendship (IKO) 119",
             [
-                "WARNING: Unable to find scan of 'Forbidden Friendship (IKO) 120'. Using 'Forbidden Friendship (IKO) 367' instead."  # noqa: E501
+                "WARNING: Unable to find scan of 'Forbidden Friendship (IKO) 120'. Using 'Forbidden Friendship (IKO) 119' instead."  # noqa: E501
             ],
         ),
         (  # Incomplete name (but unique)
@@ -99,9 +99,9 @@ def test_parsing(data_dir: Path) -> None:
         ),
         (  # Token without set and collector number
             "1 Saproling",
-            "1 Saproling (TC16) 16",
+            "1 Saproling (TCMR) 22",
             [
-                "WARNING: Tokens are not unique by name. Assuming 'Saproling' is a '1/1 green Token Creature — Saproling'.",  # noqa: E501
+                "WARNING: Tokens are not unique by name. Assuming 'Saproling' is a '1/1 green Token Creature — Saproling'."  # noqa: E501
             ],
         ),
         (  # Token with same name as the front of a double faced card (with set and collector number)
