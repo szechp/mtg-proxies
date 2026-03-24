@@ -19,6 +19,11 @@ DEFAULT_CUSTOM_ART_BLEED_CROP_PERCENT = 4.0
 BASIC_LAND_NAMES = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
 ArtPreference = Literal["standard", "wild", "premium"]
 EXCLUDED_BASIC_LAND_PRINTS = {
+    ("sld", "415"),
+    ("sld", "416"),
+    ("sld", "417"),
+    ("sld", "418"),
+    ("sld", "419"),
     ("sld", "254"),
     ("sld", "255"),
     ("sld", "256"),

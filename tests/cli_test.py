@@ -699,6 +699,66 @@ def test_generate_basic_lands_decklist_excludes_explanation_style_sld_basics_onl
     assert decklist.cards[0].card["id"] == "sld-allowed"
 
 
+def test_generate_basic_lands_decklist_excludes_vector_style_sld_basics_only() -> None:
+    from mtg_proxies.cli import _generate_basic_lands_decklist
+
+    excluded = [
+        {
+            "id": "sld-plains-415",
+            "name": "Plains",
+            "set": "sld",
+            "set_name": "Secret Lair Drop",
+            "collector_number": "415",
+            "type_line": "Basic Land — Plains",
+        },
+        {
+            "id": "sld-island-416",
+            "name": "Island",
+            "set": "sld",
+            "set_name": "Secret Lair Drop",
+            "collector_number": "416",
+            "type_line": "Basic Land — Island",
+        },
+        {
+            "id": "sld-swamp-417",
+            "name": "Swamp",
+            "set": "sld",
+            "set_name": "Secret Lair Drop",
+            "collector_number": "417",
+            "type_line": "Basic Land — Swamp",
+        },
+        {
+            "id": "sld-mountain-418",
+            "name": "Mountain",
+            "set": "sld",
+            "set_name": "Secret Lair Drop",
+            "collector_number": "418",
+            "type_line": "Basic Land — Mountain",
+        },
+        {
+            "id": "sld-forest-419",
+            "name": "Forest",
+            "set": "sld",
+            "set_name": "Secret Lair Drop",
+            "collector_number": "419",
+            "type_line": "Basic Land — Forest",
+        },
+    ]
+    allowed = {
+        "id": "sld-allowed-420",
+        "name": "Forest",
+        "set": "sld",
+        "set_name": "Secret Lair Drop",
+        "collector_number": "420",
+        "type_line": "Basic Land — Forest",
+    }
+
+    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[*excluded, allowed]):
+        decklist = _generate_basic_lands_decklist(["forest=1"], rng=random.Random(0))
+
+    assert decklist.cards[0].card["id"] == "sld-allowed-420"
+
+
 def test_generate_basic_lands_decklist_wild_varies_across_rng_seeds() -> None:
     from mtg_proxies.cli import _generate_basic_lands_decklist
 
