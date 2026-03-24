@@ -3,7 +3,7 @@ from collections.abc import Container
 from pathlib import Path
 import random
 import tempfile
-from typing import Literal
+from typing import Literal, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -17,6 +17,7 @@ from mtg_proxies.tokens import get_tokens
 
 DEFAULT_CUSTOM_ART_BLEED_CROP_PERCENT = 4.0
 BASIC_LAND_NAMES = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
+ArtPreference = Literal["standard", "wild", "premium"]
 
 def parse_decklist_spec(
     decklist_spec: str,
@@ -122,30 +123,128 @@ def _parse_basic_land_specs(specs: list[str]) -> dict[str, int]:
 def _generate_basic_lands_decklist(
     specs: list[str],
     *,
-    art_preference: Literal["standard", "wild"] = "standard",
+    art_preference: ArtPreference = "standard",
     rng: random.Random | None = None,
 ) -> Decklist:
     land_counts = _parse_basic_land_specs(specs)
     rng = rng or random.Random()
     decklist = Decklist()
 
+    def is_full_art(card: dict) -> bool:
+        frame_effects = set(card.get("frame_effects", []))
+        promo_types = set(card.get("promo_types", []))
+        return (
+            "fullart" in frame_effects
+            or "fullart" in promo_types
+            or "full_art" in promo_types
+            or card.get("set_type") in {"memorabilia", "masterpiece"}
+        )
+
+    def premium_score(card: dict) -> tuple[int, int, int, int, int, int, int, str, str]:
+        frame_effects = set(card.get("frame_effects", []))
+        promo_types = set(card.get("promo_types", []))
+        set_name = card.get("set_name", "").lower()
+        premium_keywords = {
+            "unstable",
+            "unsanctioned",
+            "unfinity",
+            "unstable lands",
+            "zendikar",
+            "battle for zendikar",
+            "oath of the gatewatch",
+            "modern horizons",
+            "modern horizons 2",
+            "modern horizons 3",
+            "bloomburrow",
+        }
+        elegant_special = {"showcase", "borderless", "extendedart"} & frame_effects
+        loud_special = {"galaxyfoil", "halofoil", "serialized", "poster", "surgefoil"} & promo_types
+        return (
+            1 if is_full_art(card) else 0,
+            1 if elegant_special else 0,
+            1 if any(keyword in set_name for keyword in premium_keywords) else 0,
+            1 if card.get("set") == "sld" else 0,
+            0 if card.get("lang") == "en" else -1,
+            0 if not card.get("digital") else -1,
+            -len(loud_special),
+            card.get("set", ""),
+            card.get("collector_number", ""),
+        )
+
+    def wild_score(card: dict) -> tuple[int, int, int, int, int, str, str]:
+        frame_effects = set(card.get("frame_effects", []))
+        promo_types = set(card.get("promo_types", []))
+        flashy_effects = {"showcase", "borderless", "extendedart", "fullart"} & frame_effects
+        flashy_promos = {
+            "boosterfun",
+            "concept",
+            "galaxyfoil",
+            "halofoil",
+            "poster",
+            "serialized",
+            "surgefoil",
+        } & promo_types
+        weird_sets = {"sld", "und", "unf", "ust"}
+        return (
+            len(flashy_promos),
+            1 if card.get("set") in weird_sets else 0,
+            len(flashy_effects),
+            1 if is_full_art(card) else 0,
+            0 if not card.get("digital") else -1,
+            card.get("set", ""),
+            card.get("collector_number", ""),
+        )
+
+    def shuffle_within_score_groups[T](cards: list[dict], score_fn) -> list[dict]:
+        grouped: dict[object, list[dict]] = {}
+        order: list[object] = []
+        for card in cards:
+            score = score_fn(card)
+            if score not in grouped:
+                grouped[score] = []
+                order.append(score)
+            grouped[score].append(card)
+
+        shuffled: list[dict] = []
+        for score in sorted(order, reverse=True):
+            bucket = grouped[score]
+            rng.shuffle(bucket)
+            shuffled.extend(bucket)
+        return shuffled
+
     for land_name, count in land_counts.items():
+        recommendation_preference = cast(Literal["standard", "wild"], art_preference if art_preference != "premium" else "wild")
         choices = [
             card
-            for card in scryfall.recommend_print(card_name=land_name.title(), art_preference=art_preference, mode="choices")
+            for card in scryfall.recommend_print(
+                card_name=land_name.title(),
+                art_preference=recommendation_preference,
+                mode="choices",
+            )
             if "Basic Land" in card.get("type_line", "")
         ]
         if not choices:
             raise ValueError(f"Unable to find printable basic land choices for {land_name!r}.")
 
+        if art_preference == "premium":
+            choices = shuffle_within_score_groups(choices, premium_score)
+        elif art_preference == "wild":
+            choices = shuffle_within_score_groups(choices, wild_score)
+        else:
+            rng.shuffle(choices)
+
         pool = list(choices)
-        rng.shuffle(pool)
         selected: list[dict] = []
         while len(selected) < count:
             if not pool:
                 pool = list(choices)
-                rng.shuffle(pool)
-            selected.append(pool.pop())
+                if art_preference == "premium":
+                    pool = shuffle_within_score_groups(pool, premium_score)
+                elif art_preference == "wild":
+                    pool = shuffle_within_score_groups(pool, wild_score)
+                else:
+                    rng.shuffle(pool)
+            selected.append(pool.pop(0))
 
         for card in selected:
             decklist.append_card(1, card)
@@ -272,7 +371,7 @@ def main() -> None:
     convert_parser.add_argument(
         "--art-preference",
         help="art recommendation style (default: %(default)s)",
-        choices=["standard", "wild"],
+        choices=["standard", "wild", "premium"],
         default="standard",
     )
 
@@ -397,6 +496,9 @@ def main() -> None:
                     raise SystemExit(1) from exc
             else:
                 decklist_spec = args.decklist
+                if args.art_preference == "premium":
+                    print("Error: --art-preference premium is only supported with --basic-lands")
+                    raise SystemExit(1)
                 if decklist_spec is not None and outfile is None:
                     looks_like_decklist = (
                         Path(decklist_spec).is_file()

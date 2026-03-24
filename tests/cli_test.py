@@ -2,6 +2,7 @@ from unittest.mock import Mock, patch
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
+import random
 
 
 def test_main(capsys: pytest.CaptureFixture) -> None:
@@ -304,6 +305,32 @@ def test_main_convert_basic_lands_accepts_outfile_after_specs(tmp_path) -> None:
     fake_decklist.save.assert_called_once_with(out_file, fmt="arena")
 
 
+def test_main_convert_basic_lands_accepts_premium_art_preference(tmp_path) -> None:
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "premium-basics.txt"
+    fake_decklist = Mock()
+
+    with (
+        patch(
+            "sys.argv",
+            [
+                "mtg-proxies",
+                "convert",
+                "--art-preference=premium",
+                "--basic-lands",
+                "mountain=9",
+                str(out_file),
+            ],
+        ),
+        patch("mtg_proxies.cli._generate_basic_lands_decklist", return_value=fake_decklist) as generate_basic_lands,
+    ):
+        main()
+
+    generate_basic_lands.assert_called_once_with(["mountain=9"], art_preference="premium")
+    fake_decklist.save.assert_called_once_with(out_file, fmt="arena")
+
+
 def test_main_convert_requires_decklist_or_basic_lands(tmp_path, capsys: pytest.CaptureFixture) -> None:
     from mtg_proxies.cli import main
 
@@ -314,6 +341,21 @@ def test_main_convert_requires_decklist_or_basic_lands(tmp_path, capsys: pytest.
 
     captured = capsys.readouterr()
     assert "Error: must provide either a decklist or --basic-lands" in captured.out
+
+
+def test_main_convert_rejects_premium_without_basic_lands(tmp_path, capsys: pytest.CaptureFixture) -> None:
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "decklist.txt"
+
+    with patch(
+        "sys.argv",
+        ["mtg-proxies", "convert", "decklist.txt", str(out_file), "--art-preference", "premium"],
+    ), pytest.raises(SystemExit):
+        main()
+
+    captured = capsys.readouterr()
+    assert "Error: --art-preference premium is only supported with --basic-lands" in captured.out
 
 
 def test_main_convert_basic_lands_invalid_spec_errors(tmp_path, capsys: pytest.CaptureFixture) -> None:
@@ -357,6 +399,78 @@ def test_generate_basic_lands_decklist_prefers_unique_art_before_repeats() -> No
     assert len(ids) == 3
     assert set(ids[:2]) == {"m1", "m2"}
     assert ids[2] in {"m1", "m2"}
+
+
+def test_generate_basic_lands_decklist_premium_prefers_elegant_full_art() -> None:
+    from mtg_proxies.cli import _generate_basic_lands_decklist
+
+    elegant_full_art = {
+        "id": "premium",
+        "name": "Mountain",
+        "set": "mh3",
+        "set_name": "Modern Horizons 3",
+        "collector_number": "300",
+        "type_line": "Basic Land — Mountain",
+        "frame_effects": ["fullart", "borderless"],
+        "promo_types": [],
+        "set_type": "expansion",
+        "lang": "en",
+        "digital": False,
+    }
+    loud_gimmick = {
+        "id": "wild",
+        "name": "Mountain",
+        "set": "sld",
+        "set_name": "Secret Lair Drop",
+        "collector_number": "123",
+        "type_line": "Basic Land — Mountain",
+        "frame_effects": [],
+        "promo_types": ["galaxyfoil", "poster", "serialized"],
+        "set_type": "promo",
+        "lang": "en",
+        "digital": False,
+    }
+
+    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[loud_gimmick, elegant_full_art]):
+        decklist = _generate_basic_lands_decklist(["mountain=1"], art_preference="premium", rng=random.Random(0))
+
+    assert decklist.cards[0].card["id"] == "premium"
+
+
+def test_generate_basic_lands_decklist_wild_prefers_flashy_over_elegant() -> None:
+    from mtg_proxies.cli import _generate_basic_lands_decklist
+
+    elegant_full_art = {
+        "id": "premium",
+        "name": "Mountain",
+        "set": "mh3",
+        "set_name": "Modern Horizons 3",
+        "collector_number": "300",
+        "type_line": "Basic Land — Mountain",
+        "frame_effects": ["fullart", "borderless"],
+        "promo_types": [],
+        "set_type": "expansion",
+        "lang": "en",
+        "digital": False,
+    }
+    loud_gimmick = {
+        "id": "wild",
+        "name": "Mountain",
+        "set": "sld",
+        "set_name": "Secret Lair Drop",
+        "collector_number": "123",
+        "type_line": "Basic Land — Mountain",
+        "frame_effects": ["showcase"],
+        "promo_types": ["galaxyfoil", "poster", "serialized"],
+        "set_type": "promo",
+        "lang": "en",
+        "digital": False,
+    }
+
+    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[elegant_full_art, loud_gimmick]):
+        decklist = _generate_basic_lands_decklist(["mountain=1"], art_preference="wild", rng=random.Random(0))
+
+    assert decklist.cards[0].card["id"] == "wild"
 
 
 def test_normalize_custom_art_images_crops_symmetrically(tmp_path) -> None:
