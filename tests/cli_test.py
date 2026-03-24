@@ -473,6 +473,58 @@ def test_generate_basic_lands_decklist_wild_prefers_flashy_over_elegant() -> Non
     assert decklist.cards[0].card["id"] == "wild"
 
 
+def test_generate_basic_lands_decklist_excludes_cross_over_and_racing_basics() -> None:
+    from mtg_proxies.cli import _generate_basic_lands_decklist
+
+    excluded = [
+        {
+            "id": "race",
+            "name": "Mountain",
+            "set": "dft",
+            "set_name": "Aetherdrift",
+            "collector_number": "275",
+            "type_line": "Basic Land — Mountain",
+        },
+        {
+            "id": "fallout",
+            "name": "Mountain",
+            "set": "pip",
+            "set_name": "Fallout",
+            "collector_number": "316",
+            "type_line": "Basic Land — Mountain",
+        },
+        {
+            "id": "doctor-who",
+            "name": "Mountain",
+            "set": "who",
+            "set_name": "Doctor Who",
+            "collector_number": "197",
+            "type_line": "Basic Land — Mountain",
+        },
+        {
+            "id": "turtles",
+            "name": "Mountain",
+            "set": "tmt",
+            "set_name": "Teenage Mutant Ninja Turtles",
+            "collector_number": "191",
+            "type_line": "Basic Land — Mountain",
+        },
+    ]
+    allowed = {
+        "id": "ok",
+        "name": "Mountain",
+        "set": "mh3",
+        "set_name": "Modern Horizons 3",
+        "collector_number": "300",
+        "type_line": "Basic Land — Mountain",
+    }
+
+    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[*excluded, allowed]):
+        decklist = _generate_basic_lands_decklist(["mountain=1"], rng=random.Random(0))
+
+    assert decklist.cards[0].card["id"] == "ok"
+
+
 def test_normalize_custom_art_images_crops_symmetrically(tmp_path) -> None:
     from mtg_proxies.cli import _normalize_custom_art_images
 

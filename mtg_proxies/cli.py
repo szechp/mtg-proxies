@@ -140,6 +140,16 @@ def _generate_basic_lands_decklist(
             or card.get("set_type") in {"memorabilia", "masterpiece"}
         )
 
+    def is_excluded_basic_land(card: dict) -> bool:
+        excluded_sets = {"dft", "pip", "who", "tmt"}
+        excluded_set_names = {
+            "aetherdrift",
+            "fallout",
+            "doctor who",
+            "teenage mutant ninja turtles",
+        }
+        return card.get("set") in excluded_sets or card.get("set_name", "").lower() in excluded_set_names
+
     def premium_score(card: dict) -> tuple[int, int, int, int, int, int, int, str, str]:
         frame_effects = set(card.get("frame_effects", []))
         promo_types = set(card.get("promo_types", []))
@@ -221,7 +231,7 @@ def _generate_basic_lands_decklist(
                 art_preference=recommendation_preference,
                 mode="choices",
             )
-            if "Basic Land" in card.get("type_line", "")
+            if "Basic Land" in card.get("type_line", "") and not is_excluded_basic_land(card)
         ]
         if not choices:
             raise ValueError(f"Unable to find printable basic land choices for {land_name!r}.")
