@@ -37,6 +37,16 @@ def test_main_print_help_mentions_flags(capsys: pytest.CaptureFixture) -> None:
     assert "--custom-art-bleed-crop PERCENT" in captured.out
 
 
+def test_main_convert_help_mentions_basic_lands(capsys: pytest.CaptureFixture) -> None:
+    from mtg_proxies.cli import main
+
+    with patch("sys.argv", ["mtg-proxies", "convert", "--help"]), pytest.raises(SystemExit):
+        main()
+
+    captured = capsys.readouterr()
+    assert "--basic-lands NAME=COUNT" in captured.out
+
+
 def test_main_print_forwards_split_pages(tmp_path) -> None:
     from mtg_proxies.cli import main
 
@@ -228,6 +238,125 @@ def test_main_convert_forwards_art_preference(tmp_path) -> None:
     parse_decklist_spec.assert_called_once()
     assert parse_decklist_spec.call_args.kwargs["art_preference"] == "wild"
     fake_decklist.save.assert_called_once_with(out_file, fmt="arena")
+
+
+def test_main_convert_basic_lands_uses_generator_and_skips_parsing(tmp_path) -> None:
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "lands.txt"
+    fake_decklist = Mock()
+
+    with (
+        patch(
+            "sys.argv",
+            [
+                "mtg-proxies",
+                "convert",
+                "ignored.txt",
+                str(out_file),
+                "--basic-lands",
+                "mountain=9",
+                "forest=7",
+                "--art-preference",
+                "wild",
+            ],
+        ),
+        patch("mtg_proxies.cli._generate_basic_lands_decklist", return_value=fake_decklist) as generate_basic_lands,
+        patch("mtg_proxies.cli.parse_decklist_spec") as parse_decklist_spec,
+    ):
+        main()
+
+    generate_basic_lands.assert_called_once_with(["mountain=9", "forest=7"], art_preference="wild")
+    parse_decklist_spec.assert_not_called()
+    fake_decklist.save.assert_called_once_with(out_file, fmt="arena")
+
+
+def test_main_convert_basic_lands_accepts_outfile_after_specs(tmp_path) -> None:
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "basics.txt"
+    fake_decklist = Mock()
+
+    with (
+        patch(
+            "sys.argv",
+            [
+                "mtg-proxies",
+                "convert",
+                "--art-preference=wild",
+                "--basic-lands",
+                "mountain=9",
+                "forest=9",
+                "plains=9",
+                "swamp=9",
+                "island=9",
+                str(out_file),
+            ],
+        ),
+        patch("mtg_proxies.cli._generate_basic_lands_decklist", return_value=fake_decklist) as generate_basic_lands,
+    ):
+        main()
+
+    generate_basic_lands.assert_called_once_with(
+        ["mountain=9", "forest=9", "plains=9", "swamp=9", "island=9"],
+        art_preference="wild",
+    )
+    fake_decklist.save.assert_called_once_with(out_file, fmt="arena")
+
+
+def test_main_convert_requires_decklist_or_basic_lands(tmp_path, capsys: pytest.CaptureFixture) -> None:
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "decklist.txt"
+
+    with patch("sys.argv", ["mtg-proxies", "convert", str(out_file)]), pytest.raises(SystemExit):
+        main()
+
+    captured = capsys.readouterr()
+    assert "Error: must provide either a decklist or --basic-lands" in captured.out
+
+
+def test_main_convert_basic_lands_invalid_spec_errors(tmp_path, capsys: pytest.CaptureFixture) -> None:
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "lands.txt"
+
+    with patch(
+        "sys.argv",
+        ["mtg-proxies", "convert", str(out_file), "--basic-lands", "mountain"],
+    ), pytest.raises(SystemExit):
+        main()
+
+    captured = capsys.readouterr()
+    assert "Error: Invalid basic land spec 'mountain'. Expected NAME=COUNT." in captured.out
+
+
+def test_main_convert_basic_lands_requires_output_file(capsys: pytest.CaptureFixture) -> None:
+    from mtg_proxies.cli import main
+
+    with patch(
+        "sys.argv",
+        ["mtg-proxies", "convert", "--basic-lands", "mountain=9", "forest=7"],
+    ), pytest.raises(SystemExit):
+        main()
+
+    captured = capsys.readouterr()
+    assert "Error: must provide an output file for convert" in captured.out
+
+
+def test_generate_basic_lands_decklist_prefers_unique_art_before_repeats() -> None:
+    from mtg_proxies.cli import _generate_basic_lands_decklist
+
+    first = {"id": "m1", "name": "Mountain", "set": "a", "collector_number": "1", "type_line": "Basic Land — Mountain"}
+    second = {"id": "m2", "name": "Mountain", "set": "b", "collector_number": "2", "type_line": "Basic Land — Mountain"}
+
+    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[first, second]):
+        decklist = _generate_basic_lands_decklist(["mountain=3"], rng=np.random.default_rng(0))
+
+    ids = [entry.card["id"] for entry in decklist.cards]
+    assert len(ids) == 3
+    assert set(ids[:2]) == {"m1", "m2"}
+    assert ids[2] in {"m1", "m2"}
 
 
 def test_normalize_custom_art_images_crops_symmetrically(tmp_path) -> None:

@@ -1,12 +1,14 @@
 import argparse
 from collections.abc import Container
 from pathlib import Path
+import random
 import tempfile
 from typing import Literal
 
 import matplotlib.pyplot as plt
 import numpy as np
 
+import mtg_proxies.scryfall as scryfall
 from mtg_proxies import fetch_scans_scryfall, print_cards_fpdf, print_cards_matplotlib
 from mtg_proxies.deck_value import show_deck_value
 from mtg_proxies.decklists import archidekt, manastack, parse_decklist
@@ -14,6 +16,7 @@ from mtg_proxies.decklists.decklist import Decklist
 from mtg_proxies.tokens import get_tokens
 
 DEFAULT_CUSTOM_ART_BLEED_CROP_PERCENT = 4.0
+BASIC_LAND_NAMES = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
 
 def parse_decklist_spec(
     decklist_spec: str,
@@ -94,6 +97,60 @@ def _normalize_custom_art_images(
         normalized_images.append(str(normalized_image_path))
 
     return normalized_images
+
+
+def _parse_basic_land_specs(specs: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for spec in specs:
+        if "=" not in spec:
+            raise ValueError(f"Invalid basic land spec {spec!r}. Expected NAME=COUNT.")
+        raw_name, raw_count = spec.split("=", 1)
+        name = raw_name.strip().lower()
+        if name not in BASIC_LAND_NAMES:
+            valid_names = ", ".join(sorted(BASIC_LAND_NAMES))
+            raise ValueError(f"Unknown basic land {raw_name!r}. Expected one of: {valid_names}.")
+        try:
+            count = int(raw_count)
+        except ValueError as exc:
+            raise ValueError(f"Invalid count for {raw_name!r}: {raw_count!r}.") from exc
+        if count <= 0:
+            raise ValueError(f"Count for {raw_name!r} must be positive.")
+        counts[name] = counts.get(name, 0) + count
+    return counts
+
+
+def _generate_basic_lands_decklist(
+    specs: list[str],
+    *,
+    art_preference: Literal["standard", "wild"] = "standard",
+    rng: random.Random | None = None,
+) -> Decklist:
+    land_counts = _parse_basic_land_specs(specs)
+    rng = rng or random.Random()
+    decklist = Decklist()
+
+    for land_name, count in land_counts.items():
+        choices = [
+            card
+            for card in scryfall.recommend_print(card_name=land_name.title(), art_preference=art_preference, mode="choices")
+            if "Basic Land" in card.get("type_line", "")
+        ]
+        if not choices:
+            raise ValueError(f"Unable to find printable basic land choices for {land_name!r}.")
+
+        pool = list(choices)
+        rng.shuffle(pool)
+        selected: list[dict] = []
+        while len(selected) < count:
+            if not pool:
+                pool = list(choices)
+                rng.shuffle(pool)
+            selected.append(pool.pop())
+
+        for card in selected:
+            decklist.append_card(1, card)
+
+    return decklist
 
 
 def main() -> None:
@@ -196,13 +253,22 @@ def main() -> None:
     )
     convert_parser.add_argument(
         "decklist",
+        nargs="?",
+        default=None,
         help="path to a decklist in text/arena format, or manastack:{manastack_id}, or archidekt:{archidekt_id}",
     )
-    convert_parser.add_argument("outfile", help="output file", type=Path)
+    convert_parser.add_argument("outfile", nargs="?", default=None, help="output file", type=Path)
     convert_parser.add_argument(
         "--format", help="output format (default: %(default)s)", choices=["arena", "text"], default="arena"
     )
     convert_parser.add_argument("--clean", action="store_true", help="remove all non-card lines")
+    convert_parser.add_argument(
+        "--basic-lands",
+        nargs="+",
+        default=None,
+        metavar="NAME=COUNT",
+        help="generate a decklist of random basic land printings, e.g. mountain=9 forest=7",
+    )
     convert_parser.add_argument(
         "--art-preference",
         help="art recommendation style (default: %(default)s)",
@@ -311,17 +377,55 @@ def main() -> None:
                     custom_art_dir.cleanup()
 
         case "convert":
-            # Parse decklist
-            decklist = parse_decklist_spec(
-                args.decklist,
-                warn_levels=["ERROR", "WARNING"],
-                art_preference=args.art_preference,
-            )
+            outfile = args.outfile
+            basic_land_specs = args.basic_lands
+            if basic_land_specs and outfile is None:
+                if args.decklist is not None:
+                    outfile = Path(args.decklist)
+                if len(basic_land_specs) > 1 and "=" not in basic_land_specs[-1]:
+                    outfile = Path(basic_land_specs[-1])
+                    basic_land_specs = basic_land_specs[:-1]
+
+            if args.basic_lands:
+                if outfile is None:
+                    print("Error: must provide an output file for convert")
+                    raise SystemExit(1)
+                try:
+                    decklist = _generate_basic_lands_decklist(basic_land_specs, art_preference=args.art_preference)
+                except ValueError as exc:
+                    print(f"Error: {exc}")
+                    raise SystemExit(1) from exc
+            else:
+                decklist_spec = args.decklist
+                if decklist_spec is not None and outfile is None:
+                    looks_like_decklist = (
+                        Path(decklist_spec).is_file()
+                        or decklist_spec.lower().startswith("manastack:")
+                        or decklist_spec.lower().startswith("archidekt:")
+                    )
+                    if looks_like_decklist:
+                        print("Error: must provide an output file for convert")
+                        raise SystemExit(1)
+                    decklist_spec = None
+
+                if args.decklist is None:
+                    print("Error: must provide either a decklist or --basic-lands")
+                    raise SystemExit(1)
+                if outfile is None:
+                    print("Error: must provide either a decklist or --basic-lands")
+                    raise SystemExit(1)
+
+                # Parse decklist
+                decklist = parse_decklist_spec(
+                    decklist_spec,
+                    warn_levels=["ERROR", "WARNING"],
+                    art_preference=args.art_preference,
+                )
 
             # Write decklist
-            decklist.save(args.outfile, fmt=args.format)
+            decklist.save(outfile, fmt=args.format)
 
-            print(f"Successfully wrote decklist to {args.outfile.resolve()}.")
+            print(f"Successfully wrote decklist to {outfile.resolve()}.")
 
         case "tokens":
             # Parse decklist
