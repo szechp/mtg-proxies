@@ -431,10 +431,14 @@ def test_generate_basic_lands_decklist_premium_prefers_elegant_full_art() -> Non
         "digital": False,
     }
 
+    premium_count = 0
     with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[loud_gimmick, elegant_full_art]):
-        decklist = _generate_basic_lands_decklist(["mountain=1"], art_preference="premium", rng=random.Random(0))
+        for seed in range(40):
+            decklist = _generate_basic_lands_decklist(["mountain=1"], art_preference="premium", rng=random.Random(seed))
+            if decklist.cards[0].card["id"] == "premium":
+                premium_count += 1
 
-    assert decklist.cards[0].card["id"] == "premium"
+    assert premium_count > 30
 
 
 def test_generate_basic_lands_decklist_wild_prefers_flashy_over_elegant() -> None:
@@ -467,10 +471,14 @@ def test_generate_basic_lands_decklist_wild_prefers_flashy_over_elegant() -> Non
         "digital": False,
     }
 
+    wild_count = 0
     with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[elegant_full_art, loud_gimmick]):
-        decklist = _generate_basic_lands_decklist(["mountain=1"], art_preference="wild", rng=random.Random(0))
+        for seed in range(40):
+            decklist = _generate_basic_lands_decklist(["mountain=1"], art_preference="wild", rng=random.Random(seed))
+            if decklist.cards[0].card["id"] == "wild":
+                wild_count += 1
 
-    assert decklist.cards[0].card["id"] == "wild"
+    assert wild_count > 30
 
 
 def test_generate_basic_lands_decklist_excludes_cross_over_and_racing_basics() -> None:

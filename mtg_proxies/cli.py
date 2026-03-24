@@ -207,11 +207,8 @@ def _generate_basic_lands_decklist(
 
     def weighted_unique_order(cards: list[dict], score_fn) -> list[dict]:
         ranked = sorted(cards, key=score_fn, reverse=True)
-        if not ranked:
-            return []
-
-        ordered: list[dict] = [ranked[0]]
-        pool = list(ranked[1:])
+        pool = list(ranked)
+        ordered: list[dict] = []
 
         while pool:
             weights = [4 ** (len(pool) - index - 1) for index in range(len(pool))]
