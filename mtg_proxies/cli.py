@@ -147,6 +147,46 @@ def _generate_basic_lands_decklist(
             or card.get("set_type") in {"memorabilia", "masterpiece"}
         )
 
+    def is_plain_standard_basic(card: dict) -> bool:
+        frame_effects = set(card.get("frame_effects", []))
+        promo_types = set(card.get("promo_types", []))
+        set_name = card.get("set_name", "").lower()
+        flashy_effects = {
+            "extendedart",
+            "showcase",
+            "shatteredglass",
+            "upside_down",
+            "inverted",
+            "borderless",
+            "fullart",
+        }
+        flashy_promos = {
+            "boosterfun",
+            "bundle",
+            "concept",
+            "datestamped",
+            "firstplacefoil",
+            "galaxyfoil",
+            "halofoil",
+            "poster",
+            "prerelease",
+            "promopack",
+            "serialized",
+            "setpromo",
+            "stamped",
+            "surgefoil",
+            "universesbeyond",
+        }
+        return not (
+            is_full_art(card)
+            or card.get("set") == "sld"
+            or "secret lair" in set_name
+            or card.get("set_type") in {"funny", "promo"}
+            or card.get("digital")
+            or flashy_effects & frame_effects
+            or flashy_promos & promo_types
+        )
+
     def is_excluded_basic_land(card: dict) -> bool:
         excluded_sets = {"dft", "pip", "who", "tmt"}
         excluded_set_names = {
@@ -248,9 +288,13 @@ def _generate_basic_lands_decklist(
         elif art_preference == "wild":
             choices = weighted_unique_order(choices, wild_score)
         else:
-            non_full_art_choices = [card for card in choices if not is_full_art(card)]
-            if non_full_art_choices:
-                choices = non_full_art_choices
+            plain_standard_choices = [card for card in choices if is_plain_standard_basic(card)]
+            if plain_standard_choices:
+                choices = plain_standard_choices
+            else:
+                non_full_art_choices = [card for card in choices if not is_full_art(card)]
+                if non_full_art_choices:
+                    choices = non_full_art_choices
             rng.shuffle(choices)
 
         pool = list(choices)

@@ -473,6 +473,40 @@ def test_generate_basic_lands_decklist_standard_repeats_regular_before_using_ful
     assert len(ids) == 3
 
 
+def test_generate_basic_lands_decklist_standard_avoids_flashy_non_full_art_when_plain_exists() -> None:
+    from mtg_proxies.cli import _generate_basic_lands_decklist
+
+    plain = {
+        "id": "plain",
+        "name": "Forest",
+        "set": "m21",
+        "set_name": "Core Set 2021",
+        "collector_number": "274",
+        "type_line": "Basic Land — Forest",
+        "frame_effects": [],
+        "promo_types": [],
+        "set_type": "core",
+        "digital": False,
+    }
+    flashy = {
+        "id": "flashy",
+        "name": "Forest",
+        "set": "blb",
+        "set_name": "Bloomburrow",
+        "collector_number": "287",
+        "type_line": "Basic Land — Forest",
+        "frame_effects": ["showcase"],
+        "promo_types": ["boosterfun"],
+        "set_type": "expansion",
+        "digital": False,
+    }
+
+    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[plain, flashy]):
+        decklist = _generate_basic_lands_decklist(["forest=1"], art_preference="standard", rng=random.Random(0))
+
+    assert decklist.cards[0].card["id"] == "plain"
+
+
 def test_generate_basic_lands_decklist_premium_prefers_elegant_full_art() -> None:
     from mtg_proxies.cli import _generate_basic_lands_decklist
 
