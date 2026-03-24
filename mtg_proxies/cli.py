@@ -205,22 +205,21 @@ def _generate_basic_lands_decklist(
             card.get("collector_number", ""),
         )
 
-    def shuffle_within_score_groups[T](cards: list[dict], score_fn) -> list[dict]:
-        grouped: dict[object, list[dict]] = {}
-        order: list[object] = []
-        for card in cards:
-            score = score_fn(card)
-            if score not in grouped:
-                grouped[score] = []
-                order.append(score)
-            grouped[score].append(card)
+    def weighted_unique_order(cards: list[dict], score_fn) -> list[dict]:
+        ranked = sorted(cards, key=score_fn, reverse=True)
+        if not ranked:
+            return []
 
-        shuffled: list[dict] = []
-        for score in sorted(order, reverse=True):
-            bucket = grouped[score]
-            rng.shuffle(bucket)
-            shuffled.extend(bucket)
-        return shuffled
+        ordered: list[dict] = [ranked[0]]
+        pool = list(ranked[1:])
+
+        while pool:
+            weights = [4 ** (len(pool) - index - 1) for index in range(len(pool))]
+            choice = rng.choices(pool, weights=weights, k=1)[0]
+            ordered.append(choice)
+            pool.remove(choice)
+
+        return ordered
 
     for land_name, count in land_counts.items():
         recommendation_preference = cast(Literal["standard", "wild"], art_preference if art_preference != "premium" else "wild")
@@ -237,9 +236,9 @@ def _generate_basic_lands_decklist(
             raise ValueError(f"Unable to find printable basic land choices for {land_name!r}.")
 
         if art_preference == "premium":
-            choices = shuffle_within_score_groups(choices, premium_score)
+            choices = weighted_unique_order(choices, premium_score)
         elif art_preference == "wild":
-            choices = shuffle_within_score_groups(choices, wild_score)
+            choices = weighted_unique_order(choices, wild_score)
         else:
             rng.shuffle(choices)
 
@@ -249,9 +248,9 @@ def _generate_basic_lands_decklist(
             if not pool:
                 pool = list(choices)
                 if art_preference == "premium":
-                    pool = shuffle_within_score_groups(pool, premium_score)
+                    pool = weighted_unique_order(pool, premium_score)
                 elif art_preference == "wild":
-                    pool = shuffle_within_score_groups(pool, wild_score)
+                    pool = weighted_unique_order(pool, wild_score)
                 else:
                     rng.shuffle(pool)
             selected.append(pool.pop(0))

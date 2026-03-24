@@ -525,6 +525,62 @@ def test_generate_basic_lands_decklist_excludes_cross_over_and_racing_basics() -
     assert decklist.cards[0].card["id"] == "ok"
 
 
+def test_generate_basic_lands_decklist_wild_varies_across_rng_seeds() -> None:
+    from mtg_proxies.cli import _generate_basic_lands_decklist
+
+    cards = [
+        {
+            "id": "a",
+            "name": "Mountain",
+            "set": "sld",
+            "set_name": "Secret Lair Drop",
+            "collector_number": "101",
+            "type_line": "Basic Land — Mountain",
+            "frame_effects": ["showcase"],
+            "promo_types": ["poster", "serialized"],
+            "set_type": "promo",
+            "lang": "en",
+            "digital": False,
+        },
+        {
+            "id": "b",
+            "name": "Mountain",
+            "set": "unf",
+            "set_name": "Unfinity",
+            "collector_number": "102",
+            "type_line": "Basic Land — Mountain",
+            "frame_effects": ["fullart"],
+            "promo_types": ["concept"],
+            "set_type": "funny",
+            "lang": "en",
+            "digital": False,
+        },
+        {
+            "id": "c",
+            "name": "Mountain",
+            "set": "ust",
+            "set_name": "Unstable",
+            "collector_number": "103",
+            "type_line": "Basic Land — Mountain",
+            "frame_effects": ["borderless"],
+            "promo_types": ["boosterfun"],
+            "set_type": "funny",
+            "lang": "en",
+            "digital": False,
+        },
+    ]
+
+    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=cards):
+        decklist_one = _generate_basic_lands_decklist(["mountain=3"], art_preference="wild", rng=random.Random(1))
+        decklist_two = _generate_basic_lands_decklist(["mountain=3"], art_preference="wild", rng=random.Random(2))
+
+    ids_one = [entry.card["id"] for entry in decklist_one.cards]
+    ids_two = [entry.card["id"] for entry in decklist_two.cards]
+    assert set(ids_one) == {"a", "b", "c"}
+    assert set(ids_two) == {"a", "b", "c"}
+    assert ids_one != ids_two
+
+
 def test_normalize_custom_art_images_crops_symmetrically(tmp_path) -> None:
     from mtg_proxies.cli import _normalize_custom_art_images
 
