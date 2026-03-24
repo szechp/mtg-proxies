@@ -18,6 +18,13 @@ from mtg_proxies.tokens import get_tokens
 DEFAULT_CUSTOM_ART_BLEED_CROP_PERCENT = 4.0
 BASIC_LAND_NAMES = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
 ArtPreference = Literal["standard", "wild", "premium"]
+EXCLUDED_BASIC_LAND_PRINTS = {
+    ("sld", "254"),
+    ("sld", "255"),
+    ("sld", "256"),
+    ("sld", "257"),
+    ("sld", "258"),
+}
 
 def parse_decklist_spec(
     decklist_spec: str,
@@ -148,7 +155,11 @@ def _generate_basic_lands_decklist(
             "doctor who",
             "teenage mutant ninja turtles",
         }
-        return card.get("set") in excluded_sets or card.get("set_name", "").lower() in excluded_set_names
+        return (
+            card.get("set") in excluded_sets
+            or card.get("set_name", "").lower() in excluded_set_names
+            or (card.get("set"), str(card.get("collector_number", ""))) in EXCLUDED_BASIC_LAND_PRINTS
+        )
 
     def premium_score(card: dict) -> tuple[int, int, int, int, int, int, int, str, str]:
         frame_effects = set(card.get("frame_effects", []))
@@ -237,6 +248,9 @@ def _generate_basic_lands_decklist(
         elif art_preference == "wild":
             choices = weighted_unique_order(choices, wild_score)
         else:
+            non_full_art_choices = [card for card in choices if not is_full_art(card)]
+            if non_full_art_choices:
+                choices = non_full_art_choices
             rng.shuffle(choices)
 
         pool = list(choices)

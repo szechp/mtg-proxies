@@ -401,6 +401,78 @@ def test_generate_basic_lands_decklist_prefers_unique_art_before_repeats() -> No
     assert ids[2] in {"m1", "m2"}
 
 
+def test_generate_basic_lands_decklist_standard_avoids_full_art_when_regular_exists() -> None:
+    from mtg_proxies.cli import _generate_basic_lands_decklist
+
+    regular = {
+        "id": "regular",
+        "name": "Mountain",
+        "set": "m21",
+        "collector_number": "270",
+        "type_line": "Basic Land — Mountain",
+        "frame_effects": [],
+        "promo_types": [],
+        "set_type": "core",
+    }
+    full_art = {
+        "id": "full",
+        "name": "Mountain",
+        "set": "mh3",
+        "collector_number": "300",
+        "type_line": "Basic Land — Mountain",
+        "frame_effects": ["fullart"],
+        "promo_types": [],
+        "set_type": "expansion",
+    }
+
+    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[regular, full_art]):
+        decklist = _generate_basic_lands_decklist(["mountain=1"], art_preference="standard", rng=random.Random(0))
+
+    assert decklist.cards[0].card["id"] == "regular"
+
+
+def test_generate_basic_lands_decklist_standard_repeats_regular_before_using_full_art() -> None:
+    from mtg_proxies.cli import _generate_basic_lands_decklist
+
+    first_regular = {
+        "id": "regular-1",
+        "name": "Mountain",
+        "set": "m21",
+        "collector_number": "270",
+        "type_line": "Basic Land — Mountain",
+        "frame_effects": [],
+        "promo_types": [],
+        "set_type": "core",
+    }
+    second_regular = {
+        "id": "regular-2",
+        "name": "Mountain",
+        "set": "m21",
+        "collector_number": "271",
+        "type_line": "Basic Land — Mountain",
+        "frame_effects": [],
+        "promo_types": [],
+        "set_type": "core",
+    }
+    full_art = {
+        "id": "full",
+        "name": "Mountain",
+        "set": "mh3",
+        "collector_number": "300",
+        "type_line": "Basic Land — Mountain",
+        "frame_effects": ["fullart"],
+        "promo_types": [],
+        "set_type": "expansion",
+    }
+
+    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[first_regular, second_regular, full_art]):
+        decklist = _generate_basic_lands_decklist(["mountain=3"], art_preference="standard", rng=random.Random(0))
+
+    ids = [entry.card["id"] for entry in decklist.cards]
+    assert set(ids) <= {"regular-1", "regular-2"}
+    assert len(ids) == 3
+
+
 def test_generate_basic_lands_decklist_premium_prefers_elegant_full_art() -> None:
     from mtg_proxies.cli import _generate_basic_lands_decklist
 
@@ -531,6 +603,66 @@ def test_generate_basic_lands_decklist_excludes_cross_over_and_racing_basics() -
         decklist = _generate_basic_lands_decklist(["mountain=1"], rng=random.Random(0))
 
     assert decklist.cards[0].card["id"] == "ok"
+
+
+def test_generate_basic_lands_decklist_excludes_explanation_style_sld_basics_only() -> None:
+    from mtg_proxies.cli import _generate_basic_lands_decklist
+
+    excluded = [
+        {
+            "id": "sld-plains",
+            "name": "Plains",
+            "set": "sld",
+            "set_name": "Secret Lair Drop",
+            "collector_number": "254",
+            "type_line": "Basic Land — Plains",
+        },
+        {
+            "id": "sld-island",
+            "name": "Island",
+            "set": "sld",
+            "set_name": "Secret Lair Drop",
+            "collector_number": "255",
+            "type_line": "Basic Land — Island",
+        },
+        {
+            "id": "sld-swamp",
+            "name": "Swamp",
+            "set": "sld",
+            "set_name": "Secret Lair Drop",
+            "collector_number": "256",
+            "type_line": "Basic Land — Swamp",
+        },
+        {
+            "id": "sld-mountain",
+            "name": "Mountain",
+            "set": "sld",
+            "set_name": "Secret Lair Drop",
+            "collector_number": "257",
+            "type_line": "Basic Land — Mountain",
+        },
+        {
+            "id": "sld-forest",
+            "name": "Forest",
+            "set": "sld",
+            "set_name": "Secret Lair Drop",
+            "collector_number": "258",
+            "type_line": "Basic Land — Forest",
+        },
+    ]
+    allowed = {
+        "id": "sld-allowed",
+        "name": "Forest",
+        "set": "sld",
+        "set_name": "Secret Lair Drop",
+        "collector_number": "259",
+        "type_line": "Basic Land — Forest",
+    }
+
+    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[*excluded, allowed]):
+        decklist = _generate_basic_lands_decklist(["forest=1"], rng=random.Random(0))
+
+    assert decklist.cards[0].card["id"] == "sld-allowed"
 
 
 def test_generate_basic_lands_decklist_wild_varies_across_rng_seeds() -> None:
