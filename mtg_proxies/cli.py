@@ -1,8 +1,8 @@
 import argparse
-from collections.abc import Container
-from pathlib import Path
 import random
 import tempfile
+from collections.abc import Container
+from pathlib import Path
 from typing import Literal, cast
 
 import matplotlib.pyplot as plt
@@ -184,6 +184,8 @@ def _generate_basic_lands_decklist(
         }
         return not (
             is_full_art(card)
+            or card.get("border_color") == "borderless"
+            or card.get("frame") not in {"2003", "2015"}
             or card.get("set") == "sld"
             or "secret lair" in set_name
             or card.get("set_type") in {"funny", "promo"}
@@ -267,7 +269,7 @@ def _generate_basic_lands_decklist(
         ordered: list[dict] = []
 
         while pool:
-            weights = [4 ** (len(pool) - index - 1) for index in range(len(pool))]
+            weights = [2 ** (len(pool) - index - 1) for index in range(len(pool))]
             choice = rng.choices(pool, weights=weights, k=1)[0]
             ordered.append(choice)
             pool.remove(choice)

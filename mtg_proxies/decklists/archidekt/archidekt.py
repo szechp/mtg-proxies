@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import requests
 from typing import Literal
+
+import requests
 
 from mtg_proxies.decklists import Decklist, ParseWarning
 from mtg_proxies.decklists.sanitizing import validate_card_name, validate_print

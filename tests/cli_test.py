@@ -1,8 +1,9 @@
+import random
 from unittest.mock import Mock, patch
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
-import random
 
 
 def test_main(capsys: pytest.CaptureFixture) -> None:
@@ -539,12 +540,12 @@ def test_generate_basic_lands_decklist_premium_prefers_elegant_full_art() -> Non
 
     premium_count = 0
     with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[loud_gimmick, elegant_full_art]):
-        for seed in range(40):
+        for seed in range(100):
             decklist = _generate_basic_lands_decklist(["mountain=1"], art_preference="premium", rng=random.Random(seed))
             if decklist.cards[0].card["id"] == "premium":
                 premium_count += 1
 
-    assert premium_count > 30
+    assert premium_count > 55
 
 
 def test_generate_basic_lands_decklist_wild_prefers_flashy_over_elegant() -> None:
@@ -579,12 +580,12 @@ def test_generate_basic_lands_decklist_wild_prefers_flashy_over_elegant() -> Non
 
     wild_count = 0
     with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[elegant_full_art, loud_gimmick]):
-        for seed in range(40):
+        for seed in range(100):
             decklist = _generate_basic_lands_decklist(["mountain=1"], art_preference="wild", rng=random.Random(seed))
             if decklist.cards[0].card["id"] == "wild":
                 wild_count += 1
 
-    assert wild_count > 30
+    assert wild_count > 55
 
 
 def test_generate_basic_lands_decklist_excludes_cross_over_and_racing_basics() -> None:
@@ -873,3 +874,286 @@ def test_main_print_custom_art_bleed_crop_too_large_errors(tmp_path, capsys: pyt
 
     captured = capsys.readouterr()
     assert "Error: Custom art bleed crop too large" in captured.out
+
+
+def test_generate_basic_lands_decklist_standard_excludes_borderless_basics() -> None:
+    from mtg_proxies.cli import _generate_basic_lands_decklist
+
+    borderless = {
+        "id": "dmu-281",
+        "name": "Forest",
+        "set": "dmu",
+        "set_name": "Dominaria United",
+        "collector_number": "281",
+        "type_line": "Basic Land — Forest",
+        "frame_effects": [],
+        "promo_types": [],
+        "set_type": "expansion",
+        "border_color": "borderless",
+        "frame": "2015",
+        "digital": False,
+    }
+    plain = {
+        "id": "plain",
+        "name": "Forest",
+        "set": "m21",
+        "set_name": "Core Set 2021",
+        "collector_number": "274",
+        "type_line": "Basic Land — Forest",
+        "frame_effects": [],
+        "promo_types": [],
+        "set_type": "core",
+        "border_color": "black",
+        "frame": "2015",
+        "digital": False,
+    }
+
+    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[borderless, plain]):
+        decklist = _generate_basic_lands_decklist(["forest=2"], art_preference="standard", rng=random.Random(0))
+
+    ids = [entry.card["id"] for entry in decklist.cards]
+    assert "dmu-281" not in ids
+    assert ids == ["plain", "plain"]
+
+
+def test_generate_basic_lands_decklist_standard_excludes_old_frame_basics() -> None:
+    from mtg_proxies.cli import _generate_basic_lands_decklist
+
+    old_frame = {
+        "id": "usg-vintage",
+        "name": "Forest",
+        "set": "usg",
+        "set_name": "Urza's Saga",
+        "collector_number": "349",
+        "type_line": "Basic Land — Forest",
+        "frame_effects": [],
+        "promo_types": [],
+        "set_type": "expansion",
+        "border_color": "black",
+        "frame": "1997",
+        "digital": False,
+    }
+    modern = {
+        "id": "plain",
+        "name": "Forest",
+        "set": "m21",
+        "set_name": "Core Set 2021",
+        "collector_number": "274",
+        "type_line": "Basic Land — Forest",
+        "frame_effects": [],
+        "promo_types": [],
+        "set_type": "core",
+        "border_color": "black",
+        "frame": "2015",
+        "digital": False,
+    }
+
+    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[old_frame, modern]):
+        decklist = _generate_basic_lands_decklist(["forest=2"], art_preference="standard", rng=random.Random(0))
+
+    ids = [entry.card["id"] for entry in decklist.cards]
+    assert "usg-vintage" not in ids
+    assert ids == ["plain", "plain"]
+
+
+def test_generate_basic_lands_decklist_wild_accepts_borderless_and_old_frame() -> None:
+    from mtg_proxies.cli import _generate_basic_lands_decklist
+
+    borderless = {
+        "id": "dmu-281",
+        "name": "Forest",
+        "set": "dmu",
+        "set_name": "Dominaria United",
+        "collector_number": "281",
+        "type_line": "Basic Land — Forest",
+        "frame_effects": [],
+        "promo_types": [],
+        "set_type": "expansion",
+        "border_color": "borderless",
+        "frame": "2015",
+        "digital": False,
+    }
+    old_frame = {
+        "id": "usg-vintage",
+        "name": "Forest",
+        "set": "usg",
+        "set_name": "Urza's Saga",
+        "collector_number": "349",
+        "type_line": "Basic Land — Forest",
+        "frame_effects": [],
+        "promo_types": [],
+        "set_type": "expansion",
+        "border_color": "black",
+        "frame": "1997",
+        "digital": False,
+    }
+
+    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[borderless, old_frame]):
+        decklist = _generate_basic_lands_decklist(["forest=2"], art_preference="wild", rng=random.Random(0))
+
+    ids = [entry.card["id"] for entry in decklist.cards]
+    assert set(ids) == {"dmu-281", "usg-vintage"}
+
+
+def test_generate_basic_lands_decklist_default_preference_excludes_like_standard() -> None:
+    from mtg_proxies.cli import _generate_basic_lands_decklist
+
+    borderless = {
+        "id": "dmu-281",
+        "name": "Forest",
+        "set": "dmu",
+        "set_name": "Dominaria United",
+        "collector_number": "281",
+        "type_line": "Basic Land — Forest",
+        "frame_effects": [],
+        "promo_types": [],
+        "set_type": "expansion",
+        "border_color": "borderless",
+        "frame": "2015",
+        "digital": False,
+    }
+    old_frame = {
+        "id": "usg-vintage",
+        "name": "Forest",
+        "set": "usg",
+        "set_name": "Urza's Saga",
+        "collector_number": "349",
+        "type_line": "Basic Land — Forest",
+        "frame_effects": [],
+        "promo_types": [],
+        "set_type": "expansion",
+        "border_color": "black",
+        "frame": "1997",
+        "digital": False,
+    }
+    plain = {
+        "id": "plain",
+        "name": "Forest",
+        "set": "m21",
+        "set_name": "Core Set 2021",
+        "collector_number": "274",
+        "type_line": "Basic Land — Forest",
+        "frame_effects": [],
+        "promo_types": [],
+        "set_type": "core",
+        "border_color": "black",
+        "frame": "2015",
+        "digital": False,
+    }
+
+    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[borderless, old_frame, plain]):
+        decklist = _generate_basic_lands_decklist(["forest=2"], art_preference="standard", rng=random.Random(0))
+
+    ids = [entry.card["id"] for entry in decklist.cards]
+    assert "dmu-281" not in ids
+    assert "usg-vintage" not in ids
+    assert ids == ["plain", "plain"]
+
+
+def test_generate_basic_lands_decklist_standard_varies_across_consecutive_runs() -> None:
+    from mtg_proxies.cli import _generate_basic_lands_decklist
+
+    cards = [
+        {
+            "id": f"forest-{i}",
+            "name": "Forest",
+            "set": "m21",
+            "set_name": "Core Set 2021",
+            "collector_number": str(270 + i),
+            "type_line": "Basic Land — Forest",
+            "frame_effects": [],
+            "promo_types": [],
+            "set_type": "core",
+            "border_color": "black",
+            "frame": "2015",
+            "digital": False,
+        }
+        for i in range(6)
+    ]
+
+    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=cards):
+        decklist_a = _generate_basic_lands_decklist(["forest=10"], art_preference="standard", rng=random.Random(1))
+        decklist_b = _generate_basic_lands_decklist(["forest=10"], art_preference="standard", rng=random.Random(2))
+
+    ids_a = [entry.card["id"] for entry in decklist_a.cards]
+    ids_b = [entry.card["id"] for entry in decklist_b.cards]
+    combined = ids_a + ids_b
+    assert len(set(combined)) >= 4
+    for card_id in set(combined):
+        assert combined.count(card_id) <= 7
+
+
+def test_generate_basic_lands_decklist_wild_weight_curve_distributes_selection() -> None:
+    from mtg_proxies.cli import _generate_basic_lands_decklist
+
+    all_promos = ["boosterfun", "concept", "galaxyfoil", "halofoil", "poster"]
+    cards = [
+        {
+            "id": f"mountain-{i}",
+            "name": "Mountain",
+            "set": "m21",
+            "set_name": "Core Set 2021",
+            "collector_number": str(i),
+            "type_line": "Basic Land — Mountain",
+            "frame_effects": [],
+            "promo_types": all_promos[: 5 - i],
+            "set_type": "core",
+            "border_color": "black",
+            "frame": "2015",
+            "digital": False,
+        }
+        for i in range(5)
+    ]
+
+    top_card_count = 0
+    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=cards):
+        for seed in range(500):
+            decklist = _generate_basic_lands_decklist(["mountain=1"], art_preference="wild", rng=random.Random(seed))
+            if decklist.cards[0].card["id"] == "mountain-0":
+                top_card_count += 1
+
+    # With 2^rank: P(top card first) = 16/31 ≈ 52%, expected ~258/500 → reliably below 320
+    # With old 4^rank: P(top card first) = 256/341 ≈ 75%, expected ~375/500 → would exceed 320
+    assert top_card_count < 320
+
+
+def test_generate_basic_lands_decklist_small_pool_completes_without_error() -> None:
+    from mtg_proxies.cli import _generate_basic_lands_decklist
+
+    cards = [
+        {
+            "id": "plains-1",
+            "name": "Plains",
+            "set": "m21",
+            "set_name": "Core Set 2021",
+            "collector_number": "260",
+            "type_line": "Basic Land — Plains",
+            "frame_effects": [],
+            "promo_types": [],
+            "set_type": "core",
+            "border_color": "black",
+            "frame": "2015",
+            "digital": False,
+        },
+        {
+            "id": "plains-2",
+            "name": "Plains",
+            "set": "bfz",
+            "set_name": "Battle for Zendikar",
+            "collector_number": "250",
+            "type_line": "Basic Land — Plains",
+            "frame_effects": [],
+            "promo_types": [],
+            "set_type": "expansion",
+            "border_color": "black",
+            "frame": "2015",
+            "digital": False,
+        },
+    ]
+
+    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=cards):
+        decklist = _generate_basic_lands_decklist(["plains=5"], art_preference="standard", rng=random.Random(0))
+
+    assert len(decklist.cards) == 5
+    ids = [entry.card["id"] for entry in decklist.cards]
+    assert set(ids) == {"plains-1", "plains-2"}

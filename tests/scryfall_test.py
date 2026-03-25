@@ -281,8 +281,8 @@ def test_get_print_warnings_distinguishes_digital_from_lowres() -> None:
 
 
 def test_validate_print_explains_digital_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    from mtg_proxies.decklists.sanitizing import validate_print
     import mtg_proxies.decklists.sanitizing as sanitizing
+    from mtg_proxies.decklists.sanitizing import validate_print
 
     digital_highres = _test_card("digital-highres", highres_image=True, digital=True)
 
