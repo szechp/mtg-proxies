@@ -1,6 +1,6 @@
 # Story 1.2: Genuine Land Art Variety via Weight Curve Flattening
 
-Status: done
+Status: review
 
 ## Story
 
