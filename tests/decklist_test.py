@@ -149,6 +149,71 @@ def test_parse_decklist_warnings(line: str, expected_card_name: str | None, expe
     assert [str(w) for w in warnings] == expected_warnings
 
 
+def test_bare_card_name_defaults_to_count_one() -> None:
+    from mtg_proxies.decklists import Card, parse_decklist_stream
+
+    decklist, ok, _ = parse_decklist_stream(StringIO("Esper Sentinel\n"))
+
+    assert ok
+    assert len(decklist.cards) == 1
+    assert type(decklist.entries[0]) is Card
+    assert decklist.entries[0].count == 1
+
+
+def test_count_prefixed_line_still_works() -> None:
+    from mtg_proxies.decklists import Card, parse_decklist_stream
+
+    decklist, ok, _ = parse_decklist_stream(StringIO("4 Lightning Bolt\n"))
+
+    assert ok
+    assert len(decklist.cards) == 1
+    assert type(decklist.entries[0]) is Card
+    assert decklist.entries[0].count == 4
+
+
+def test_bare_name_with_set_and_collector() -> None:
+    from mtg_proxies.decklists import Card, parse_decklist_stream
+
+    decklist, ok, _ = parse_decklist_stream(StringIO("Esper Sentinel (MH2) 12\n"))
+
+    assert ok
+    assert len(decklist.cards) == 1
+    assert type(decklist.entries[0]) is Card
+    assert decklist.entries[0].count == 1
+    assert decklist.entries[0].card["set"] == "mh2"
+    assert decklist.entries[0].card["collector_number"] == "12"
+
+
+def test_bare_name_blank_lines_remain_comments() -> None:
+    from mtg_proxies.decklists import Comment, parse_decklist_stream
+
+    decklist, _, _ = parse_decklist_stream(StringIO("\n"))
+
+    assert len(decklist.entries) == 1
+    assert type(decklist.entries[0]) is Comment
+
+
+def test_bare_invalid_card_name_becomes_silent_comment() -> None:
+    from mtg_proxies.decklists import Comment, parse_decklist_stream
+
+    decklist, ok, warnings = parse_decklist_stream(StringIO("NotARealCardName\n"))
+
+    assert ok
+    assert len(warnings) == 0
+    assert len(decklist.entries) == 1
+    assert type(decklist.entries[0]) is Comment
+
+
+def test_bare_name_hash_comments_remain_comments() -> None:
+    from mtg_proxies.decklists import Comment, parse_decklist_stream
+
+    decklist, _, _ = parse_decklist_stream(StringIO("# Sideboard\n"))
+
+    assert len(decklist.entries) == 1
+    assert type(decklist.entries[0]) is Comment
+    assert decklist.entries[0].text == "# Sideboard"
+
+
 @pytest.mark.parametrize(
     ("archidekt_id", "expected_first_card"),
     [

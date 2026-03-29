@@ -156,10 +156,16 @@ def parse_decklist_stream(
     warnings = []
     ok = True
     for line in stream:
-        m = re.search(r"([0-9]+)x?\s+(.+?)(?:\s+\((\S*)\)\s+(\S+))?\s*$", line)
-        if m:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            decklist.append_comment(line.rstrip())
+            continue
+
+        m = re.search(r"(?:([0-9]{1,3})x?\s+)?(.+?)(?:\s+\((\S*)\)\s+(\S+))?\s*$", stripped)
+        if m and m.group(2) and m.group(2).strip():
             # Extract relevant data
-            count = int(m.group(1))
+            has_count = m.group(1) is not None
+            count = int(m.group(1)) if has_count else 1
             card_name = m.group(2)
             set_id = m.group(3)  # May be None
             collector_number = m.group(4)  # May be None
@@ -168,8 +174,10 @@ def parse_decklist_stream(
             card_name, warnings_name = validate_card_name(card_name)
             if card_name is None:
                 decklist.append_comment(line.rstrip())
-                warnings.extend(warnings_name)
-                ok = False
+                if has_count:
+                    # Explicit count prefix means user intended a card — report as error
+                    warnings.extend(warnings_name)
+                    ok = False
                 continue
 
             # Validate card print
