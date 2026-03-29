@@ -309,7 +309,9 @@ def _select_standard_fallback(alternatives: list[dict], scores: list[int]) -> di
     if digital_candidates:
         return min(digital_candidates, key=lambda card: -indexed_scores[card["id"]])
 
-    promo_candidates = [card for card in highres_candidates if card.get("set_type") == "promo" or _is_stamped_promo(card)]
+    promo_candidates = [
+        card for card in highres_candidates if card.get("set_type") == "promo" or _is_stamped_promo(card)
+    ]
     if promo_candidates:
         return min(promo_candidates, key=lambda card: -indexed_scores[card["id"]])
 
@@ -374,9 +376,7 @@ def recommend_print(
             points += 2
         if not card["digital"]:
             points += 4
-        if card["border_color"] == "black" and (
-            mode != "best" or "extendedart" not in frame_effects
-        ):
+        if card["border_color"] == "black" and (mode != "best" or "extendedart" not in frame_effects):
             points += 8
         if card["collector_number"][-1] not in ["p", "s"] and card["nonfoil"]:
             points += 16

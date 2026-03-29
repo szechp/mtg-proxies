@@ -107,7 +107,9 @@ def test_recommend_print_prefers_wild_lightning_bolt() -> None:
     assert frame_effects & {"showcase", "borderless", "extendedart", "inverted", "shatteredglass"}
 
 
-@pytest.mark.parametrize("name", ["Voice of Victory", "Rot-Curse Rakshasa", "Cori-Steel Cutter", "Surrak, Elusive Hunter"])
+@pytest.mark.parametrize(
+    "name", ["Voice of Victory", "Rot-Curse Rakshasa", "Cori-Steel Cutter", "Surrak, Elusive Hunter"]
+)
 def test_recommend_print_falls_back_to_highres_when_standard_is_lowres(name: str) -> None:
     from mtg_proxies import scryfall
 
@@ -139,7 +141,9 @@ def test_recommend_print_prefers_clean_standard_prints(
     assert not card.get("digital")
 
 
-def test_recommend_print_standard_fallback_prefers_clean_alternate_before_promo(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_recommend_print_standard_fallback_prefers_clean_alternate_before_promo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from mtg_proxies.scryfall import scryfall
 
     lowres_standard = _test_card("lowres-standard", highres_image=False)
