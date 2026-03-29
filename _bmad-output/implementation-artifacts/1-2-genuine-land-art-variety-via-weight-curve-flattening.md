@@ -1,6 +1,6 @@
 # Story 1.2: Genuine Land Art Variety via Weight Curve Flattening
 
-Status: review
+Status: done
 
 ## Story
 
@@ -238,6 +238,12 @@ Required imports at top of `cli_test.py` (already present): `import random`, `fr
 - `wild_score()` (needed to understand card ranking): `mtg_proxies/cli.py:242-264`
 - Project context rules: `_bmad-output/project-context.md`
 - Epics requirement: `_bmad-output/planning-artifacts/epics.md` — Additional Requirements, Story 1.2
+
+### Review Findings
+
+- [x] [Review][Patch] Test `default_preference_excludes_like_standard` passes explicit `art_preference="standard"` instead of testing the actual default parameter value [tests/cli_test.py] — fixed: removed explicit arg
+- [x] [Review][Defer] Frame allowlist `{"2003", "2015"}` silently excludes `None`/`"future"`/unknown frame values — story 1.1 design decision, fallback prevents failure [mtg_proxies/cli.py:188] — deferred, pre-existing
+- [x] [Review][Defer] SLD exclusion list uses magic collector numbers with no comments explaining what each printing is [mtg_proxies/cli.py:22-36] — deferred, pre-existing
 
 ## Dev Agent Record
 
