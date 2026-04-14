@@ -68,9 +68,10 @@ def print_cards_matplotlib(
                         img = plt.imread(images[idx])
                         idx += 1
 
-                        # Crop left and top if not on border of sheet
-                        left = border_crop if x > 0 else 0
-                        top = border_crop if y > 0 else 0
+                        # Crop left and top if not on border of sheet.
+                        # Negative border_crop means gap between cards — no pixels to crop.
+                        left = max(border_crop, 0) if x > 0 else 0
+                        top = max(border_crop, 0) if y > 0 else 0
                         img = img[top:, left:]
 
                         # Compute extent
@@ -161,9 +162,10 @@ def print_cards_fpdf(
         x = (i % cards_per_sheet) % N[0]
         y = (i % cards_per_sheet) // N[0]
 
-        # Crop left and top if not on border of sheet
-        left = border_crop if x > 0 else 0
-        top = border_crop if y > 0 else 0
+        # Crop left and top if not on border of sheet.
+        # Negative border_crop means gap between cards — no pixels to crop.
+        left = max(border_crop, 0) if x > 0 else 0
+        top = max(border_crop, 0) if y > 0 else 0
 
         if left == 0 and top == 0:
             cropped_image = image
