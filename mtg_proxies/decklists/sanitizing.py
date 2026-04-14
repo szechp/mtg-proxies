@@ -18,7 +18,7 @@ class ParseWarning:
 
 
 @cache
-def card_names() -> tuple[dict[str, str], dict[str, str]]:
+def card_names() -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
     """Return sets of valid card names.
 
     Cached for performance.
@@ -29,7 +29,14 @@ def card_names() -> tuple[dict[str, str], dict[str, str]]:
     double_faced_by_front = {
         name.split("//")[0].strip().lower(): name for name in cards_by_name.values() if "//" in name
     }
-    return cards_by_name, double_faced_by_front
+    # Flavor names are printed names used in themed sets (e.g. "Henneth Annûn" for Reflecting Pool in LTC).
+    # Map lowercased flavor_name → oracle name so users can reference cards by their printed name.
+    flavor_name_to_oracle: dict[str, str] = {}
+    for card in scryfall.get_cards():
+        fn = card.get("flavor_name")
+        if fn:
+            flavor_name_to_oracle[fn.lower()] = card["name"]
+    return cards_by_name, double_faced_by_front, flavor_name_to_oracle
 
 
 def validate_card_name(card_name: str) -> tuple[str | None, list[ParseWarning]]:
@@ -41,7 +48,7 @@ def validate_card_name(card_name: str) -> tuple[str | None, list[ParseWarning]]:
         ok: whether the card could be found.
     """
     # Unique names of all cards
-    cards_by_name, double_faced_by_front = card_names()
+    cards_by_name, double_faced_by_front, flavor_name_to_oracle = card_names()
 
     validated_name = None
     sanizized_name = scryfall.canonic_card_name(card_name)
@@ -53,6 +60,8 @@ def validate_card_name(card_name: str) -> tuple[str | None, list[ParseWarning]]:
         warnings.append(
             ParseWarning("WARNING", f"Misspelled card name {card_name!r}. Assuming you mean {validated_name!r}.")
         )
+    elif sanizized_name in flavor_name_to_oracle:  # Flavor name used in themed sets (e.g. LTC)
+        validated_name = flavor_name_to_oracle[sanizized_name]
     else:  # No exact match
         # Try partial matching
         candidates = [
@@ -94,6 +103,8 @@ def validate_print(
     set_id: str,
     collector_number: str,
     art_preference: Literal["standard", "wild"] = "standard",
+    preferred_sets: list[str] | None = None,
+    allow_low_res: bool = False,
 ) -> tuple[dict, list[ParseWarning]]:
     """Validate a print against the Scryfall database.
 
@@ -104,9 +115,10 @@ def validate_print(
         warnings: list of warnings.
     """
     warnings: list[ParseWarning] = []
+    lowres_upgraded = False
 
     if set_id is None:
-        card = scryfall.recommend_print(card_name=card_name, art_preference=art_preference)
+        card = scryfall.recommend_print(card_name=card_name, art_preference=art_preference, preferred_sets=preferred_sets)
         # Warn for tokens, as they are not unique by name
         if card["layout"] in ["token", "double_faced_token"]:
             warnings.append(
@@ -118,7 +130,7 @@ def validate_print(
         card = scryfall.get_card(card_name, set_id, collector_number)
         if card is None:  # No exact match
             # Find alternative print
-            card = scryfall.recommend_print(card_name=card_name, art_preference=art_preference)
+            card = scryfall.recommend_print(card_name=card_name, art_preference=art_preference, preferred_sets=preferred_sets)
             warnings.append(
                 ParseWarning(
                     "WARNING",
@@ -126,12 +138,37 @@ def validate_print(
                     + f" Using {format_print(card)!r} instead.",
                 )
             )
+        elif not card["highres_image"]:  # Found but low resolution — check if a better print exists
+            in_preferred_set = preferred_sets and card["set"] in {ps.lower() for ps in preferred_sets}
+            if allow_low_res and in_preferred_set:
+                pass  # Honor the preferred-set print even though it's low-res
+            else:
+                better = scryfall.recommend_print(card_name=card_name, art_preference=art_preference, preferred_sets=preferred_sets)
+                if better != card:
+                    warnings.append(
+                        ParseWarning(
+                            "WARNING",
+                            f"Low resolution scan for {format_print(card)!r}. Upgrading to {format_print(better)!r}.",
+                        )
+                    )
+                    card = better
+                    lowres_upgraded = True
+    # Warn if none of the preferred sets could be used (skip if lowres upgrade already explained the substitution)
+    if preferred_sets and card["set"] not in {ps.lower() for ps in preferred_sets} and not lowres_upgraded:
+        sets_str = ", ".join(s.upper() for s in preferred_sets)
+        warnings.append(
+            ParseWarning(
+                "WARNING",
+                f"No high-quality print of {card_name!r} found in preferred set(s) ({sets_str})."
+                + f" Using {format_print(card)!r} instead.",
+            )
+        )
 
     # Warnings for low-quality scans
     quality_warnings = get_print_warnings(card)
     if len(quality_warnings) > 0:
         # Get recommendation
-        recommendation = scryfall.recommend_print(card, art_preference=art_preference)
+        recommendation = scryfall.recommend_print(card, art_preference=art_preference, preferred_sets=preferred_sets)
 
         # Format warnings string
         if quality_warnings == ["digital print"]:

@@ -214,6 +214,76 @@ def test_bare_name_hash_comments_remain_comments() -> None:
     assert decklist.entries[0].text == "# Sideboard"
 
 
+@pytest.mark.parametrize("marker", ["*F*", "*E*"])
+def test_foil_marker_stripped_from_collector_number(marker: str) -> None:
+    """Foil markers like *F* and *E* should be stripped so the correct collector number reaches validate_print."""
+    import mtg_proxies.decklists.decklist as decklist_module
+
+    fake_card = {"id": "x", "set": "ltr", "collector_number": "288", "layout": "normal", "image_uris": {}}
+    captured: list[tuple] = []
+
+    def mock_validate_print(card_name: str, set_id: str, collector_number: str, **kwargs: object) -> tuple:
+        captured.append((set_id, collector_number))
+        return fake_card, []
+
+    decklist_module.validate_card_name = lambda name: ("Sauron, the Lidless Eye", [])  # type: ignore[assignment]
+    decklist_module.validate_print = mock_validate_print  # type: ignore[assignment]
+
+    try:
+        from mtg_proxies.decklists import parse_decklist_stream
+
+        parse_decklist_stream(StringIO(f"1 Sauron, the Lidless Eye (LTR) 288 {marker}\n"))
+    finally:
+        # Restore originals so other tests are unaffected
+        from mtg_proxies.decklists.sanitizing import validate_card_name as _vcn, validate_print as _vp
+
+        decklist_module.validate_card_name = _vcn  # type: ignore[assignment]
+        decklist_module.validate_print = _vp  # type: ignore[assignment]
+
+    assert len(captured) == 1
+    assert captured[0] == ("LTR", "288")  # marker was stripped before reaching validate_print
+
+
+def test_flavor_name_resolves_to_oracle_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """'Henneth Annûn' is the LTC flavor name for Reflecting Pool and should resolve without a warning."""
+    import mtg_proxies.decklists.sanitizing as sanitizing
+    from mtg_proxies.decklists.sanitizing import card_names, validate_card_name
+
+    fake_cards = [
+        {"name": "Reflecting Pool", "layout": "normal", "flavor_name": "Henneth Annûn"},
+    ]
+    monkeypatch.setattr(sanitizing.scryfall, "get_cards", lambda **kwargs: fake_cards)
+    card_names.cache_clear()
+
+    try:
+        validated_name, warnings = validate_card_name("Henneth Annûn")
+    finally:
+        card_names.cache_clear()
+
+    assert validated_name == "Reflecting Pool"
+    assert len(warnings) == 0
+
+
+def test_flavor_name_paths_of_the_dead_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
+    """'Paths of the Dead' is the LTC flavor name for Cavern of Souls and should resolve without a warning."""
+    import mtg_proxies.decklists.sanitizing as sanitizing
+    from mtg_proxies.decklists.sanitizing import card_names, validate_card_name
+
+    fake_cards = [
+        {"name": "Cavern of Souls", "layout": "normal", "flavor_name": "Paths of the Dead"},
+    ]
+    monkeypatch.setattr(sanitizing.scryfall, "get_cards", lambda **kwargs: fake_cards)
+    card_names.cache_clear()
+
+    try:
+        validated_name, warnings = validate_card_name("Paths of the Dead")
+    finally:
+        card_names.cache_clear()
+
+    assert validated_name == "Cavern of Souls"
+    assert len(warnings) == 0
+
+
 @pytest.mark.parametrize(
     ("archidekt_id", "expected_first_card"),
     [

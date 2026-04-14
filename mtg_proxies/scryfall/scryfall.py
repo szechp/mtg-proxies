@@ -325,6 +325,7 @@ def recommend_print(
     card_name: str | None = None,
     oracle_id: str | None = None,
     art_preference: Literal["standard", "wild"] = "standard",
+    preferred_sets: list[str] | None = None,
     mode: Literal["best"] = "best",
 ) -> dict: ...
 
@@ -336,6 +337,7 @@ def recommend_print(
     card_name: str | None = None,
     oracle_id: str | None = None,
     art_preference: Literal["standard", "wild"] = "standard",
+    preferred_sets: list[str] | None = None,
     mode: Literal["all", "choices"],
 ) -> list[dict]: ...
 
@@ -346,9 +348,21 @@ def recommend_print(
     card_name: str | None = None,
     oracle_id: str | None = None,
     art_preference: Literal["standard", "wild"] = "standard",
+    preferred_sets: list[str] | None = None,
     mode: Literal["best", "all", "choices"] = "best",
 ) -> dict | list[dict]:
-    """Recommend a (better) print of a card."""
+    """Recommend a (better) print of a card.
+
+    Args:
+        current: Current card print to compare against.
+        card_name: Card name to look up.
+        oracle_id: Oracle id to look up.
+        art_preference: Art recommendation style.
+        preferred_sets: Ordered list of Scryfall set codes to prefer (e.g. ["ltr", "lto"]).
+            High-res prints from earlier sets receive a larger score bonus. The bonus is only
+            applied when the print has a high-res image so that quality remains the top priority.
+        mode: Recommendation mode.
+    """
     if current is not None and oracle_id is None:  # Use oracle id of current
         if current.get("layout") == "reversible_card":
             # Reversible cards have the same oracle id for both faces
@@ -384,6 +398,12 @@ def recommend_print(
             points += 32
         if card["lang"] == "en":
             points += 64
+
+        if preferred_sets and card["highres_image"]:
+            for i, pset in enumerate(preferred_sets):
+                if card["set"] == pset.lower():
+                    points += max(200 - i * 100, 50)
+                    break
 
         if art_preference == "standard":
             return points - _standard_art_penalty(card)

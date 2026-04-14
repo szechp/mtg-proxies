@@ -11,6 +11,8 @@ from mtg_proxies.decklists.sanitizing import validate_card_name, validate_print
 def parse_decklist(
     archidekt_id: str,
     art_preference: Literal["standard", "wild"] = "standard",
+    preferred_sets: list[str] | None = None,
+    allow_low_res: bool = False,
 ) -> tuple[Decklist, bool, list[ParseWarning]]:
     """Parse a decklist from manastack.
 
@@ -53,6 +55,8 @@ def parse_decklist(
             set_id,
             collector_number,
             art_preference=art_preference,
+            preferred_sets=preferred_sets,
+            allow_low_res=allow_low_res,
         )
 
         decklist.append_card(count, card)

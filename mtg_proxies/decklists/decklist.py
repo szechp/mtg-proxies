@@ -119,6 +119,8 @@ class Decklist:
 def parse_decklist(
     filepath: str | Path,
     art_preference: Literal["standard", "wild"] = "standard",
+    preferred_sets: list[str] | None = None,
+    allow_low_res: bool = False,
 ) -> tuple[Decklist, bool, list[ParseWarning]]:
     """Parse card information from a decklist in text or MtG Arena (or mixed) format.
 
@@ -136,7 +138,7 @@ def parse_decklist(
         warnings: List of warnings and error encountered during parsing
     """
     with open(filepath, encoding="utf-8") as f:
-        decklist, ok, warnings = parse_decklist_stream(f, art_preference=art_preference)
+        decklist, ok, warnings = parse_decklist_stream(f, art_preference=art_preference, preferred_sets=preferred_sets, allow_low_res=allow_low_res)
 
     # Use file name without extension as name
     decklist.name = Path(filepath).stem
@@ -145,7 +147,10 @@ def parse_decklist(
 
 
 def parse_decklist_stream(
-    stream: TextIO, art_preference: Literal["standard", "wild"] = "standard"
+    stream: TextIO,
+    art_preference: Literal["standard", "wild"] = "standard",
+    preferred_sets: list[str] | None = None,
+    allow_low_res: bool = False,
 ) -> tuple[Decklist, bool, list[ParseWarning]]:
     """Parse card information from a decklist in text or MtG Arena (or mixed) format from a stream.
 
@@ -161,6 +166,7 @@ def parse_decklist_stream(
             decklist.append_comment(line.rstrip())
             continue
 
+        stripped = re.sub(r"\s+\*[A-Za-z]+\*\s*$", "", stripped)  # Strip foil markers e.g. *F*, *E*
         m = re.search(r"(?:([0-9]{1,3})x?\s+)?(.+?)(?:\s+\((\S*)\)\s+(\S+))?\s*$", stripped)
         if m and m.group(2) and m.group(2).strip():
             # Extract relevant data
@@ -186,6 +192,8 @@ def parse_decklist_stream(
                 set_id,
                 collector_number,
                 art_preference=art_preference,
+                preferred_sets=preferred_sets,
+                allow_low_res=allow_low_res,
             )
 
             decklist.append_card(count, card)
