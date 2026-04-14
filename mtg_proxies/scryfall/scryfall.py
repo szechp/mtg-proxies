@@ -242,9 +242,10 @@ def _standard_art_penalty(card: dict) -> int:
     if card.get("digital"):
         penalty += 80
 
-    # Prefer regular card treatments over obvious alternates.
+    # Prefer regular card treatments over obvious alternates. Penalty is large enough that a
+    # lowres standard print from a preferred set scores higher than a highres borderless one.
     if {"extendedart", "showcase", "shatteredglass", "upside_down", "inverted", "borderless"} & frame_effects:
-        penalty += 16
+        penalty += 32
     if card.get("artist") == "Canata Katana" and card.get("set") == "j22":
         penalty += 128
 
@@ -399,8 +400,15 @@ def recommend_print(
         if card["lang"] == "en":
             points += 64
 
-        if preferred_sets and card["highres_image"]:
-            if card["set"] in {ps.lower() for ps in preferred_sets}:
+        if preferred_sets and card["set"] in {ps.lower() for ps in preferred_sets}:
+            if art_preference == "standard":
+                # In standard mode: bonus only for highres standard-art cards. Borderless/flashy
+                # prints in the preferred set do not get the bonus, so a highres standard card from
+                # any set beats them (and a lowres standard preferred card may too via fallback).
+                if card["highres_image"] and not _has_flashy_treatment(card):
+                    points += 200
+            elif card["highres_image"]:
+                # In wild mode: bonus for all highres preferred prints.
                 points += 200
 
         if art_preference == "standard":
@@ -426,7 +434,16 @@ def recommend_print(
         best_card = alternatives[best_index]
 
         if art_preference == "standard" and not best_card["highres_image"]:
-            best_card = _select_standard_fallback(alternatives, scores)
+            # Skip the fallback when the lowres winner is a standard-art preferred-set card —
+            # it scored higher than available highres alternatives (e.g. borderless), so the
+            # lowres win is intentional.
+            preferred_set_winner = (
+                preferred_sets is not None
+                and best_card["set"] in {ps.lower() for ps in preferred_sets}
+                and not _has_flashy_treatment(best_card)
+            )
+            if not preferred_set_winner:
+                best_card = _select_standard_fallback(alternatives, scores)
 
         if current is not None and current["id"] == best_card["id"]:
             return current  # No better recommendation

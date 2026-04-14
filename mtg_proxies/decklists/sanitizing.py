@@ -141,11 +141,19 @@ def validate_print(
         elif not card["highres_image"]:  # Found but low resolution — check if a better print exists
             in_preferred_set = preferred_sets is None or card["set"] in {ps.lower() for ps in preferred_sets}
             if allow_low_res and in_preferred_set and preferred_sets is not None:
-                # --allow-low-res with explicit preferred sets: still upgrade if a highres version exists
-                # within the same preferred sets (e.g. LTR 192 lowres → LTR 741 highres).
+                # --allow-low-res with explicit preferred sets: still upgrade if a highres standard-art
+                # version exists within the same preferred sets (e.g. LTR 192 lowres → LTR 741 highres).
+                # In standard mode, skip the upgrade if the only highres option is wild/flashy art.
                 preferred_set_codes = {ps.lower() for ps in preferred_sets}
                 better = scryfall.recommend_print(card_name=card_name, art_preference=art_preference, preferred_sets=preferred_sets)
-                if better != card and better["highres_image"] and better["set"] in preferred_set_codes:
+                flashy_effects = {"extendedart", "showcase", "shatteredglass", "upside_down", "inverted", "borderless"}
+                better_is_flashy = bool(flashy_effects & set(better.get("frame_effects", [])))
+                if (
+                    better != card
+                    and better["highres_image"]
+                    and better["set"] in preferred_set_codes
+                    and not (art_preference == "standard" and better_is_flashy)
+                ):
                     warnings.append(
                         ParseWarning(
                             "WARNING",
@@ -154,7 +162,7 @@ def validate_print(
                     )
                     card = better
                     lowres_upgraded = True
-                # else: no highres in preferred sets — keep the lowres preferred-set print as requested
+                # else: no suitable highres in preferred sets — keep the lowres preferred-set print as requested
             elif allow_low_res and in_preferred_set:
                 pass  # print mode (preferred_sets=None): honor whatever print was requested, no upgrade
             else:
