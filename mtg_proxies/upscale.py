@@ -10,6 +10,10 @@ _MODEL_URL = (
 )
 _MODEL_CACHE = Path.home() / ".cache" / "mtg-proxies" / "RealESRGAN_x4plus_anime_6B.pth"
 
+# Target width after upscaling: matches Scryfall highres PNG width.
+# AI sharpening survives the downscale while keeping PDF sizes consistent with normal highres cards.
+_TARGET_WIDTH = 745
+
 
 def _download_model() -> Path:
     if _MODEL_CACHE.exists():
@@ -79,7 +83,13 @@ def upscale_images(
             with torch.no_grad():
                 output = model(tensor)
             result = (output.squeeze(0).permute(1, 2, 0).clamp(0, 1) * 255).byte().cpu().numpy()
-            Image.fromarray(result).save(str(_upscaled_path(path)))
+            upscaled = Image.fromarray(result)
+            # Downscale to Scryfall highres width so PDF sizes stay consistent with normal highres scans.
+            # The AI sharpening is preserved through the resize (upscale-then-downscale technique).
+            if upscaled.width > _TARGET_WIDTH:
+                ratio = _TARGET_WIDTH / upscaled.width
+                upscaled = upscaled.resize((_TARGET_WIDTH, round(upscaled.height * ratio)), Image.LANCZOS)
+            upscaled.save(str(_upscaled_path(path)))
     else:
         print("All lowres images already upscaled (cached).")
 
