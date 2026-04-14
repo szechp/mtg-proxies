@@ -1357,3 +1357,82 @@ def test_generate_basic_lands_decklist_small_pool_completes_without_error() -> N
     assert len(decklist.cards) == 5
     ids = [entry.card["id"] for entry in decklist.cards]
     assert set(ids) == {"plains-1", "plains-2"}
+
+
+def test_upscale_images_skips_highres(tmp_path: pytest.TempPathFactory) -> None:
+    """upscale_images must not process images marked as highres."""
+    import sys
+
+    img = tmp_path / "card.png"
+    img.write_bytes(b"fake")
+
+    # Patch spandrel out entirely so the lazy import inside upscale_images doesn't fail
+    spandrel_mock = Mock()
+    with patch.dict(sys.modules, {"spandrel": spandrel_mock, "torch": Mock(), "numpy": Mock(), "PIL": Mock(), "PIL.Image": Mock()}):
+        from mtg_proxies.upscale import upscale_images
+
+        result = upscale_images([str(img)], highres_flags=[True])
+
+    # Highres image returned unchanged, no _4x file created
+    assert result == [str(img)]
+    assert not (tmp_path / "card_4x.png").exists()
+
+
+def test_upscale_images_uses_cached_4x(tmp_path: pytest.TempPathFactory) -> None:
+    """upscale_images must return the cached _4x path without re-running the model."""
+    import sys
+
+    img = tmp_path / "card.png"
+    img.write_bytes(b"fake")
+    cached = tmp_path / "card_4x.png"
+    cached.write_bytes(b"upscaled")
+
+    # Already cached — model loading code is never reached, so no real spandrel needed
+    with patch.dict(sys.modules, {"spandrel": Mock(), "torch": Mock(), "numpy": Mock(), "PIL": Mock(), "PIL.Image": Mock()}):
+        from mtg_proxies.upscale import upscale_images
+
+        result = upscale_images([str(img)], highres_flags=[False])
+
+    assert result == [str(cached)]
+
+
+def test_main_print_upscale_calls_upscale_images(tmp_path) -> None:
+    """--upscale must fetch flagged images and pass highres flags to upscale_images."""
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "out.pdf"
+    fake_decklist = object()
+    fake_images = ["card.png"]
+    fake_flags = [False]
+    upscaled = ["card_4x.png"]
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), "--upscale"]),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
+        patch("mtg_proxies.cli.fetch_scans_scryfall_flagged", return_value=(fake_images, fake_flags)) as flagged_fetch,
+        patch("mtg_proxies.upscale.upscale_images", return_value=upscaled) as mock_upscale,
+        patch("mtg_proxies.cli.print_cards_fpdf"),
+    ):
+        main()
+
+    flagged_fetch.assert_called_once()
+    mock_upscale.assert_called_once_with(fake_images, highres_flags=fake_flags, model_path=None)
+
+
+def test_main_print_no_upscale_does_not_call_upscale_images(tmp_path) -> None:
+    """Without --upscale, upscale_images must never be called."""
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "out.pdf"
+    fake_decklist = object()
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file)]),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
+        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["card.png"]),
+        patch("mtg_proxies.cli.fetch_scans_scryfall_flagged") as flagged_fetch,
+        patch("mtg_proxies.cli.print_cards_fpdf"),
+    ):
+        main()
+
+    flagged_fetch.assert_not_called()
