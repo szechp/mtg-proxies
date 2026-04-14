@@ -400,10 +400,8 @@ def recommend_print(
             points += 64
 
         if preferred_sets and card["highres_image"]:
-            for i, pset in enumerate(preferred_sets):
-                if card["set"] == pset.lower():
-                    points += max(200 - i * 100, 50)
-                    break
+            if card["set"] in {ps.lower() for ps in preferred_sets}:
+                points += 200
 
         if art_preference == "standard":
             return points - _standard_art_penalty(card)

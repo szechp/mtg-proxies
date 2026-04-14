@@ -314,32 +314,35 @@ def test_recommend_print_preferred_set_lowres_does_not_beat_highres(monkeypatch:
     assert card["id"] == "non-preferred-highres"
 
 
-def test_recommend_print_preferred_sets_first_beats_second(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When both preferred sets have highres prints, the first set wins."""
+def test_recommend_print_all_preferred_sets_get_equal_bonus(monkeypatch: pytest.MonkeyPatch) -> None:
+    """All preferred sets get the same +200 bonus — order in the list does not create ranking."""
     from mtg_proxies.scryfall import scryfall
 
-    first_preferred = _test_card("first", highres_image=True, set_code="ltr", set_name="LTR Set")
-    second_preferred = _test_card("second", highres_image=True, set_code="ltc", set_name="LTC Set")
+    ltr_card = _test_card("ltr", highres_image=True, set_code="ltr", set_name="LTR Set")
+    ltc_card = _test_card("ltc", highres_image=True, set_code="ltc", set_name="LTC Set")
+    pltr_card = _test_card("pltr", highres_image=True, set_code="pltr", set_name="PLTR Set")
 
-    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [second_preferred, first_preferred])
+    # All three are from preferred sets and highres — the regular scorer breaks the tie,
+    # so just verify all three beat a non-preferred highres card.
+    non_preferred = _test_card("other", highres_image=True, set_code="abc")
+    for preferred_card in [ltr_card, ltc_card, pltr_card]:
+        monkeypatch.setattr(scryfall, "get_cards", lambda name=None, pc=preferred_card: [non_preferred, pc])
+        card = scryfall.recommend_print(card_name="Test Card", preferred_sets=["ltr", "ltc", "pltr"])
+        assert card["id"] == preferred_card["id"], f"{preferred_card['set']} should beat non-preferred"
+
+
+def test_recommend_print_lowres_preferred_set_loses_to_highres_non_preferred(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lowres print from a preferred set must not beat a highres print from another set."""
+    from mtg_proxies.scryfall import scryfall
+
+    lowres_ltr = _test_card("lowres-ltr", highres_image=False, set_code="ltr", set_name="LTR Set")
+    highres_ltc = _test_card("highres-ltc", highres_image=True, set_code="ltc", set_name="LTC Set")
+
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [lowres_ltr, highres_ltc])
 
     card = scryfall.recommend_print(card_name="Test Card", preferred_sets=["ltr", "ltc"])
 
-    assert card["id"] == "first"
-
-
-def test_recommend_print_falls_back_to_second_preferred_when_first_is_lowres(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Should use the second preferred set when the first has no highres print."""
-    from mtg_proxies.scryfall import scryfall
-
-    first_lowres = _test_card("first-lowres", highres_image=False, set_code="ltr", set_name="LTR Set")
-    second_highres = _test_card("second-highres", highres_image=True, set_code="ltc", set_name="LTC Set")
-
-    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [first_lowres, second_highres])
-
-    card = scryfall.recommend_print(card_name="Test Card", preferred_sets=["ltr", "ltc"])
-
-    assert card["id"] == "second-highres"
+    assert card["id"] == "highres-ltc"
 
 
 def test_validate_print_warns_when_no_preferred_set_has_highres(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -423,6 +426,43 @@ def test_validate_print_keeps_lowres_when_no_better_option_exists(monkeypatch: p
     assert card["id"] == "lowres"
     assert not any(w.level == "WARNING" and "Upgrading" in w.message for w in warnings)
     assert any(w.level == "COSMETIC" for w in warnings)
+
+
+def test_validate_print_allow_low_res_upgrades_within_preferred_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--allow-low-res should still upgrade lowres→highres when highres exists in the same preferred set."""
+    import mtg_proxies.decklists.sanitizing as sanitizing
+    from mtg_proxies.decklists.sanitizing import validate_print
+
+    lowres = _test_card("lowres", highres_image=False, set_code="ltr", collector_number="192")
+    highres = _test_card("highres", highres_image=True, set_code="ltr", collector_number="741")
+
+    monkeypatch.setattr(sanitizing.scryfall, "get_card", lambda *args, **kwargs: lowres)
+    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: highres)
+
+    card, warnings = validate_print("Test Card", "LTR", "192", allow_low_res=True, preferred_sets=["LTR"])
+
+    assert card["id"] == "highres"
+    assert any(w.level == "WARNING" and "Upgrading to" in w.message for w in warnings)
+
+
+def test_validate_print_allow_low_res_keeps_lowres_when_highres_only_outside_preferred_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--allow-low-res should NOT upgrade when the only highres is outside the preferred sets."""
+    import mtg_proxies.decklists.sanitizing as sanitizing
+    from mtg_proxies.decklists.sanitizing import validate_print
+
+    lowres_ltr = _test_card("lowres-ltr", highres_image=False, set_code="ltr", collector_number="192")
+    highres_woc = _test_card("highres-woc", highres_image=True, set_code="woc", collector_number="1")
+
+    monkeypatch.setattr(sanitizing.scryfall, "get_card", lambda *args, **kwargs: lowres_ltr)
+    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: highres_woc)
+
+    card, warnings = validate_print("Test Card", "LTR", "192", allow_low_res=True, preferred_sets=["LTR"])
+
+    # Should keep the lowres LTR print, not upgrade to WOC
+    assert card["id"] == "lowres-ltr"
+    assert not any(w.level == "WARNING" and "Upgrading" in w.message for w in warnings)
 
 
 def test_validate_print_explains_digital_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
