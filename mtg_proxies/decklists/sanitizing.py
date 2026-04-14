@@ -139,9 +139,24 @@ def validate_print(
                 )
             )
         elif not card["highres_image"]:  # Found but low resolution — check if a better print exists
-            in_preferred_set = preferred_sets and card["set"] in {ps.lower() for ps in preferred_sets}
-            if allow_low_res and in_preferred_set:
-                pass  # Honor the preferred-set print even though it's low-res
+            in_preferred_set = preferred_sets is None or card["set"] in {ps.lower() for ps in preferred_sets}
+            if allow_low_res and in_preferred_set and preferred_sets is not None:
+                # --allow-low-res with explicit preferred sets: still upgrade if a highres version exists
+                # within the same preferred sets (e.g. LTR 192 lowres → LTR 741 highres).
+                preferred_set_codes = {ps.lower() for ps in preferred_sets}
+                better = scryfall.recommend_print(card_name=card_name, art_preference=art_preference, preferred_sets=preferred_sets)
+                if better != card and better["highres_image"] and better["set"] in preferred_set_codes:
+                    warnings.append(
+                        ParseWarning(
+                            "WARNING",
+                            f"Low resolution scan for {format_print(card)!r}. Upgrading to {format_print(better)!r}.",
+                        )
+                    )
+                    card = better
+                    lowres_upgraded = True
+                # else: no highres in preferred sets — keep the lowres preferred-set print as requested
+            elif allow_low_res and in_preferred_set:
+                pass  # print mode (preferred_sets=None): honor whatever print was requested, no upgrade
             else:
                 better = scryfall.recommend_print(card_name=card_name, art_preference=art_preference, preferred_sets=preferred_sets)
                 if better != card:
