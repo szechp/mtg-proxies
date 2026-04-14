@@ -10,6 +10,7 @@ import numpy as np
 
 import mtg_proxies.scryfall as scryfall
 from mtg_proxies import fetch_scans_scryfall, print_cards_fpdf, print_cards_matplotlib
+from mtg_proxies.scans import fetch_scans_scryfall_flagged
 from mtg_proxies.deck_value import show_deck_value
 from mtg_proxies.decklists import archidekt, manastack, parse_decklist
 from mtg_proxies.decklists.decklist import Card, Comment, Decklist
@@ -417,6 +418,18 @@ def main() -> None:
         choices=["standard", "wild"],
         default="standard",
     )
+    print_parser.add_argument(
+        "--upscale",
+        action="store_true",
+        default=False,
+        help="upscale lowres card images with Real-ESRGAN instead of replacing them with a different print",
+    )
+    print_parser.add_argument(
+        "--upscale-model",
+        default=None,
+        metavar="PATH",
+        help="path to a local .pth upscaling model (default: RealESRGAN anime_6B); implies --upscale",
+    )
     # Convert tool
     convert_parser = subparsers.add_parser(
         "convert",
@@ -500,8 +513,18 @@ def main() -> None:
             custom_art_dir: tempfile.TemporaryDirectory[str] | None = None
 
             if args.decklist:
-                decklist = parse_decklist_spec(args.decklist, art_preference=args.art_preference)
-                images = fetch_scans_scryfall(decklist, faces=args.faces)
+                decklist = parse_decklist_spec(
+                    args.decklist,
+                    art_preference=args.art_preference,
+                    allow_low_res=True,  # print renders what's given; convert is the optimizer
+                )
+                if args.upscale or args.upscale_model:
+                    from mtg_proxies.upscale import upscale_images
+
+                    images, highres_flags = fetch_scans_scryfall_flagged(decklist, faces=args.faces)
+                    images = upscale_images(images, highres_flags=highres_flags, model_path=args.upscale_model)
+                else:
+                    images = fetch_scans_scryfall(decklist, faces=args.faces)
 
             if args.custom_art:
                 custom_folder = Path(args.custom_art)
