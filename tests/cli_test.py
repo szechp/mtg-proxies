@@ -222,11 +222,208 @@ def test_main_print_custom_art_empty_folder_warns_and_continues_with_decklist(
     assert print_cards_fpdf.call_args.args[0] == fake_images
 
 
+def test_main_convert_preferred_set_moves_fallback_cards_to_bottom(tmp_path) -> None:
+    """Cards not from a preferred set should be moved to the bottom of the output with a comment."""
+    from mtg_proxies.cli import main
+    from mtg_proxies.decklists.decklist import Card, Comment, Decklist
+
+    out_file = tmp_path / "out.txt"
+
+    ltr_card = Card(1, {"name": "Lightning Bolt", "set": "ltr", "collector_number": "123"})
+    fallback_card = Card(1, {"name": "Counterspell", "set": "m21", "collector_number": "45"})
+    decklist = Decklist(entries=[ltr_card, Comment("Mainboard"), fallback_card])
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "convert", "deck.txt", str(out_file), "--set", "LTR"]),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
+    ):
+        main()
+
+    content = out_file.read_text(encoding="utf-8")
+    ltr_pos = content.index("Lightning Bolt")
+    comment_pos = content.index("# Only low-quality")
+    fallback_pos = content.index("Counterspell")
+
+    assert ltr_pos < comment_pos < fallback_pos
+
+
+def test_main_convert_no_preferred_set_flag_no_reordering(tmp_path) -> None:
+    """Without --set, card order is preserved as-is."""
+    from mtg_proxies.cli import main
+    from mtg_proxies.decklists.decklist import Card, Decklist
+
+    out_file = tmp_path / "out.txt"
+
+    card_a = Card(1, {"name": "Counterspell", "set": "m21", "collector_number": "45"})
+    card_b = Card(1, {"name": "Lightning Bolt", "set": "ltr", "collector_number": "123"})
+    decklist = Decklist(entries=[card_a, card_b])
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "convert", "deck.txt", str(out_file)]),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
+    ):
+        main()
+
+    content = out_file.read_text(encoding="utf-8")
+    assert content.index("Counterspell") < content.index("Lightning Bolt")
+    assert "# Only low-quality" not in content
+
+
+def test_main_convert_allow_low_res_keeps_lowres_preferred_set_cards(tmp_path) -> None:
+    """With --allow-low-res and --set, lowres preferred-set cards go to their own section; non-preferred go to 'not in set'."""
+    from mtg_proxies.cli import main
+    from mtg_proxies.decklists.decklist import Card, Decklist
+
+    out_file = tmp_path / "out.txt"
+
+    ltr_highres = Card(1, {"name": "Gandalf", "set": "ltr", "collector_number": "1", "highres_image": True})
+    ltr_lowres = Card(1, {"name": "Nazgul", "set": "ltr", "collector_number": "100", "highres_image": False})
+    not_in_set = Card(1, {"name": "Counterspell", "set": "ema", "collector_number": "43", "highres_image": True})
+    decklist = Decklist(entries=[ltr_highres, ltr_lowres, not_in_set])
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "convert", "deck.txt", str(out_file), "--set", "LTR", "--allow-low-res"]),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
+    ):
+        main()
+
+    content = out_file.read_text(encoding="utf-8")
+    gandalf_pos = content.index("Gandalf")
+    lowres_comment_pos = content.index("# Only low-quality version available in LTR")
+    nazgul_pos = content.index("Nazgul")
+    not_in_set_comment_pos = content.index("# Card not in set")
+    counterspell_pos = content.index("Counterspell")
+
+    assert gandalf_pos < lowres_comment_pos < nazgul_pos < not_in_set_comment_pos < counterspell_pos
+    assert "# Only low-quality version available in LTR, or card not in set" not in content
+
+
+def test_main_convert_allow_low_res_no_not_in_set_section_when_all_cards_in_preferred_set(tmp_path) -> None:
+    """With --allow-low-res, no 'not in set' section appears when all cards are from the preferred set."""
+    from mtg_proxies.cli import main
+    from mtg_proxies.decklists.decklist import Card, Decklist
+
+    out_file = tmp_path / "out.txt"
+
+    ltr_highres = Card(1, {"name": "Gandalf", "set": "ltr", "collector_number": "1", "highres_image": True})
+    ltr_lowres = Card(1, {"name": "Nazgul", "set": "ltr", "collector_number": "100", "highres_image": False})
+    decklist = Decklist(entries=[ltr_highres, ltr_lowres])
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "convert", "deck.txt", str(out_file), "--set", "LTR", "--allow-low-res"]),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
+    ):
+        main()
+
+    content = out_file.read_text(encoding="utf-8")
+    assert "# Card not in set" not in content
+    assert "# Only low-quality version available in LTR" in content
+    assert content.index("Gandalf") < content.index("# Only low-quality") < content.index("Nazgul")
+
+
+def test_main_convert_without_allow_low_res_uses_combined_section(tmp_path) -> None:
+    """Without --allow-low-res, the combined 'or card not in set' comment is used (existing behaviour)."""
+    from mtg_proxies.cli import main
+    from mtg_proxies.decklists.decklist import Card, Decklist
+
+    out_file = tmp_path / "out.txt"
+
+    ltr_card = Card(1, {"name": "Gandalf", "set": "ltr", "collector_number": "1", "highres_image": True})
+    fallback = Card(1, {"name": "Counterspell", "set": "ema", "collector_number": "43", "highres_image": True})
+    decklist = Decklist(entries=[ltr_card, fallback])
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "convert", "deck.txt", str(out_file), "--set", "LTR"]),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
+    ):
+        main()
+
+    content = out_file.read_text(encoding="utf-8")
+    assert "# Only low-quality version available in LTR, or card not in set" in content
+    assert "# Card not in set" not in content
+
+
+def test_main_convert_lowres_cards_moved_to_bottom(tmp_path) -> None:
+    """Cards with highres_image=False are moved to the bottom with a comment."""
+    from mtg_proxies.cli import main
+    from mtg_proxies.decklists.decklist import Card, Comment, Decklist
+
+    out_file = tmp_path / "out.txt"
+
+    highres_card = Card(1, {"name": "Lightning Bolt", "set": "lea", "collector_number": "161", "highres_image": True})
+    lowres_card = Card(1, {"name": "Counterspell", "set": "ltd", "collector_number": "45", "highres_image": False})
+    decklist = Decklist(entries=[highres_card, lowres_card])
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "convert", "deck.txt", str(out_file)]),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
+    ):
+        main()
+
+    content = out_file.read_text(encoding="utf-8")
+    highres_pos = content.index("Lightning Bolt")
+    comment_pos = content.index("# Low resolution scan")
+    lowres_pos = content.index("Counterspell")
+
+    assert highres_pos < comment_pos < lowres_pos
+
+
+def test_main_convert_all_highres_no_lowres_comment(tmp_path) -> None:
+    """When all cards are highres, no low-res section comment is added."""
+    from mtg_proxies.cli import main
+    from mtg_proxies.decklists.decklist import Card, Decklist
+
+    out_file = tmp_path / "out.txt"
+
+    card_a = Card(1, {"name": "Lightning Bolt", "set": "lea", "collector_number": "161", "highres_image": True})
+    card_b = Card(1, {"name": "Counterspell", "set": "ema", "collector_number": "43", "highres_image": True})
+    decklist = Decklist(entries=[card_a, card_b])
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "convert", "deck.txt", str(out_file)]),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
+    ):
+        main()
+
+    content = out_file.read_text(encoding="utf-8")
+    assert "# Low resolution scan" not in content
+    assert content.index("Lightning Bolt") < content.index("Counterspell")
+
+
+def test_main_convert_lowres_below_preferred_set_fallback_section(tmp_path) -> None:
+    """With --set, lowres cards appear below the non-preferred-set section."""
+    from mtg_proxies.cli import main
+    from mtg_proxies.decklists.decklist import Card, Decklist
+
+    out_file = tmp_path / "out.txt"
+
+    ltr_highres = Card(1, {"name": "Gandalf", "set": "ltr", "collector_number": "1", "highres_image": True})
+    fallback_highres = Card(1, {"name": "Counterspell", "set": "ema", "collector_number": "43", "highres_image": True})
+    ltr_lowres = Card(1, {"name": "Nazgul", "set": "ltr", "collector_number": "100", "highres_image": False})
+    decklist = Decklist(entries=[ltr_highres, fallback_highres, ltr_lowres])
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "convert", "deck.txt", str(out_file), "--set", "LTR"]),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
+    ):
+        main()
+
+    content = out_file.read_text(encoding="utf-8")
+    gandalf_pos = content.index("Gandalf")
+    not_in_set_comment_pos = content.index("# Only low-quality")
+    counterspell_pos = content.index("Counterspell")
+    lowres_comment_pos = content.index("# Low resolution scan")
+    nazgul_pos = content.index("Nazgul")
+
+    assert gandalf_pos < not_in_set_comment_pos < counterspell_pos < lowres_comment_pos < nazgul_pos
+
+
 def test_main_convert_forwards_art_preference(tmp_path) -> None:
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "decklist.txt"
     fake_decklist = Mock()
+    fake_decklist.entries = []
 
     with (
         patch(
@@ -247,6 +444,7 @@ def test_main_convert_basic_lands_uses_generator_and_skips_parsing(tmp_path) -> 
 
     out_file = tmp_path / "lands.txt"
     fake_decklist = Mock()
+    fake_decklist.entries = []
 
     with (
         patch(
@@ -278,6 +476,7 @@ def test_main_convert_basic_lands_accepts_outfile_after_specs(tmp_path) -> None:
 
     out_file = tmp_path / "basics.txt"
     fake_decklist = Mock()
+    fake_decklist.entries = []
 
     with (
         patch(
@@ -311,6 +510,7 @@ def test_main_convert_basic_lands_accepts_premium_art_preference(tmp_path) -> No
 
     out_file = tmp_path / "premium-basics.txt"
     fake_decklist = Mock()
+    fake_decklist.entries = []
 
     with (
         patch(

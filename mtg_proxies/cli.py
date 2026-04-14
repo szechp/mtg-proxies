@@ -12,7 +12,7 @@ import mtg_proxies.scryfall as scryfall
 from mtg_proxies import fetch_scans_scryfall, print_cards_fpdf, print_cards_matplotlib
 from mtg_proxies.deck_value import show_deck_value
 from mtg_proxies.decklists import archidekt, manastack, parse_decklist
-from mtg_proxies.decklists.decklist import Decklist
+from mtg_proxies.decklists.decklist import Card, Comment, Decklist
 from mtg_proxies.tokens import get_tokens
 
 DEFAULT_CUSTOM_ART_BLEED_CROP_PERCENT = 4.0
@@ -35,24 +35,27 @@ def parse_decklist_spec(
     decklist_spec: str,
     warn_levels: Container[str] = ("ERROR", "WARNING", "COSMETIC"),
     art_preference: Literal["standard", "wild"] = "standard",
+    preferred_sets: list[str] | None = None,
+    allow_low_res: bool = False,
 ) -> Decklist:
     """Attempt to parse a decklist from different locations.
 
     Args:
         decklist_spec: File path or ManaStack id
         warn_levels: Levels of warnings to show
+        preferred_sets: Ordered list of Scryfall set codes to prefer when recommending prints (e.g. ["ltr", "lto"])
     """
     print("Parsing decklist ...")
     if Path(decklist_spec).is_file():  # Decklist is file
-        decklist, ok, warnings = parse_decklist(decklist_spec, art_preference=art_preference)
+        decklist, ok, warnings = parse_decklist(decklist_spec, art_preference=art_preference, preferred_sets=preferred_sets, allow_low_res=allow_low_res)
     elif decklist_spec.lower().startswith("manastack:") and decklist_spec.split(":")[-1].isdigit():
         # Decklist on Manastack
         manastack_id = decklist_spec.split(":")[-1]
-        decklist, ok, warnings = manastack.parse_decklist(manastack_id, art_preference=art_preference)
+        decklist, ok, warnings = manastack.parse_decklist(manastack_id, art_preference=art_preference, preferred_sets=preferred_sets, allow_low_res=allow_low_res)
     elif decklist_spec.lower().startswith("archidekt:") and decklist_spec.split(":")[-1].isdigit():
         # Decklist on Archidekt
         archidekt_id = decklist_spec.split(":")[-1]
-        decklist, ok, warnings = archidekt.parse_decklist(archidekt_id, art_preference=art_preference)
+        decklist, ok, warnings = archidekt.parse_decklist(archidekt_id, art_preference=art_preference, preferred_sets=preferred_sets, allow_low_res=allow_low_res)
     else:
         print(f"Cant find decklist '{decklist_spec}'")
         quit()
@@ -414,7 +417,6 @@ def main() -> None:
         choices=["standard", "wild"],
         default="standard",
     )
-
     # Convert tool
     convert_parser = subparsers.add_parser(
         "convert",
@@ -444,6 +446,20 @@ def main() -> None:
         help="art recommendation style (default: %(default)s)",
         choices=["standard", "wild", "premium"],
         default="standard",
+    )
+    convert_parser.add_argument(
+        "--set",
+        help="one or more preferred set codes in priority order (e.g. LTR LTO); quality rules still apply",
+        nargs="+",
+        type=str,
+        default=None,
+        metavar="SET",
+    )
+    convert_parser.add_argument(
+        "--allow-low-res",
+        action="store_true",
+        default=False,
+        help="when used with --set, keep low-res prints from preferred sets instead of upgrading to highres alternatives",
     )
 
     # Tokens tool
@@ -589,11 +605,88 @@ def main() -> None:
                     raise SystemExit(1)
 
                 # Parse decklist
+                allow_low_res = getattr(args, "allow_low_res", False)
                 decklist = parse_decklist_spec(
                     decklist_spec,
-                    warn_levels=["ERROR", "WARNING"],
+                    warn_levels=["ERROR", "WARNING", "COSMETIC"],
                     art_preference=args.art_preference,
+                    preferred_sets=args.set or None,
+                    allow_low_res=allow_low_res,
                 )
+
+            # If preferred sets were specified, move cards not from those sets to the bottom
+            preferred_sets = args.set or None
+            allow_low_res = getattr(args, "allow_low_res", False)
+            if preferred_sets:
+                preferred_set_codes = {ps.lower() for ps in preferred_sets}
+                sets_str = ", ".join(s.upper() for s in preferred_sets)
+                main_entries = []
+
+                if allow_low_res:
+                    # Split into three groups: highres preferred, lowres preferred, not in set
+                    lowres_preferred_cards: list[Card] = []
+                    not_in_set_cards: list[Card] = []
+                    for entry in decklist.entries:
+                        if isinstance(entry, Card):
+                            if entry["set"] in preferred_set_codes and entry.card.get("highres_image", True):
+                                main_entries.append(entry)
+                            elif entry["set"] in preferred_set_codes:
+                                lowres_preferred_cards.append(entry)
+                            else:
+                                not_in_set_cards.append(entry)
+                        else:
+                            main_entries.append(entry)
+
+                    if lowres_preferred_cards:
+                        while main_entries and isinstance(main_entries[-1], Comment) and not main_entries[-1].text.strip():
+                            main_entries.pop()
+                        main_entries.append(Comment(""))
+                        main_entries.append(Comment(f"# Only low-quality version available in {sets_str}"))
+                        main_entries.extend(lowres_preferred_cards)
+
+                    if not_in_set_cards:
+                        while main_entries and isinstance(main_entries[-1], Comment) and not main_entries[-1].text.strip():
+                            main_entries.pop()
+                        main_entries.append(Comment(""))
+                        main_entries.append(Comment("# Card not in set"))
+                        main_entries.extend(not_in_set_cards)
+
+                else:
+                    # Default: auto-upgraded prints, move non-preferred-set cards to bottom
+                    fallback_cards: list[Card] = []
+                    for entry in decklist.entries:
+                        if isinstance(entry, Card) and entry["set"] not in preferred_set_codes:
+                            fallback_cards.append(entry)
+                        else:
+                            main_entries.append(entry)
+
+                    if fallback_cards:
+                        while main_entries and isinstance(main_entries[-1], Comment) and not main_entries[-1].text.strip():
+                            main_entries.pop()
+                        main_entries.append(Comment(""))
+                        main_entries.append(Comment(f"# Only low-quality version available in {sets_str}, or card not in set"))
+                        main_entries.extend(fallback_cards)
+
+                decklist.entries = main_entries
+
+            # Move low-res cards to the bottom (skip when --allow-low-res is active, those are already in their own section)
+            lowres_cards: list[Card] = []
+            clean_entries = []
+            if allow_low_res:
+                clean_entries = list(decklist.entries)
+            for entry in ([] if allow_low_res else decklist.entries):
+                if isinstance(entry, Card) and not entry.card.get("highres_image", True):
+                    lowres_cards.append(entry)
+                else:
+                    clean_entries.append(entry)
+
+            if lowres_cards:
+                while clean_entries and isinstance(clean_entries[-1], Comment) and not clean_entries[-1].text.strip():
+                    clean_entries.pop()
+                clean_entries.append(Comment(""))
+                clean_entries.append(Comment("# Low resolution scan — no high-res version available"))
+                clean_entries.extend(lowres_cards)
+                decklist.entries = clean_entries
 
             # Write decklist
             decklist.save(outfile, fmt=args.format)
