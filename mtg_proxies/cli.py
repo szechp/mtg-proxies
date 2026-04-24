@@ -307,6 +307,9 @@ def _generate_basic_lands_decklist(
                 non_full_art_choices = [card for card in choices if not is_full_art(card)]
                 if non_full_art_choices:
                     choices = non_full_art_choices
+            highres_choices = [card for card in choices if card.get("highres_image", True)]
+            if highres_choices:
+                choices = highres_choices
             rng.shuffle(choices)
 
         pool = list(choices)

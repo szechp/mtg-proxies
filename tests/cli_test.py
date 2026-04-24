@@ -1549,6 +1549,50 @@ def test_generate_basic_lands_decklist_standard_avoids_full_art_flag_when_regula
     assert all(i == "regular" for i in ids), f"Expected only regular, got: {ids}"
 
 
+def test_generate_basic_lands_decklist_standard_prefers_duplicate_over_lowres() -> None:
+    """In standard mode, repeat a highres basic rather than pick a lowres one."""
+    from mtg_proxies.cli import _generate_basic_lands_decklist
+
+    highres = {
+        "id": "highres",
+        "name": "Mountain",
+        "set": "m21",
+        "collector_number": "270",
+        "type_line": "Basic Land — Mountain",
+        "highres_image": True,
+        "full_art": False,
+        "frame_effects": [],
+        "promo_types": [],
+        "border_color": "black",
+        "frame": "2015",
+        "set_type": "core",
+        "digital": False,
+        "set_name": "Core Set 2021",
+    }
+    lowres = {
+        "id": "lowres",
+        "name": "Mountain",
+        "set": "tdm",
+        "collector_number": "284",
+        "type_line": "Basic Land — Mountain",
+        "highres_image": False,
+        "full_art": False,
+        "frame_effects": [],
+        "promo_types": [],
+        "border_color": "black",
+        "frame": "2015",
+        "set_type": "expansion",
+        "digital": False,
+        "set_name": "Tarkir: Dragonstorm",
+    }
+
+    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[highres, lowres]):
+        decklist = _generate_basic_lands_decklist(["mountain=3"], art_preference="standard", rng=random.Random(0))
+
+    ids = [entry.card["id"] for entry in decklist.cards]
+    assert all(i == "highres" for i in ids), f"Expected only highres duplicates, got: {ids}"
+
+
 def test_upscale_images_skips_highres(tmp_path: pytest.TempPathFactory) -> None:
     """upscale_images must not process images marked as highres."""
     import sys
