@@ -27,7 +27,6 @@ _cache_folder.mkdir(parents=True, exist_ok=True)  # Create cache folder
 scryfall_rate_limiter = RateLimiter(delay=0.1)
 _download_lock = threading.Lock()
 
-
 def get_image(image_uri: str, *, silent: bool = False) -> str:
     """Download card artwork and return the path to a local copy.
 
@@ -39,6 +38,7 @@ def get_image(image_uri: str, *, silent: bool = False) -> str:
     split = image_uri.split("/")
     file_name = split[-5] + "_" + split[-4] + "_" + split[-1].split("?")[0]
     return get_file(file_name, image_uri, silent=silent)
+
 
 
 def get_file(file_name: str, url: str, *, silent: bool = False) -> str:

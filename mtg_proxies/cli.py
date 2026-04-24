@@ -10,10 +10,10 @@ import numpy as np
 
 import mtg_proxies.scryfall as scryfall
 from mtg_proxies import fetch_scans_scryfall, print_cards_fpdf, print_cards_matplotlib
-from mtg_proxies.scans import fetch_scans_scryfall_flagged
 from mtg_proxies.deck_value import show_deck_value
 from mtg_proxies.decklists import archidekt, manastack, parse_decklist
 from mtg_proxies.decklists.decklist import Card, Comment, Decklist
+from mtg_proxies.scans import fetch_scans_scryfall_flagged
 from mtg_proxies.tokens import get_tokens
 
 DEFAULT_CUSTOM_ART_BLEED_CROP_PERCENT = 4.0
@@ -430,6 +430,20 @@ def main() -> None:
         metavar="PATH",
         help="path to a local .pth upscaling model (default: RealESRGAN anime_6B); implies --upscale",
     )
+    print_parser.add_argument(
+        "--card-back",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="path to a card back image; appends one copy per card in the decklist (override count with --card-back-count)",
+    )
+    print_parser.add_argument(
+        "--card-back-count",
+        type=int,
+        default=None,
+        metavar="N",
+        help="number of card back copies to append (default: total card count from the decklist)",
+    )
     # Convert tool
     convert_parser = subparsers.add_parser(
         "convert",
@@ -549,8 +563,21 @@ def main() -> None:
                     print(f"Warning: no PNG files found in '{args.custom_art}'")
                 images.extend(custom_images)
 
+            if args.card_back is not None:
+                if not Path(args.card_back).is_file():
+                    print(f"Error: card back image not found: {args.card_back}")
+                    raise SystemExit(1)
+                if args.card_back_count is not None:
+                    n_backs = args.card_back_count
+                elif images:
+                    n_backs = len(images)
+                else:
+                    print("Error: --card-back without --card-back-count requires front images (decklist or --custom-art)")
+                    raise SystemExit(1)
+                images.extend([args.card_back] * n_backs)
+
             if not images:
-                print("Error: must provide either a decklist or --custom-art folder with images")
+                print("Error: must provide either a decklist, --custom-art folder, or --card-back PATH")
                 raise SystemExit(1)
 
             try:

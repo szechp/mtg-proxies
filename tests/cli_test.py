@@ -190,7 +190,7 @@ def test_main_print_requires_decklist_or_custom_art(tmp_path, capsys: pytest.Cap
         main()
 
     captured = capsys.readouterr()
-    assert "Error: must provide either a decklist or --custom-art folder with images" in captured.out
+    assert "Error: must provide either a decklist, --custom-art folder, or --card-back PATH" in captured.out
 
 
 def test_main_print_custom_art_empty_folder_warns_and_continues_with_decklist(
@@ -246,6 +246,156 @@ def test_main_convert_preferred_set_moves_fallback_cards_to_bottom(tmp_path) -> 
 
     assert ltr_pos < comment_pos < fallback_pos
 
+
+def test_main_print_card_back_explicit_count(tmp_path) -> None:
+    """--card-back-count N overrides the auto-count and appends exactly N back images."""
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "backs.pdf"
+    back_image = tmp_path / "card_back.png"
+    plt.imsave(back_image, np.zeros((4, 4, 4), dtype=np.uint8))
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "print", str(out_file), "--card-back", str(back_image), "--card-back-count", "3"]),
+        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+    ):
+        main()
+
+    print_cards_fpdf.assert_called_once()
+    assert print_cards_fpdf.call_args.args[0] == [str(back_image)] * 3
+
+
+def test_main_print_card_back_matches_decklist_count(tmp_path) -> None:
+    """--card-back without --card-back-count appends one back per front image (decklist only)."""
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "backs.pdf"
+    back_image = tmp_path / "card_back.png"
+    plt.imsave(back_image, np.zeros((4, 4, 4), dtype=np.uint8))
+    fake_decklist = Mock()
+    fake_decklist.total_count = 3
+    fake_images = ["card1.png", "card2.png", "card3.png"]
+    expected_images = list(fake_images) + [str(back_image)] * 3
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), "--card-back", str(back_image)]),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
+        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=fake_images),
+        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+    ):
+        main()
+
+    print_cards_fpdf.assert_called_once()
+    assert print_cards_fpdf.call_args.args[0] == expected_images
+
+
+def test_main_print_card_back_matches_custom_art_count(tmp_path) -> None:
+    """--card-back without --card-back-count appends one back per custom art image."""
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "backs.pdf"
+    back_image = tmp_path / "card_back.png"
+    plt.imsave(back_image, np.zeros((4, 4, 4), dtype=np.uint8))
+    custom_dir = tmp_path / "art"
+    custom_dir.mkdir()
+    art1 = custom_dir / "a.png"
+    art2 = custom_dir / "b.png"
+    plt.imsave(art1, np.zeros((4, 4, 4), dtype=np.uint8))
+    plt.imsave(art2, np.zeros((4, 4, 4), dtype=np.uint8))
+
+    with (
+        patch(
+            "sys.argv",
+            [
+                "mtg-proxies", "print", str(out_file),
+                "--custom-art", str(custom_dir),
+                "--custom-art-bleed-crop", "0",
+                "--card-back", str(back_image),
+            ],
+        ),
+        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+    ):
+        main()
+
+    print_cards_fpdf.assert_called_once()
+    images = print_cards_fpdf.call_args.args[0]
+    fronts = [p for p in images if p != str(back_image)]
+    backs = [p for p in images if p == str(back_image)]
+    assert len(fronts) == 2
+    assert len(backs) == 2
+
+
+def test_main_print_card_back_matches_decklist_plus_custom_art_count(tmp_path) -> None:
+    """--card-back without --card-back-count covers both decklist and custom art fronts."""
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "backs.pdf"
+    back_image = tmp_path / "card_back.png"
+    plt.imsave(back_image, np.zeros((4, 4, 4), dtype=np.uint8))
+    custom_dir = tmp_path / "art"
+    custom_dir.mkdir()
+    custom_image = custom_dir / "extra.png"
+    plt.imsave(custom_image, np.zeros((4, 4, 4), dtype=np.uint8))
+    fake_decklist = Mock()
+    fake_decklist.total_count = 2
+    fake_images = ["card1.png", "card2.png"]
+
+    with (
+        patch(
+            "sys.argv",
+            [
+                "mtg-proxies", "print", "decklist.txt", str(out_file),
+                "--custom-art", str(custom_dir),
+                "--custom-art-bleed-crop", "0",
+                "--card-back", str(back_image),
+            ],
+        ),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
+        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=fake_images),
+        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+    ):
+        main()
+
+    print_cards_fpdf.assert_called_once()
+    images = print_cards_fpdf.call_args.args[0]
+    # 2 decklist fronts + 1 custom art front + 3 backs = 6 total
+    backs = [p for p in images if p == str(back_image)]
+    assert len(backs) == 3
+
+
+def test_main_print_card_back_missing_image_file_errors(tmp_path, capsys: pytest.CaptureFixture) -> None:
+    """--card-back with a non-existent path exits with a clear error."""
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "backs.pdf"
+    missing = tmp_path / "no_such_file.png"
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "print", str(out_file), "--card-back", str(missing), "--card-back-count", "3"]),
+        pytest.raises(SystemExit),
+    ):
+        main()
+
+    captured = capsys.readouterr()
+    assert "card back image not found" in captured.out
+
+
+def test_main_print_card_back_without_fronts_requires_count(tmp_path, capsys: pytest.CaptureFixture) -> None:
+    """--card-back without any front images and without --card-back-count exits with a clear error."""
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "backs.pdf"
+    back_image = tmp_path / "card_back.png"
+    plt.imsave(back_image, np.zeros((4, 4, 4), dtype=np.uint8))
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "print", str(out_file), "--card-back", str(back_image)]),
+        pytest.raises(SystemExit),
+    ):
+        main()
+
+    captured = capsys.readouterr()
+    assert "--card-back-count" in captured.out and "--card-back without --card-back-count" in captured.out
 
 def test_main_convert_no_preferred_set_flag_no_reordering(tmp_path) -> None:
     """Without --set, card order is preserved as-is."""
