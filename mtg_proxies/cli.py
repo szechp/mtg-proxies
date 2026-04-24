@@ -150,7 +150,8 @@ def _generate_basic_lands_decklist(
         frame_effects = set(card.get("frame_effects", []))
         promo_types = set(card.get("promo_types", []))
         return (
-            "fullart" in frame_effects
+            card.get("full_art")
+            or "fullart" in frame_effects
             or "fullart" in promo_types
             or "full_art" in promo_types
             or card.get("set_type") in {"memorabilia", "masterpiece"}

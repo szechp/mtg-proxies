@@ -1505,8 +1505,48 @@ def test_generate_basic_lands_decklist_small_pool_completes_without_error() -> N
         decklist = _generate_basic_lands_decklist(["plains=5"], art_preference="standard", rng=random.Random(0))
 
     assert len(decklist.cards) == 5
+
+
+def test_generate_basic_lands_decklist_standard_avoids_full_art_flag_when_regular_exists() -> None:
+    """Cards with full_art=True (but no 'fullart' frame_effect) must be excluded in standard mode."""
+    from mtg_proxies.cli import _generate_basic_lands_decklist
+
+    regular = {
+        "id": "regular",
+        "name": "Forest",
+        "set": "ktk",
+        "collector_number": "268",
+        "type_line": "Basic Land — Forest",
+        "full_art": False,
+        "frame_effects": [],
+        "promo_types": [],
+        "border_color": "black",
+        "frame": "2015",
+        "set_type": "expansion",
+        "digital": False,
+        "set_name": "Khans of Tarkir",
+    }
+    full_art_via_flag = {
+        "id": "fdn-290",
+        "name": "Forest",
+        "set": "fdn",
+        "collector_number": "290",
+        "type_line": "Basic Land — Forest",
+        "full_art": True,         # flagged full_art by Scryfall...
+        "frame_effects": [],      # ...but NOT listed in frame_effects
+        "promo_types": [],
+        "border_color": "black",
+        "frame": "2015",
+        "set_type": "core",
+        "digital": False,
+        "set_name": "Foundations",
+    }
+
+    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[regular, full_art_via_flag]):
+        decklist = _generate_basic_lands_decklist(["forest=2"], art_preference="standard", rng=random.Random(0))
+
     ids = [entry.card["id"] for entry in decklist.cards]
-    assert set(ids) == {"plains-1", "plains-2"}
+    assert all(i == "regular" for i in ids), f"Expected only regular, got: {ids}"
 
 
 def test_upscale_images_skips_highres(tmp_path: pytest.TempPathFactory) -> None:
