@@ -27,6 +27,7 @@ _cache_folder.mkdir(parents=True, exist_ok=True)  # Create cache folder
 scryfall_rate_limiter = RateLimiter(delay=0.1)
 _download_lock = threading.Lock()
 
+
 def get_image(image_uri: str, *, silent: bool = False) -> str:
     """Download card artwork and return the path to a local copy.
 
@@ -38,7 +39,6 @@ def get_image(image_uri: str, *, silent: bool = False) -> str:
     split = image_uri.split("/")
     file_name = split[-5] + "_" + split[-4] + "_" + split[-1].split("?")[0]
     return get_file(file_name, image_uri, silent=silent)
-
 
 
 def get_file(file_name: str, url: str, *, silent: bool = False) -> str:
@@ -202,14 +202,22 @@ def get_faces(card: dict) -> list[dict]:
     raise ValueError(f"Unknown layout {card['layout']}")
 
 
-def _standard_art_penalty(card: dict) -> int:
-    """Penalty for printings that are less likely to use standard in-universe art."""
+def _standard_art_penalty(card: dict, preferred_sets: list[str] | None = None) -> int:
+    """Penalty for printings that are less likely to use standard in-universe art.
+
+    Args:
+        card: Scryfall card object.
+        preferred_sets: Sets the user explicitly opted into. If the card belongs to one,
+            the SLD penalty is waived — opting into SLD means the user wants SLD prints.
+    """
     penalty = 0
 
     set_name = card.get("set_name", "").lower()
     frame_effects = set(card.get("frame_effects", []))
     promo_types = set(card.get("promo_types", []))
     lang = card.get("lang", "en")
+    preferred_set_codes = {ps.lower() for ps in preferred_sets} if preferred_sets else set()
+    in_preferred_set = card.get("set") in preferred_set_codes
     keywords = {
         "fallout",
         "doctor who",
@@ -229,7 +237,7 @@ def _standard_art_penalty(card: dict) -> int:
     }
     if any(keyword in set_name for keyword in keywords):
         penalty += 256
-    if card.get("set") == "sld" or "secret lair" in set_name:
+    if not in_preferred_set and (card.get("set") == "sld" or "secret lair" in set_name):
         penalty += 256
     if card.get("set") == "plst" or set_name == "the list":
         penalty += 24
@@ -274,7 +282,7 @@ def _is_stamped_promo(card: dict) -> bool:
 
 
 def _select_standard_fallback(alternatives: list[dict], scores: list[int]) -> dict:
-    highres_candidates = [card for card in alternatives if card["highres_image"]]
+    highres_candidates = [card for card in alternatives if card.get("highres_image", False)]
     if not highres_candidates:
         return alternatives[int(np.argmax(scores))]
 
@@ -327,6 +335,7 @@ def recommend_print(
     oracle_id: str | None = None,
     art_preference: Literal["standard", "wild"] = "standard",
     preferred_sets: list[str] | None = None,
+    allow_low_res: bool = False,
     mode: Literal["best"] = "best",
 ) -> dict: ...
 
@@ -339,6 +348,7 @@ def recommend_print(
     oracle_id: str | None = None,
     art_preference: Literal["standard", "wild"] = "standard",
     preferred_sets: list[str] | None = None,
+    allow_low_res: bool = False,
     mode: Literal["all", "choices"],
 ) -> list[dict]: ...
 
@@ -350,6 +360,7 @@ def recommend_print(
     oracle_id: str | None = None,
     art_preference: Literal["standard", "wild"] = "standard",
     preferred_sets: list[str] | None = None,
+    allow_low_res: bool = False,
     mode: Literal["best", "all", "choices"] = "best",
 ) -> dict | list[dict]:
     """Recommend a (better) print of a card.
@@ -359,9 +370,14 @@ def recommend_print(
         card_name: Card name to look up.
         oracle_id: Oracle id to look up.
         art_preference: Art recommendation style.
-        preferred_sets: Ordered list of Scryfall set codes to prefer (e.g. ["ltr", "lto"]).
-            High-res prints from earlier sets receive a larger score bonus. The bonus is only
-            applied when the print has a high-res image so that quality remains the top priority.
+        preferred_sets: When set, restrict candidates to prints from these set codes (case-insensitive).
+            The default scoring still ranks candidates within the restriction (e.g. standard frames
+            beat borderless within the same set). Only falls back to the full pool when no print in
+            any preferred set exists.
+        allow_low_res: When True, low-res prints in the preferred set are kept as candidates
+            instead of being filtered out — useful when the user explicitly wants a set even
+            if only low-res scans exist. When False (default), low-res preferred-set prints are
+            ignored and the recommender falls back to high-res alternatives.
         mode: Recommendation mode.
     """
     if current is not None and oracle_id is None:  # Use oracle id of current
@@ -372,6 +388,22 @@ def recommend_print(
             oracle_id = current["oracle_id"]
 
     alternatives = cards_by_oracle_id()[oracle_id] if oracle_id is not None else get_cards(name=card_name)
+    if not alternatives:
+        raise LookupError(f"No prints found for card_name={card_name!r} oracle_id={oracle_id!r}")
+
+    # Preferred-set hard restriction: when the user picks a set, only consider prints from that set.
+    # Without --allow-low-res, low-res preferred-set prints are filtered out so the recommender can
+    # fall back to high-res alternatives in other sets. With --allow-low-res, the preferred-set
+    # restriction is absolute regardless of resolution.
+    preferred_set_restricted = False
+    if preferred_sets:
+        preferred_set_codes = {ps.lower() for ps in preferred_sets}
+        in_preferred = [a for a in alternatives if a.get("set") in preferred_set_codes]
+        if not allow_low_res:
+            in_preferred = [a for a in in_preferred if a.get("highres_image")]
+        if in_preferred:
+            alternatives = in_preferred
+            preferred_set_restricted = True
 
     def score(card: dict) -> int:
         points = 0
@@ -400,19 +432,8 @@ def recommend_print(
         if card["lang"] == "en":
             points += 64
 
-        if preferred_sets and card["set"] in {ps.lower() for ps in preferred_sets}:
-            if art_preference == "standard":
-                # In standard mode: bonus only for highres standard-art cards. Borderless/flashy
-                # prints in the preferred set do not get the bonus, so a highres standard card from
-                # any set beats them (and a lowres standard preferred card may too via fallback).
-                if card["highres_image"] and not _has_flashy_treatment(card):
-                    points += 200
-            elif card["highres_image"]:
-                # In wild mode: bonus for all highres preferred prints.
-                points += 200
-
         if art_preference == "standard":
-            return points - _standard_art_penalty(card)
+            return points - _standard_art_penalty(card, preferred_sets=preferred_sets)
 
         if _has_flashy_treatment(card):
             points += 48
@@ -433,20 +454,27 @@ def recommend_print(
         best_index = int(np.argmax(scores))
         best_card = alternatives[best_index]
 
-        if art_preference == "standard" and not best_card["highres_image"]:
-            # Skip the fallback when the lowres winner is a standard-art preferred-set card —
-            # it scored higher than available highres alternatives (e.g. borderless), so the
-            # lowres win is intentional.
-            preferred_set_winner = (
-                preferred_sets is not None
-                and best_card["set"] in {ps.lower() for ps in preferred_sets}
-                and not _has_flashy_treatment(best_card)
-            )
-            if not preferred_set_winner:
-                best_card = _select_standard_fallback(alternatives, scores)
+        # Skip the standard-art "lowres → highres elsewhere" fallback when we're restricted to
+        # the user's preferred set — they opted in, so respect it.
+        if (
+            art_preference == "standard"
+            and not best_card.get("highres_image", False)
+            and not preferred_set_restricted
+        ):
+            best_card = _select_standard_fallback(alternatives, scores)
 
-        if current is not None and current["id"] == best_card["id"]:
-            return current  # No better recommendation
+        if current is not None:
+            if current["id"] == best_card["id"]:
+                return current  # No better recommendation
+            # If the fallback did not override the argmax winner, preserve current on score
+            # ties. (When the fallback overrides, we want the upgrade even on a score tie.)
+            fallback_did_not_override = best_card is alternatives[best_index]
+            if (
+                fallback_did_not_override
+                and current in alternatives
+                and scores[alternatives.index(current)] == scores[best_index]
+            ):
+                return current
 
         # Return print with highest score
         return best_card

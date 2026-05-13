@@ -235,7 +235,8 @@ def test_foil_marker_stripped_from_collector_number(marker: str) -> None:
         parse_decklist_stream(StringIO(f"1 Sauron, the Lidless Eye (LTR) 288 {marker}\n"))
     finally:
         # Restore originals so other tests are unaffected
-        from mtg_proxies.decklists.sanitizing import validate_card_name as _vcn, validate_print as _vp
+        from mtg_proxies.decklists.sanitizing import validate_card_name as _vcn
+        from mtg_proxies.decklists.sanitizing import validate_print as _vp
 
         decklist_module.validate_card_name = _vcn  # type: ignore[assignment]
         decklist_module.validate_print = _vp  # type: ignore[assignment]

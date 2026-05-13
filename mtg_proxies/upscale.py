@@ -20,7 +20,15 @@ def _download_model() -> Path:
         return _MODEL_CACHE
     _MODEL_CACHE.parent.mkdir(parents=True, exist_ok=True)
     print(f"Downloading Real-ESRGAN model to {_MODEL_CACHE} …")
-    urllib.request.urlretrieve(_MODEL_URL, _MODEL_CACHE)
+    # Download to a temp file and rename atomically so an interrupted download
+    # does not leave a corrupt .pth at the cache path that future runs would load.
+    tmp_path = _MODEL_CACHE.with_suffix(_MODEL_CACHE.suffix + ".tmp")
+    try:
+        urllib.request.urlretrieve(_MODEL_URL, tmp_path)
+        tmp_path.replace(_MODEL_CACHE)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
     return _MODEL_CACHE
 
 
@@ -71,7 +79,12 @@ def upscale_images(
     ]
 
     if needs_upscale:
-        resolved_model = Path(model_path) if model_path else _download_model()
+        if model_path:
+            resolved_model = Path(model_path)
+            if not resolved_model.is_file():
+                raise FileNotFoundError(f"Upscale model not found: {resolved_model}")
+        else:
+            resolved_model = _download_model()
         model = ModelLoader().load_from_file(str(resolved_model))
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model = model.eval().to(device)
@@ -80,7 +93,7 @@ def upscale_images(
             img = Image.open(path).convert("RGB")
             tensor = torch.from_numpy(np.array(img)).permute(2, 0, 1).float() / 255.0
             tensor = tensor.unsqueeze(0).to(device)
-            with torch.no_grad():
+            with torch.inference_mode():
                 output = model(tensor)
             result = (output.squeeze(0).permute(1, 2, 0).clamp(0, 1) * 255).byte().cpu().numpy()
             upscaled = Image.fromarray(result)
@@ -90,7 +103,15 @@ def upscale_images(
                 ratio = _TARGET_WIDTH / upscaled.width
                 upscaled = upscaled.resize((_TARGET_WIDTH, round(upscaled.height * ratio)), Image.LANCZOS)
             upscaled.save(str(_upscaled_path(path)))
+            del tensor, output, result, upscaled
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
     else:
         print("All lowres images already upscaled (cached).")
 
-    return [str(_upscaled_path(p)) if _upscaled_path(p).exists() else p for p in image_paths]
+    # Only substitute the upscaled cache for images that were flagged as needing upscaling.
+    # A stale _4x file from a previous run must not be returned for an image that is now highres.
+    return [
+        str(_upscaled_path(p)) if not is_highres and _upscaled_path(p).exists() else p
+        for p, is_highres in zip(image_paths, highres_flags, strict=True)
+    ]

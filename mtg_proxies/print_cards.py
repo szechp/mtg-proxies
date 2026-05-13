@@ -40,6 +40,10 @@ def print_cards_matplotlib(
         dpi: Dots per inch for the output PDF.
         background_color: Background color of the PDF as name or hex code.
     """
+    border_crop = int(border_crop)
+    if border_crop > min(image_size) // 2:
+        raise ValueError(f"border_crop ({border_crop}) is too large for image_size {tuple(image_size)}")
+
     # Cards per figure
     N = np.floor(papersize / cardsize).astype(int)
     if N[0] == 0 or N[1] == 0:
@@ -51,7 +55,7 @@ def print_cards_matplotlib(
     filepath.parent.mkdir(parents=True, exist_ok=True)
 
     # Choose pdf of image saver
-    saver = PdfPages if filepath.suffix == ".pdf" else SplitPages
+    saver = PdfPages if filepath.suffix.lower() == ".pdf" else SplitPages
 
     with saver(filepath) as saver, tqdm(total=len(images), desc="Plotting cards") as pbar:
         idx = 0
@@ -121,8 +125,15 @@ def print_cards_fpdf(
         border_crop: How many pixel to crop from the border of each card.
         background_color: Background color of the PDF as an RGB tuple.
         cropmarks: Whether to add crop marks to the PDF.
+        split_pages: If set, write a new PDF every N pages with `_<n>` suffix added to the filename.
     """
     from fpdf import FPDF
+
+    border_crop = int(border_crop)
+    if border_crop > min(image_size) // 2:
+        raise ValueError(f"border_crop ({border_crop}) is too large for image_size {tuple(image_size)}")
+    if split_pages is not None and split_pages <= 0:
+        raise ValueError(f"split_pages must be positive (got {split_pages})")
 
     # Cards per sheet
     N = np.floor(papersize / cardsize).astype(int)
@@ -142,7 +153,8 @@ def print_cards_fpdf(
         return filepath.with_name(f"{filepath.stem}_{file_index + 1}{filepath.suffix}")
 
     def init_pdf() -> FPDF:
-        return FPDF(orientation="P", unit="mm", format="A4")
+        # Pass papersize through so non-A4 callers get pages that match the layout math.
+        return FPDF(orientation="P", unit="mm", format=(float(papersize[0]), float(papersize[1])))
 
     pdf = init_pdf()
 

@@ -30,12 +30,13 @@ def card_names() -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
         name.split("//")[0].strip().lower(): name for name in cards_by_name.values() if "//" in name
     }
     # Flavor names are printed names used in themed sets (e.g. "Henneth Annûn" for Reflecting Pool in LTC).
-    # Map lowercased flavor_name → oracle name so users can reference cards by their printed name.
+    # Map canonicalized flavor_name → oracle name so users can reference cards by their printed name.
+    # Use canonic_card_name so the lookup matches validate_card_name's normalization (handles æ→ae, etc.).
     flavor_name_to_oracle: dict[str, str] = {}
     for card in scryfall.get_cards():
         fn = card.get("flavor_name")
         if fn:
-            flavor_name_to_oracle[fn.lower()] = card["name"]
+            flavor_name_to_oracle[scryfall.canonic_card_name(fn)] = card["name"]
     return cards_by_name, double_faced_by_front, flavor_name_to_oracle
 
 
@@ -116,9 +117,15 @@ def validate_print(
     """
     warnings: list[ParseWarning] = []
     lowres_upgraded = False
+    preferred_swapped = False
 
     if set_id is None:
-        card = scryfall.recommend_print(card_name=card_name, art_preference=art_preference, preferred_sets=preferred_sets)
+        card = scryfall.recommend_print(
+            card_name=card_name,
+            art_preference=art_preference,
+            preferred_sets=preferred_sets,
+            allow_low_res=allow_low_res,
+        )
         # Warn for tokens, as they are not unique by name
         if card["layout"] in ["token", "double_faced_token"]:
             warnings.append(
@@ -130,7 +137,12 @@ def validate_print(
         card = scryfall.get_card(card_name, set_id, collector_number)
         if card is None:  # No exact match
             # Find alternative print
-            card = scryfall.recommend_print(card_name=card_name, art_preference=art_preference, preferred_sets=preferred_sets)
+            card = scryfall.recommend_print(
+                card_name=card_name,
+                art_preference=art_preference,
+                preferred_sets=preferred_sets,
+                allow_low_res=allow_low_res,
+            )
             warnings.append(
                 ParseWarning(
                     "WARNING",
@@ -139,35 +151,19 @@ def validate_print(
                 )
             )
         elif not card["highres_image"]:  # Found but low resolution — check if a better print exists
-            in_preferred_set = preferred_sets is None or card["set"] in {ps.lower() for ps in preferred_sets}
-            if allow_low_res and in_preferred_set and preferred_sets is not None:
-                # --allow-low-res with explicit preferred sets: still upgrade if a highres standard-art
-                # version exists within the same preferred sets (e.g. LTR 192 lowres → LTR 741 highres).
-                # In standard mode, skip the upgrade if the only highres option is wild/flashy art.
-                preferred_set_codes = {ps.lower() for ps in preferred_sets}
-                better = scryfall.recommend_print(card_name=card_name, art_preference=art_preference, preferred_sets=preferred_sets)
-                flashy_effects = {"extendedart", "showcase", "shatteredglass", "upside_down", "inverted", "borderless"}
-                better_is_flashy = bool(flashy_effects & set(better.get("frame_effects", [])))
-                if (
-                    better != card
-                    and better["highres_image"]
-                    and better["set"] in preferred_set_codes
-                    and not (art_preference == "standard" and better_is_flashy)
-                ):
-                    warnings.append(
-                        ParseWarning(
-                            "WARNING",
-                            f"Low resolution scan for {format_print(card)!r}. Upgrading to {format_print(better)!r}.",
-                        )
-                    )
-                    card = better
-                    lowres_upgraded = True
-                # else: no suitable highres in preferred sets — keep the lowres preferred-set print as requested
-            elif allow_low_res and in_preferred_set:
-                pass  # print mode (preferred_sets=None): honor whatever print was requested, no upgrade
+            if allow_low_res and preferred_sets is None:
+                # print mode (no --set): honor whatever print was requested, do not upgrade
+                pass
             else:
-                better = scryfall.recommend_print(card_name=card_name, art_preference=art_preference, preferred_sets=preferred_sets)
-                if better != card:
+                # recommend_print enforces the preferred-set restriction (with allow_low_res honored
+                # inside it) and otherwise returns the highest-scoring alternative.
+                better = scryfall.recommend_print(
+                    card_name=card_name,
+                    art_preference=art_preference,
+                    preferred_sets=preferred_sets,
+                    allow_low_res=allow_low_res,
+                )
+                if better["id"] != card["id"]:
                     warnings.append(
                         ParseWarning(
                             "WARNING",
@@ -176,8 +172,35 @@ def validate_print(
                     )
                     card = better
                     lowres_upgraded = True
-    # Warn if none of the preferred sets could be used (skip if lowres upgrade already explained the substitution)
-    if preferred_sets and card["set"] not in {ps.lower() for ps in preferred_sets} and not lowres_upgraded:
+    # If the card is from a non-preferred set, try to swap to a preferred-set version when one exists.
+    # Without this, a highres explicit print (e.g. "Turtle Tracks (TMC) 129") is accepted as-is even
+    # when --set=SLD asked for the SLD print.
+    if preferred_sets and card["set"] not in {ps.lower() for ps in preferred_sets}:
+        preferred_set_codes = {ps.lower() for ps in preferred_sets}
+        better = scryfall.recommend_print(
+            card,
+            art_preference=art_preference,
+            preferred_sets=preferred_sets,
+            allow_low_res=allow_low_res,
+        )
+        if better["id"] != card["id"] and better["set"] in preferred_set_codes:
+            warnings.append(
+                ParseWarning(
+                    "WARNING",
+                    f"Swapping {format_print(card)!r} for preferred-set print {format_print(better)!r}.",
+                )
+            )
+            card = better
+            preferred_swapped = True
+
+    # Warn if none of the preferred sets could be used (skipped when a lowres upgrade or
+    # preferred-set swap already explained the substitution).
+    if (
+        preferred_sets
+        and card["set"] not in {ps.lower() for ps in preferred_sets}
+        and not lowres_upgraded
+        and not preferred_swapped
+    ):
         sets_str = ", ".join(s.upper() for s in preferred_sets)
         warnings.append(
             ParseWarning(
@@ -191,7 +214,12 @@ def validate_print(
     quality_warnings = get_print_warnings(card)
     if len(quality_warnings) > 0:
         # Get recommendation
-        recommendation = scryfall.recommend_print(card, art_preference=art_preference, preferred_sets=preferred_sets)
+        recommendation = scryfall.recommend_print(
+            card,
+            art_preference=art_preference,
+            preferred_sets=preferred_sets,
+            allow_low_res=allow_low_res,
+        )
 
         # Format warnings string
         if quality_warnings == ["digital print"]:

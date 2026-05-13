@@ -22,16 +22,16 @@ Create a high quality printable PDF from your decklist or a list of cards you wa
   `mtg-proxies` warns you if you attempt to print a low-resolution scan and offers alternatives. The `convert` tool automatically selects the best print for each card, and flags or moves remaining low-res cards to the bottom of the output file.
 
 - **Art preference and preferred sets**  
-  Choose between `standard` (conservative, avoids promos/digital), `wild` (any art including borderless/extended), or `premium` (highest-quality basic land art). Pin preferred sets with `--set` so the recommender stays within those sets when possible.
+  Choose between `standard` (conservative, avoids promos/digital) and `wild` (any art including borderless/extended) for both `print` and `convert`. `convert --basic-lands` also accepts `premium` (highest-quality full-art basics). Pin preferred sets with `--set` so the recommender stays within those sets when possible.
 
-- **Custom art overlays**  
-  Drop custom art images into a folder and append them to the PDF with `--custom-art`. Supports bleed-crop normalization to extend art to card edges.
+- **Custom art appended to a print run**  
+  Drop full-card PNG images into a folder and append them to the PDF with `--custom-art FOLDER` (JPGs are not picked up). `--custom-art-bleed-crop PERCENT` trims each edge before rendering so art that bleeds past the card edge prints correctly.
 
 - **AI upscaling**  
   Upscale low-quality scans with Real-ESRGAN or any ESRGAN-compatible model via `--upscale`. Models are loaded with [spandrel](https://github.com/chaiNNer-org/spandrel) and cached locally.
 
-- **Card back printing**  
-  Print card backs for double-sided proxy use with `--card-back PATH`. Without `--card-back-count`, automatically matches the number of front images (decklist cards, custom art, or both combined). Supply any PNG/JPG as the back image.
+- **Duplex card-back printing**  
+  Pass `--card-back PATH` to lay out the PDF for long-edge duplex printing: each sheet of fronts is followed by a sheet of backs in the mirrored position, so a flip-on-long-edge duplex print lands every card's back directly behind its front. Double-faced cards (Chalice of Life // Chalice of Death, transform cards, MDFCs) use their actual back face at the mirrored position — every other card uses the supplied card-back image. Pass `--card-back-count N` to opt into the legacy non-duplex behavior (appends N copies of the back image after the fronts).
 
 - **Basic land generator**  
   Generate decklists of random basic land printings with `convert --basic-lands`, with weighted art variety and configurable art style.
@@ -112,7 +112,7 @@ mtg-proxies print deck.txt output.pdf --art-preference wild
 **Generate random basic lands:**
 
 ```bash
-mtg-proxies convert --basic-lands plains=10 island=8 --art-preference premium basics.txt
+mtg-proxies convert --basic-lands plains=10 island=8 --art-preference premium -o basics.txt
 ```
 
 Art preference options for basic lands: `standard` (regular frame), `wild` (any art), `premium` (highest-quality full art). Then print them:
@@ -187,8 +187,8 @@ mtg-proxies print deck.txt output.pdf --split-pages 3
 **Append tokens created by your deck:**
 
 ```bash
-mtg-proxies tokens deck.txt >> deck_with_tokens.txt
-mtg-proxies print deck_with_tokens.txt output.pdf
+mtg-proxies tokens deck.txt        # rewrites deck.txt in place with a "Tokens" section appended
+mtg-proxies print deck.txt output.pdf
 ```
 
 **Use a ManaStack or Archidekt deck directly:**
@@ -274,10 +274,14 @@ Convert a decklist to text or arena format.
 positional arguments:
   decklist              path to a decklist in text/arena format, or
                         manastack:{manastack_id}, or archidekt:{archidekt_id}
-  outfile               output file (stdout if omitted)
+  outfile               output file (required, except when generating basic
+                        lands with --basic-lands and a non-existent path is
+                        supplied as the decklist positional)
 
 options:
   -h, --help            show this help message and exit
+  -o PATH, --out PATH   output file (recommended; overrides the positional
+                        outfile if both are given)
   --format {arena,text}
                         output format (default: arena)
   --clean               remove all non-card lines

@@ -25,7 +25,7 @@ def test_fetch_scans_scryfall(example_decklist: Decklist, faces: str, expected_i
 
 
 def test_fetch_scans_scryfall_flagged_same_paths_as_unflagged(example_decklist: Decklist) -> None:
-    """flagged variant must return the same paths as the plain variant."""
+    """Flagged variant must return the same paths as the plain variant."""
     from mtg_proxies import fetch_scans_scryfall
     from mtg_proxies.scans import fetch_scans_scryfall_flagged
 
@@ -33,6 +33,7 @@ def test_fetch_scans_scryfall_flagged_same_paths_as_unflagged(example_decklist: 
     flagged_images, highres_flags = fetch_scans_scryfall_flagged(example_decklist)
 
     assert flagged_images == images
+    assert len(highres_flags) == len(flagged_images)
 
 
 def test_fetch_scans_scryfall_flagged_flag_count_matches_image_count(example_decklist: Decklist) -> None:

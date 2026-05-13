@@ -24,7 +24,7 @@ def parse_decklist(
     warnings = []
     ok = True
 
-    r = requests.get(f"https://archidekt.com/api/decks/{archidekt_id}/")
+    r = requests.get(f"https://archidekt.com/api/decks/{archidekt_id}/", timeout=30)
     if r.status_code != 200:
         raise ValueError(f"Archidekt returned statuscode {r.status_code}")
 

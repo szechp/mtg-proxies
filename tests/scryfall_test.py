@@ -249,7 +249,9 @@ def test_recommend_print_standard_devalues_flashy_anime_variants(monkeypatch: py
     assert card["id"] == "plain-english-print"
 
 
-def test_recommend_print_standard_accepts_plain_ub_mainset_over_ub_promo(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_recommend_print_standard_picks_highres_ub_promo_over_lowres_ub_mainset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from mtg_proxies.scryfall import scryfall
 
     plain_ub_mainset = _test_card(
@@ -345,13 +347,14 @@ def test_recommend_print_lowres_preferred_set_loses_to_highres_non_preferred(mon
     assert card["id"] == "highres-ltc"
 
 
-def test_recommend_print_standard_mode_prefers_lowres_standard_over_highres_borderless_in_preferred_set(
+def test_recommend_print_allow_low_res_prefers_lowres_standard_over_highres_borderless_in_preferred_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """In standard mode with --set, a lowres standard card should beat a highres borderless one from the same set.
+    """With --allow-low-res, a lowres standard card beats a highres borderless one from the same set.
 
     Real Scryfall borderless cards have border_color='borderless' (not 'black'), so they miss the +8 black-border
-    bonus. Combined with the borderless penalty, the lowres standard card ends up scoring higher.
+    bonus. Combined with the borderless penalty, the lowres standard card scores higher within the same set.
+    Without --allow-low-res, the lowres print is filtered out of the preferred-set candidate pool.
     """
     from mtg_proxies.scryfall import scryfall
 
@@ -367,9 +370,89 @@ def test_recommend_print_standard_mode_prefers_lowres_standard_over_highres_bord
 
     monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [highres_borderless, lowres_standard])
 
-    card = scryfall.recommend_print(card_name="Test Card", preferred_sets=["ltr"], art_preference="standard")
+    card = scryfall.recommend_print(
+        card_name="Test Card", preferred_sets=["ltr"], art_preference="standard", allow_low_res=True
+    )
 
     assert card["id"] == "lowres-standard"
+
+
+def test_recommend_print_set_sld_picks_sld_print_even_when_flashy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--set=SLD must pick the SLD print even though SLD prints are universally flashy.
+
+    Regression for issues.txt #2: previously `Broadside Bombardiers`-style cards with SLD drops
+    were ignored because the flashy-treatment check denied SLD prints the preferred-set bonus.
+    Under the restriction model, any preferred-set print wins over non-preferred regardless of style.
+    """
+    from mtg_proxies.scryfall import scryfall
+
+    sld_showcase = _test_card(
+        "sld-showcase",
+        highres_image=True,
+        set_code="sld",
+        set_name="Secret Lair Drop",
+        frame_effects=["showcase"],
+        border_color="borderless",
+    )
+    standard_print = _test_card(
+        "standard-print",
+        highres_image=True,
+        set_code="mh3",
+        set_name="Modern Horizons 3",
+    )
+
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [sld_showcase, standard_print])
+
+    card = scryfall.recommend_print(card_name="Test Card", preferred_sets=["SLD"], art_preference="standard")
+
+    assert card["id"] == "sld-showcase"
+
+
+def test_recommend_print_falls_back_to_default_when_card_not_in_preferred_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When no print exists in the preferred set, fall back to the default scoring flow."""
+    from mtg_proxies.scryfall import scryfall
+
+    standard_mh3 = _test_card("standard-mh3", highres_image=True, set_code="mh3", set_name="MH3")
+    showcase_woc = _test_card(
+        "showcase-woc",
+        highres_image=True,
+        set_code="woc",
+        set_name="WOC",
+        frame_effects=["showcase"],
+        border_color="borderless",
+    )
+
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [standard_mh3, showcase_woc])
+
+    card = scryfall.recommend_print(card_name="Test Card", preferred_sets=["SLD"], art_preference="standard")
+
+    # No SLD print exists → fall back to default scoring → standard (non-flashy) wins
+    assert card["id"] == "standard-mh3"
+
+
+def test_recommend_print_standard_mode_picks_highres_borderless_in_preferred_set_without_allow_low_res(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without --allow-low-res, lowres preferred-set prints are filtered out; highres borderless wins by default."""
+    from mtg_proxies.scryfall import scryfall
+
+    highres_borderless = _test_card(
+        "highres-borderless",
+        highres_image=True,
+        set_code="ltr",
+        set_name="LTR Set",
+        frame_effects=["borderless"],
+        border_color="borderless",
+    )
+    lowres_standard = _test_card("lowres-standard", highres_image=False, set_code="ltr", set_name="LTR Set")
+
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [highres_borderless, lowres_standard])
+
+    card = scryfall.recommend_print(card_name="Test Card", preferred_sets=["ltr"], art_preference="standard")
+
+    assert card["id"] == "highres-borderless"
 
 
 def test_recommend_print_wild_mode_still_prefers_highres_borderless_in_preferred_set(
@@ -497,22 +580,21 @@ def test_validate_print_keeps_lowres_when_no_better_option_exists(monkeypatch: p
 def test_validate_print_allow_low_res_does_not_upgrade_lowres_standard_to_highres_borderless(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """--allow-low-res should NOT upgrade lowres standard to highres borderless in standard mode."""
+    """--allow-low-res should NOT upgrade lowres standard to highres borderless in standard mode.
+
+    With the preferred-set restriction model, this is enforced inside `recommend_print` itself —
+    given both candidates in the preferred set, scoring picks the standard print on penalty
+    arithmetic. The mock here returns what real `recommend_print` would return in that scenario.
+    """
     import mtg_proxies.decklists.sanitizing as sanitizing
     from mtg_proxies.decklists.sanitizing import validate_print
 
     lowres_standard = _test_card("lowres-standard", highres_image=False, set_code="ltr", collector_number="192")
-    highres_borderless = _test_card(
-        "highres-borderless",
-        highres_image=True,
-        set_code="ltr",
-        collector_number="741",
-        frame_effects=["borderless"],
-        border_color="borderless",
-    )
 
     monkeypatch.setattr(sanitizing.scryfall, "get_card", lambda *args, **kwargs: lowres_standard)
-    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: highres_borderless)
+    # Real recommend_print, given (lowres_standard, highres_borderless) both in LTR with allow_low_res=True,
+    # returns lowres_standard via penalty arithmetic. Mock to match that contract.
+    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: lowres_standard)
 
     card, warnings = validate_print(
         "Test Card", "LTR", "192", allow_low_res=True, preferred_sets=["LTR"], art_preference="standard"
@@ -542,19 +624,22 @@ def test_validate_print_allow_low_res_upgrades_within_preferred_set(monkeypatch:
 def test_validate_print_allow_low_res_keeps_lowres_when_highres_only_outside_preferred_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """--allow-low-res should NOT upgrade when the only highres is outside the preferred sets."""
+    """--allow-low-res should NOT upgrade when the only highres is outside the preferred sets.
+
+    Real `recommend_print` enforces the preferred-set restriction: with allow_low_res=True it returns
+    the LTR print (the only candidate in the restricted pool) rather than the highres WOC alternative.
+    """
     import mtg_proxies.decklists.sanitizing as sanitizing
     from mtg_proxies.decklists.sanitizing import validate_print
 
     lowres_ltr = _test_card("lowres-ltr", highres_image=False, set_code="ltr", collector_number="192")
-    highres_woc = _test_card("highres-woc", highres_image=True, set_code="woc", collector_number="1")
 
     monkeypatch.setattr(sanitizing.scryfall, "get_card", lambda *args, **kwargs: lowres_ltr)
-    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: highres_woc)
+    # Real recommend_print restricts to LTR (the only preferred set) and returns lowres_ltr.
+    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: lowres_ltr)
 
     card, warnings = validate_print("Test Card", "LTR", "192", allow_low_res=True, preferred_sets=["LTR"])
 
-    # Should keep the lowres LTR print, not upgrade to WOC
     assert card["id"] == "lowres-ltr"
     assert not any(w.level == "WARNING" and "Upgrading" in w.message for w in warnings)
 

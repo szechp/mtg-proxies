@@ -13,7 +13,7 @@ from mtg_proxies import fetch_scans_scryfall, print_cards_fpdf, print_cards_matp
 from mtg_proxies.deck_value import show_deck_value
 from mtg_proxies.decklists import archidekt, manastack, parse_decklist
 from mtg_proxies.decklists.decklist import Card, Comment, Decklist
-from mtg_proxies.scans import fetch_scans_scryfall_flagged
+from mtg_proxies.scans import fetch_scans_paired, fetch_scans_scryfall_flagged
 from mtg_proxies.tokens import get_tokens
 
 DEFAULT_CUSTOM_ART_BLEED_CROP_PERCENT = 4.0
@@ -31,6 +31,50 @@ EXCLUDED_BASIC_LAND_PRINTS = {
     ("sld", "257"),
     ("sld", "258"),
 }
+
+def _cards_per_sheet_dims(paper_inches: np.ndarray, scale: float) -> tuple[int, int]:
+    """Return (cards_per_row, rows_per_sheet) for the given paper and card scale.
+
+    Mirrors the calculation inside print_cards.py so the CLI can lay out duplex pages
+    consistently with what the renderer will produce.
+    """
+    cardsize_inches = np.array([2.5, 3.5]) * scale
+    n = np.floor(paper_inches / cardsize_inches).astype(int)
+    return int(n[0]), int(n[1])
+
+
+def _build_duplex_layout(
+    fronts: list[str],
+    backs: list[str],
+    filler: str,
+    cards_per_row: int,
+    rows_per_sheet: int,
+) -> list[str]:
+    """Build the interleaved [front sheet, back sheet, front sheet, …] image list for duplex printing.
+
+    Each back sheet is mirrored row-by-row so that a long-edge duplex flip places each
+    card's back behind its front. Partial last sheets are padded with ``filler`` on both
+    sides to keep the mirror layout well-defined; the filler cells print as the card back,
+    which is harmless to discard.
+    """
+    if len(fronts) != len(backs):
+        raise ValueError(f"fronts and backs must have equal length (got {len(fronts)} vs {len(backs)})")
+    cards_per_sheet = cards_per_row * rows_per_sheet
+    out: list[str] = []
+    for i in range(0, len(fronts), cards_per_sheet):
+        front_sheet = list(fronts[i : i + cards_per_sheet])
+        back_sheet = list(backs[i : i + cards_per_sheet])
+        pad = cards_per_sheet - len(front_sheet)
+        front_sheet.extend([filler] * pad)
+        back_sheet.extend([filler] * pad)
+        mirrored_back: list[str] = []
+        for r in range(rows_per_sheet):
+            row = back_sheet[r * cards_per_row : (r + 1) * cards_per_row]
+            mirrored_back.extend(row[::-1])
+        out.extend(front_sheet)
+        out.extend(mirrored_back)
+    return out
+
 
 def parse_decklist_spec(
     decklist_spec: str,
@@ -93,7 +137,7 @@ def papersize(string: str) -> np.ndarray:
 def _normalize_custom_art_images(
     custom_folder: Path, bleed_crop_percent: float = 0.0, output_dir: Path | None = None
 ) -> list[str]:
-    images = sorted(custom_folder.glob("*.png"))
+    images = sorted(p for p in custom_folder.iterdir() if p.is_file() and p.suffix.lower() == ".png")
     if bleed_crop_percent <= 0:
         return [str(path) for path in images]
 
@@ -439,14 +483,21 @@ def main() -> None:
         type=str,
         default=None,
         metavar="PATH",
-        help="path to a card back image; appends one copy per card in the decklist (override count with --card-back-count)",
+        help=(
+            "path to a card back image; enables duplex layout (alternating sheets of fronts then "
+            "mirrored backs for long-edge duplex printing). DFCs use their actual back face; all "
+            "other cards use this image. Pass --card-back-count for the legacy non-duplex behavior."
+        ),
     )
     print_parser.add_argument(
         "--card-back-count",
         type=int,
         default=None,
         metavar="N",
-        help="number of card back copies to append (default: total card count from the decklist)",
+        help=(
+            "legacy: append N copies of the --card-back image after the front images (no duplex "
+            "interleaving). Setting this disables duplex mode."
+        ),
     )
     # Convert tool
     convert_parser = subparsers.add_parser(
@@ -461,6 +512,15 @@ def main() -> None:
         help="path to a decklist in text/arena format, or manastack:{manastack_id}, or archidekt:{archidekt_id}",
     )
     convert_parser.add_argument("outfile", nargs="?", default=None, help="output file", type=Path)
+    convert_parser.add_argument(
+        "-o",
+        "--out",
+        dest="out",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="output file (recommended; overrides the positional outfile if both are given)",
+    )
     convert_parser.add_argument(
         "--format", help="output format (default: %(default)s)", choices=["arena", "text"], default="arena"
     )
@@ -530,17 +590,43 @@ def main() -> None:
             images = []
             custom_art_dir: tempfile.TemporaryDirectory[str] | None = None
 
+            if args.card_back is None and args.card_back_count is not None:
+                print("Error: --card-back-count requires --card-back PATH")
+                raise SystemExit(1)
+            if args.card_back_count is not None and args.card_back_count <= 0:
+                print(f"Error: --card-back-count must be positive (got {args.card_back_count})")
+                raise SystemExit(1)
+            if (args.upscale or args.upscale_model) and not args.decklist:
+                print("Error: --upscale requires a decklist (it operates on Scryfall scans)")
+                raise SystemExit(1)
+            if args.split_pages is not None and args.split_pages <= 0:
+                print(f"Error: --split-pages must be positive (got {args.split_pages})")
+                raise SystemExit(1)
+
+            # Duplex mode is triggered by --card-back PATH alone (without --card-back-count).
+            # In duplex mode the renderer outputs alternating sheets of fronts and (mirrored) backs
+            # so a long-edge duplex flip lines each card's back up with its front. DFCs use their
+            # own back face; all other cards (single-faced + custom art) use the supplied card_back.
+            duplex_mode = args.card_back is not None and args.card_back_count is None
+            if args.card_back is not None and not Path(args.card_back).is_file():
+                print(f"Error: card back image not found: {args.card_back}")
+                raise SystemExit(1)
+
+            fronts: list[str] = []
+            backs: list[str] = []
+            front_flags: list[bool] = []
+            back_flags: list[bool] = []
+
             if args.decklist:
                 decklist = parse_decklist_spec(
                     args.decklist,
                     art_preference=args.art_preference,
                     allow_low_res=True,  # print renders what's given; convert is the optimizer
                 )
-                if args.upscale or args.upscale_model:
-                    from mtg_proxies.upscale import upscale_images
-
+                if duplex_mode:
+                    fronts, backs, front_flags, back_flags = fetch_scans_paired(decklist, args.card_back)
+                elif args.upscale or args.upscale_model:
                     images, highres_flags = fetch_scans_scryfall_flagged(decklist, faces=args.faces)
-                    images = upscale_images(images, highres_flags=highres_flags, model_path=args.upscale_model)
                 else:
                     images = fetch_scans_scryfall(decklist, faces=args.faces)
 
@@ -565,27 +651,49 @@ def main() -> None:
                     raise SystemExit(1) from exc
                 if not custom_images:
                     print(f"Warning: no PNG files found in '{args.custom_art}'")
-                images.extend(custom_images)
-
-            if args.card_back is not None:
-                if not Path(args.card_back).is_file():
-                    print(f"Error: card back image not found: {args.card_back}")
-                    raise SystemExit(1)
-                if args.card_back_count is not None:
-                    n_backs = args.card_back_count
-                elif images:
-                    n_backs = len(images)
+                if duplex_mode:
+                    fronts.extend(custom_images)
+                    backs.extend([args.card_back] * len(custom_images))
+                    # Custom art is user-supplied; assume highres so it's not subject to upscale.
+                    front_flags.extend([True] * len(custom_images))
+                    back_flags.extend([True] * len(custom_images))
                 else:
-                    print("Error: --card-back without --card-back-count requires front images (decklist or --custom-art)")
+                    images.extend(custom_images)
+
+            if duplex_mode:
+                if not fronts:
+                    print("Error: --card-back requires a decklist or --custom-art to pair backs with")
                     raise SystemExit(1)
-                images.extend([args.card_back] * n_backs)
+                if args.upscale or args.upscale_model:
+                    from mtg_proxies.upscale import upscale_images
+
+                    fronts = upscale_images(fronts, highres_flags=front_flags, model_path=args.upscale_model)
+                    backs = upscale_images(backs, highres_flags=back_flags, model_path=args.upscale_model)
+                cards_per_row, rows_per_sheet = _cards_per_sheet_dims(args.paper, args.scale)
+                images = _build_duplex_layout(
+                    fronts, backs, args.card_back, cards_per_row, rows_per_sheet
+                )
+            else:
+                if args.decklist and (args.upscale or args.upscale_model):
+                    from mtg_proxies.upscale import upscale_images
+
+                    images = upscale_images(images, highres_flags=highres_flags, model_path=args.upscale_model)
+                if args.card_back is not None:
+                    # Non-duplex card-back: legacy "append N backs at the end" behavior.
+                    n_backs = (
+                        args.card_back_count if args.card_back_count is not None else (len(images) or 0)
+                    )
+                    if n_backs == 0:
+                        print("Error: --card-back without --card-back-count requires front images (decklist or --custom-art)")
+                        raise SystemExit(1)
+                    images.extend([args.card_back] * n_backs)
 
             if not images:
                 print("Error: must provide either a decklist, --custom-art folder, or --card-back PATH")
                 raise SystemExit(1)
 
             try:
-                if args.outfile.endswith(".pdf"):
+                if args.outfile.lower().endswith(".pdf"):
                     import matplotlib.colors as colors
 
                     background_color = args.background
@@ -617,13 +725,29 @@ def main() -> None:
                     custom_art_dir.cleanup()
 
         case "convert":
-            outfile = args.outfile
+            # Resolution order: explicit `-o/--out` > positional `outfile` > legacy shifts (for
+            # backward compat with `convert deck.txt out.txt` and `convert --basic-lands mountain=9 out.txt`).
+            outfile = args.out if args.out is not None else args.outfile
             basic_land_specs = args.basic_lands
             if basic_land_specs and outfile is None:
                 if args.decklist is not None:
+                    # Refuse to overwrite an existing decklist file with --basic-lands output.
+                    if Path(args.decklist).is_file():
+                        print(
+                            f"Error: refusing to overwrite existing decklist {args.decklist!r} with"
+                            " --basic-lands output. Use -o/--out PATH to specify the output."
+                        )
+                        raise SystemExit(1)
                     outfile = Path(args.decklist)
                 if len(basic_land_specs) > 1 and "=" not in basic_land_specs[-1]:
-                    outfile = Path(basic_land_specs[-1])
+                    candidate = basic_land_specs[-1]
+                    # Catch typos like `--basic-lands mountain=9 forest` (forgot `=COUNT` on the last spec).
+                    if candidate.strip().lower() in BASIC_LAND_NAMES:
+                        print(
+                            f"Error: basic land spec {candidate!r} is missing a count. Expected NAME=COUNT."
+                        )
+                        raise SystemExit(1)
+                    outfile = Path(candidate)
                     basic_land_specs = basic_land_specs[:-1]
 
             if args.basic_lands:
@@ -682,9 +806,10 @@ def main() -> None:
                     not_in_set_cards: list[Card] = []
                     for entry in decklist.entries:
                         if isinstance(entry, Card):
-                            if entry["set"] in preferred_set_codes and entry.card.get("highres_image", True):
+                            entry_set = entry.card.get("set")
+                            if entry_set in preferred_set_codes and entry.card.get("highres_image", True):
                                 main_entries.append(entry)
-                            elif entry["set"] in preferred_set_codes:
+                            elif entry_set in preferred_set_codes:
                                 lowres_preferred_cards.append(entry)
                             else:
                                 not_in_set_cards.append(entry)
@@ -709,7 +834,7 @@ def main() -> None:
                     # Default: auto-upgraded prints, move non-preferred-set cards to bottom
                     fallback_cards: list[Card] = []
                     for entry in decklist.entries:
-                        if isinstance(entry, Card) and entry["set"] not in preferred_set_codes:
+                        if isinstance(entry, Card) and entry.card.get("set") not in preferred_set_codes:
                             fallback_cards.append(entry)
                         else:
                             main_entries.append(entry)

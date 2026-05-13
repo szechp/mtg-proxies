@@ -265,32 +265,44 @@ def test_main_print_card_back_explicit_count(tmp_path) -> None:
     assert print_cards_fpdf.call_args.args[0] == [str(back_image)] * 3
 
 
-def test_main_print_card_back_matches_decklist_count(tmp_path) -> None:
-    """--card-back without --card-back-count appends one back per front image (decklist only)."""
+def test_main_print_card_back_duplex_mode_pairs_decklist_fronts(tmp_path) -> None:
+    """--card-back without --card-back-count enables duplex mode: each front gets a paired back.
+
+    The renderer receives alternating sheets of fronts then mirrored backs. With 3 decklist
+    cards on an A4 3×3 grid (9-per-sheet), the single sheet is padded to 9 with the card_back.
+    """
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "backs.pdf"
     back_image = tmp_path / "card_back.png"
     plt.imsave(back_image, np.zeros((4, 4, 4), dtype=np.uint8))
-    fake_decklist = Mock()
-    fake_decklist.total_count = 3
-    fake_images = ["card1.png", "card2.png", "card3.png"]
-    expected_images = list(fake_images) + [str(back_image)] * 3
+    fronts = ["card1.png", "card2.png", "card3.png"]
+    backs = [str(back_image), str(back_image), str(back_image)]
 
     with (
         patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), "--card-back", str(back_image)]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
-        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=fake_images),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=Mock()),
+        patch(
+            "mtg_proxies.cli.fetch_scans_paired",
+            return_value=(fronts, backs, [True, True, True], [True, True, True]),
+        ),
         patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
     ):
         main()
 
     print_cards_fpdf.assert_called_once()
-    assert print_cards_fpdf.call_args.args[0] == expected_images
+    images = print_cards_fpdf.call_args.args[0]
+    # One sheet (9 slots) of fronts followed by one sheet (9 slots) of backs = 18 images.
+    assert len(images) == 18
+    # Front sheet: 3 real fronts at positions 0..2, rest filled with card_back.
+    assert images[0:3] == fronts
+    assert all(p == str(back_image) for p in images[3:9])
+    # Back sheet: all 9 slots are card_back (since no DFCs in this test).
+    assert all(p == str(back_image) for p in images[9:18])
 
 
-def test_main_print_card_back_matches_custom_art_count(tmp_path) -> None:
-    """--card-back without --card-back-count appends one back per custom art image."""
+def test_main_print_card_back_duplex_mode_pairs_custom_art(tmp_path) -> None:
+    """--card-back enables duplex mode for custom-art fronts as well."""
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "backs.pdf"
@@ -319,14 +331,17 @@ def test_main_print_card_back_matches_custom_art_count(tmp_path) -> None:
 
     print_cards_fpdf.assert_called_once()
     images = print_cards_fpdf.call_args.args[0]
-    fronts = [p for p in images if p != str(back_image)]
-    backs = [p for p in images if p == str(back_image)]
-    assert len(fronts) == 2
-    assert len(backs) == 2
+    # 2 custom-art fronts → 1 sheet padded to 9, plus 1 sheet of 9 backs = 18 images.
+    assert len(images) == 18
+    # First two slots of front sheet are the custom-art images.
+    assert images[0] == str(art1)
+    assert images[1] == str(art2)
+    # All remaining front-sheet slots and all back-sheet slots are the card_back.
+    assert all(p == str(back_image) for p in images[2:])
 
 
-def test_main_print_card_back_matches_decklist_plus_custom_art_count(tmp_path) -> None:
-    """--card-back without --card-back-count covers both decklist and custom art fronts."""
+def test_main_print_card_back_duplex_mode_pairs_decklist_plus_custom_art(tmp_path) -> None:
+    """--card-back enables duplex mode covering both decklist and custom-art fronts."""
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "backs.pdf"
@@ -336,9 +351,8 @@ def test_main_print_card_back_matches_decklist_plus_custom_art_count(tmp_path) -
     custom_dir.mkdir()
     custom_image = custom_dir / "extra.png"
     plt.imsave(custom_image, np.zeros((4, 4, 4), dtype=np.uint8))
-    fake_decklist = Mock()
-    fake_decklist.total_count = 2
-    fake_images = ["card1.png", "card2.png"]
+    fronts = ["card1.png", "card2.png"]
+    backs = [str(back_image), str(back_image)]
 
     with (
         patch(
@@ -350,17 +364,21 @@ def test_main_print_card_back_matches_decklist_plus_custom_art_count(tmp_path) -
                 "--card-back", str(back_image),
             ],
         ),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
-        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=fake_images),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=Mock()),
+        patch(
+            "mtg_proxies.cli.fetch_scans_paired",
+            return_value=(fronts, backs, [True, True], [True, True]),
+        ),
         patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
     ):
         main()
 
     print_cards_fpdf.assert_called_once()
     images = print_cards_fpdf.call_args.args[0]
-    # 2 decklist fronts + 1 custom art front + 3 backs = 6 total
-    backs = [p for p in images if p == str(back_image)]
-    assert len(backs) == 3
+    # 2 decklist fronts + 1 custom art = 3 fronts total → 1 sheet padded to 9 + 9 backs = 18.
+    assert len(images) == 18
+    assert images[0:3] == ["card1.png", "card2.png", str(custom_image)]
+    assert all(p == str(back_image) for p in images[3:])
 
 
 def test_main_print_card_back_missing_image_file_errors(tmp_path, capsys: pytest.CaptureFixture) -> None:
@@ -380,8 +398,65 @@ def test_main_print_card_back_missing_image_file_errors(tmp_path, capsys: pytest
     assert "card back image not found" in captured.out
 
 
-def test_main_print_card_back_without_fronts_requires_count(tmp_path, capsys: pytest.CaptureFixture) -> None:
-    """--card-back without any front images and without --card-back-count exits with a clear error."""
+def test_build_duplex_layout_mirrors_back_row_for_long_edge_flip() -> None:
+    """Front at reading-order position 0 must have its back at the mirrored back-sheet position
+    (cards_per_row - 1) — exactly the alignment a long-edge duplex flip requires.
+    """
+    from mtg_proxies.cli import _build_duplex_layout
+
+    fronts = ["F1", "F2", "F3"]
+    backs = ["B1", "B2", "B3"]
+    out = _build_duplex_layout(fronts, backs, filler="BACK", cards_per_row=3, rows_per_sheet=1)
+
+    # 3 fronts + 3 mirrored backs = 6 (single full sheet, no padding needed).
+    assert out == ["F1", "F2", "F3", "B3", "B2", "B1"]
+
+
+def test_build_duplex_layout_pads_partial_last_sheet_with_filler() -> None:
+    """Partial last sheets pad both sides with filler so mirror math stays correct."""
+    from mtg_proxies.cli import _build_duplex_layout
+
+    fronts = ["F1"]
+    backs = ["B1"]
+    out = _build_duplex_layout(fronts, backs, filler="BACK", cards_per_row=3, rows_per_sheet=1)
+
+    # Front row: [F1, BACK, BACK]; back row before mirror: [B1, BACK, BACK]; mirrored: [BACK, BACK, B1]
+    # → F1 at (0,0) on front; its back B1 at (2,0) on back. Duplex-flipped, B1 lands behind F1. ✓
+    assert out == ["F1", "BACK", "BACK", "BACK", "BACK", "B1"]
+
+
+def test_build_duplex_layout_mirrors_each_row_independently_on_multi_row_sheet() -> None:
+    """3×3 sheet: each of the 3 rows is mirrored independently for long-edge duplex flip."""
+    from mtg_proxies.cli import _build_duplex_layout
+
+    fronts = [f"F{i}" for i in range(9)]
+    backs = [f"B{i}" for i in range(9)]
+    out = _build_duplex_layout(fronts, backs, filler="BACK", cards_per_row=3, rows_per_sheet=3)
+
+    assert out[:9] == fronts
+    # Each row reversed: row0 [B0,B1,B2]→[B2,B1,B0], row1 [B3,B4,B5]→[B5,B4,B3], row2 [B6,B7,B8]→[B8,B7,B6]
+    assert out[9:] == ["B2", "B1", "B0", "B5", "B4", "B3", "B8", "B7", "B6"]
+
+
+def test_build_duplex_layout_routes_dfc_back_to_mirrored_position() -> None:
+    """DFC back face routed via the `backs` list lands at the mirrored position so it duplex-pairs
+    with its own front.
+    """
+    from mtg_proxies.cli import _build_duplex_layout
+
+    # Position 0: a DFC (Chalice of Life front, Chalice of Death back).
+    # Positions 1-2: single-faced cards with generic backs.
+    fronts = ["chalice-life", "lightning-bolt", "counterspell"]
+    backs = ["chalice-death", "GENERIC", "GENERIC"]
+    out = _build_duplex_layout(fronts, backs, filler="GENERIC", cards_per_row=3, rows_per_sheet=1)
+
+    # Chalice of Life is at front position (0,0). After mirror, its back should land at back
+    # position (2,0) — which is the last slot of the back row. That slot must be Chalice of Death.
+    assert out == ["chalice-life", "lightning-bolt", "counterspell", "GENERIC", "GENERIC", "chalice-death"]
+
+
+def test_main_print_card_back_duplex_mode_without_fronts_errors(tmp_path, capsys: pytest.CaptureFixture) -> None:
+    """--card-back in duplex mode needs at least one front (decklist or --custom-art) to pair backs with."""
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "backs.pdf"
@@ -395,7 +470,7 @@ def test_main_print_card_back_without_fronts_requires_count(tmp_path, capsys: py
         main()
 
     captured = capsys.readouterr()
-    assert "--card-back-count" in captured.out and "--card-back without --card-back-count" in captured.out
+    assert "requires a decklist or --custom-art" in captured.out
 
 def test_main_convert_no_preferred_set_flag_no_reordering(tmp_path) -> None:
     """Without --set, card order is preserved as-is."""
@@ -496,7 +571,7 @@ def test_main_convert_without_allow_low_res_uses_combined_section(tmp_path) -> N
 def test_main_convert_lowres_cards_moved_to_bottom(tmp_path) -> None:
     """Cards with highres_image=False are moved to the bottom with a comment."""
     from mtg_proxies.cli import main
-    from mtg_proxies.decklists.decklist import Card, Comment, Decklist
+    from mtg_proxies.decklists.decklist import Card, Decklist
 
     out_file = tmp_path / "out.txt"
 
@@ -724,6 +799,55 @@ def test_main_convert_basic_lands_invalid_spec_errors(tmp_path, capsys: pytest.C
     assert "Error: Invalid basic land spec 'mountain'. Expected NAME=COUNT." in captured.out
 
 
+def test_main_convert_basic_lands_accepts_explicit_out_flag(tmp_path) -> None:
+    """`-o PATH` is the recommended way to specify the output file for `convert --basic-lands`."""
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "lands.txt"
+    fake_decklist = Mock()
+    fake_decklist.entries = []
+
+    with (
+        patch(
+            "sys.argv",
+            ["mtg-proxies", "convert", "--basic-lands", "mountain=9", "-o", str(out_file)],
+        ),
+        patch("mtg_proxies.cli._generate_basic_lands_decklist", return_value=fake_decklist) as generate_basic_lands,
+    ):
+        main()
+
+    generate_basic_lands.assert_called_once_with(["mountain=9"], art_preference="standard")
+    fake_decklist.save.assert_called_once_with(out_file, fmt="arena")
+
+
+def test_main_convert_out_flag_overrides_positional(tmp_path) -> None:
+    """When both `-o PATH` and positional outfile are given, `-o` wins."""
+    from mtg_proxies.cli import main
+
+    positional_out = tmp_path / "positional.txt"
+    explicit_out = tmp_path / "explicit.txt"
+    fake_decklist = Mock()
+    fake_decklist.entries = []
+
+    with (
+        patch(
+            "sys.argv",
+            [
+                "mtg-proxies",
+                "convert",
+                "deck.txt",
+                str(positional_out),
+                "-o",
+                str(explicit_out),
+            ],
+        ),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
+    ):
+        main()
+
+    fake_decklist.save.assert_called_once_with(explicit_out, fmt="arena")
+
+
 def test_main_convert_basic_lands_requires_output_file(capsys: pytest.CaptureFixture) -> None:
     from mtg_proxies.cli import main
 
@@ -744,7 +868,7 @@ def test_generate_basic_lands_decklist_prefers_unique_art_before_repeats() -> No
     second = {"id": "m2", "name": "Mountain", "set": "b", "collector_number": "2", "type_line": "Basic Land — Mountain"}
 
     with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[first, second]):
-        decklist = _generate_basic_lands_decklist(["mountain=3"], rng=np.random.default_rng(0))
+        decklist = _generate_basic_lands_decklist(["mountain=3"], rng=random.Random(0))
 
     ids = [entry.card["id"] for entry in decklist.cards]
     assert len(ids) == 3

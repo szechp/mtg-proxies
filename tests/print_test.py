@@ -2,12 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
-from matplotlib.pylab import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from mtg_proxies.decklists import Decklist
 
 
 @pytest.mark.parametrize("border_crop", [0, 14])
@@ -40,7 +37,6 @@ def test_print_cards_matplotlib_negative_border_crop_does_not_slice_from_end(
 ) -> None:
     """With border_crop < 0, all cards must receive the full unsliced image, not a negative-index slice."""
     import matplotlib
-    import matplotlib.pyplot as plt
 
     matplotlib.use("Agg")
 
@@ -105,13 +101,21 @@ def test_print_cards_fpdf_negative_border_crop_does_not_slice_from_end(
         assert shape[1] == 745, f"Intermediate crop {i}: expected 745 cols, got {shape[1]}"
 
 
-@pytest.fixture(scope="module")
-def example_images(example_decklist: Decklist) -> list[str]:
-    from mtg_proxies import fetch_scans_scryfall
+@pytest.fixture
+def example_images(tmp_path_factory: pytest.TempPathFactory) -> list[str]:
+    """Seven synthetic 745×1040 RGB PNGs — same count and dimensions as the prior live-Scryfall fixture.
 
-    example_images = fetch_scans_scryfall(example_decklist)
-    assert len(example_images) == 7
-    return example_images
+    Local generation keeps the print-renderer tests hermetic; the renderer doesn't care about pixel
+    content. Tests that actually exercise Scryfall fetching live in scans_test.py and decklist_test.py.
+    """
+    out_dir = tmp_path_factory.mktemp("example_images")
+    paths: list[str] = []
+    for i in range(7):
+        img = np.full((1040, 745, 3), fill_value=(i * 30) % 256, dtype=np.uint8)
+        path = out_dir / f"card_{i}.png"
+        plt.imsave(path, img)
+        paths.append(str(path))
+    return paths
 
 
 def test_print_cards_fpdf(example_images: list[str], tmp_path: Path) -> None:
@@ -129,12 +133,14 @@ def test_print_cards_fpdf_split_pages(example_images: list[str], tmp_path: Path)
     from mtg_proxies import print_cards_fpdf
 
     out_file = tmp_path / "decklist.pdf"
-    images = example_images * 6
+    images = example_images * 6  # 7 * 6 = 42 cards, A4 fits 9 per sheet → 5 files at split_pages=1
     print_cards_fpdf(images, out_file, split_pages=1)
 
     assert not out_file.exists()
-    assert (tmp_path / "decklist_1.pdf").is_file()
-    assert (tmp_path / "decklist_2.pdf").is_file()
+    produced = sorted(tmp_path.glob("decklist_*.pdf"))
+    assert [p.name for p in produced] == [f"decklist_{i}.pdf" for i in range(1, 6)]
+    for path in produced:
+        assert path.stat().st_size > 0, f"{path.name} is empty"
 
 
 def test_print_cards_matplotlib_pdf(example_images: list[str], tmp_path: Path) -> None:

@@ -137,8 +137,14 @@ def parse_decklist(
         ok: whether all cards could be found
         warnings: List of warnings and error encountered during parsing
     """
-    with open(filepath, encoding="utf-8") as f:
-        decklist, ok, warnings = parse_decklist_stream(f, art_preference=art_preference, preferred_sets=preferred_sets, allow_low_res=allow_low_res)
+    # utf-8-sig strips a leading BOM (Notepad/Excel saves UTF-8 files with one).
+    with open(filepath, encoding="utf-8-sig") as f:
+        decklist, ok, warnings = parse_decklist_stream(
+            f,
+            art_preference=art_preference,
+            preferred_sets=preferred_sets,
+            allow_low_res=allow_low_res,
+        )
 
     # Use file name without extension as name
     decklist.name = Path(filepath).stem
@@ -166,7 +172,12 @@ def parse_decklist_stream(
             decklist.append_comment(line.rstrip())
             continue
 
-        stripped = re.sub(r"\s+\*[A-Za-z]+\*\s*$", "", stripped)  # Strip foil markers e.g. *F*, *E*
+        # Strip trailing foil markers e.g. `*F*`, `*E*`. Loop to handle stacked markers like `*F* *E*`.
+        while True:
+            new_stripped = re.sub(r"\s+\*[A-Za-z]+\*\s*$", "", stripped)
+            if new_stripped == stripped:
+                break
+            stripped = new_stripped
         m = re.search(r"(?:([0-9]{1,3})x?\s+)?(.+?)(?:\s+\((\S*)\)\s+(\S+))?\s*$", stripped)
         if m and m.group(2) and m.group(2).strip():
             # Extract relevant data

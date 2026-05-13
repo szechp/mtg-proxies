@@ -26,7 +26,7 @@ def parse_decklist(
     warnings = []
     ok = True
 
-    r = requests.get(f"https://manastack.com/api/decklist?format=json&id={manastack_id}")
+    r = requests.get(f"https://manastack.com/api/decklist?format=json&id={manastack_id}", timeout=30)
     if r.status_code != 200:
         raise ValueError(f"Manastack returned statuscode {r.status_code}")
 
