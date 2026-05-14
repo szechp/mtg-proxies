@@ -50,8 +50,30 @@ def print_cards_matplotlib(
     N = np.floor(papersize / cardsize).astype(int)
     if N[0] == 0 or N[1] == 0:
         raise ValueError(f"Paper size too small: {papersize}")
+    cards_per_sheet = int(np.prod(N))
     grid_size = _occupied_space(cardsize, N, border_crop, closed=True)
     offset = (papersize - grid_size) / 2
+
+    def background_rects(n_on_sheet: int) -> list[tuple[float, float, float, float]]:
+        """Rectangles covering the slots that hold actual cards on this sheet (L-shape if partial)."""
+        if n_on_sheet <= 0:
+            return []
+        full_rows = n_on_sheet // N[0]
+        partial_row_cards = n_on_sheet % N[0]
+        rects: list[tuple[float, float, float, float]] = []
+        if full_rows > 0:
+            size = _occupied_space(cardsize, np.array([N[0], full_rows]), border_crop, closed=True)
+            rects.append((float(offset[0]), float(offset[1]), float(size[0]), float(size[1])))
+        if partial_row_cards > 0:
+            top = offset[1] + _occupied_space(cardsize, np.array([0, full_rows]), border_crop)[1]
+            bottom = offset[1] + _occupied_space(
+                cardsize, np.array([0, full_rows + 1]), border_crop, closed=True
+            )[1]
+            right = offset[0] + _occupied_space(
+                cardsize, np.array([partial_row_cards, 1]), border_crop, closed=True
+            )[0]
+            rects.append((float(offset[0]), float(top), float(right - offset[0]), float(bottom - top)))
+        return rects
 
     # Ensure directory exists
     filepath = Path(filepath)
@@ -65,19 +87,24 @@ def print_cards_matplotlib(
         while idx < len(images):  # Loop over pages
             fig = plt.figure(figsize=papersize)
             ax = fig.add_axes((0, 0, 1, 1))  # ax covers the whole figure
-            # Background fills only the card grid, leaving page margins white.
+            # Background fills only the slots that hold cards on this sheet, leaving page margins
+            # (and any unused slots on a partial last sheet) white.
             if background_color is not None:
-                bg_lower = offset / papersize
-                bg_size = grid_size / papersize
-                plt.gca().add_patch(
-                    Rectangle(
-                        (bg_lower[0], 1 - bg_lower[1] - bg_size[1]),
-                        bg_size[0],
-                        bg_size[1],
-                        color=background_color,
-                        zorder=-1000,
+                n_on_sheet = min(cards_per_sheet, len(images) - idx)
+                for rx, ry, rw, rh in background_rects(n_on_sheet):
+                    nx = rx / papersize[0]
+                    ny = ry / papersize[1]
+                    nw = rw / papersize[0]
+                    nh = rh / papersize[1]
+                    plt.gca().add_patch(
+                        Rectangle(
+                            (nx, 1 - ny - nh),
+                            nw,
+                            nh,
+                            color=background_color,
+                            zorder=-1000,
+                        )
                     )
-                )
 
             for y in range(N[1]):
                 for x in range(N[0]):
@@ -159,6 +186,27 @@ def print_cards_fpdf(
     grid_size = _occupied_space(cardsize, N, border_crop, closed=True)
     offset = (papersize - grid_size) / 2
 
+    def background_rects(n_on_sheet: int) -> list[tuple[float, float, float, float]]:
+        """Rectangles covering the slots that hold actual cards on this sheet (L-shape if partial)."""
+        if n_on_sheet <= 0:
+            return []
+        full_rows = n_on_sheet // N[0]
+        partial_row_cards = n_on_sheet % N[0]
+        rects: list[tuple[float, float, float, float]] = []
+        if full_rows > 0:
+            size = _occupied_space(cardsize, np.array([N[0], full_rows]), border_crop, closed=True)
+            rects.append((float(offset[0]), float(offset[1]), float(size[0]), float(size[1])))
+        if partial_row_cards > 0:
+            top = offset[1] + _occupied_space(cardsize, np.array([0, full_rows]), border_crop)[1]
+            bottom = offset[1] + _occupied_space(
+                cardsize, np.array([0, full_rows + 1]), border_crop, closed=True
+            )[1]
+            right = offset[0] + _occupied_space(
+                cardsize, np.array([partial_row_cards, 1]), border_crop, closed=True
+            )[0]
+            rects.append((float(offset[0]), float(top), float(right - offset[0]), float(bottom - top)))
+        return rects
+
     # Ensure directory exists
     filepath = Path(filepath)
     filepath.parent.mkdir(parents=True, exist_ok=True)
@@ -184,8 +232,10 @@ def print_cards_fpdf(
         if i % cards_per_sheet == 0:  # Startign a new sheet
             pdf.add_page()
             if background_color is not None:
+                n_on_sheet = min(cards_per_sheet, len(images) - i)
                 pdf.set_fill_color(*background_color)
-                pdf.rect(offset[0], offset[1], grid_size[0], grid_size[1], "F")
+                for rx, ry, rw, rh in background_rects(n_on_sheet):
+                    pdf.rect(rx, ry, rw, rh, "F")
 
         x = (i % cards_per_sheet) % N[0]
         y = (i % cards_per_sheet) // N[0]

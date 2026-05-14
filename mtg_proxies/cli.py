@@ -483,6 +483,23 @@ def main() -> None:
         help="path to a local .pth upscaling model (default: RealESRGAN anime_6B); implies --upscale",
     )
     print_parser.add_argument(
+        "--normalize",
+        action="store_true",
+        default=False,
+        help=(
+            "match every card's color/contrast histogram to a reference (highest-variance card in"
+            " the batch by default, or --normalize-reference PATH). Reduces visible exposure"
+            " differences between scans of varying quality. Cached as {path}_norm.png."
+        ),
+    )
+    print_parser.add_argument(
+        "--normalize-reference",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="explicit reference image for --normalize (defaults to auto-pick); implies --normalize",
+    )
+    print_parser.add_argument(
         "--card-back",
         type=str,
         default=None,
@@ -695,6 +712,11 @@ def main() -> None:
             if not images:
                 print("Error: must provide either a decklist, --custom-art folder, or --card-back PATH")
                 raise SystemExit(1)
+
+            if args.normalize or args.normalize_reference:
+                from mtg_proxies.normalize import normalize_images
+
+                images = normalize_images(images, reference_path=args.normalize_reference)
 
             try:
                 if args.outfile.lower().endswith(".pdf"):
