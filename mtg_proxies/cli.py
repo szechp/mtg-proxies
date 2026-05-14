@@ -422,7 +422,11 @@ def main() -> None:
     )
     print_parser.add_argument(
         "--background",
-        help='background color, either by name or by hex code (e.g. black or "#ff0000", default: %(default)s)',
+        help=(
+            "color filled behind the card grid (not the whole page) — covers the diamond gaps"
+            ' between rounded card corners. Name or hex code (e.g. black or "#ff0000",'
+            " default: %(default)s)"
+        ),
         type=str,
         default=None,
         metavar="COLOR",

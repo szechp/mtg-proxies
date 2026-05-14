@@ -38,7 +38,9 @@ def print_cards_matplotlib(
         border_crop: How many pixel to crop from the border of each card.
         interpolation: Interpolation method for resizing images.
         dpi: Dots per inch for the output PDF.
-        background_color: Background color of the PDF as name or hex code.
+        background_color: Color filled behind the card grid (not the whole page) as name or hex
+            code. Covers the small diamond gaps where rounded card corners meet without flooding
+            the page margins with ink.
     """
     border_crop = int(border_crop)
     if border_crop > min(image_size) // 2:
@@ -48,7 +50,8 @@ def print_cards_matplotlib(
     N = np.floor(papersize / cardsize).astype(int)
     if N[0] == 0 or N[1] == 0:
         raise ValueError(f"Paper size too small: {papersize}")
-    offset = (papersize - _occupied_space(cardsize, N, border_crop, closed=True)) / 2
+    grid_size = _occupied_space(cardsize, N, border_crop, closed=True)
+    offset = (papersize - grid_size) / 2
 
     # Ensure directory exists
     filepath = Path(filepath)
@@ -62,9 +65,19 @@ def print_cards_matplotlib(
         while idx < len(images):  # Loop over pages
             fig = plt.figure(figsize=papersize)
             ax = fig.add_axes((0, 0, 1, 1))  # ax covers the whole figure
-            #  Background
+            # Background fills only the card grid, leaving page margins white.
             if background_color is not None:
-                plt.gca().add_patch(Rectangle((0, 0), 1, 1, color=background_color, zorder=-1000))
+                bg_lower = offset / papersize
+                bg_size = grid_size / papersize
+                plt.gca().add_patch(
+                    Rectangle(
+                        (bg_lower[0], 1 - bg_lower[1] - bg_size[1]),
+                        bg_size[0],
+                        bg_size[1],
+                        color=background_color,
+                        zorder=-1000,
+                    )
+                )
 
             for y in range(N[1]):
                 for x in range(N[0]):
@@ -123,7 +136,9 @@ def print_cards_fpdf(
         papersize: Size of the paper in inches. Defaults to A4.
         cardsize: Size of a card in inches.
         border_crop: How many pixel to crop from the border of each card.
-        background_color: Background color of the PDF as an RGB tuple.
+        background_color: Color filled behind the card grid (not the whole page) as an RGB tuple.
+            Covers the small diamond gaps where rounded card corners meet without flooding the page
+            margins with ink.
         cropmarks: Whether to add crop marks to the PDF.
         split_pages: If set, write a new PDF every N pages with `_<n>` suffix added to the filename.
     """
@@ -141,7 +156,8 @@ def print_cards_fpdf(
         raise ValueError(f"Paper size too small: {papersize}")
     cards_per_sheet = np.prod(N)
     cards_per_file = None if split_pages is None else cards_per_sheet * split_pages
-    offset = (papersize - _occupied_space(cardsize, N, border_crop, closed=True)) / 2
+    grid_size = _occupied_space(cardsize, N, border_crop, closed=True)
+    offset = (papersize - grid_size) / 2
 
     # Ensure directory exists
     filepath = Path(filepath)
@@ -169,7 +185,7 @@ def print_cards_fpdf(
             pdf.add_page()
             if background_color is not None:
                 pdf.set_fill_color(*background_color)
-                pdf.rect(0, 0, papersize[0], papersize[1], "F")
+                pdf.rect(offset[0], offset[1], grid_size[0], grid_size[1], "F")
 
         x = (i % cards_per_sheet) % N[0]
         y = (i % cards_per_sheet) // N[0]
