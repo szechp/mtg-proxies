@@ -99,7 +99,7 @@ def test_parsing(data_dir: Path) -> None:
         ),
         (  # Token without set and collector number
             "1 Saproling",
-            "1 Saproling (TCMR) 22",
+            "1 Saproling (TDOM) 12",
             [
                 "WARNING: Tokens are not unique by name. Assuming 'Saproling' is a '1/1 green Token Creature — Saproling'."  # noqa: E501
             ],

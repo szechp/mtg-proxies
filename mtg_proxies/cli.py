@@ -729,6 +729,8 @@ def main() -> None:
             # backward compat with `convert deck.txt out.txt` and `convert --basic-lands mountain=9 out.txt`).
             outfile = args.out if args.out is not None else args.outfile
             basic_land_specs = args.basic_lands
+            # Track whether the positional decklist arg was consumed by a legacy outfile shift.
+            input_decklist_spec = args.decklist
             if basic_land_specs and outfile is None:
                 if args.decklist is not None:
                     # Refuse to overwrite an existing decklist file with --basic-lands output.
@@ -739,6 +741,7 @@ def main() -> None:
                         )
                         raise SystemExit(1)
                     outfile = Path(args.decklist)
+                    input_decklist_spec = None
                 if len(basic_land_specs) > 1 and "=" not in basic_land_specs[-1]:
                     candidate = basic_land_specs[-1]
                     # Catch typos like `--basic-lands mountain=9 forest` (forgot `=COUNT` on the last spec).
@@ -755,10 +758,37 @@ def main() -> None:
                     print("Error: must provide an output file for convert")
                     raise SystemExit(1)
                 try:
-                    decklist = _generate_basic_lands_decklist(basic_land_specs, art_preference=args.art_preference)
+                    basics_decklist = _generate_basic_lands_decklist(
+                        basic_land_specs, art_preference=args.art_preference
+                    )
                 except ValueError as exc:
                     print(f"Error: {exc}")
                     raise SystemExit(1) from exc
+
+                # When an input decklist is also provided, parse it and append the basics.
+                if input_decklist_spec is not None:
+                    if args.art_preference == "premium":
+                        print(
+                            "Error: --art-preference premium is only supported with --basic-lands"
+                            " without an input decklist"
+                        )
+                        raise SystemExit(1)
+                    allow_low_res = getattr(args, "allow_low_res", False)
+                    decklist = parse_decklist_spec(
+                        input_decklist_spec,
+                        warn_levels=["ERROR", "WARNING", "COSMETIC"],
+                        art_preference=args.art_preference,
+                        preferred_sets=args.set or None,
+                        allow_low_res=allow_low_res,
+                    )
+                    if decklist.entries and not (
+                        isinstance(decklist.entries[-1], Comment) and not decklist.entries[-1].text.strip()
+                    ):
+                        decklist.entries.append(Comment(""))
+                    decklist.entries.append(Comment("# Basic lands"))
+                    decklist.entries.extend(basics_decklist.entries)
+                else:
+                    decklist = basics_decklist
             else:
                 decklist_spec = args.decklist
                 if args.art_preference == "premium":

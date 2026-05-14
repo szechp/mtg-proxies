@@ -254,6 +254,8 @@ def _standard_art_penalty(card: dict, preferred_sets: list[str] | None = None) -
     # lowres standard print from a preferred set scores higher than a highres borderless one.
     if {"extendedart", "showcase", "shatteredglass", "upside_down", "inverted", "borderless"} & frame_effects:
         penalty += 32
+    if card.get("full_art") or "fullart" in frame_effects or {"fullart", "full_art"} & promo_types:
+        penalty += 32
     if card.get("artist") == "Canata Katana" and card.get("set") == "j22":
         penalty += 128
 

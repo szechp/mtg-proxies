@@ -664,7 +664,57 @@ def test_main_convert_forwards_art_preference(tmp_path) -> None:
     fake_decklist.save.assert_called_once_with(out_file, fmt="arena")
 
 
-def test_main_convert_basic_lands_uses_generator_and_skips_parsing(tmp_path) -> None:
+def test_main_convert_basic_lands_appends_to_input_decklist(tmp_path) -> None:
+    from mtg_proxies.cli import main
+    from mtg_proxies.decklists.decklist import Card, Comment, Decklist
+
+    out_file = tmp_path / "lands.txt"
+    input_card = Card(count=1, card={"name": "Lightning Bolt", "set": "lea", "collector_number": "161"})
+    input_decklist = Decklist()
+    input_decklist.entries = [input_card]
+    basics_decklist = Decklist()
+    basics_decklist.entries = [
+        Card(count=1, card={"name": "Mountain", "set": "scd", "collector_number": "346"}),
+    ]
+
+    saved: dict = {}
+
+    def fake_save(path, fmt):  # noqa: ANN001
+        saved["path"] = path
+        saved["fmt"] = fmt
+        saved["entries"] = list(input_decklist.entries)
+
+    with (
+        patch(
+            "sys.argv",
+            [
+                "mtg-proxies",
+                "convert",
+                "input.txt",
+                str(out_file),
+                "--basic-lands",
+                "mountain=9",
+                "forest=7",
+                "--art-preference",
+                "wild",
+            ],
+        ),
+        patch("mtg_proxies.cli._generate_basic_lands_decklist", return_value=basics_decklist) as generate_basic_lands,
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=input_decklist) as parse_decklist_spec,
+        patch.object(Decklist, "save", autospec=True, side_effect=lambda self, path, fmt: fake_save(path, fmt)),
+    ):
+        main()
+
+    generate_basic_lands.assert_called_once_with(["mountain=9", "forest=7"], art_preference="wild")
+    parse_decklist_spec.assert_called_once()
+    # Input card preserved, basics appended after a "# Basic lands" comment.
+    assert saved["path"] == out_file
+    assert saved["entries"][0] is input_card
+    assert any(isinstance(e, Comment) and e.text == "# Basic lands" for e in saved["entries"])
+    assert saved["entries"][-1].card["name"] == "Mountain"
+
+
+def test_main_convert_basic_lands_only_skips_parsing(tmp_path) -> None:
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "lands.txt"
@@ -677,13 +727,13 @@ def test_main_convert_basic_lands_uses_generator_and_skips_parsing(tmp_path) -> 
             [
                 "mtg-proxies",
                 "convert",
-                "ignored.txt",
-                str(out_file),
                 "--basic-lands",
                 "mountain=9",
                 "forest=7",
                 "--art-preference",
                 "wild",
+                "-o",
+                str(out_file),
             ],
         ),
         patch("mtg_proxies.cli._generate_basic_lands_decklist", return_value=fake_decklist) as generate_basic_lands,

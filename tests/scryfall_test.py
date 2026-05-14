@@ -121,6 +121,31 @@ def test_recommend_print_falls_back_to_highres_when_standard_is_lowres(name: str
     assert not card.get("digital")
 
 
+@pytest.mark.parametrize("name", ["Mountain", "Forest", "Plains", "Island", "Swamp"])
+def test_recommend_print_standard_avoids_full_art_basics(name: str) -> None:
+    from mtg_proxies import scryfall
+
+    card = scryfall.recommend_print(card_name=name, art_preference="standard")
+
+    assert not card.get("full_art"), (
+        f"Standard mode picked full-art {name}: {card['set'].upper()} {card['collector_number']}"
+    )
+
+
+def test_recommend_print_standard_full_art_loses_to_plain_basic(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mtg_proxies.scryfall import scryfall
+
+    full_art = _test_card("blb-full-art", highres_image=True, set_code="blb", collector_number="280")
+    full_art["full_art"] = True
+    plain = _test_card("blb-plain", highres_image=True, set_code="blb", collector_number="377")
+
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [full_art, plain])
+
+    card = scryfall.recommend_print(card_name="Forest", art_preference="standard")
+
+    assert card["id"] == "blb-plain"
+
+
 @pytest.mark.parametrize(
     ("name", "forbidden_sets", "forbidden_promo_types"),
     [
