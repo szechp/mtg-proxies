@@ -1,5 +1,6 @@
 import argparse
 import random
+import re
 import tempfile
 from collections.abc import Container
 from pathlib import Path
@@ -134,12 +135,22 @@ def papersize(string: str) -> np.ndarray:
     raise argparse.ArgumentTypeError()
 
 
+_PIPELINE_CACHE_SUFFIX_RE = re.compile(
+    r"(_norm(_cp[\d.eE+-]+)?|_shadow(_a[\d.eE+-]+)?|_bg\d{9})$"
+)
+
+
 def _normalize_custom_art_images(
     custom_folder: Path, bleed_crop_percent: float = 0.0, output_dir: Path | None = None
 ) -> list[str]:
+    # Pipeline stages (normalize/shadow_lift/composite) write derivative caches alongside
+    # their source. Re-running with --custom-art pointing at a folder that already contains
+    # those artifacts would otherwise ingest them as new cards.
     images = sorted(
-        p for p in custom_folder.iterdir() 
-        if p.is_file() and p.suffix.lower() in (".png", ".jpg", ".jpeg")
+        p for p in custom_folder.iterdir()
+        if p.is_file()
+        and p.suffix.lower() in (".png", ".jpg", ".jpeg")
+        and not _PIPELINE_CACHE_SUFFIX_RE.search(p.stem)
     )
     if bleed_crop_percent <= 0:
         return [str(path) for path in images]
@@ -156,7 +167,9 @@ def _normalize_custom_art_images(
         if crop_x * 2 >= width or crop_y * 2 >= height:
             raise ValueError(f"Custom art bleed crop too large for '{image_path}'")
         cropped = image[crop_y : height - crop_y, crop_x : width - crop_x]
-        normalized_image_path = output_dir / image_path.name
+        # Always write PNG so a .jpg input doesn't get a lossy re-encode through plt.imsave's
+        # default JPEG quality.
+        normalized_image_path = output_dir / f"{image_path.stem}.png"
         plt.imsave(normalized_image_path, cropped)
         normalized_images.append(str(normalized_image_path))
 
@@ -750,7 +763,7 @@ def main() -> None:
                 from mtg_proxies.composite import composite_against_bg
 
                 bg_rgb = tuple((np.array(colors.to_rgb(args.background)) * 255).astype(int))
-                images = composite_against_bg(images, bg_color=bg_rgb)
+                images = composite_against_bg(images, bg_color=bg_rgb, skip_paths=user_supplied)
 
             try:
                 if args.outfile.lower().endswith(".pdf"):

@@ -131,6 +131,46 @@ def test_main_print_custom_art_appends_supported_image_extensions(tmp_path) -> N
     assert print_cards_fpdf.call_args.args[0] == sorted([str(png_a), str(png_b), str(jpg_c)])
 
 
+def test_main_print_custom_art_excludes_pipeline_cache_artifacts(tmp_path) -> None:
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "custom.pdf"
+    custom_dir = tmp_path / "art"
+    custom_dir.mkdir()
+    real = custom_dir / "card.png"
+    norm_artifact = custom_dir / "card_norm_cp0.5.png"
+    shadow_artifact = custom_dir / "card_shadow_a0.3.png"
+    bg_artifact = custom_dir / "card_bg000000000.png"
+    legacy_norm = custom_dir / "card_norm.png"
+    legacy_shadow = custom_dir / "card_shadow.png"
+    for path in (real, norm_artifact, shadow_artifact, bg_artifact, legacy_norm, legacy_shadow):
+        plt.imsave(path, np.zeros((4, 4, 4), dtype=np.uint8))
+
+    with (
+        patch(
+            "sys.argv",
+            [
+                "mtg-proxies",
+                "print",
+                "--custom-art",
+                str(custom_dir),
+                "--custom-art-bleed-crop",
+                "0",
+                str(out_file),
+            ],
+        ),
+        patch("mtg_proxies.cli.parse_decklist_spec") as parse_decklist_spec,
+        patch("mtg_proxies.cli.fetch_scans_scryfall") as fetch_scans_scryfall,
+        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+    ):
+        main()
+
+    parse_decklist_spec.assert_not_called()
+    fetch_scans_scryfall.assert_not_called()
+    print_cards_fpdf.assert_called_once()
+    assert print_cards_fpdf.call_args.args[0] == [str(real)]
+
+
 def test_main_print_custom_art_extends_decklist_images(tmp_path) -> None:
     from mtg_proxies.cli import main
 

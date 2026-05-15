@@ -41,31 +41,48 @@ def _border_black(image: np.ndarray) -> np.ndarray | None:
         if opaque.size == 0:
             continue
         m = opaque[..., :3].mean(axis=0)
-        # Sanity gate: real borders measured below 30 across many scans; > 50 means this edge is
-        # part of the illustration (or art bleeds into the border).
-        if float(m.max()) <= 50.0:
+        # Strict "near black" gate: real card borders are very dark. A dark-but-chromatic edge
+        # (e.g. a dark blue sky on a borderless full-art card) must not be mistaken for a black
+        # border anchor. Accept only when the brightest channel is low AND either the channel
+        # range is small (Bomat-style elevated near-neutral) OR the darkest channel is near zero
+        # (tinted-but-zeroed borders — _auto_levels percentile fallback handles those too).
+        m_max = float(m.max())
+        m_min = float(m.min())
+        if m_max <= 35.0 and (m_max - m_min <= 10.0 or m_min <= 5.0):
             means.append(m)
     if not means:
         return None
     return np.mean(means, axis=0)
 
 
-def _desaturate_darks(image: np.ndarray, full_below: float = 20.0, none_above: float = 40.0) -> np.ndarray:
-    """Pull chromatic darks toward true neutral black.
+def _desaturate_darks(
+    image: np.ndarray,
+    full_below: float = 20.0,
+    none_above: float = 40.0,
+    chroma_full_below: float = 6.0,
+    chroma_none_above: float = 18.0,
+) -> np.ndarray:
+    """Pull *near-neutral* dark pixels toward true neutral black.
 
-    Some scans render the card's "black" with a strong cast — Forest (J25) 95 has a border at
-    RGB (0, 21, 34), nearly pure blue. Per-channel auto-levels neutralizes the absolute floor
-    per channel, but it does nothing about chromatic dark *art* pixels (and the safe-lo cap
-    that prevents deep-dark clipping means the border itself isn't fully driven to (0,0,0)
-    on cards like Forest J25). This pass replaces chromatic darks with their luminance so
-    every dark pixel ends up neutral. Bright pixels (lum >= ``none_above``) are untouched.
+    Some scans render the card's "black" with a mild cast — a near-grey shadow that ends up
+    slightly green or blue from scanner white-balance drift. This pass replaces such pixels
+    with their luminance so the cast is neutralized. **Saturated dark art is preserved**: a
+    dark blue ocean or a Phyrexian deep red sits at low luminance but with strong chroma, so
+    the chroma gate keeps them untouched. The border anchor in ``_auto_levels`` handles the
+    truly tinted (high-chroma low-lum) border case already.
 
-    Alpha is preserved untouched. True black (lum=0) implies RGB=(0,0,0) already, so it stays.
+    The blend weight is the product of two soft masks: luminance (full strength below
+    ``full_below``, zero above ``none_above``) and chroma (full strength below
+    ``chroma_full_below``, zero above ``chroma_none_above``). Alpha is preserved untouched.
     """
     rgb = image[..., :3].astype(np.float32)
     lum = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
-    span = max(none_above - full_below, 1e-3)
-    blend = np.clip((none_above - lum) / span, 0.0, 1.0)[..., None]
+    chroma = rgb.max(axis=-1) - rgb.min(axis=-1)
+    lum_span = max(none_above - full_below, 1e-3)
+    chroma_span = max(chroma_none_above - chroma_full_below, 1e-3)
+    lum_w = np.clip((none_above - lum) / lum_span, 0.0, 1.0)
+    chroma_w = np.clip((chroma_none_above - chroma) / chroma_span, 0.0, 1.0)
+    blend = (lum_w * chroma_w)[..., None]
     new_rgb = rgb * (1.0 - blend) + lum[..., None] * blend
     out = image.copy()
     out[..., :3] = np.clip(new_rgb, 0, 255).astype(np.uint8)
@@ -93,8 +110,14 @@ def _auto_levels(image: np.ndarray, clip_percent: float = 0.5) -> np.ndarray:
         # base black level is consistent across the batch. Pixels darker than the border in
         # any channel get clipped — those become true black, which you've explicitly opted into
         # ("0 should stay 0"). Chromatic clipping artifacts are neutralized by _desaturate_darks.
-        lo = float(border_lo[c]) if border_lo is not None else float(np.percentile(sample, clip_percent))
         hi = float(np.percentile(sample, 100.0 - clip_percent))
+        # Fall back to percentile lo if the border anchor exceeds hi (very dark card whose art
+        # max sits below the border mean) — otherwise this channel would be silently skipped
+        # while the other two get stretched, producing a chromatic shift.
+        if border_lo is not None and float(border_lo[c]) < hi:
+            lo = float(border_lo[c])
+        else:
+            lo = float(np.percentile(sample, clip_percent))
         if hi <= lo:
             continue
         scaled = (plane.astype(np.float32) - lo) * (255.0 / (hi - lo))
@@ -111,7 +134,7 @@ def normalize_images(
 
     Each card is normalized independently — no reference, no cross-card forcing. Reduces
     washed-out / over-saturated scans without making the batch look uniform. Cached as
-    ``{path}_norm.png``.
+    ``{path}_norm_cp{clip_percent}.png`` so changing the parameter invalidates the cache.
 
     Args:
         paths: Image paths to normalize.
@@ -126,9 +149,9 @@ def normalize_images(
     """
     if not paths:
         return []
-    skip = {str(p) for p in (skip_paths or ())}
+    skip = {str(Path(p).resolve()) for p in (skip_paths or ())}
     out_paths: list[str] = [str(p) for p in paths]
-    to_process = [(i, p) for i, p in enumerate(paths) if str(p) not in skip]
+    to_process = [(i, p) for i, p in enumerate(paths) if str(Path(p).resolve()) not in skip]
     seen: dict[str, str] = {}
     for i, path in tqdm(to_process, desc="Normalizing"):
         key = str(path)
@@ -136,12 +159,16 @@ def normalize_images(
             out_paths[i] = seen[key]
             continue
         src_path = Path(path)
-        out_path = src_path.with_name(f"{src_path.stem}_norm.png")
+        out_path = src_path.with_name(f"{src_path.stem}_norm_cp{clip_percent:g}.png")
         if not out_path.is_file():
             source = _load_rgba(src_path)
             normalized = _desaturate_darks(_auto_levels(source, clip_percent=clip_percent))
             mode = "RGBA" if normalized.shape[2] == 4 else "RGB"
-            Image.fromarray(normalized, mode=mode).save(out_path)
+            # Atomic write so a SIGKILL mid-save can't poison the cache with a half-written PNG.
+            # PIL infers format from the destination extension, so we pass format= explicitly.
+            tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+            Image.fromarray(normalized, mode=mode).save(tmp_path, format="PNG")
+            tmp_path.replace(out_path)
         seen[key] = str(out_path)
         out_paths[i] = str(out_path)
     return out_paths

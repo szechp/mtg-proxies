@@ -145,7 +145,8 @@ def lift_shadows_images(
     """Apply selective shadow lift to cards that have flat-black detail in their art region.
 
     Cards without significant dark-and-detailed art are returned unchanged (no cache write,
-    original path returned). Lifted versions are cached as ``{path}_shadow.png``.
+    original path returned). Lifted versions are cached as ``{path}_shadow_a{amount}.png`` so
+    changing the parameter invalidates the cache.
 
     Args:
         paths: Image paths to process.
@@ -160,9 +161,9 @@ def lift_shadows_images(
     """
     if not paths:
         return []
-    skip = {str(p) for p in (skip_paths or ())}
+    skip = {str(Path(p).resolve()) for p in (skip_paths or ())}
     out_paths: list[str] = [str(p) for p in paths]
-    to_process = [(i, p) for i, p in enumerate(paths) if str(p) not in skip]
+    to_process = [(i, p) for i, p in enumerate(paths) if str(Path(p).resolve()) not in skip]
     seen: dict[str, str] = {}
     for i, path in tqdm(to_process, desc="Lifting shadows"):
         key = str(path)
@@ -170,7 +171,7 @@ def lift_shadows_images(
             out_paths[i] = seen[key]
             continue
         src_path = Path(path)
-        out_path = src_path.with_name(f"{src_path.stem}_shadow.png")
+        out_path = src_path.with_name(f"{src_path.stem}_shadow_a{amount:g}.png")
         if out_path.is_file():
             seen[key] = str(out_path)
             out_paths[i] = str(out_path)
@@ -182,7 +183,11 @@ def lift_shadows_images(
             continue
         lifted = _lift_shadows(image, amount=amount)
         mode = "RGBA" if lifted.shape[2] == 4 else "RGB"
-        Image.fromarray(lifted, mode=mode).save(out_path)
+        # Atomic write so a SIGKILL mid-save can't poison the cache with a half-written PNG.
+        # PIL infers format from the destination extension, so we pass format= explicitly.
+        tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+        Image.fromarray(lifted, mode=mode).save(tmp_path, format="PNG")
+        tmp_path.replace(out_path)
         seen[key] = str(out_path)
         out_paths[i] = str(out_path)
     return out_paths

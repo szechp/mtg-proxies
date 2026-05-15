@@ -65,7 +65,9 @@ def print_cards_matplotlib(
             size = _occupied_space(cardsize, np.array([N[0], full_rows]), border_crop, closed=True)
             rects.append((float(offset[0]), float(offset[1]), float(size[0]), float(size[1])))
         if partial_row_cards > 0:
-            top = offset[1] + _occupied_space(cardsize, np.array([0, full_rows]), border_crop)[1]
+            # closed=True on the `top` calc so the partial row's top edge meets the full-rows
+            # rect's bottom edge flush. Mismatched closed flags left a thin seam of white.
+            top = offset[1] + _occupied_space(cardsize, np.array([0, full_rows]), border_crop, closed=True)[1]
             bottom = offset[1] + _occupied_space(
                 cardsize, np.array([0, full_rows + 1]), border_crop, closed=True
             )[1]
@@ -197,7 +199,9 @@ def print_cards_fpdf(
             size = _occupied_space(cardsize, np.array([N[0], full_rows]), border_crop, closed=True)
             rects.append((float(offset[0]), float(offset[1]), float(size[0]), float(size[1])))
         if partial_row_cards > 0:
-            top = offset[1] + _occupied_space(cardsize, np.array([0, full_rows]), border_crop)[1]
+            # closed=True on the `top` calc so the partial row's top edge meets the full-rows
+            # rect's bottom edge flush. Mismatched closed flags left a thin seam of white.
+            top = offset[1] + _occupied_space(cardsize, np.array([0, full_rows]), border_crop, closed=True)[1]
             bottom = offset[1] + _occupied_space(
                 cardsize, np.array([0, full_rows + 1]), border_crop, closed=True
             )[1]
