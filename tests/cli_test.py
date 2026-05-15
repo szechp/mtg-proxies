@@ -91,18 +91,20 @@ def test_main_print_forwards_art_preference(tmp_path) -> None:
     print_cards_fpdf.assert_called_once()
 
 
-def test_main_print_custom_art_only_appends_pngs(tmp_path) -> None:
+def test_main_print_custom_art_appends_supported_image_extensions(tmp_path) -> None:
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "custom.pdf"
     custom_dir = tmp_path / "art"
     custom_dir.mkdir()
-    first = custom_dir / "a.png"
-    second = custom_dir / "b.png"
-    ignored = custom_dir / "c.jpg"
-    plt.imsave(first, np.zeros((4, 4, 4), dtype=np.uint8))
-    plt.imsave(second, np.zeros((4, 4, 4), dtype=np.uint8))
-    ignored.write_bytes(b"jpg")
+    png_a = custom_dir / "a.png"
+    png_b = custom_dir / "b.png"
+    jpg_c = custom_dir / "c.jpg"
+    ignored = custom_dir / "notes.txt"
+    plt.imsave(png_a, np.zeros((4, 4, 4), dtype=np.uint8))
+    plt.imsave(png_b, np.zeros((4, 4, 4), dtype=np.uint8))
+    plt.imsave(jpg_c, np.zeros((4, 4, 3), dtype=np.uint8))
+    ignored.write_text("not an image")
 
     with (
         patch(
@@ -126,7 +128,7 @@ def test_main_print_custom_art_only_appends_pngs(tmp_path) -> None:
     parse_decklist_spec.assert_not_called()
     fetch_scans_scryfall.assert_not_called()
     print_cards_fpdf.assert_called_once()
-    assert print_cards_fpdf.call_args.args[0] == sorted([str(first), str(second)])
+    assert print_cards_fpdf.call_args.args[0] == sorted([str(png_a), str(png_b), str(jpg_c)])
 
 
 def test_main_print_custom_art_extends_decklist_images(tmp_path) -> None:

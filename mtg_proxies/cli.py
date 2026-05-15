@@ -137,7 +137,10 @@ def papersize(string: str) -> np.ndarray:
 def _normalize_custom_art_images(
     custom_folder: Path, bleed_crop_percent: float = 0.0, output_dir: Path | None = None
 ) -> list[str]:
-    images = sorted(p for p in custom_folder.iterdir() if p.is_file() and p.suffix.lower() == ".png")
+    images = sorted(
+        p for p in custom_folder.iterdir() 
+        if p.is_file() and p.suffix.lower() in (".png", ".jpg", ".jpeg")
+    )
     if bleed_crop_percent <= 0:
         return [str(path) for path in images]
 
@@ -487,17 +490,23 @@ def main() -> None:
         action="store_true",
         default=False,
         help=(
-            "match every card's color/contrast histogram to a reference (highest-variance card in"
-            " the batch by default, or --normalize-reference PATH). Reduces visible exposure"
-            " differences between scans of varying quality. Cached as {path}_norm.png."
+            "per-card auto-levels (Photoshop Auto-Color style): clip 0.5%% extremes per channel"
+            " and stretch the remaining range to [0, 255]. Each card is normalized on its own,"
+            " no reference. Reduces washed-out scans without forcing the batch to look uniform."
+            " Cached as {path}_norm.png."
         ),
     )
     print_parser.add_argument(
-        "--normalize-reference",
-        type=str,
-        default=None,
-        metavar="PATH",
-        help="explicit reference image for --normalize (defaults to auto-pick); implies --normalize",
+        "--shadow-lift",
+        action="store_true",
+        default=False,
+        help=(
+            "selectively lift shadow detail in dark art so printers don't smear it into a flat"
+            " black blob. Only applies to cards whose art region has both dark pixels AND local"
+            " detail; flat-black cards and bright-art cards are left untouched. The base black"
+            " level (lum < 5) is preserved exactly — lift kicks in above it. Borders, frames,"
+            " and text boxes stay intact (the lift is masked to the art rectangle)."
+        ),
     )
     print_parser.add_argument(
         "--card-back",
@@ -713,10 +722,35 @@ def main() -> None:
                 print("Error: must provide either a decklist, --custom-art folder, or --card-back PATH")
                 raise SystemExit(1)
 
-            if args.normalize or args.normalize_reference:
+            # Custom art and card-back images are user-supplied and assumed pristine — they
+            # shouldn't be touched by the auto-correct passes. Decklist scans (Scryfall) get
+            # the full normalize/shadow_lift treatment.
+            user_supplied: set[str] = set()
+            if args.custom_art:
+                user_supplied.update(custom_images)
+            if args.card_back is not None:
+                user_supplied.add(args.card_back)
+
+            if args.normalize:
                 from mtg_proxies.normalize import normalize_images
 
-                images = normalize_images(images, reference_path=args.normalize_reference)
+                images = normalize_images(images, skip_paths=user_supplied)
+
+            if args.shadow_lift:
+                from mtg_proxies.shadow_lift import lift_shadows_images
+
+                images = lift_shadows_images(images, skip_paths=user_supplied)
+
+            # Pre-flatten RGBA cards against the chosen background color: fpdf2 composites alpha
+            # against white, so without this the rounded corners render white instead of letting
+            # the rectangle drawn under them show through.
+            if args.background is not None:
+                import matplotlib.colors as colors
+
+                from mtg_proxies.composite import composite_against_bg
+
+                bg_rgb = tuple((np.array(colors.to_rgb(args.background)) * 255).astype(int))
+                images = composite_against_bg(images, bg_color=bg_rgb)
 
             try:
                 if args.outfile.lower().endswith(".pdf"):
