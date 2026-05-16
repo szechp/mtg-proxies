@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -159,3 +160,341 @@ def test_print_cards_matplotlib_png(example_images: list[str], tmp_path: Path) -
     print_cards_matplotlib(example_images, out_file)
 
     assert (tmp_path / "decklist_000.png").is_file()
+
+
+# ---------------------------------------------------------------------------
+# Per-card modeline dispatch (feature/per-card-modelines)
+# ---------------------------------------------------------------------------
+
+
+def _fake_card(name: str, count: int = 1, modeline: str = "") -> object:
+    from mtg_proxies.decklists.decklist import Card
+
+    return Card(
+        count=count,
+        card={
+            "id": f"sf-{name.lower().replace(' ', '-')}",
+            "name": name,
+            "set": "c21",
+            "collector_number": "1",
+            "layout": "normal",
+            "image_uris": {"png": f"https://img.example/{name}.png"},
+            "highres_image": True,
+        },
+        modeline=modeline,
+    )
+
+
+def _fake_decklist(*cards: object) -> object:
+    from mtg_proxies.decklists.decklist import Decklist
+
+    d = Decklist()
+    d.entries.extend(cards)
+    return d
+
+
+def test_apply_per_card_modelines_noop_when_no_modelines(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mtg_proxies import cli
+
+    fake_resolve = MagicMock()
+    monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", fake_resolve)
+
+    decklist = _fake_decklist(_fake_card("Sol Ring"), _fake_card("Lightning Bolt"))
+    image_paths = ["sol.png", "bolt.png"]
+
+    result = cli._apply_per_card_modelines(decklist, image_paths)
+
+    assert result == ["sol.png", "bolt.png"]
+    fake_resolve.assert_not_called()
+
+
+def test_apply_per_card_modelines_mpcfill_swap_single_copy(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from mtg_proxies import cli
+
+    swapped = tmp_path / "mpcfill_render.png"
+    swapped.write_bytes(b"PNG")
+
+    fake_resolve = MagicMock(return_value=swapped)
+    monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", fake_resolve)
+
+    decklist = _fake_decklist(
+        _fake_card("Sol Ring"),
+        _fake_card("Caves of Koilos", modeline="#mpcfill --similarity 0.83"),
+    )
+    image_paths = ["sol.png", "caves_scryfall.png"]
+
+    result = cli._apply_per_card_modelines(decklist, image_paths)
+
+    assert result[0] == "sol.png"
+    assert result[1] == str(swapped)
+    fake_resolve.assert_called_once()
+    kwargs = fake_resolve.call_args.kwargs
+    assert kwargs["card_name"] == "Caves of Koilos"
+    assert kwargs["similarity"] == pytest.approx(0.83)
+
+
+def test_apply_per_card_modelines_mpcfill_miss_falls_back_to_scryfall(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mtg_proxies import cli
+
+    fake_resolve = MagicMock(return_value=None)
+    monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", fake_resolve)
+
+    decklist = _fake_decklist(_fake_card("Sol Ring", modeline="#mpcfill"))
+    image_paths = ["sol_scryfall.png"]
+
+    result = cli._apply_per_card_modelines(decklist, image_paths)
+
+    assert result == ["sol_scryfall.png"]  # Unchanged on miss
+    fake_resolve.assert_called_once()
+
+
+def test_apply_per_card_modelines_mpcfill_swap_count_expansion(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from mtg_proxies import cli
+
+    swapped = tmp_path / "mpcfill_render.png"
+    swapped.write_bytes(b"PNG")
+    fake_resolve = MagicMock(return_value=swapped)
+    monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", fake_resolve)
+
+    # count=3 → 3 identical slots, all should swap.
+    decklist = _fake_decklist(_fake_card("Mountain", count=3, modeline="#mpcfill"))
+    image_paths = ["m.png", "m.png", "m.png"]
+
+    result = cli._apply_per_card_modelines(decklist, image_paths)
+
+    assert result == [str(swapped), str(swapped), str(swapped)]
+    # Resolver is invoked once per card, not per copy.
+    fake_resolve.assert_called_once()
+
+
+def test_apply_per_card_modelines_per_card_upscale_when_global_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mtg_proxies import cli
+
+    fake_upscale = MagicMock(side_effect=lambda paths, **kw: [f"{p}_up" for p in paths])
+    monkeypatch.setattr("mtg_proxies.upscale.upscale_images", fake_upscale)
+
+    decklist = _fake_decklist(
+        _fake_card("Sol Ring"),
+        _fake_card("Birds of Paradise", modeline="#upscale"),
+    )
+    image_paths = ["sol.png", "birds.png"]
+
+    result = cli._apply_per_card_modelines(decklist, image_paths, global_upscale=False)
+
+    assert result[0] == "sol.png"
+    assert result[1] == "birds.png_up"
+    fake_upscale.assert_called_once()
+    upscaled_subset = fake_upscale.call_args.args[0]
+    assert upscaled_subset == ["birds.png"]
+
+
+def test_apply_per_card_modelines_per_card_upscale_noop_when_global_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mtg_proxies import cli
+
+    fake_upscale = MagicMock()
+    monkeypatch.setattr("mtg_proxies.upscale.upscale_images", fake_upscale)
+
+    decklist = _fake_decklist(_fake_card("Birds of Paradise", modeline="#upscale"))
+    image_paths = ["birds.png"]
+
+    cli._apply_per_card_modelines(decklist, image_paths, global_upscale=True)
+
+    # Bulk upscale pass already covers everything — per-card pass must be a no-op.
+    fake_upscale.assert_not_called()
+
+
+def _fake_dfc_card(name: str, count: int = 1, modeline: str = "") -> object:
+    """Synthetic DFC card with two faces — exercises front/back slot routing."""
+    from mtg_proxies.decklists.decklist import Card
+
+    return Card(
+        count=count,
+        card={
+            "id": f"sf-{name.lower().replace(' ', '-').replace('//', '_')}",
+            "name": name,
+            "set": "mid",
+            "collector_number": "1",
+            "layout": "transform",
+            "card_faces": [
+                {"image_uris": {"png": f"https://img.example/{name}-front.png"}},
+                {"image_uris": {"png": f"https://img.example/{name}-back.png"}},
+            ],
+            "highres_image": True,
+        },
+        modeline=modeline,
+    )
+
+
+def test_apply_per_card_modelines_mpcfill_dfc_replaces_both_faces(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`#mpcfill` on a DFC must replace BOTH faces by querying MPCFill for each face name."""
+    from mtg_proxies import cli
+
+    front_render = tmp_path / "front.png"
+    back_render = tmp_path / "back.png"
+    front_render.write_bytes(b"FRONT")
+    back_render.write_bytes(b"BACK")
+
+    # Resolver returns the front render when called with the front name, the back render
+    # when called with the back name.
+    def _resolve(*, card_name: str, **_: object) -> Path:
+        return front_render if card_name == "Disciple of Freyalise" else back_render
+
+    fake_resolve = MagicMock(side_effect=_resolve)
+    monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", fake_resolve)
+
+    decklist = _fake_decklist(_fake_dfc_card("Disciple of Freyalise // Garden of Freyalise", modeline="#mpcfill"))
+    # Use the patched fake_dfc_card: faces[0].name = the long name above, faces[1].name = …
+    # Override the helper output to make the names line up with the resolver dispatch.
+    decklist.entries[0].card["card_faces"][0]["name"] = "Disciple of Freyalise"
+    decklist.entries[0].card["card_faces"][1]["name"] = "Garden of Freyalise"
+
+    image_paths = ["front_scryfall.png", "back_scryfall.png"]
+    result = cli._apply_per_card_modelines(decklist, image_paths)
+
+    assert result == [str(front_render), str(back_render)]
+    # Resolver called twice: once per face.
+    assert fake_resolve.call_count == 2
+    called_names = {c.kwargs["card_name"] for c in fake_resolve.call_args_list}
+    assert called_names == {"Disciple of Freyalise", "Garden of Freyalise"}
+
+
+def test_apply_per_card_modelines_mpcfill_dfc_back_miss_falls_back(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When the back face can't be matched, it falls back to Scryfall; front still swaps."""
+    from mtg_proxies import cli
+
+    front_render = tmp_path / "front.png"
+    front_render.write_bytes(b"FRONT")
+
+    def _resolve(*, card_name: str, **_: object) -> Path | None:
+        return front_render if card_name == "Disciple of Freyalise" else None
+
+    fake_resolve = MagicMock(side_effect=_resolve)
+    monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", fake_resolve)
+
+    decklist = _fake_decklist(_fake_dfc_card("Disciple // Garden", modeline="#mpcfill"))
+    decklist.entries[0].card["card_faces"][0]["name"] = "Disciple of Freyalise"
+    decklist.entries[0].card["card_faces"][1]["name"] = "Garden of Freyalise"
+
+    image_paths = ["front_scryfall.png", "back_scryfall.png"]
+    result = cli._apply_per_card_modelines(decklist, image_paths)
+
+    assert result[0] == str(front_render)
+    assert result[1] == "back_scryfall.png"  # Back falls back
+
+
+def test_apply_per_card_modelines_duplex_mpcfill_dfc_swaps_both_lists(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """In duplex mode the helper must swap front in `fronts` and back in `backs` for a DFC."""
+    from mtg_proxies import cli
+
+    front_render = tmp_path / "front.png"
+    back_render = tmp_path / "back.png"
+    front_render.write_bytes(b"FRONT")
+    back_render.write_bytes(b"BACK")
+
+    def _resolve(*, card_name: str, **_: object) -> Path:
+        return front_render if card_name == "Disciple of Freyalise" else back_render
+
+    monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", MagicMock(side_effect=_resolve))
+
+    decklist = _fake_decklist(_fake_dfc_card("Disciple // Garden", count=2, modeline="#mpcfill"))
+    decklist.entries[0].card["card_faces"][0]["name"] = "Disciple of Freyalise"
+    decklist.entries[0].card["card_faces"][1]["name"] = "Garden of Freyalise"
+
+    # fetch_scans_paired layout: count=2 DFC produces fronts=[f, f], backs=[b, b].
+    fronts = ["front_scryfall.png", "front_scryfall.png"]
+    backs = ["back_scryfall.png", "back_scryfall.png"]
+
+    cli._apply_per_card_modelines(decklist, fronts, backs=backs, duplex=True)
+
+    assert fronts == [str(front_render), str(front_render)]
+    assert backs == [str(back_render), str(back_render)]
+
+
+def test_apply_per_card_modelines_duplex_single_faced_back_untouched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Single-faced cards in duplex mode must not have the generic card-back touched."""
+    from mtg_proxies import cli
+
+    front_render = tmp_path / "front.png"
+    front_render.write_bytes(b"FRONT")
+    fake_resolve = MagicMock(return_value=front_render)
+    monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", fake_resolve)
+
+    decklist = _fake_decklist(_fake_card("Sol Ring", modeline="#mpcfill"))
+    fronts = ["front_scryfall.png"]
+    backs = ["generic_card_back.jpg"]
+
+    cli._apply_per_card_modelines(
+        decklist,
+        fronts,
+        backs=backs,
+        duplex=True,
+        user_supplied={"generic_card_back.jpg"},
+    )
+
+    assert fronts == [str(front_render)]
+    assert backs == ["generic_card_back.jpg"]  # Untouched
+    # Resolver called once for the front only; never for a back.
+    assert fake_resolve.call_count == 1
+    assert fake_resolve.call_args.kwargs["card_name"] == "Sol Ring"
+
+
+def test_apply_per_card_modelines_duplex_upscale_skips_user_supplied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`#upscale` on a single-faced card in duplex mode upscales the front, not the generic back."""
+    from mtg_proxies import cli
+
+    fake_upscale = MagicMock(side_effect=lambda paths, **_: [f"{p}_up" for p in paths])
+    monkeypatch.setattr("mtg_proxies.upscale.upscale_images", fake_upscale)
+
+    decklist = _fake_decklist(_fake_card("Sol Ring", modeline="#upscale"))
+    fronts = ["sol.png"]
+    backs = ["generic_card_back.jpg"]
+
+    cli._apply_per_card_modelines(
+        decklist,
+        fronts,
+        backs=backs,
+        duplex=True,
+        user_supplied={"generic_card_back.jpg"},
+    )
+
+    assert fronts == ["sol.png_up"]
+    assert backs == ["generic_card_back.jpg"]
+    fake_upscale.assert_called_once()
+    assert fake_upscale.call_args.args[0] == ["sol.png"]
+
+
+def test_apply_per_card_modelines_stacked_verbs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mtg_proxies import cli
+
+    fake_normalize = MagicMock(side_effect=lambda paths, **kw: [f"{p}_norm" for p in paths])
+    fake_lift = MagicMock(side_effect=lambda paths, **kw: [f"{p}_lift" for p in paths])
+    monkeypatch.setattr("mtg_proxies.normalize.normalize_images", fake_normalize)
+    monkeypatch.setattr("mtg_proxies.shadow_lift.lift_shadows_images", fake_lift)
+
+    decklist = _fake_decklist(_fake_card("Mountain", count=2, modeline="#normalize #shadow-lift"))
+    image_paths = ["m.png", "m.png"]
+
+    result = cli._apply_per_card_modelines(decklist, image_paths)
+
+    # Both transforms applied to both slots; shadow-lift sees normalized paths.
+    assert result == ["m.png_norm_lift", "m.png_norm_lift"]
+    fake_normalize.assert_called_once()
+    fake_lift.assert_called_once()

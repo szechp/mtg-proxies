@@ -2,6 +2,7 @@
 
 ### Feat
 
+- feat: per-card `#verb` modelines in `mtg-proxies print`. Append `#mpcfill`, `#upscale`, `#normalize`, or `#shadow-lift` (with optional `--flag value` tuning) to a decklist line to apply that treatment to one card only. Modelines stack, round-trip through `convert`, and are additive with the global `--upscale` / `--normalize` / `--shadow-lift` flags. `#mpcfill` matches each face of a DFC independently (front and back), and works in both normal and `--card-back` duplex layouts.
 - feat: add mpcfill subcommand — matches Scryfall reference art against MPCFill community renders (CLIP embedding by default, pHash optional) and writes one PNG per slot for `mtg-proxies print --custom-art`
 
 ## 0.3.0 (2026-03-09)

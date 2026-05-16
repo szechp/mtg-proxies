@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Literal, TextIO
 
 import mtg_proxies.scryfall as scryfall
+from mtg_proxies.decklists.modelines import parse_modeline_trailer, split_modeline_trailer
 from mtg_proxies.decklists.sanitizing import ParseWarning, validate_card_name, validate_print
 
 
@@ -15,11 +16,14 @@ from mtg_proxies.decklists.sanitizing import ParseWarning, validate_card_name, v
 class Card:
     """Card in a decklist.
 
-    Composed of a count and a Scryfall object.
+    Composed of a count, a Scryfall object, and an optional raw modeline trailer
+    (e.g. ``"#mpcfill --similarity 0.83"``) preserved verbatim from the source line so
+    serialization round-trips byte-for-byte.
     """
 
     count: int
     card: dict[str, Any]
+    modeline: str = ""
 
     def __getitem__(self, key: str) -> Any:  # noqa: ANN401
         return self.card[key]
@@ -36,10 +40,12 @@ class Card:
         return [face["image_uris"] for face in scryfall.get_faces(self.card)]
 
     def __format__(self, format_spec: str) -> str:
+        # ``modeline`` already includes its leading whitespace so the original line round-trips
+        # byte-for-byte; append it verbatim, no extra space.
         if format_spec == "text":
-            return f"{self.count} {self['name']}"
+            return f"{self.count} {self['name']}{self.modeline}"
         if format_spec == "arena":
-            return f"{self.count} {self['name']} ({self['set'].upper()}) {self['collector_number']}"
+            return f"{self.count} {self['name']} ({self['set'].upper()}) {self['collector_number']}{self.modeline}"
         raise ValueError(f"Unkown format {format_spec}")
 
 
@@ -66,9 +72,9 @@ class Decklist:
     entries: list[DecklistEntry] = field(default_factory=list)
     name: str | None = None
 
-    def append_card(self, count: int, card: dict) -> None:
+    def append_card(self, count: int, card: dict, modeline: str = "") -> None:
         """Append a card line to this decklist."""
-        self.entries.append(Card(count, card))
+        self.entries.append(Card(count, card, modeline))
 
     def append_comment(self, text: str) -> None:
         """Append a comment line to this decklist."""
@@ -172,6 +178,23 @@ def parse_decklist_stream(
             decklist.append_comment(line.rstrip())
             continue
 
+        # Split off any trailing modeline (e.g. " #mpcfill --similarity 0.83") before
+        # the main regex runs. ``split_modeline_trailer`` only strips when the first
+        # segment is a recognized verb, so ad-hoc annotations like ``#my favorite copy``
+        # stay attached to the line. The trailer keeps its leading whitespace so the line
+        # round-trips byte-for-byte. Either way, we attempt-parse the candidate trailer
+        # so unknown-verb / malformed-flag warnings surface through the normal channel.
+        stripped, modeline_trailer = split_modeline_trailer(stripped)
+        modeline_candidate_match = re.search(r"(\s+#\S.*)$", stripped)
+        if modeline_trailer:
+            _, modeline_warnings = parse_modeline_trailer(modeline_trailer)
+            warnings.extend(modeline_warnings)
+        elif modeline_candidate_match:
+            # First verb wasn't recognized: warn but DON'T strip — the user may have
+            # meant a free-form annotation, and silently mangling the line is worse.
+            _, candidate_warnings = parse_modeline_trailer(modeline_candidate_match.group(1))
+            warnings.extend(candidate_warnings)
+
         # Strip trailing foil markers e.g. `*F*`, `*E*`. Loop to handle stacked markers like `*F* *E*`.
         while True:
             new_stripped = re.sub(r"\s+\*[A-Za-z]+\*\s*$", "", stripped)
@@ -207,7 +230,7 @@ def parse_decklist_stream(
                 allow_low_res=allow_low_res,
             )
 
-            decklist.append_card(count, card)
+            decklist.append_card(count, card, modeline=modeline_trailer)
             warnings.extend(warnings_name + warnings_print)
         else:
             decklist.append_comment(line.rstrip())

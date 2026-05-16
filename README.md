@@ -263,6 +263,42 @@ options:
                         auto-matching the front image count
 ```
 
+#### Per-card modelines
+
+Append a `#verb` directive to a decklist line to apply a treatment to that card only,
+without paying the cost on the rest of the deck. Multiple verbs stack on one line; flags
+mirror the matching CLI options.
+
+```
+1 Caves of Koilos (DRC) 148 #mpcfill --similarity 0.83 --frame-strictness 0.06
+1 Birds of Paradise (RVR) 133 #upscale
+4 Mountain (RVR) 271 #normalize #shadow-lift
+```
+
+Supported verbs:
+
+- `#mpcfill [--similarity F] [--frame-strictness F] [--matcher {embedding,phash}]` —
+  replace this card's Scryfall art with the visually closest MPCFill community render.
+  A miss falls back to Scryfall with a warning.
+- `#upscale [--upscale-model PATH]` — upscale this card via Real-ESRGAN.
+- `#normalize [--clip-percent F]` — border-anchored auto-levels on this card.
+- `#shadow-lift [--amount F]` — lift crushed blacks on this card.
+
+Per-card directives are **additive** with the global `--upscale` / `--normalize` /
+`--shadow-lift` flags: when a global flag is on, the bulk pass already handles every
+card, so the per-card directive becomes a no-op. Modelines round-trip through
+`mtg-proxies convert` — the modeline tokens themselves (including whitespace between
+segments) are preserved exactly.
+
+Double-faced cards: `#mpcfill` swaps both the front and the back face independently
+(each face name is queried separately against MPCFill). The same applies in `--card-back`
+duplex layouts — the front replaces the front-of-sheet image, and the matched back
+replaces the back-of-sheet image. Single-faced cards in duplex mode never have the
+generic card-back image touched by modelines.
+
+Unknown verbs or malformed flag values surface as warnings and are dropped; the card
+itself still parses and prints normally.
+
 ### convert
 
 ```

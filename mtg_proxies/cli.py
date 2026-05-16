@@ -229,6 +229,265 @@ def _normalize_custom_art_images(
     return normalized_images
 
 
+# Slot identifier: (list_name, idx_within_list). ``list_name`` keys into the ``target_lists``
+# dict in :func:`_apply_per_card_modelines`; it is ``"flat"`` for non-duplex (single shared
+# list) or ``"fronts"``/``"backs"`` for duplex (two parallel lists).
+SlotKey = tuple[str, int]
+
+
+def _build_slot_map(
+    decklist: Decklist,
+    faces: Literal["all", "front", "back"],
+    *,
+    duplex: bool = False,
+) -> list[dict[str, list[SlotKey]]]:
+    """Map each card index to the slot keys it occupies.
+
+    Non-duplex (``duplex=False``) mirrors ``scans._fetch_scans_with_flags``: a single flat
+    list where front+back slots for the same card interleave per copy; all keys use the
+    ``"flat"`` list name.
+
+    Duplex (``duplex=True``) mirrors ``scans.fetch_scans_paired``: front and back live in
+    separate parallel lists; keys use ``"fronts"`` / ``"backs"``. Single-faced cards yield
+    an empty back-slot list so the user-supplied generic card-back is never touched by
+    modelines.
+
+    Cards whose layout raises (``card.image_uris``) get empty slot sets + a warning so
+    their modelines become no-ops instead of crashing the print run.
+    """
+    slot_map: list[dict[str, list[SlotKey]]] = []
+    flat_idx = 0
+    duplex_idx = 0
+    for card in decklist.cards:
+        per: dict[str, list[SlotKey]] = {"front": [], "back": []}
+        try:
+            face_uris = list(card.image_uris)
+        except (ValueError, KeyError) as exc:
+            _mpcfill_log.warning("Skipping modeline slot mapping for %r: %s", card.card.get("name", "?"), exc)
+            slot_map.append(per)
+            if duplex:
+                duplex_idx += card.count
+            continue
+        if duplex:
+            is_dfc = len(face_uris) > 1
+            per["front"].extend(("fronts", duplex_idx + i) for i in range(card.count))
+            if is_dfc:
+                per["back"].extend(("backs", duplex_idx + i) for i in range(card.count))
+            duplex_idx += card.count
+        else:
+            for face_i in range(len(face_uris)):
+                include = faces == "all" or (faces == "front" and face_i == 0) or (faces == "back" and face_i > 0)
+                if not include:
+                    continue
+                key = "front" if face_i == 0 else "back"
+                for _ in range(card.count):
+                    per[key].append(("flat", flat_idx))
+                    flat_idx += 1
+        slot_map.append(per)
+    return slot_map
+
+
+def _apply_per_card_modelines(
+    decklist: Decklist,
+    image_paths: list[str],
+    *,
+    backs: list[str] | None = None,
+    faces: Literal["all", "front", "back"] = "all",
+    duplex: bool = False,
+    user_supplied: set[str] | None = None,
+    global_upscale: bool = False,
+    global_normalize: bool = False,
+    global_shadow_lift: bool = False,
+    upscale_model: Path | None = None,
+    server: str = MPCFILL_DEFAULT_SERVER,
+    cache_root: Path | None = None,
+    session: requests.Session | None = None,
+) -> list[str]:
+    """Apply per-card modeline directives to the image list(s) in place.
+
+    Non-duplex mode (``duplex=False``): ``image_paths`` is the single flat list returned by
+    ``fetch_scans_scryfall``; ``backs`` is ignored.
+
+    Duplex mode (``duplex=True``): ``image_paths`` is the ``fronts`` list and ``backs`` is
+    the parallel ``backs`` list — both produced by ``fetch_scans_paired``.
+
+    Pass 1 — source selection (``#mpcfill``): for each card with a ``#mpcfill`` directive,
+    swap the front-face slot(s) with an MPCFill render. If the card is a DFC AND has back
+    slots in the map (DFC in non-duplex, or DFC in duplex), also try matching the back-face
+    render keyed on the back-face name; misses fall back to Scryfall. Single-faced cards in
+    duplex mode have empty back-slot lists, so the user-supplied generic card-back stays
+    untouched.
+
+    Pass 2 — per-card transforms (``#upscale`` / ``#normalize`` / ``#shadow-lift``): when
+    the corresponding global flag is OFF, gather slots from flagged cards and run the
+    existing batch transform on that subset, grouped by underlying list. Paths in
+    ``user_supplied`` (e.g. the generic card-back) are skipped.
+    """
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    if not any(card.modeline for card in decklist.cards):
+        return image_paths
+
+    user_supplied = user_supplied or set()
+    target_lists: dict[str, list[str]] = (
+        {"fronts": image_paths, "backs": backs if backs is not None else image_paths}
+        if duplex
+        else {"flat": image_paths}
+    )
+
+    slot_map = _build_slot_map(decklist, faces, duplex=duplex)
+    parsed: list[list] = []
+    for card in decklist.cards:
+        directives, warnings = parse_modeline_trailer(card.modeline) if card.modeline else ([], [])
+        for w in warnings:
+            _mpcfill_log.warning("Modeline on %r: %s", card.card.get("name"), w)
+        parsed.append(directives)
+
+    def _read(key: SlotKey) -> str:
+        return target_lists[key[0]][key[1]]
+
+    def _write(key: SlotKey, value: str) -> None:
+        target_lists[key[0]][key[1]] = value
+
+    # Pass 1: #mpcfill swaps (front first, then DFC back).
+    needs_mpcfill = any(any(d.verb == "mpcfill" for d in dl) for dl in parsed)
+    if needs_mpcfill:
+        from mtg_proxies.mpcfill import per_card as mpcfill_per_card
+
+        cache_root_ = cache_root if cache_root is not None else default_cache_root()
+        session_ = session if session is not None else requests.Session()
+
+        for card_idx, (card, directives) in enumerate(zip(decklist.cards, parsed, strict=True)):
+            for directive in directives:
+                if directive.verb != "mpcfill":
+                    continue
+                similarity = directive.flags.get("--similarity", mpcfill_per_card.DEFAULT_SIMILARITY)
+                frame_strictness = directive.flags.get("--frame-strictness", mpcfill_per_card.DEFAULT_FRAME_STRICTNESS)
+                matcher = directive.flags.get("--matcher", mpcfill_per_card.DEFAULT_MATCHER)
+
+                # Front swap. For DFCs the backend search expects the front-face name,
+                # not the joined "Front // Back" name on the card dict.
+                front_slots = slot_map[card_idx]["front"]
+                if not front_slots:
+                    _mpcfill_log.warning(
+                        "#mpcfill on %r has no front-face slot for --faces=%s; directive ignored.",
+                        card["name"],
+                        faces,
+                    )
+                    continue
+                try:
+                    face_dicts = scryfall.get_faces(card.card)
+                except (ValueError, KeyError) as exc:
+                    # Without face dicts we can't construct a reliable front-face query —
+                    # falling back to ``card["name"]`` would give the joined ``"X // Y"`` form
+                    # for DFCs, which would never match MPCFill. Skip the swap with a clear
+                    # diagnostic instead of silently misquerying.
+                    _mpcfill_log.warning(
+                        "#mpcfill on %r: cannot determine card faces (%s); directive skipped.",
+                        card.card.get("name"),
+                        exc,
+                    )
+                    continue
+                front_query_name = (face_dicts[0].get("name") if face_dicts else None) or card["name"]
+                out_front = mpcfill_per_card.resolve_per_card_mpcfill(
+                    card_name=front_query_name,
+                    scryfall_image_path=_read(front_slots[0]),
+                    scryfall_id=f"{card['id']}_front",
+                    cache_root=cache_root_,
+                    server=server,
+                    session=session_,
+                    similarity=similarity,
+                    frame_strictness=frame_strictness,
+                    matcher=matcher,
+                )
+                if out_front is None:
+                    _mpcfill_log.warning(
+                        "MPCFill front-face miss for %r — falling back to Scryfall art.",
+                        card["name"],
+                    )
+                else:
+                    for slot in front_slots:
+                        _write(slot, str(out_front))
+
+                # DFC back swap: only when card has multiple faces AND slot map has back slots.
+                back_slots = slot_map[card_idx]["back"]
+                if not back_slots or len(face_dicts) <= 1:
+                    continue
+                back_name = face_dicts[1].get("name") or ""
+                if not back_name:
+                    _mpcfill_log.warning(
+                        "DFC back face for %r has no name on the Scryfall record; back swap skipped.",
+                        card["name"],
+                    )
+                    continue
+                out_back = mpcfill_per_card.resolve_per_card_mpcfill(
+                    card_name=back_name,
+                    scryfall_image_path=_read(back_slots[0]),
+                    scryfall_id=f"{card['id']}_back",
+                    cache_root=cache_root_,
+                    server=server,
+                    session=session_,
+                    similarity=similarity,
+                    frame_strictness=frame_strictness,
+                    matcher=matcher,
+                )
+                if out_back is None:
+                    _mpcfill_log.warning(
+                        "MPCFill back-face miss for %r — back falls back to Scryfall art.",
+                        back_name,
+                    )
+                    continue
+                for slot in back_slots:
+                    _write(slot, str(out_back))
+
+    # Pass 2: per-card transforms.
+    def _slots_for_verb(verb: str) -> list[SlotKey]:
+        slots: list[SlotKey] = []
+        for card_idx, directives in enumerate(parsed):
+            if any(d.verb == verb for d in directives):
+                slots.extend(slot_map[card_idx]["front"] + slot_map[card_idx]["back"])
+        return slots
+
+    def _run_transform(slots: list[SlotKey], transform: Callable[[list[str]], list[str]]) -> None:
+        """Group ``slots`` by underlying list and apply ``transform`` once per group."""
+        grouped: dict[str, list[tuple[int, str]]] = {}
+        for list_name, idx in slots:
+            path = target_lists[list_name][idx]
+            if path in user_supplied:
+                continue
+            grouped.setdefault(list_name, []).append((idx, path))
+        for list_name, items in grouped.items():
+            new_paths = transform([p for _, p in items])
+            for (idx, _), new in zip(items, new_paths, strict=True):
+                target_lists[list_name][idx] = new
+
+    if not global_upscale:
+        slots = _slots_for_verb("upscale")
+        if slots:
+            from mtg_proxies.upscale import upscale_images
+
+            _run_transform(
+                slots,
+                lambda paths: upscale_images(paths, highres_flags=[False] * len(paths), model_path=upscale_model),
+            )
+
+    if not global_normalize:
+        slots = _slots_for_verb("normalize")
+        if slots:
+            from mtg_proxies.normalize import normalize_images
+
+            _run_transform(slots, lambda paths: normalize_images(paths))
+
+    if not global_shadow_lift:
+        slots = _slots_for_verb("shadow-lift")
+        if slots:
+            from mtg_proxies.shadow_lift import lift_shadows_images
+
+            _run_transform(slots, lambda paths: lift_shadows_images(paths))
+
+    return image_paths
+
+
 def _parse_basic_land_specs(specs: list[str]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for spec in specs:
@@ -771,15 +1030,8 @@ def _run_mpcfill(args: argparse.Namespace) -> None:
             cards_to_process.append(card)
 
     if preserved_cards:
-        bar = (
-            f"similarity >= {similarity_floor:.2f}"
-            if args.matcher == "embedding"
-            else f"hamming <= {args.threshold}"
-        )
-        print(
-            f"Preserved {len(preserved_cards)} prior match(es) meeting {bar}"
-            " (pass --rematch-all to re-evaluate)"
-        )
+        bar = f"similarity >= {similarity_floor:.2f}" if args.matcher == "embedding" else f"hamming <= {args.threshold}"
+        print(f"Preserved {len(preserved_cards)} prior match(es) meeting {bar} (pass --rematch-all to re-evaluate)")
 
     # Build the unique-query set from cards still needing a match — preserved cards already
     # have their drive_id / source_name from the prior CSV.
@@ -832,9 +1084,7 @@ def _run_mpcfill(args: argparse.Namespace) -> None:
             # The matching path always compares against an English equivalent — mpcfill renders
             # are typically English, so this keeps CLIP focused on the artwork.
             fallback_ref_path = _reference_image_path(decklist_card_dict, face_index=face_index)
-            match_ref_path = _reference_image_path(
-                decklist_card_dict, face_index=face_index, prefer_english=True
-            )
+            match_ref_path = _reference_image_path(decklist_card_dict, face_index=face_index, prefer_english=True)
         except (KeyError, ValueError):
             log.exception("scryfall reference unavailable for %s", card.name)
             card.decision = "error"
@@ -1410,7 +1660,10 @@ def main() -> None:
         ),
     )
     mpcfill_parser.add_argument(
-        "--threshold", type=int, default=25, help="maximum pHash Hamming distance (phash matcher only) (default: %(default)d)"
+        "--threshold",
+        type=int,
+        default=25,
+        help="maximum pHash Hamming distance (phash matcher only) (default: %(default)d)",
     )
     mpcfill_parser.add_argument(
         "--dpi-tiers",
@@ -1559,6 +1812,39 @@ def main() -> None:
                     images, highres_flags = fetch_scans_scryfall_flagged(decklist, faces=args.faces)
                 else:
                     images = fetch_scans_scryfall(decklist, faces=args.faces)
+
+                # Per-card #verb modelines (#mpcfill / #upscale / #normalize / #shadow-lift).
+                # Runs against either the flat ``images`` list (non-duplex) or the parallel
+                # ``fronts``/``backs`` lists (duplex). Must happen BEFORE the bulk transform
+                # passes so the swapped images flow through them naturally.
+                has_modelines = isinstance(decklist, Decklist) and any(card.modeline for card in decklist.cards)
+                if has_modelines:
+                    user_supplied_so_far: set[str] = set()
+                    if args.card_back is not None:
+                        user_supplied_so_far.add(args.card_back)
+                    if duplex_mode:
+                        _apply_per_card_modelines(
+                            decklist,
+                            fronts,
+                            backs=backs,
+                            duplex=True,
+                            user_supplied=user_supplied_so_far,
+                            global_upscale=bool(args.upscale or args.upscale_model),
+                            global_normalize=bool(args.normalize),
+                            global_shadow_lift=bool(args.shadow_lift),
+                            upscale_model=args.upscale_model,
+                        )
+                    else:
+                        images = _apply_per_card_modelines(
+                            decklist,
+                            images,
+                            faces=args.faces,
+                            user_supplied=user_supplied_so_far,
+                            global_upscale=bool(args.upscale or args.upscale_model),
+                            global_normalize=bool(args.normalize),
+                            global_shadow_lift=bool(args.shadow_lift),
+                            upscale_model=args.upscale_model,
+                        )
 
             if args.custom_art:
                 custom_folder = Path(args.custom_art)

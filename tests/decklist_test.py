@@ -301,6 +301,216 @@ def test_archidekt(archidekt_id: str, expected_first_card: str) -> None:
     assert decklist.cards[0]["name"] == expected_first_card
 
 
+# ---------------------------------------------------------------------------
+# Per-card modeline tests (feature/per-card-modelines)
+# ---------------------------------------------------------------------------
+
+
+def _patch_card_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace validate_card_name / validate_print so modeline tests don't hit Scryfall."""
+    import mtg_proxies.decklists.decklist as decklist_module
+
+    fake_card = {"id": "x", "set": "c21", "collector_number": "244", "layout": "normal", "image_uris": {}}
+
+    def _fake_validate_card_name(name: str) -> tuple[str, list]:
+        return name, []
+
+    def _fake_validate_print(name: str, set_id: str | None, collector_number: str | None, **_: object) -> tuple:
+        card = {
+            **fake_card,
+            "name": name,
+            "set": (set_id or "c21").lower(),
+            "collector_number": collector_number or "1",
+        }
+        return card, []
+
+    monkeypatch.setattr(decklist_module, "validate_card_name", _fake_validate_card_name)
+    monkeypatch.setattr(decklist_module, "validate_print", _fake_validate_print)
+
+
+def test_modeline_parse_single_verb_bare() -> None:
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#upscale")
+
+    assert len(directives) == 1
+    assert directives[0].verb == "upscale"
+    assert directives[0].flags == {}
+    assert warnings == []
+
+
+def test_modeline_parse_single_verb_with_flags() -> None:
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#mpcfill --similarity 0.83 --frame-strictness 0.06")
+
+    assert len(directives) == 1
+    assert directives[0].verb == "mpcfill"
+    assert directives[0].flags == {"--similarity": 0.83, "--frame-strictness": 0.06}
+    assert warnings == []
+
+
+def test_modeline_parse_stacked_verbs() -> None:
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#upscale #normalize #shadow-lift")
+
+    assert [d.verb for d in directives] == ["upscale", "normalize", "shadow-lift"]
+    assert all(d.flags == {} for d in directives)
+    assert warnings == []
+
+
+def test_modeline_parse_unknown_verb_warns_and_drops_segment() -> None:
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#frobnicate --x 1")
+
+    assert directives == []
+    assert len(warnings) == 1
+    assert "frobnicate" in str(warnings[0])
+
+
+def test_modeline_parse_unknown_flag_warns_and_drops_segment() -> None:
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#mpcfill --bogus 1")
+
+    assert directives == []
+    assert len(warnings) == 1
+    assert "--bogus" in str(warnings[0])
+
+
+def test_modeline_parse_malformed_flag_value_warns_and_drops_segment() -> None:
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#mpcfill --similarity not-a-float")
+
+    assert directives == []
+    assert len(warnings) == 1
+    assert "--similarity" in str(warnings[0])
+
+
+def test_modeline_parse_mixed_known_unknown_keeps_known() -> None:
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#upscale #frobnicate")
+
+    assert [d.verb for d in directives] == ["upscale"]
+    assert len(warnings) == 1
+
+
+def test_modeline_parse_empty_trailer() -> None:
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("")
+
+    assert directives == []
+    assert warnings == []
+
+
+def test_decklist_card_no_modeline_has_empty_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_card_lookup(monkeypatch)
+    from mtg_proxies.decklists import Card, parse_decklist_stream
+
+    decklist, _, _ = parse_decklist_stream(StringIO("1 Sol Ring (C21) 244\n"))
+
+    assert type(decklist.entries[0]) is Card
+    assert decklist.entries[0].modeline == ""
+
+
+def test_decklist_card_captures_single_modeline(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_card_lookup(monkeypatch)
+    from mtg_proxies.decklists import Card, parse_decklist_stream
+
+    decklist, _, _ = parse_decklist_stream(StringIO("1 Sol Ring (C21) 244 #upscale\n"))
+
+    assert type(decklist.entries[0]) is Card
+    # Captured WITH leading whitespace so the line round-trips byte-for-byte.
+    assert decklist.entries[0].modeline == " #upscale"
+
+
+def test_decklist_card_captures_stacked_modelines(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_card_lookup(monkeypatch)
+    from mtg_proxies.decklists import Card, parse_decklist_stream
+
+    decklist, _, _ = parse_decklist_stream(StringIO("4 Mountain (RVR) 271 #upscale #normalize\n"))
+
+    assert type(decklist.entries[0]) is Card
+    assert decklist.entries[0].modeline == " #upscale #normalize"
+
+
+def test_decklist_card_preserves_internal_whitespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Round-trip must be byte-for-byte: multiple spaces between segments are preserved."""
+    _patch_card_lookup(monkeypatch)
+    from mtg_proxies.decklists import parse_decklist_stream
+
+    src = "1 Sol Ring (C21) 244   #upscale   #normalize"
+    decklist, _, _ = parse_decklist_stream(StringIO(src + "\n"))
+
+    assert format(decklist, "arena") == src
+
+
+def test_decklist_unknown_verb_warning_surfaces_at_parse_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Modeline ParseWarnings must come back via parse_decklist_stream's warnings list."""
+    _patch_card_lookup(monkeypatch)
+    from mtg_proxies.decklists import parse_decklist_stream
+
+    _, _, warnings = parse_decklist_stream(StringIO("1 Sol Ring (C21) 244 #frobnicate --x 1\n"))
+
+    assert any("frobnicate" in str(w) for w in warnings)
+
+
+def test_decklist_unrecognized_leading_hash_is_not_treated_as_modeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A trailing ``#`` whose first segment is not a known verb is left attached to the line.
+
+    Without this, ad-hoc annotations like ``1 Sol Ring #foil version I own`` would silently
+    have their text mangled into a bogus modeline.
+    """
+    _patch_card_lookup(monkeypatch)
+    from mtg_proxies.decklists import parse_decklist_stream
+
+    # When the suffix isn't a real modeline, parse_decklist_stream should NOT strip it; the
+    # line then fails the card-line regex and becomes a comment (matching pre-feature behavior).
+    decklist, _, _ = parse_decklist_stream(StringIO("1 Sol Ring (C21) 244 #my favourite copy\n"))
+
+    # The line should NOT have been stripped of "#my favourite copy" silently.
+    assert all(getattr(e, "modeline", "") != "#my favourite copy" for e in decklist.entries)
+
+
+def test_decklist_modeline_roundtrip_arena_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_card_lookup(monkeypatch)
+    from mtg_proxies.decklists import parse_decklist_stream
+
+    src = "1 Caves of Koilos (DRC) 148 #mpcfill --similarity 0.83 --frame-strictness 0.06"
+    decklist, _, _ = parse_decklist_stream(StringIO(src + "\n"))
+
+    rendered = format(decklist, "arena")
+    assert rendered == src
+
+
+def test_decklist_modeline_roundtrip_text_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_card_lookup(monkeypatch)
+    from mtg_proxies.decklists import parse_decklist_stream
+
+    decklist, _, _ = parse_decklist_stream(StringIO("1 Sol Ring (C21) 244 #upscale\n"))
+
+    # text format: "{count} {name}" + " {modeline}"
+    assert format(decklist, "text") == "1 Sol Ring #upscale"
+
+
+def test_decklist_full_line_comment_with_hash_inside_unchanged() -> None:
+    from mtg_proxies.decklists import Comment, parse_decklist_stream
+
+    src = "# 1 Sol Ring (C21) 244 #upscale"
+    decklist, _, _ = parse_decklist_stream(StringIO(src + "\n"))
+
+    assert len(decklist.entries) == 1
+    assert type(decklist.entries[0]) is Comment
+    assert decklist.entries[0].text == src
+
+
 def test_reversible_cards() -> None:
     """Check that reversible cards are parsed correctly."""
     from mtg_proxies import fetch_scans_scryfall

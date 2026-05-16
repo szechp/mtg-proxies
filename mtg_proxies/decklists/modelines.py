@@ -1,0 +1,162 @@
+"""Per-card modeline parsing.
+
+A modeline is a trailing ``#verb [--flag value]…`` segment on a decklist line that
+selectively applies a transformation (mpcfill, upscale, normalize, shadow-lift) to a
+single card. Multiple segments may stack, separated by whitespace-then-``#``.
+
+The decklist parser captures the raw modeline text on each ``Card`` so it round-trips
+byte-for-byte through serialization. The ``print`` command parses the raw text via
+:func:`parse_modeline_trailer` at run time to obtain validated ``Directive`` objects.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any
+
+from mtg_proxies.decklists.sanitizing import ParseWarning
+
+FlagValidator = Callable[[str], Any]
+
+
+def _float_in_range(lo: float, hi: float) -> FlagValidator:
+    def _check(s: str) -> float:
+        v = float(s)
+        if not (lo <= v <= hi):
+            raise ValueError(f"value {v} not in [{lo}, {hi}]")
+        return v
+
+    return _check
+
+
+def _choice(*opts: str) -> FlagValidator:
+    def _check(s: str) -> str:
+        if s not in opts:
+            raise ValueError(f"value {s!r} not in {opts!r}")
+        return s
+
+    return _check
+
+
+def _path_str(s: str) -> str:
+    return s
+
+
+VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
+    "mpcfill": {
+        "--similarity": _float_in_range(0.0, 1.0),
+        "--frame-strictness": _float_in_range(0.0, 1.0),
+        "--matcher": _choice("embedding", "phash"),
+    },
+    "upscale": {
+        "--upscale-model": _path_str,
+    },
+    "normalize": {
+        "--clip-percent": _float_in_range(0.0, 10.0),
+    },
+    "shadow-lift": {
+        "--amount": _float_in_range(0.0, 1.0),
+    },
+}
+
+
+@dataclass(slots=True)
+class Directive:
+    """One parsed modeline directive: a verb plus validated flag values."""
+
+    verb: str
+    flags: dict[str, Any] = field(default_factory=dict)
+
+
+# Trailing modeline pattern: a whitespace boundary followed by '#' and the rest of the line.
+# Anchored at end-of-line so we only match a true trailer (not a '#' embedded mid-name, which
+# Magic card names don't contain anyway). The leading whitespace IS captured so the modeline
+# round-trips byte-for-byte through ``Decklist.__format__``.
+MODELINE_TRAILER_RE = re.compile(r"(\s+#\S.*)$")
+
+
+def split_modeline_trailer(line: str) -> tuple[str, str]:
+    """Split a decklist line into ``(main, trailer)``.
+
+    The trailer includes its **leading whitespace** plus the ``#`` and everything after.
+    An absent trailer returns ``""``. The split only happens when the first ``#``-segment's
+    verb is recognized in :data:`VERB_REGISTRY`; an unrecognized leading verb is treated as a
+    free-form annotation and the line is returned unchanged. The main portion preserves the
+    trailing characters that the regex did not consume.
+    """
+    m = MODELINE_TRAILER_RE.search(line)
+    if not m:
+        return line, ""
+    trailer_raw = m.group(1)
+    first_segment = _split_segments(trailer_raw.lstrip())
+    if not first_segment or first_segment[0].split()[0] not in VERB_REGISTRY:
+        return line, ""
+    return line[: m.start()], trailer_raw
+
+
+def _split_segments(trailer: str) -> list[str]:
+    """Split a trailer like ``#upscale #mpcfill --similarity 0.83`` into per-verb segments."""
+    if not trailer.startswith("#"):
+        return []
+    parts = re.split(r"\s+#", trailer[1:])
+    return [p.strip() for p in parts if p.strip()]
+
+
+def parse_modeline_trailer(trailer: str) -> tuple[list[Directive], list[ParseWarning]]:
+    """Parse a modeline trailer into directives and warnings.
+
+    Args:
+        trailer: The text of the modeline trailer including the leading ``#`` (or empty).
+
+    Returns:
+        directives: validated directives in source order; segments with unknown verbs or
+            invalid flags are dropped.
+        warnings: one ParseWarning per dropped segment.
+    """
+    directives: list[Directive] = []
+    warnings: list[ParseWarning] = []
+    if not trailer.strip():
+        return directives, warnings
+
+    for segment in _split_segments(trailer.strip()):
+        tokens = segment.split()
+        verb = tokens[0]
+        if verb not in VERB_REGISTRY:
+            warnings.append(ParseWarning("WARNING", f"Unknown modeline verb '#{verb}'; dropping segment."))
+            continue
+
+        flag_specs = VERB_REGISTRY[verb]
+        flag_tokens = tokens[1:]
+        parsed_flags: dict[str, Any] = {}
+        dropped = False
+        i = 0
+        while i < len(flag_tokens):
+            flag = flag_tokens[i]
+            if flag not in flag_specs:
+                warnings.append(ParseWarning("WARNING", f"Unknown flag {flag!r} for #{verb}; dropping segment."))
+                dropped = True
+                break
+            if i + 1 >= len(flag_tokens):
+                warnings.append(ParseWarning("WARNING", f"Flag {flag!r} for #{verb} missing value; dropping segment."))
+                dropped = True
+                break
+            value_str = flag_tokens[i + 1]
+            try:
+                parsed_flags[flag] = flag_specs[flag](value_str)
+            except ValueError as exc:
+                warnings.append(
+                    ParseWarning(
+                        "WARNING",
+                        f"Invalid value {value_str!r} for {flag} on #{verb}: {exc}; dropping segment.",
+                    )
+                )
+                dropped = True
+                break
+            i += 2
+
+        if not dropped:
+            directives.append(Directive(verb=verb, flags=parsed_flags))
+
+    return directives, warnings

@@ -13,21 +13,20 @@ def merge_duplicates(decklist: Decklist, identifier: str = "oracle_id") -> Deckl
         decklist: Decklist object
         identifier: Id to merge on.
     """
-    cards_by_id = {}
+    # Cards with different per-card modelines must NOT merge — they carry different print-time
+    # directives and merging would silently drop everything after the first.
+    cards_by_key: dict[tuple[str, str], Card] = {}
 
     merged = Decklist()
     for entry in decklist.entries:
         if isinstance(entry, Card):
-            card_id = entry[identifier]
-            if card_id in cards_by_id:
-                # Merge
-                cards_by_id[card_id].count += entry.count
+            key = (entry[identifier], entry.modeline)
+            if key in cards_by_key:
+                cards_by_key[key].count += entry.count
             else:
-                # Append card
                 merged.entries.append(entry)
-                cards_by_id[card_id] = merged.entries[-1]
+                cards_by_key[key] = merged.entries[-1]
         else:
-            # Append comment
             merged.entries.append(entry)
 
     return merged
