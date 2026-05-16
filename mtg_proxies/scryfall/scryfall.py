@@ -458,11 +458,7 @@ def recommend_print(
 
         # Skip the standard-art "lowres → highres elsewhere" fallback when we're restricted to
         # the user's preferred set — they opted in, so respect it.
-        if (
-            art_preference == "standard"
-            and not best_card.get("highres_image", False)
-            and not preferred_set_restricted
-        ):
+        if art_preference == "standard" and not best_card.get("highres_image", False) and not preferred_set_restricted:
             best_card = _select_standard_fallback(alternatives, scores)
 
         if current is not None:

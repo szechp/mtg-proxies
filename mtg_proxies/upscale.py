@@ -5,9 +5,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-_MODEL_URL = (
-    "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth"
-)
+_MODEL_URL = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth"
 _MODEL_CACHE = Path.home() / ".cache" / "mtg-proxies" / "RealESRGAN_x4plus_anime_6B.pth"
 
 # Target width after upscaling: matches Scryfall highres PNG width.

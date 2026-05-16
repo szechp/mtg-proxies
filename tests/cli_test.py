@@ -19,7 +19,7 @@ def test_main(capsys: pytest.CaptureFixture) -> None:
 
     # Check output
     captured = capsys.readouterr()
-    assert "usage: mtg-proxies [-h] {print,convert,tokens,deck_value} ..." in captured.out
+    assert "usage: mtg-proxies [-h] {print,convert,tokens,deck_value,mpcfill} ..." in captured.out
     assert "Prepare a decklist for printing" in captured.out
     assert "Convert a decklist to text or arena format" in captured.out
     assert "Append the created tokens to a decklist" in captured.out
@@ -213,10 +213,13 @@ def test_main_print_custom_art_missing_folder_errors(tmp_path, capsys: pytest.Ca
     out_file = tmp_path / "decklist.pdf"
     missing_dir = tmp_path / "missing"
 
-    with patch(
-        "sys.argv",
-        ["mtg-proxies", "print", "--custom-art", str(missing_dir), str(out_file)],
-    ), pytest.raises(SystemExit):
+    with (
+        patch(
+            "sys.argv",
+            ["mtg-proxies", "print", "--custom-art", str(missing_dir), str(out_file)],
+        ),
+        pytest.raises(SystemExit),
+    ):
         main()
 
     captured = capsys.readouterr()
@@ -298,7 +301,10 @@ def test_main_print_card_back_explicit_count(tmp_path) -> None:
     plt.imsave(back_image, np.zeros((4, 4, 4), dtype=np.uint8))
 
     with (
-        patch("sys.argv", ["mtg-proxies", "print", str(out_file), "--card-back", str(back_image), "--card-back-count", "3"]),
+        patch(
+            "sys.argv",
+            ["mtg-proxies", "print", str(out_file), "--card-back", str(back_image), "--card-back-count", "3"],
+        ),
         patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
     ):
         main()
@@ -361,10 +367,15 @@ def test_main_print_card_back_duplex_mode_pairs_custom_art(tmp_path) -> None:
         patch(
             "sys.argv",
             [
-                "mtg-proxies", "print", str(out_file),
-                "--custom-art", str(custom_dir),
-                "--custom-art-bleed-crop", "0",
-                "--card-back", str(back_image),
+                "mtg-proxies",
+                "print",
+                str(out_file),
+                "--custom-art",
+                str(custom_dir),
+                "--custom-art-bleed-crop",
+                "0",
+                "--card-back",
+                str(back_image),
             ],
         ),
         patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
@@ -400,10 +411,16 @@ def test_main_print_card_back_duplex_mode_pairs_decklist_plus_custom_art(tmp_pat
         patch(
             "sys.argv",
             [
-                "mtg-proxies", "print", "decklist.txt", str(out_file),
-                "--custom-art", str(custom_dir),
-                "--custom-art-bleed-crop", "0",
-                "--card-back", str(back_image),
+                "mtg-proxies",
+                "print",
+                "decklist.txt",
+                str(out_file),
+                "--custom-art",
+                str(custom_dir),
+                "--custom-art-bleed-crop",
+                "0",
+                "--card-back",
+                str(back_image),
             ],
         ),
         patch("mtg_proxies.cli.parse_decklist_spec", return_value=Mock()),
@@ -431,7 +448,9 @@ def test_main_print_card_back_missing_image_file_errors(tmp_path, capsys: pytest
     missing = tmp_path / "no_such_file.png"
 
     with (
-        patch("sys.argv", ["mtg-proxies", "print", str(out_file), "--card-back", str(missing), "--card-back-count", "3"]),
+        patch(
+            "sys.argv", ["mtg-proxies", "print", str(out_file), "--card-back", str(missing), "--card-back-count", "3"]
+        ),
         pytest.raises(SystemExit),
     ):
         main()
@@ -513,6 +532,7 @@ def test_main_print_card_back_duplex_mode_without_fronts_errors(tmp_path, capsys
 
     captured = capsys.readouterr()
     assert "requires a decklist or --custom-art" in captured.out
+
 
 def test_main_convert_no_preferred_set_flag_no_reordering(tmp_path) -> None:
     """Without --set, card order is preserved as-is."""
@@ -866,10 +886,13 @@ def test_main_convert_rejects_premium_without_basic_lands(tmp_path, capsys: pyte
 
     out_file = tmp_path / "decklist.txt"
 
-    with patch(
-        "sys.argv",
-        ["mtg-proxies", "convert", "decklist.txt", str(out_file), "--art-preference", "premium"],
-    ), pytest.raises(SystemExit):
+    with (
+        patch(
+            "sys.argv",
+            ["mtg-proxies", "convert", "decklist.txt", str(out_file), "--art-preference", "premium"],
+        ),
+        pytest.raises(SystemExit),
+    ):
         main()
 
     captured = capsys.readouterr()
@@ -881,10 +904,13 @@ def test_main_convert_basic_lands_invalid_spec_errors(tmp_path, capsys: pytest.C
 
     out_file = tmp_path / "lands.txt"
 
-    with patch(
-        "sys.argv",
-        ["mtg-proxies", "convert", str(out_file), "--basic-lands", "mountain"],
-    ), pytest.raises(SystemExit):
+    with (
+        patch(
+            "sys.argv",
+            ["mtg-proxies", "convert", str(out_file), "--basic-lands", "mountain"],
+        ),
+        pytest.raises(SystemExit),
+    ):
         main()
 
     captured = capsys.readouterr()
@@ -943,10 +969,13 @@ def test_main_convert_out_flag_overrides_positional(tmp_path) -> None:
 def test_main_convert_basic_lands_requires_output_file(capsys: pytest.CaptureFixture) -> None:
     from mtg_proxies.cli import main
 
-    with patch(
-        "sys.argv",
-        ["mtg-proxies", "convert", "--basic-lands", "mountain=9", "forest=7"],
-    ), pytest.raises(SystemExit):
+    with (
+        patch(
+            "sys.argv",
+            ["mtg-proxies", "convert", "--basic-lands", "mountain=9", "forest=7"],
+        ),
+        pytest.raises(SystemExit),
+    ):
         main()
 
     captured = capsys.readouterr()
@@ -1424,18 +1453,21 @@ def test_main_print_custom_art_bleed_crop_too_large_errors(tmp_path, capsys: pyt
     image_path = custom_dir / "art.png"
     plt.imsave(image_path, np.zeros((4, 4, 4), dtype=np.uint8))
 
-    with patch(
-        "sys.argv",
-        [
-            "mtg-proxies",
-            "print",
-            "--custom-art",
-            str(custom_dir),
-            "--custom-art-bleed-crop",
-            "50",
-            str(out_file),
-        ],
-    ), pytest.raises(SystemExit):
+    with (
+        patch(
+            "sys.argv",
+            [
+                "mtg-proxies",
+                "print",
+                "--custom-art",
+                str(custom_dir),
+                "--custom-art-bleed-crop",
+                "50",
+                str(out_file),
+            ],
+        ),
+        pytest.raises(SystemExit),
+    ):
         main()
 
     captured = capsys.readouterr()
@@ -1748,8 +1780,8 @@ def test_generate_basic_lands_decklist_standard_avoids_full_art_flag_when_regula
         "set": "fdn",
         "collector_number": "290",
         "type_line": "Basic Land — Forest",
-        "full_art": True,         # flagged full_art by Scryfall...
-        "frame_effects": [],      # ...but NOT listed in frame_effects
+        "full_art": True,  # flagged full_art by Scryfall...
+        "frame_effects": [],  # ...but NOT listed in frame_effects
         "promo_types": [],
         "border_color": "black",
         "frame": "2015",
@@ -1818,7 +1850,9 @@ def test_upscale_images_skips_highres(tmp_path: pytest.TempPathFactory) -> None:
 
     # Patch spandrel out entirely so the lazy import inside upscale_images doesn't fail
     spandrel_mock = Mock()
-    with patch.dict(sys.modules, {"spandrel": spandrel_mock, "torch": Mock(), "numpy": Mock(), "PIL": Mock(), "PIL.Image": Mock()}):
+    with patch.dict(
+        sys.modules, {"spandrel": spandrel_mock, "torch": Mock(), "numpy": Mock(), "PIL": Mock(), "PIL.Image": Mock()}
+    ):
         from mtg_proxies.upscale import upscale_images
 
         result = upscale_images([str(img)], highres_flags=[True])
@@ -1838,7 +1872,9 @@ def test_upscale_images_uses_cached_4x(tmp_path: pytest.TempPathFactory) -> None
     cached.write_bytes(b"upscaled")
 
     # Already cached — model loading code is never reached, so no real spandrel needed
-    with patch.dict(sys.modules, {"spandrel": Mock(), "torch": Mock(), "numpy": Mock(), "PIL": Mock(), "PIL.Image": Mock()}):
+    with patch.dict(
+        sys.modules, {"spandrel": Mock(), "torch": Mock(), "numpy": Mock(), "PIL": Mock(), "PIL.Image": Mock()}
+    ):
         from mtg_proxies.upscale import upscale_images
 
         result = upscale_images([str(img)], highres_flags=[False])

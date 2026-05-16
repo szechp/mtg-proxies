@@ -42,6 +42,9 @@ Create a high quality printable PDF from your decklist or a list of cards you wa
 - **ManaStack and Archidekt integration**  
   Use ManaStack and Archidekt deck IDs directly as input instead of local files. Archidekt decks must be public.
 
+- **MPCFill art matching**  
+  `mtg-proxies mpcfill` picks the visually-closest community render from [MPCFill](https://mpcfill.com) for each card by CLIP-embedding (default) or perceptual-hash compare against the Scryfall reference, then writes a flat folder of one PNG per slot — front + DFC back — plus a `match_report.csv` audit log. The flat output is designed to feed `mtg-proxies print --custom-art OUTDIR` for the final printable PDF.
+
 ## Usage
 
 1. Install `mtg-proxies` using [uv](https://docs.astral.sh/uv/#installation).
@@ -315,6 +318,36 @@ options:
   --format {arena,text}
                         output format (default: arena)
 ```
+
+### mpcfill
+
+```
+usage: mtg-proxies mpcfill [-h] [--server SERVER] [--matcher {embedding,phash}]
+                           [--similarity SIMILARITY] [--threshold THRESHOLD]
+                           [--fallback {scryfall,skip,error}] [--size SIZE]
+                           [--hash-size HASH_SIZE] [--sources SOURCES]
+                           [--exclude-sources EXCLUDE_SOURCES] [--cache CACHE]
+                           [--no-cache] [--workers WORKERS] [--dry-run]
+                           [--frame-strictness FRAME_STRICTNESS]
+                           [--dfc-tolerance DFC_TOLERANCE] [--rematch-all]
+                           [decklist] outdir
+
+Match the visually-closest mpcfill community render for each card against the
+Scryfall reference and write one PNG per slot under OUTDIR (front + DFC back),
+plus a match_report.csv audit log. Designed to be piped into
+`mtg-proxies print --custom-art OUTDIR` for the final PDF.
+```
+
+Usage example — match against MPCFill and render a printable PDF:
+
+```bash
+mtg-proxies mpcfill decklist.txt ./mpc-order
+mtg-proxies print --custom-art ./mpc-order --card-back card_back.png proof.pdf
+```
+
+The first command writes `mpc-order/match_report.csv` plus one `<NNNN>-<slug>.png` per slot. The second command renders the printable PDF from those PNGs, using `card_back.png` for the non-DFC card backs.
+
+Use `--dry-run` to compute matches and emit the CSV without downloading full-resolution renders. Use `--sources` / `--exclude-sources` (comma-separated source names) to constrain which MPCFill contributors are considered. Use `--similarity` (embedding matcher) or `--threshold` (pHash) to tighten or loosen the acceptance bar.
 
 ### deck_value
 

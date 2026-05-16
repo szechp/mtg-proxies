@@ -1,3 +1,9 @@
+## Unreleased
+
+### Feat
+
+- feat: add mpcfill subcommand — matches Scryfall reference art against MPCFill community renders (CLIP embedding by default, pHash optional) and writes one PNG per slot for `mtg-proxies print --custom-art`
+
 ## 0.3.0 (2026-03-09)
 
 ### BREAKING CHANGE

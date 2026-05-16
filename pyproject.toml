@@ -3,13 +3,19 @@ name = "mtg-proxies"
 version = "0.3.0"
 authors = [{ name = "Robin More", email = "more@diddiz.de" }]
 description = "Print high-resolution MtG proxies."
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 dependencies = [
-    "numpy",
+    "numpy<2",
     "matplotlib",
     "requests",
     "tqdm",
     "fpdf2>=2.3.0",
+    "pillow>=10",
+    "imagehash>=4.3",
+    "torch<2.3",
+    "sentence-transformers>=3,<4",
+    "transformers>=4.46,<4.55",
+    "torchvision<0.18",
 ]
 
 [project.optional-dependencies]
@@ -112,6 +118,12 @@ known-local-folder = ["mtg_proxies"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: opt-in tests hitting the live mpcfill backend (skipped by default)",
+]
+addopts = "-m 'not integration'"
 
 [tool.flake8]
 select = ["I900"]

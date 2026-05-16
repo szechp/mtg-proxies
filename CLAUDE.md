@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **mtg-proxies** is a CLI tool that generates high-quality printable PDFs of Magic: The Gathering card proxies from decklists. It fetches card images from Scryfall's API and lays them out on pages ready for printing.
 
-Entry point: `mtg_proxies/cli.py` → `main()` → dispatches to `print`, `convert`, `tokens`, or `deck_value` subcommands.
+Entry point: `mtg_proxies/cli.py` → `main()` → dispatches to `print`, `convert`, `tokens`, `deck_value`, or `mpcfill` subcommands.
 
 ## Commands
 
@@ -62,7 +62,18 @@ Decklist file / ManaStack ID / Archidekt ID
 - `print_cards_fpdf()` — used when the outfile is `.pdf`; supports `--split-pages` and crop marks
 - `print_cards_matplotlib()` — used for non-PDF outputs (PNG/JPG/etc.)
 
-**`mtg_proxies/cli.py`** — All user-facing logic: art preference (`standard`/`wild` for both `print` and `convert`; `premium` is `convert --basic-lands` only), custom art folder append, basic land generation with weighted random art variety (only for premium/wild — standard mode is uniform shuffle), duplex card-back layout (`--card-back PATH`: alternating front/back sheets, back rows mirrored for long-edge duplex flip, DFCs routed to their actual back face), AI upscale orchestration.
+**`mtg_proxies/cli.py`** — All user-facing logic: art preference (`standard`/`wild` for both `print` and `convert`; `premium` is `convert --basic-lands` only), custom art folder append, basic land generation with weighted random art variety (only for premium/wild — standard mode is uniform shuffle), duplex card-back layout (`--card-back PATH`: alternating front/back sheets, back rows mirrored for long-edge duplex flip, DFCs routed to their actual back face), AI upscale orchestration, mpcfill orchestration (`_run_mpcfill`: per-card concurrent Scryfall + mpcfill fetches, CLIP embedding or pHash matching, byte-for-byte slot copies, CSV report).
+
+**`mtg_proxies/mpcfill/`** — Match Scryfall reference art against MPCFill community renders and write one PNG per slot (front + DFC back) under OUTDIR, plus a `match_report.csv` audit log. Designed to feed `mtg-proxies print --custom-art OUTDIR` for the final PDF.
+- `client.py`: two-step backend search. `POST /2/editorSearch/` returns ranked identifier lists, then `POST /2/cards/` resolves them to full Card objects. The `sourceSettings.sources` field MUST be `[[pk, bool], ...]` — passing `null` triggers a Pydantic schema 400. The client fetches `/2/sources/` first (cached 24h) to build the proper list. Queries batched at 100 per call (both endpoints); 50ms polite throttle via `mpcfill_rate_limiter`
+- `embedder.py`: CLIP ViT-B/32 image encoder via `sentence-transformers`. Lazy-loaded on first match call (~600MB model download on first run, cached to `~/.cache/torch/`). Embeddings are 512-dim float32 vectors persisted to `~/.cache/mtg-proxies/mpcfill/embeddings/<drive_id>.npy`
+- `matcher.py`: two matcher strategies. `match_by_embedding` (default) uses CLIP cosine similarity — content-aware, robust to border/crop/recolor differences. `match` uses pHash — fast, but only works when candidate pixels are structurally close. Both are wrapped by `match_tiered_*` for DPI-tier ladders (try high-DPI candidates first, fall back to lower DPI if nothing scores)
+- `drive.py`: Google Drive thumbnail fetcher. Hits `drive.google.com/thumbnail?sz=w<N>&id=<ID>` then falls back to `lh3.googleusercontent.com/d/<ID>=w<N>` on 429/403/5xx (or 200+HTML interstitial) with exponential backoff (2s → 60s, max 5 retries). `sz=w<N>` is honored up to the source resolution
+- `naming.py`: filename helpers — `slugify_card_name` (`Murderous Rider // Swift End` → `murderous_rider`) and `slot_filename` (`<NNNN>-<slug>.png`)
+- `cache.py`: on-disk cache layout under `~/.cache/mtg-proxies/mpcfill/` (`thumbs/`, `search/`, `embeddings/`). Search responses are written atomically (tempfile + rename) so an interrupted run doesn't poison the cache
+- `errors.py`: `MpcfillError` base + `ThumbnailFetchError`, `SearchError`, `MatchBelowThresholdError`
+
+**Matcher choice:** `--matcher embedding` (default) is right when Scryfall and MPCFill have different art treatments (borderless, extended, recolored). `--matcher phash` is right when you expect near-identical pixel layouts and want sub-second matching. The embedding matcher loads CLIP lazily, so pHash-only runs stay lean.
 
 ### Custom Art
 
@@ -71,6 +82,15 @@ The `print` subcommand accepts a folder of full-card images via `--custom-art FO
 ### Scryfall Caching
 
 Bulk card data and images are cached in `/tmp/scryfall_cache`. The cache is checked before making API requests. Rate limiting (100ms per request) is enforced globally via `RateLimiter`.
+
+### MPCFill Caching
+
+The `mpcfill` subcommand caches separately under `~/.cache/mtg-proxies/mpcfill/`:
+- `thumbs/<drive_id>__<size>.<ext>` — Drive thumbnails, content-addressed, no expiry
+- `search/<sha1>.json` — backend search and `/2/cards/` responses, 24h TTL
+- `hashes/<drive_id>__<crop>.hash` — persisted pHashes to skip re-decode (reserved; not written by current build)
+
+Pass `--no-cache` to bypass cache reads (writes still happen). Pass `--cache PATH` to relocate the cache root.
 
 ## Code Style
 

@@ -30,9 +30,9 @@ def _border_black(image: np.ndarray) -> np.ndarray | None:
         return None
     h, w = image.shape[:2]
     strips = (
-        image[5:15, int(w * 0.3) : int(w * 0.7)],          # top
+        image[5:15, int(w * 0.3) : int(w * 0.7)],  # top
         image[h - 15 : h - 5, int(w * 0.3) : int(w * 0.7)],  # bottom
-        image[int(h * 0.3) : int(h * 0.7), 5:15],           # left
+        image[int(h * 0.3) : int(h * 0.7), 5:15],  # left
         image[int(h * 0.3) : int(h * 0.7), w - 15 : w - 5],  # right
     )
     means = []

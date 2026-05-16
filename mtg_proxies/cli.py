@@ -1,21 +1,56 @@
 import argparse
+import csv
+import logging
 import random
 import re
 import tempfile
-from collections.abc import Container
+from collections.abc import Callable, Container
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Literal, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
+import requests
 
 import mtg_proxies.scryfall as scryfall
 from mtg_proxies import fetch_scans_scryfall, print_cards_fpdf, print_cards_matplotlib
 from mtg_proxies.deck_value import show_deck_value
 from mtg_proxies.decklists import archidekt, manastack, parse_decklist
+from mtg_proxies.decklists.cleaning import merge_duplicates
 from mtg_proxies.decklists.decklist import Card, Comment, Decklist
+from mtg_proxies.mpcfill import drive as mpcfill_drive
+from mtg_proxies.mpcfill import matcher as mpcfill_matcher
+from mtg_proxies.mpcfill.cache import default_cache_root
+from mtg_proxies.mpcfill.client import DEFAULT_SERVER as MPCFILL_DEFAULT_SERVER
+from mtg_proxies.mpcfill.client import search as mpcfill_search
+from mtg_proxies.mpcfill.errors import MpcfillError, ThumbnailFetchError
+from mtg_proxies.mpcfill.naming import slot_filename, slugify_card_name
+from mtg_proxies.mpcfill.types import OrderCard
 from mtg_proxies.scans import fetch_scans_paired, fetch_scans_scryfall_flagged
 from mtg_proxies.tokens import get_tokens
+
+MPCFILL_CSV_COLUMNS = [
+    "name",
+    "set",
+    "collector_number",
+    "scryfall_id",
+    "mpcfill_drive_id",
+    "source_name",
+    "similarity",
+    "art_similarity",
+    "frame_similarity",
+    "similarity_tier",
+    "hamming_distance",
+    "dpi",
+    "dpi_tier",
+    "decision",
+    "quantity",
+    "slot_indices",
+    "image_basename",
+]
+MPCFILL_WORKERS_HARD_CAP = 8
+_mpcfill_log = logging.getLogger("mtg_proxies.mpcfill.cli")
 
 DEFAULT_CUSTOM_ART_BLEED_CROP_PERCENT = 4.0
 BASIC_LAND_NAMES = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
@@ -32,6 +67,7 @@ EXCLUDED_BASIC_LAND_PRINTS = {
     ("sld", "257"),
     ("sld", "258"),
 }
+
 
 def _cards_per_sheet_dims(paper_inches: np.ndarray, scale: float) -> tuple[int, int]:
     """Return (cards_per_row, rows_per_sheet) for the given paper and card scale.
@@ -89,19 +125,37 @@ def parse_decklist_spec(
     Args:
         decklist_spec: File path or ManaStack id
         warn_levels: Levels of warnings to show
+        art_preference: Art recommendation style passed through to the parser/recommender.
         preferred_sets: Ordered list of Scryfall set codes to prefer when recommending prints (e.g. ["ltr", "lto"])
+        allow_low_res: When True with `preferred_sets`, keep low-res prints from preferred sets
+            instead of upgrading to highres alternatives.
     """
     print("Parsing decklist ...")
     if Path(decklist_spec).is_file():  # Decklist is file
-        decklist, ok, warnings = parse_decklist(decklist_spec, art_preference=art_preference, preferred_sets=preferred_sets, allow_low_res=allow_low_res)
+        decklist, ok, warnings = parse_decklist(
+            decklist_spec,
+            art_preference=art_preference,
+            preferred_sets=preferred_sets,
+            allow_low_res=allow_low_res,
+        )
     elif decklist_spec.lower().startswith("manastack:") and decklist_spec.split(":")[-1].isdigit():
         # Decklist on Manastack
         manastack_id = decklist_spec.split(":")[-1]
-        decklist, ok, warnings = manastack.parse_decklist(manastack_id, art_preference=art_preference, preferred_sets=preferred_sets, allow_low_res=allow_low_res)
+        decklist, ok, warnings = manastack.parse_decklist(
+            manastack_id,
+            art_preference=art_preference,
+            preferred_sets=preferred_sets,
+            allow_low_res=allow_low_res,
+        )
     elif decklist_spec.lower().startswith("archidekt:") and decklist_spec.split(":")[-1].isdigit():
         # Decklist on Archidekt
         archidekt_id = decklist_spec.split(":")[-1]
-        decklist, ok, warnings = archidekt.parse_decklist(archidekt_id, art_preference=art_preference, preferred_sets=preferred_sets, allow_low_res=allow_low_res)
+        decklist, ok, warnings = archidekt.parse_decklist(
+            archidekt_id,
+            art_preference=art_preference,
+            preferred_sets=preferred_sets,
+            allow_low_res=allow_low_res,
+        )
     else:
         print(f"Cant find decklist '{decklist_spec}'")
         quit()
@@ -135,9 +189,7 @@ def papersize(string: str) -> np.ndarray:
     raise argparse.ArgumentTypeError()
 
 
-_PIPELINE_CACHE_SUFFIX_RE = re.compile(
-    r"(_norm(_cp[\d.eE+-]+)?|_shadow(_a[\d.eE+-]+)?|_bg\d{9})$"
-)
+_PIPELINE_CACHE_SUFFIX_RE = re.compile(r"(_norm(_cp[\d.eE+-]+)?|_shadow(_a[\d.eE+-]+)?|_bg\d{9})$")
 
 
 def _normalize_custom_art_images(
@@ -147,7 +199,8 @@ def _normalize_custom_art_images(
     # their source. Re-running with --custom-art pointing at a folder that already contains
     # those artifacts would otherwise ingest them as new cards.
     images = sorted(
-        p for p in custom_folder.iterdir()
+        p
+        for p in custom_folder.iterdir()
         if p.is_file()
         and p.suffix.lower() in (".png", ".jpg", ".jpeg")
         and not _PIPELINE_CACHE_SUFFIX_RE.search(p.stem)
@@ -328,7 +381,7 @@ def _generate_basic_lands_decklist(
             card.get("collector_number", ""),
         )
 
-    def weighted_unique_order(cards: list[dict], score_fn) -> list[dict]:
+    def weighted_unique_order(cards: list[dict], score_fn: Callable[[dict], object]) -> list[dict]:
         ranked = sorted(cards, key=score_fn, reverse=True)
         pool = list(ranked)
         ordered: list[dict] = []
@@ -342,7 +395,10 @@ def _generate_basic_lands_decklist(
         return ordered
 
     for land_name, count in land_counts.items():
-        recommendation_preference = cast(Literal["standard", "wild"], art_preference if art_preference != "premium" else "wild")
+        recommendation_preference = cast(
+            Literal["standard", "wild"],
+            art_preference if art_preference != "premium" else "wild",
+        )
         choices = [
             card
             for card in scryfall.recommend_print(
@@ -389,6 +445,672 @@ def _generate_basic_lands_decklist(
             decklist.append_card(1, card)
 
     return decklist
+
+
+class _MpcfillFallbackError(Exception):
+    """Raised inside an mpcfill worker when --fallback=error and no candidate qualifies.
+
+    Caught by the main thread, which cancels pending futures and exits with status 1. Using a
+    domain exception (instead of SystemExit from the worker) lets the main loop clean up the
+    thread pool deterministically and emit a clear error message.
+    """
+
+    def __init__(self, card_name: str) -> None:
+        super().__init__(f"No mpcfill candidate within threshold for {card_name!r}")
+        self.card_name = card_name
+
+
+def _split_comma_list(raw: str | None) -> list[str] | None:
+    """Split a comma-separated CLI value into a list, dropping empty entries."""
+    if raw is None:
+        return None
+    items = [item.strip() for item in raw.split(",") if item.strip()]
+    return items or None
+
+
+def _assign_slots(decklist: Decklist) -> tuple[list[OrderCard], int]:
+    """Walk the decklist and compute slot assignments, including DFC back entries.
+
+    DFC backs occupy a SINGLE slot (the front's lowest) regardless of the copy count — only
+    one back PNG is written per unique DFC, since the back face is identical across copies.
+
+    Returns:
+        Tuple of (cards, total_slots) where `cards` contains front entries followed by back
+        entries.
+    """
+    fronts: list[OrderCard] = []
+    backs: list[OrderCard] = []
+    next_slot = 0
+    for entry in decklist.cards:
+        if entry.count <= 0:
+            continue
+        card_dict = entry.card
+        faces = scryfall.get_faces(card_dict)
+        is_dfc = len(faces) > 1
+        front_name = card_dict.get("name") or faces[0].get("name", "")
+        front_slug = slugify_card_name(front_name if not is_dfc else faces[0].get("name", front_name))
+        slot_indices = list(range(next_slot, next_slot + entry.count))
+        next_slot += entry.count
+        front_basename = f"{slot_indices[0] + 1:04d}-{front_slug}.png"
+        fronts.append(
+            OrderCard(
+                name=front_name,
+                query=(faces[0].get("name") or front_name).lower(),
+                slot_indices=slot_indices,
+                image_basename=front_basename,
+                is_back=False,
+                scryfall_id=str(card_dict.get("id", "")),
+                set_code=str(card_dict.get("set", "")),
+                collector_number=str(card_dict.get("collector_number", "")),
+            )
+        )
+        if is_dfc:
+            back_name = faces[1].get("name", "")
+            back_slug = slugify_card_name(back_name)
+            back_slot = slot_indices[0]
+            back_basename = f"{back_slot + 1:04d}-{back_slug}.png"
+            backs.append(
+                OrderCard(
+                    name=back_name,
+                    query=back_name.lower(),
+                    slot_indices=[back_slot],
+                    image_basename=back_basename,
+                    is_back=True,
+                    scryfall_id=str(card_dict.get("id", "")),
+                    set_code=str(card_dict.get("set", "")),
+                    collector_number=str(card_dict.get("collector_number", "")),
+                )
+            )
+    return fronts + backs, next_slot
+
+
+def _english_equivalent(card_dict: dict, *, face_index: int = 0) -> dict:
+    """Return an English print of the same card when the input is non-English.
+
+    For meld/transform layouts whose two faces have distinct `oracle_id`s, `face_index`
+    selects which face's `oracle_id` to use for the English lookup so the back face
+    matches the back's English equivalent (not the front's).
+    """
+    if card_dict.get("lang") == "en":
+        return card_dict
+    oracle_id = card_dict.get("oracle_id")
+    if not oracle_id and "card_faces" in card_dict:
+        faces = card_dict["card_faces"]
+        face_idx = face_index if face_index < len(faces) else 0
+        oracle_id = faces[face_idx].get("oracle_id") or faces[0].get("oracle_id")
+    if not oracle_id:
+        return card_dict
+    english = [c for c in scryfall.cards_by_oracle_id().get(oracle_id, []) if c.get("lang") == "en"]
+    return english[0] if english else card_dict
+
+
+def _reference_image_path(card_dict: dict, *, face_index: int, prefer_english: bool = False) -> Path:
+    """Return the local path to the Scryfall reference image for one face of a card.
+
+    Args:
+        card_dict: Scryfall card object from the user's decklist.
+        face_index: 0 for the front face, 1 for the back face of a DFC.
+        prefer_english: When True and the input is non-English, fetch an English equivalent
+            (same oracle_id, lang=en) instead. Used for the matcher's reference image so the
+            embedding compare isn't disturbed by foreign text on the card frame.
+    """
+    target = _english_equivalent(card_dict, face_index=face_index) if prefer_english else card_dict
+    face = scryfall.get_faces(target)[face_index]
+    image_uri = face["image_uris"]["png"]
+    return Path(scryfall.get_image(image_uri, silent=True))
+
+
+def _load_existing_csv_rows(outdir: Path) -> dict[str, dict[str, str]]:
+    """Read a prior `match_report.csv` from OUTDIR; return per-card key -> row mapping.
+
+    Rows with an empty `scryfall_id` are skipped — they can't be looked up by the canonical
+    `f"{scryfall_id}::{name}"` key and would collide if multiple such rows existed.
+    """
+    path = outdir / "match_report.csv"
+    if not path.is_file():
+        return {}
+    try:
+        with path.open(encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            return {
+                f"{row.get('scryfall_id', '')}::{row.get('name', '')}": dict(row)
+                for row in reader
+                if row.get("scryfall_id")
+            }
+    except (OSError, csv.Error):
+        return {}
+
+
+def _parse_float(raw: str | None) -> float | None:
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _parse_int(raw: str | None) -> int | None:
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _apply_preserved_row(card: OrderCard, row: dict[str, str]) -> None:
+    """Populate `card` fields from a previously-saved CSV row so it round-trips into the new CSV."""
+    card.drive_id = row.get("mpcfill_drive_id") or None
+    card.source_name = row.get("source_name") or None
+    card.similarity = _parse_float(row.get("similarity"))
+    card.art_similarity = _parse_float(row.get("art_similarity"))
+    card.frame_similarity = _parse_float(row.get("frame_similarity"))
+    card.similarity_tier = _parse_float(row.get("similarity_tier"))
+    card.hamming_distance = _parse_int(row.get("hamming_distance"))
+    card.dpi = _parse_int(row.get("dpi"))
+    card.dpi_tier = _parse_int(row.get("dpi_tier"))
+    card.decision = row.get("decision") or "matched"
+
+
+def _should_preserve(
+    card: OrderCard,
+    row: dict[str, str],
+    outdir: Path,
+    *,
+    matcher: str,
+    similarity_floor: float,
+    threshold: int,
+) -> bool:
+    """Decide whether `row` can be reused as-is for `card` on a re-run.
+
+    Refuses preservation for rows produced by an older scoring method — currently detected
+    by the absence of `art_similarity` (added when we split into two-region scoring with
+    frame strictness). Those scores aren't comparable to the current method, so we re-evaluate.
+    """
+    # Schema version gate: legacy CSV without per-region columns → re-evaluate. The old scores
+    # came from single-vector CLIP and aren't comparable to the new two-region min.
+    if matcher == "embedding" and "art_similarity" not in row:
+        return False
+    basename = row.get("image_basename", "")
+    if not basename:
+        return False
+    png_path = outdir / basename
+    if not png_path.is_file():
+        return False
+    if matcher == "embedding":
+        sim_raw = row.get("similarity") or ""
+        try:
+            existing_sim = float(sim_raw)
+        except ValueError:
+            return False
+        return existing_sim >= similarity_floor
+    # phash
+    hd_raw = row.get("hamming_distance") or ""
+    try:
+        existing_hd = int(hd_raw)
+    except ValueError:
+        return False
+    return existing_hd <= threshold
+
+
+def _write_mpcfill_csv(path: Path, cards: list[OrderCard]) -> None:
+    """Persist one CSV row per unique card (front and back rows for DFCs)."""
+    with path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=MPCFILL_CSV_COLUMNS)
+        writer.writeheader()
+        for card in cards:
+            writer.writerow({
+                "name": card.name,
+                "set": card.set_code,
+                "collector_number": card.collector_number,
+                "scryfall_id": card.scryfall_id,
+                "mpcfill_drive_id": card.drive_id or "",
+                "source_name": card.source_name or "",
+                "similarity": "" if card.similarity is None else f"{card.similarity:.4f}",
+                "art_similarity": "" if card.art_similarity is None else f"{card.art_similarity:.4f}",
+                "frame_similarity": "" if card.frame_similarity is None else f"{card.frame_similarity:.4f}",
+                "similarity_tier": "" if card.similarity_tier is None else f"{card.similarity_tier:.2f}",
+                "hamming_distance": "" if card.hamming_distance is None else card.hamming_distance,
+                "dpi": "" if card.dpi is None else card.dpi,
+                "dpi_tier": "" if card.dpi_tier is None else card.dpi_tier,
+                "decision": card.decision,
+                "quantity": card.quantity,
+                "slot_indices": " ".join(str(i) for i in card.slot_indices),
+                "image_basename": card.image_basename,
+            })
+
+
+def _run_mpcfill(args: argparse.Namespace) -> None:
+    """Orchestrate the `mpcfill` subcommand end-to-end."""
+    log = _mpcfill_log
+    if args.workers <= 0:
+        print("Error: --workers must be positive")
+        raise SystemExit(1)
+    workers = args.workers
+    if workers > MPCFILL_WORKERS_HARD_CAP:
+        print(
+            f"Warning: --workers={workers} above hard cap; capping to {MPCFILL_WORKERS_HARD_CAP}"
+            " to respect mpcfill rate limits"
+        )
+        workers = MPCFILL_WORKERS_HARD_CAP
+    if not args.decklist:
+        print("Error: mpcfill requires a decklist argument")
+        raise SystemExit(1)
+    if args.matcher == "phash" and args.dfc_tolerance < 1.0:
+        print(
+            "Error: --dfc-tolerance only applies to --matcher embedding."
+            " Re-run with --matcher embedding or --dfc-tolerance 1.0."
+        )
+        raise SystemExit(1)
+
+    try:
+        dpi_tiers = [int(t) for t in args.dpi_tiers.split(",") if t.strip()]
+    except ValueError as exc:
+        print(f"Error: --dpi-tiers must be comma-separated integers (got {args.dpi_tiers!r}): {exc}")
+        raise SystemExit(1) from exc
+    if not dpi_tiers:
+        dpi_tiers = [0]
+    # Always include a final 0-floor pass when --fallback=scryfall would otherwise be the only
+    # path for cards whose only candidates are low-DPI. User can opt out by passing a single tier.
+    if len(dpi_tiers) > 1 and dpi_tiers[-1] != 0:
+        dpi_tiers = [*dpi_tiers, 0]
+
+    # Parse --similarity-tiers (descending, for reporting). --similarity is the independent floor.
+    try:
+        similarity_tiers = sorted(
+            {float(t) for t in args.similarity_tiers.split(",") if t.strip()},
+            reverse=True,
+        )
+    except ValueError as exc:
+        print(f"Error: --similarity-tiers must be comma-separated floats (got {args.similarity_tiers!r}): {exc}")
+        raise SystemExit(1) from exc
+    if not similarity_tiers:
+        similarity_tiers = [0.85]
+    # Floor defaults to the lowest tier when not explicitly set; an explicit --similarity ratchets
+    # the floor up independently of the reporting ladder.
+    similarity_floor = args.similarity if args.similarity is not None else min(similarity_tiers)
+
+    outdir: Path = args.outdir
+    outdir.mkdir(parents=True, exist_ok=True)
+    cache_root: Path = args.cache if args.cache is not None else default_cache_root()
+    cache_root.mkdir(parents=True, exist_ok=True)
+
+    decklist = parse_decklist_spec(args.decklist, allow_low_res=True)
+    decklist = merge_duplicates(decklist, identifier="id")
+
+    cards, total_slots = _assign_slots(decklist)
+
+    source_filter = _split_comma_list(args.sources)
+    exclude_sources = _split_comma_list(args.exclude_sources)
+
+    session = requests.Session()
+    use_cache = not args.no_cache
+
+    # Preserve prior matches when re-running over an existing OUTDIR. A previously-recorded
+    # match that still meets the current acceptance bar (similarity for embedding, hamming for
+    # phash) is kept verbatim — its PNG stays untouched and its row round-trips into the new
+    # CSV. Cards that didn't meet the bar get re-processed normally. `--rematch-all` bypasses.
+    preserved_rows: dict[str, dict[str, str]] = {} if args.rematch_all else _load_existing_csv_rows(outdir)
+    preserved_cards: list[OrderCard] = []
+    cards_to_process: list[OrderCard] = []
+    for card in cards:
+        key = f"{card.scryfall_id}::{card.name}"
+        row = preserved_rows.get(key)
+        if row and _should_preserve(
+            card,
+            row,
+            outdir,
+            matcher=args.matcher,
+            similarity_floor=similarity_floor,
+            threshold=args.threshold,
+        ):
+            _apply_preserved_row(card, row)
+            preserved_cards.append(card)
+        else:
+            cards_to_process.append(card)
+
+    if preserved_cards:
+        bar = (
+            f"similarity >= {similarity_floor:.2f}"
+            if args.matcher == "embedding"
+            else f"hamming <= {args.threshold}"
+        )
+        print(
+            f"Preserved {len(preserved_cards)} prior match(es) meeting {bar}"
+            " (pass --rematch-all to re-evaluate)"
+        )
+
+    # Build the unique-query set from cards still needing a match — preserved cards already
+    # have their drive_id / source_name from the prior CSV.
+    unique_queries: list[str] = []
+    seen_queries: set[str] = set()
+    for card in cards_to_process:
+        if card.query not in seen_queries:
+            seen_queries.add(card.query)
+            unique_queries.append(card.query)
+
+    candidates_by_query: dict[str, list] = {}
+    if unique_queries:
+        print(f"Searching mpcfill for {len(unique_queries)} unique queries...")
+        try:
+            candidates_by_query = mpcfill_search(
+                args.server,
+                unique_queries,
+                session=session,
+                card_type="CARD",
+                source_filter=source_filter,
+                exclude_sources=exclude_sources,
+                cache_root=cache_root,
+                use_cache=use_cache,
+            )
+        except requests.RequestException as exc:
+            print(f"Error: mpcfill backend unreachable ({exc}); check --server={args.server!r}")
+            raise SystemExit(2) from exc
+        except MpcfillError as exc:
+            print(f"Error: mpcfill backend returned an error: {exc}")
+            raise SystemExit(2) from exc
+
+    def _fetcher_for(drive_id: str, size: int) -> bytes:
+        return mpcfill_drive.fetch_thumbnail(
+            drive_id,
+            size,
+            session=session,
+            cache_root=cache_root,
+        )
+
+    def _process(card: OrderCard) -> OrderCard:
+        face_index = 1 if card.is_back else 0
+        try:
+            decklist_card_dict = next(e.card for e in decklist.cards if str(e.card.get("id", "")) == card.scryfall_id)
+        except StopIteration:
+            log.exception("could not locate scryfall card for %s (id=%s)", card.name, card.scryfall_id)
+            card.decision = "error"
+            return card
+        try:
+            # The fallback path (no mpcfill match) writes the user's chosen print as-is.
+            # The matching path always compares against an English equivalent — mpcfill renders
+            # are typically English, so this keeps CLIP focused on the artwork.
+            fallback_ref_path = _reference_image_path(decklist_card_dict, face_index=face_index)
+            match_ref_path = _reference_image_path(
+                decklist_card_dict, face_index=face_index, prefer_english=True
+            )
+        except (KeyError, ValueError):
+            log.exception("scryfall reference unavailable for %s", card.name)
+            card.decision = "error"
+            return card
+
+        candidates = candidates_by_query.get(card.query, [])
+        result = None
+        matched_tier = 0
+        matched_sim_tier = 0.0
+        if candidates:
+            try:
+                from PIL import Image as _Image
+
+                with _Image.open(match_ref_path) as ref_img:
+                    ref_img.load()
+                    if args.matcher == "embedding":
+                        result, matched_tier, matched_sim_tier = mpcfill_matcher.match_tiered_embedding(
+                            ref_img,
+                            candidates,
+                            drive_fetcher=_fetcher_for,
+                            dpi_tiers=dpi_tiers,
+                            cache_root=cache_root,
+                            similarity_tiers=similarity_tiers,
+                            similarity_floor=similarity_floor,
+                            frame_strictness=args.frame_strictness,
+                        )
+                    else:
+                        result, matched_tier = mpcfill_matcher.match_tiered(
+                            ref_img,
+                            candidates,
+                            drive_fetcher=_fetcher_for,
+                            dpi_tiers=dpi_tiers,
+                            threshold=args.threshold,
+                            hash_size=args.hash_size,
+                        )
+            except OSError:
+                log.exception("could not open reference image for %s", card.name)
+
+        if result is None:
+            if args.fallback == "error":
+                raise _MpcfillFallbackError(card.name)
+            card.decision = "skipped" if args.fallback == "skip" else "fallback"
+            card.drive_id = None
+            card.source_name = None
+            card.hamming_distance = None
+            # In skip mode, we write nothing to OUTDIR — the post-matching pass will renumber
+            # the kept cards and dump a `skipped.txt` for the user to feed into `mtg-proxies print`.
+            if not args.dry_run and args.fallback != "skip":
+                _write_byte_copies(fallback_ref_path.read_bytes(), card, outdir)
+            return card
+
+        card.drive_id = result.candidate.drive_id
+        card.source_name = result.candidate.source_name
+        card.decision = result.decision
+        card.dpi = result.candidate.dpi
+        card.dpi_tier = matched_tier
+        card.similarity_tier = matched_sim_tier if matched_sim_tier > 0 else None
+        # For the CSV: pHash matches fill `hamming_distance`; embedding matches fill `similarity`
+        # plus raw region values for diagnostics (so the user can see WHY a card scored what it did).
+        if result.similarity is None:
+            card.hamming_distance = result.distance
+            card.similarity = None
+        else:
+            card.hamming_distance = None
+            card.similarity = result.similarity
+            card.art_similarity = result.art_similarity
+            card.frame_similarity = result.frame_similarity
+
+        if not args.dry_run:
+            try:
+                full_bytes = _fetcher_for(result.candidate.drive_id, args.size)
+            except ThumbnailFetchError:
+                log.exception("full-res fetch failed for %s", card.name)
+                card.decision = "error"
+                return card
+            if mpcfill_matcher.is_low_res(full_bytes):
+                card.decision = "matched_low_res"
+            _write_byte_copies(full_bytes, card, outdir)
+        return card
+
+    print(f"Matching {len(cards_to_process)} card face(s) (workers={workers})...")
+    errors = 0
+    if cards_to_process:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_process, card): card for card in cards_to_process}
+            try:
+                for future in as_completed(futures):
+                    updated = future.result()
+                    if updated.decision == "error":
+                        errors += 1
+            except _MpcfillFallbackError as exc:
+                for pending in futures:
+                    pending.cancel()
+                print(f"Error: {exc}")
+                raise SystemExit(1) from exc
+
+    # DFC consistency check: if the front and back of a DFC matched at meaningfully different
+    # quality levels, the proxy would have visibly inconsistent art across faces. Promote both
+    # faces to skip/fallback so the user can re-handle the card via `mtg-proxies print`.
+    if args.matcher == "embedding" and args.dfc_tolerance < 1.0:
+        _enforce_dfc_consistency(cards, tolerance=args.dfc_tolerance, fallback=args.fallback)
+
+    # In skip mode, peel off the skipped cards: write their original decklist entries to
+    # `skipped.txt` for re-processing via `mtg-proxies print`, drop their PNGs (and any orphan
+    # PNGs left over from a prior run), and renumber the kept cards' slot indices so the
+    # output filenames stay contiguous (0001, 0002, ...).
+    if args.fallback == "skip" and not args.dry_run:
+        # All-or-nothing per card: if either face of a DFC skips, the whole card skips. Otherwise
+        # we'd ship a half-printed card (front from mpcfill, no back) which isn't usable.
+        skipped_scryfall_ids = {c.scryfall_id for c in cards if c.decision == "skipped"}
+        if skipped_scryfall_ids:
+            skipped_cards = [c for c in cards if c.scryfall_id in skipped_scryfall_ids]
+            kept_cards = [c for c in cards if c.scryfall_id not in skipped_scryfall_ids]
+            # Mark promoted-from-partial-DFC faces as skipped too, for accurate CSV/orphan cleanup.
+            for c in skipped_cards:
+                if c.decision != "skipped":
+                    c.decision = "skipped"
+                    c.drive_id = None
+                    c.source_name = None
+                    c.similarity = None
+                    c.hamming_distance = None
+            skipped_path = _write_skipped_decklist(outdir, skipped_cards, decklist)
+            if skipped_path is not None:
+                print(
+                    f"Wrote {skipped_path}"
+                    f" — {len(skipped_scryfall_ids)} unique card(s) skipped"
+                    f" ({len(skipped_cards)} face(s) including DFC promotion)"
+                )
+            _drop_skipped_pngs(outdir, skipped_cards)
+            cards = _renumber_kept(kept_cards, outdir)
+            total_slots = sum(c.quantity for c in cards if not c.is_back)
+
+    csv_path = outdir / "match_report.csv"
+    _write_mpcfill_csv(csv_path, cards)
+    print(f"Wrote {csv_path}")
+
+    if args.dry_run:
+        print("Dry run: skipping image writes")
+        return
+
+    if errors:
+        print(f"Error: {errors} card(s) failed to process")
+        raise SystemExit(1)
+
+    print(f"mpcfill images written: {total_slots} slot(s) under {outdir.resolve()}")
+
+
+def _enforce_dfc_consistency(cards: list[OrderCard], *, tolerance: float, fallback: str) -> None:
+    """Promote DFCs with inconsistent front/back similarity to skip/fallback.
+
+    For each card whose scryfall_id appears more than once (DFCs: front + back), compute the
+    max-min similarity gap across its faces. If the gap exceeds `tolerance`, mark every face of
+    that card as skipped (or fallback, depending on `--fallback`). The downstream all-or-nothing
+    logic then handles cleanup (orphan PNG removal, skipped.txt, etc.). Faces whose match never
+    succeeded (similarity is None) are ignored here — they're already handled by the per-face
+    fallback path.
+    """
+    from collections import defaultdict
+
+    by_id: dict[str, list[OrderCard]] = defaultdict(list)
+    for c in cards:
+        by_id[c.scryfall_id].append(c)
+    for faces in by_id.values():
+        if len(faces) < 2:
+            continue
+        sims = [c.similarity for c in faces if c.similarity is not None]
+        if len(sims) < len(faces):
+            continue  # at least one face missing — leave to per-face fallback path
+        gap = max(sims) - min(sims)
+        if gap <= tolerance:
+            continue
+        new_decision = "skipped" if fallback == "skip" else "fallback"
+        for c in faces:
+            c.decision = new_decision
+            c.drive_id = None
+            c.source_name = None
+            c.similarity = None
+            c.hamming_distance = None
+            c.similarity_tier = None
+
+
+def _write_skipped_decklist(outdir: Path, skipped_cards: list[OrderCard], decklist: Decklist) -> Path | None:
+    """Emit `skipped.txt` with arena-format lines for each unique scryfall_id whose card was skipped.
+
+    Returns the path written, or None when no skipped card had a matching decklist entry
+    (nothing useful to emit — avoids producing an empty `skipped.txt`).
+    """
+    # One row per unique scryfall_id; DFC front + back share an id, write only once.
+    seen: set[str] = set()
+    lines: list[str] = []
+    for card in skipped_cards:
+        if card.scryfall_id in seen:
+            continue
+        seen.add(card.scryfall_id)
+        entry = next((e for e in decklist.cards if str(e.card.get("id", "")) == card.scryfall_id), None)
+        if entry is None:
+            continue
+        lines.append(format(entry, "arena"))
+    if not lines:
+        return None
+    path = outdir / "skipped.txt"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _drop_skipped_pngs(outdir: Path, skipped_cards: list[OrderCard]) -> None:
+    """Remove any PNG files that correspond to a skipped card (from this run or a prior one)."""
+    for card in skipped_cards:
+        for slot_index in card.slot_indices:
+            old_path = outdir / slot_filename(slot_index, card.name)
+            if old_path.is_file():
+                old_path.unlink()
+
+
+def _renumber_kept(kept: list[OrderCard], outdir: Path) -> list[OrderCard]:
+    """Renumber slot indices on kept cards to be contiguous (0..N-1), renaming PNGs to match.
+
+    Fronts get fresh sequential slot ranges in their original order; DFC backs (single slot
+    each) align to their front's lowest renumbered slot. PNGs on disk are renamed in lockstep
+    so the `<NNNN>-<slug>.png` filenames line up with the new indices.
+    """
+    front_new_indices: dict[str, list[int]] = {}  # scryfall_id -> renumbered front slot indices
+    next_slot = 0
+    # Pass 1: renumber fronts in their existing decklist order.
+    for card in kept:
+        if card.is_back:
+            continue
+        new_indices = list(range(next_slot, next_slot + len(card.slot_indices)))
+        _rename_card_slot_files(card, new_indices, outdir)
+        card.slot_indices = new_indices
+        card.image_basename = slot_filename(new_indices[0], card.name)
+        front_new_indices[card.scryfall_id] = new_indices
+        next_slot += len(new_indices)
+    # Pass 2: align DFC backs to their front's new lowest slot. The all-or-nothing skip logic
+    # in `_run_mpcfill` guarantees a back's front is also in `kept` (front+back share scryfall_id
+    # and are partitioned together), so `front_new_indices.get(...)` always returns a value here.
+    for card in kept:
+        if not card.is_back:
+            continue
+        front_indices = front_new_indices[card.scryfall_id]
+        back_indices = [front_indices[0]]
+        _rename_card_slot_files(card, back_indices, outdir)
+        card.slot_indices = back_indices
+        card.image_basename = slot_filename(back_indices[0], card.name)
+    return kept
+
+
+def _rename_card_slot_files(card: OrderCard, new_indices: list[int], outdir: Path) -> None:
+    """Rename one card's PNG files in lockstep with new slot indices.
+
+    Uses `Path.replace` so the operation is atomic and consistent across POSIX/Windows
+    (overwrites the target if it exists — orphan PNGs at the target slot are clobbered
+    by the kept card's renamed file, which is the desired behavior). Logs a warning when
+    the source PNG is missing.
+    """
+    for old_idx, new_idx in zip(card.slot_indices, new_indices, strict=False):
+        if old_idx == new_idx:
+            continue
+        old_path = outdir / slot_filename(old_idx, card.name)
+        new_path = outdir / slot_filename(new_idx, card.name)
+        if old_path.is_file():
+            old_path.replace(new_path)
+        else:
+            _mpcfill_log.warning(
+                "expected PNG %s missing during renumber; %s may reference a non-existent file",
+                old_path.name,
+                slot_filename(new_idx, card.name),
+            )
+
+
+def _write_byte_copies(data: bytes, card: OrderCard, outdir: Path) -> None:
+    """Write `data` to one PNG per slot the card occupies (byte-for-byte copies)."""
+    for slot_index in card.slot_indices:
+        filename = slot_filename(slot_index, card.name)
+        (outdir / filename).write_bytes(data)
+    card.image_basename = slot_filename(card.slot_indices[0], card.name)
 
 
 def main() -> None:
@@ -593,7 +1315,9 @@ def main() -> None:
         "--allow-low-res",
         action="store_true",
         default=False,
-        help="when used with --set, keep low-res prints from preferred sets instead of upgrading to highres alternatives",
+        help=(
+            "when used with --set, keep low-res prints from preferred sets instead of upgrading to highres alternatives"
+        ),
     )
 
     # Tokens tool
@@ -626,6 +1350,169 @@ def main() -> None:
         metavar="FLOAT",
     )
 
+    # MPCFill tool
+    mpcfill_parser = subparsers.add_parser(
+        "mpcfill",
+        help="Match Scryfall reference art against MPCFill renders and write one PNG per slot",
+        description=(
+            "Match the visually-closest mpcfill community render for each card against the"
+            " Scryfall reference and write one PNG per slot under OUTDIR (front + DFC back),"
+            " plus a `match_report.csv` audit log. Designed to be piped into"
+            " `mtg-proxies print --custom-art OUTDIR` for the final PDF."
+        ),
+    )
+    mpcfill_parser.add_argument(
+        "decklist",
+        nargs="?",
+        default=None,
+        help="path to a decklist in text/arena format, or manastack:{manastack_id}, or archidekt:{archidekt_id}",
+    )
+    mpcfill_parser.add_argument("outdir", type=Path, help="output directory (will be created if missing)")
+    mpcfill_parser.add_argument(
+        "--server", default=MPCFILL_DEFAULT_SERVER, help="mpcfill backend base URL (default: %(default)s)"
+    )
+    mpcfill_parser.add_argument(
+        "--matcher",
+        choices=["embedding", "phash"],
+        default="embedding",
+        help=(
+            "matching strategy. `embedding` (default) uses CLIP ViT-B/32 — content-aware,"
+            " matches the same art across different borders/croppings/recolors. `phash` uses"
+            " perceptual hashing — fast, but only works when candidate pixels are structurally"
+            " close to the reference."
+        ),
+    )
+    mpcfill_parser.add_argument(
+        "--similarity",
+        type=float,
+        default=None,
+        help=(
+            "acceptance FLOOR for the embedding matcher — best similarity below this triggers"
+            " --fallback. Independent of --similarity-tiers. Defaults to the LOWEST value in"
+            " --similarity-tiers (0.85 with the default ladder). Set this higher than the lowest"
+            " tier to require stricter matches while still getting tier-quality reporting; e.g."
+            " `--similarity 0.90 --similarity-tiers 0.99,0.95,0.90,0.85` walks the full ladder"
+            " for the CSV label but rejects anything below 0.90."
+        ),
+    )
+    mpcfill_parser.add_argument(
+        "--similarity-tiers",
+        type=str,
+        default="0.99,0.95,0.90,0.85",
+        help=(
+            "comma-separated CLIP cosine similarity tiers, descending (embedding matcher only)."
+            " Used to LABEL each match with a quality band in the CSV `similarity_tier` column."
+            " The matcher picks the best candidate per card; the HIGHEST tier the match cleared"
+            " becomes the label. Acceptance is independently gated by --similarity. 0.99+ = same"
+            " artwork; 0.95-0.99 = same artwork with mild treatment differences; 0.90-0.95 ="
+            " same subject with stylized treatment; 0.85-0.90 = stylized re-imagining."
+            " Default: %(default)s"
+        ),
+    )
+    mpcfill_parser.add_argument(
+        "--threshold", type=int, default=25, help="maximum pHash Hamming distance (phash matcher only) (default: %(default)d)"
+    )
+    mpcfill_parser.add_argument(
+        "--dpi-tiers",
+        type=str,
+        default="1200,800,0",
+        help=(
+            "comma-separated DPI floors to try in order. The matcher considers only candidates"
+            " with reported DPI >= tier and picks the closest pHash within the tier. If nothing"
+            " in a tier scores at or below --threshold, the next (lower) tier is tried. A `0`"
+            " tier is appended automatically when missing so every card can match. Default:"
+            " %(default)s"
+        ),
+    )
+    mpcfill_parser.add_argument(
+        "--fallback",
+        choices=["scryfall", "skip", "error"],
+        default="scryfall",
+        help="behavior when no candidate meets the threshold (default: %(default)s)",
+    )
+    mpcfill_parser.add_argument(
+        "--size",
+        type=int,
+        default=2000,
+        help="pixel-width hint for the full-resolution download (default: %(default)d)",
+    )
+    mpcfill_parser.add_argument(
+        "--hash-size",
+        type=int,
+        default=16,
+        help="imagehash pHash hash_size; the hash bit length is hash_size^2 (default: %(default)d)",
+    )
+    mpcfill_parser.add_argument(
+        "--sources",
+        type=str,
+        default=None,
+        help="comma-separated allowlist of source names to restrict candidates to",
+    )
+    mpcfill_parser.add_argument(
+        "--exclude-sources",
+        type=str,
+        default=None,
+        help="comma-separated denylist of source names to drop from the candidate set",
+    )
+    mpcfill_parser.add_argument(
+        "--cache",
+        type=Path,
+        default=None,
+        help="override the on-disk cache directory (default: ~/.cache/mtg-proxies/mpcfill)",
+    )
+    mpcfill_parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        default=False,
+        help="bypass cache reads (writes still happen so subsequent runs are fast)",
+    )
+    mpcfill_parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="ThreadPoolExecutor worker count for per-card fetch/match (default: %(default)d, hard-capped at 8)",
+    )
+    mpcfill_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="compute matches and write the CSV but skip full-res downloads",
+    )
+    mpcfill_parser.add_argument(
+        "--frame-strictness",
+        type=float,
+        default=0.03,
+        help=(
+            "extra penalty applied to the bottom-half (frame) similarity before taking"
+            " min(art, frame). A candidate's frame region must score at least this much higher"
+            " than the art region to count equally — catches full-art renders whose colorful"
+            " bottoms partially fool CLIP. 0 disables (pure min); 0.03 (default) ≈ 'frame must"
+            " score 3pp higher than art threshold'; 0.05 is stricter; 0.10+ is aggressive."
+        ),
+    )
+    mpcfill_parser.add_argument(
+        "--dfc-tolerance",
+        type=float,
+        default=0.05,
+        help=(
+            "max acceptable gap between front and back similarity for a DFC. If max - min across"
+            " the DFC's face similarities exceeds this, the whole card is treated as a skip"
+            " (in --fallback=skip mode) or fallback (otherwise). Default %(default)s catches"
+            " obvious inconsistencies (e.g. matched front at 0.97 + back at 0.86, gap 0.11)"
+            " while letting mild render variation through. Set to 1.0 to disable."
+        ),
+    )
+    mpcfill_parser.add_argument(
+        "--rematch-all",
+        action="store_true",
+        default=False,
+        help=(
+            "force re-evaluation of every card. By default, when re-running against a folder"
+            " that already has a match_report.csv, any prior match whose recorded score meets"
+            " the current threshold AND whose PNG is on disk is preserved as-is. Pass this to"
+            " bypass that protection and re-match everything from scratch."
+        ),
+    )
     args = parser.parse_args()
 
     match args.command:
@@ -713,9 +1600,7 @@ def main() -> None:
                     fronts = upscale_images(fronts, highres_flags=front_flags, model_path=args.upscale_model)
                     backs = upscale_images(backs, highres_flags=back_flags, model_path=args.upscale_model)
                 cards_per_row, rows_per_sheet = _cards_per_sheet_dims(args.paper, args.scale)
-                images = _build_duplex_layout(
-                    fronts, backs, args.card_back, cards_per_row, rows_per_sheet
-                )
+                images = _build_duplex_layout(fronts, backs, args.card_back, cards_per_row, rows_per_sheet)
             else:
                 if args.decklist and (args.upscale or args.upscale_model):
                     from mtg_proxies.upscale import upscale_images
@@ -723,11 +1608,12 @@ def main() -> None:
                     images = upscale_images(images, highres_flags=highres_flags, model_path=args.upscale_model)
                 if args.card_back is not None:
                     # Non-duplex card-back: legacy "append N backs at the end" behavior.
-                    n_backs = (
-                        args.card_back_count if args.card_back_count is not None else (len(images) or 0)
-                    )
+                    n_backs = args.card_back_count if args.card_back_count is not None else (len(images) or 0)
                     if n_backs == 0:
-                        print("Error: --card-back without --card-back-count requires front images (decklist or --custom-art)")
+                        print(
+                            "Error: --card-back without --card-back-count requires front images"
+                            " (decklist or --custom-art)"
+                        )
                         raise SystemExit(1)
                     images.extend([args.card_back] * n_backs)
 
@@ -819,9 +1705,7 @@ def main() -> None:
                     candidate = basic_land_specs[-1]
                     # Catch typos like `--basic-lands mountain=9 forest` (forgot `=COUNT` on the last spec).
                     if candidate.strip().lower() in BASIC_LAND_NAMES:
-                        print(
-                            f"Error: basic land spec {candidate!r} is missing a count. Expected NAME=COUNT."
-                        )
+                        print(f"Error: basic land spec {candidate!r} is missing a count. Expected NAME=COUNT.")
                         raise SystemExit(1)
                     outfile = Path(candidate)
                     basic_land_specs = basic_land_specs[:-1]
@@ -920,17 +1804,22 @@ def main() -> None:
                             main_entries.append(entry)
 
                     if lowres_preferred_cards:
-                        while main_entries and isinstance(main_entries[-1], Comment) and not main_entries[-1].text.strip():
+                        while (
+                            main_entries and isinstance(main_entries[-1], Comment) and not main_entries[-1].text.strip()
+                        ):
                             main_entries.pop()
-                        main_entries.append(Comment(""))
-                        main_entries.append(Comment(f"# Only low-quality version available in {sets_str}"))
+                        main_entries.extend([
+                            Comment(""),
+                            Comment(f"# Only low-quality version available in {sets_str}"),
+                        ])
                         main_entries.extend(lowres_preferred_cards)
 
                     if not_in_set_cards:
-                        while main_entries and isinstance(main_entries[-1], Comment) and not main_entries[-1].text.strip():
+                        while (
+                            main_entries and isinstance(main_entries[-1], Comment) and not main_entries[-1].text.strip()
+                        ):
                             main_entries.pop()
-                        main_entries.append(Comment(""))
-                        main_entries.append(Comment("# Card not in set"))
+                        main_entries.extend([Comment(""), Comment("# Card not in set")])
                         main_entries.extend(not_in_set_cards)
 
                 else:
@@ -943,20 +1832,25 @@ def main() -> None:
                             main_entries.append(entry)
 
                     if fallback_cards:
-                        while main_entries and isinstance(main_entries[-1], Comment) and not main_entries[-1].text.strip():
+                        while (
+                            main_entries and isinstance(main_entries[-1], Comment) and not main_entries[-1].text.strip()
+                        ):
                             main_entries.pop()
-                        main_entries.append(Comment(""))
-                        main_entries.append(Comment(f"# Only low-quality version available in {sets_str}, or card not in set"))
+                        main_entries.extend([
+                            Comment(""),
+                            Comment(f"# Only low-quality version available in {sets_str}, or card not in set"),
+                        ])
                         main_entries.extend(fallback_cards)
 
                 decklist.entries = main_entries
 
-            # Move low-res cards to the bottom (skip when --allow-low-res is active, those are already in their own section)
+            # Move low-res cards to the bottom (skip when --allow-low-res is set; those
+            # are already in their own section).
             lowres_cards: list[Card] = []
             clean_entries = []
             if allow_low_res:
                 clean_entries = list(decklist.entries)
-            for entry in ([] if allow_low_res else decklist.entries):
+            for entry in [] if allow_low_res else decklist.entries:
                 if isinstance(entry, Card) and not entry.card.get("highres_image", True):
                     lowres_cards.append(entry)
                 else:
@@ -1001,3 +1895,6 @@ def main() -> None:
 
             # Show deck value decomposition
             show_deck_value(decklist, lump_threshold=args.lump_threshold)
+
+        case "mpcfill":
+            _run_mpcfill(args)
