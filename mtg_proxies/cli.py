@@ -504,10 +504,63 @@ def _apply_per_card_modelines(
 
             _run_transform(slots, lambda paths: lift_shadows_images(paths))
 
+    # Per-card upscale (override + bare subset) intentionally runs OUTSIDE this helper —
+    # see ``_apply_per_card_upscale_modelines``. It must execute AFTER the bulk normalize
+    # and shadow-lift passes so the upscaler sees a cleanly toned input (consistent with
+    # the global pipeline order). Doing it here would feed un-normalized art to the model
+    # AND cause the bulk upscale to redundantly re-run on the already-upscaled output
+    # because the post-normalize+shadow-lift path no longer matches ``skip_upscale``.
+    return image_paths
+
+
+def _apply_per_card_upscale_modelines(
+    decklist: Decklist,
+    image_paths: list[str],
+    *,
+    backs: list[str] | None = None,
+    faces: Literal["all", "front", "back"] = "all",
+    duplex: bool = False,
+    user_supplied: set[str] | None = None,
+    skip_upscale: set[str] | None = None,
+    global_upscale: bool = False,
+    upscale_model: Path | None = None,
+    upscale_target_width: int | None = None,
+) -> None:
+    """Apply per-card upscale directives. Runs AFTER the bulk normalize/shadow-lift passes.
+
+    Two effects:
+
+    * ``#upscale --upscale-model PATH`` is an always-on override — runs even when global
+      ``--upscale-all`` is set. The card is upscaled with the specified model, the new
+      path replaces the entry in ``image_paths`` (or ``backs``), and the new path is
+      recorded in ``skip_upscale`` so the subsequent bulk upscale skips it.
+    * Bare ``#upscale`` (no ``--upscale-model``) keeps the additive-subset behavior:
+      runs only when ``global_upscale`` is off, and excludes slots already handled by an
+      override above.
+
+    Called from the print dispatch between the bulk shadow-lift pass and the bulk
+    upscale pass, so the per-card output is the same as what the bulk pass would do —
+    just with a different model (or with no global flag involved at all).
+    """
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    if not any(card.modeline for card in decklist.cards):
+        return
+
+    user_supplied = user_supplied or set()
+    target_lists: dict[str, list[str]] = (
+        {"fronts": image_paths, "backs": backs if backs is not None else image_paths}
+        if duplex
+        else {"flat": image_paths}
+    )
+
+    slot_map = _build_slot_map(decklist, faces, duplex=duplex)
+    parsed: list[list] = [parse_modeline_trailer(card.modeline)[0] if card.modeline else [] for card in decklist.cards]
+
+    def _slots_for(card_idx: int) -> list[SlotKey]:
+        return slot_map[card_idx]["front"] + slot_map[card_idx]["back"]
+
     # ----- #upscale --upscale-model PATH: always-on per-card model override --------------
-    # Even when global ``--upscale-all`` is set, a per-card directive carrying an explicit
-    # model path is a "this card uses a different model" override and runs unconditionally.
-    # The resulting upscaled path is added to ``skip_upscale`` so the bulk pass skips it.
     override_handled: set[tuple[str, int]] = set()
     overrides: dict[str, list[SlotKey]] = {}
     for card_idx, directives in enumerate(parsed):
@@ -540,24 +593,31 @@ def _apply_per_card_modelines(
                     if skip_upscale is not None:
                         skip_upscale.add(new)
 
-    # Bare ``#upscale`` (no --upscale-model) keeps the additive-subset behavior: only runs
-    # when the global flag is off, and excludes slots already handled by an override above.
+    # ----- Bare ``#upscale`` (no --upscale-model): additive subset when global is off ----
     if not global_upscale:
-        slots = [slot for slot in _slots_for_verb("upscale") if slot not in override_handled]
-        if slots:
+        bare_slots: list[SlotKey] = []
+        for card_idx, directives in enumerate(parsed):
+            if not any(d.verb == "upscale" and "--upscale-model" not in d.flags for d in directives):
+                continue
+            bare_slots.extend(slot for slot in _slots_for(card_idx) if slot not in override_handled)
+        if bare_slots:
             from mtg_proxies.upscale import upscale_images
 
-            _run_transform(
-                slots,
-                lambda paths: upscale_images(
-                    paths,
-                    highres_flags=[False] * len(paths),
+            grouped: dict[str, list[tuple[int, str]]] = {}
+            for lname, idx in bare_slots:
+                path = target_lists[lname][idx]
+                if path in user_supplied:
+                    continue
+                grouped.setdefault(lname, []).append((idx, path))
+            for lname, items in grouped.items():
+                new_paths = upscale_images(
+                    [p for _, p in items],
+                    highres_flags=[False] * len(items),
                     model_path=upscale_model,
                     target_width=upscale_target_width,
-                ),
-            )
-
-    return image_paths
+                )
+                for (idx, _), new in zip(items, new_paths, strict=True):
+                    target_lists[lname][idx] = new
 
 
 def _parse_basic_land_specs(specs: list[str]) -> dict[str, int]:
@@ -1870,6 +1930,7 @@ def main() -> None:
             modeline_skip_normalize: set[str] = set()
             modeline_skip_shadow_lift: set[str] = set()
             modeline_skip_upscale: set[str] = set()
+            has_modelines = False
 
             if args.card_back is None and args.card_back_count is not None:
                 print("Error: --card-back-count requires --card-back PATH")
@@ -2056,6 +2117,39 @@ def main() -> None:
                 from mtg_proxies.shadow_lift import lift_shadows_images
 
                 images = lift_shadows_images(images, skip_paths=shadow_lift_skip)
+
+            # Per-card upscale modelines (#upscale --upscale-model PATH overrides + bare
+            # #upscale subset) run HERE — after bulk normalize and shadow-lift have given
+            # us cleanly-toned input, and before the bulk upscale pass. Each override
+            # writes its already-upscaled output into ``images`` and records the new path
+            # in ``modeline_skip_upscale`` so the bulk pass below skips that slot.
+            if has_modelines:
+                if duplex_mode:
+                    _apply_per_card_upscale_modelines(
+                        decklist,
+                        fronts,
+                        backs=backs,
+                        duplex=True,
+                        user_supplied=user_supplied,
+                        skip_upscale=modeline_skip_upscale,
+                        global_upscale=bool(args.upscale or args.upscale_model or args.upscale_all),
+                        upscale_model=args.upscale_model,
+                        upscale_target_width=args.upscale_target_width,
+                    )
+                else:
+                    _apply_per_card_upscale_modelines(
+                        decklist,
+                        images,
+                        faces=args.faces,
+                        user_supplied=user_supplied,
+                        skip_upscale=modeline_skip_upscale,
+                        global_upscale=bool(args.upscale or args.upscale_model or args.upscale_all),
+                        upscale_model=args.upscale_model,
+                        upscale_target_width=args.upscale_target_width,
+                    )
+                # Refresh the upscale_skip union now that the modeline pass has added
+                # post-upscale paths into ``modeline_skip_upscale``.
+                upscale_skip = user_supplied | modeline_skip_upscale
 
             if args.decklist and (args.upscale or args.upscale_model or args.upscale_all):
                 from mtg_proxies.upscale import upscale_images

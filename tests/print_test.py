@@ -283,10 +283,12 @@ def test_apply_per_card_modelines_per_card_upscale_when_global_off(
     )
     image_paths = ["sol.png", "birds.png"]
 
-    result = cli._apply_per_card_modelines(decklist, image_paths, global_upscale=False)
+    # Bare ``#upscale`` lives in the upscale-phase helper now (split from the pre-upscale
+    # phase so it runs after bulk normalize/shadow-lift instead of before).
+    cli._apply_per_card_upscale_modelines(decklist, image_paths, global_upscale=False)
 
-    assert result[0] == "sol.png"
-    assert result[1] == "birds.png_up"
+    assert image_paths[0] == "sol.png"
+    assert image_paths[1] == "birds.png_up"
     fake_upscale.assert_called_once()
     upscaled_subset = fake_upscale.call_args.args[0]
     assert upscaled_subset == ["birds.png"]
@@ -465,7 +467,7 @@ def test_apply_per_card_modelines_duplex_upscale_skips_user_supplied(
     fronts = ["sol.png"]
     backs = ["generic_card_back.jpg"]
 
-    cli._apply_per_card_modelines(
+    cli._apply_per_card_upscale_modelines(
         decklist,
         fronts,
         backs=backs,
@@ -522,7 +524,8 @@ def test_apply_per_card_modelines_upscale_model_override_runs_with_global_on(
     image_paths = ["sol.png", "crossroads.png"]
     skip_upscale: set[str] = set()
 
-    result = cli._apply_per_card_modelines(
+    # Upscale logic (override + bare subset) lives in the dedicated upscale-phase helper now.
+    cli._apply_per_card_upscale_modelines(
         decklist,
         image_paths,
         global_upscale=True,  # mimic --upscale-all
@@ -530,8 +533,8 @@ def test_apply_per_card_modelines_upscale_model_override_runs_with_global_on(
     )
 
     # Override ran on the modelined card; non-modelined card is untouched at this stage.
-    assert result[0] == "sol.png"
-    assert result[1] == "crossroads.png_anime"
+    assert image_paths[0] == "sol.png"
+    assert image_paths[1] == "crossroads.png_anime"
     fake_upscale.assert_called_once()
     upscale_kwargs = fake_upscale.call_args.kwargs
     assert str(upscale_kwargs["model_path"]).endswith("anime_6B.pth")
@@ -621,12 +624,12 @@ def test_apply_per_card_modelines_upscale_override_skips_subset_pass(
     )
     image_paths = ["crossroads.png"]
 
-    # Global upscale is OFF so the subset pass would normally run for #upscale,
+    # Global upscale is OFF so the bare-subset pass would normally run for #upscale,
     # but the override has already handled this card.
-    result = cli._apply_per_card_modelines(
+    cli._apply_per_card_upscale_modelines(
         decklist,
         image_paths,
         global_upscale=False,
     )
 
-    assert result == ["crossroads.png_anime"]  # NOT "_anime_default"
+    assert image_paths == ["crossroads.png_anime"]  # NOT "_anime_default"
