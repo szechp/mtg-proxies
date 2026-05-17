@@ -108,6 +108,18 @@ By default `--upscale` only touches cards Scryfall marks low-res. To force every
 mtg-proxies print deck-ltr.txt output.pdf --upscale-all
 ```
 
+The 4× model output is downsampled (Lanczos) to a configurable target width before it lands in the PDF — the AI sharpening survives the resample. Default is **745 px** (matches Scryfall highres, ≈ 298 DPI on a 2.5-inch card — the sweet spot for desktop printing). Set `--upscale-target-width` for other needs:
+
+```bash
+# Smaller PDF for draft prints / screen review
+mtg-proxies print deck.txt out.pdf --upscale --upscale-target-width 480
+
+# Larger, sharper PDF for high-DPI / large-format print
+mtg-proxies print deck.txt out.pdf --upscale --upscale-target-width 1500
+```
+
+**Pipeline order** when you combine the post-processing flags: `--normalize` → `--shadow-lift` → `--upscale` / `--upscale-all`. Tone and shadow fixes run on the Scryfall-resolution original, so the upscaler sees a cleanly toned image and reconstructs a sharper output than if you ran the tone passes after upscaling. The cache file names include each step's parameters, so changing any of them invalidates only what's downstream.
+
 **Choose art style:**
 
 ```bash
@@ -224,7 +236,9 @@ usage: mtg-proxies print [-h] [--dpi DPI] [--paper WIDTHxHEIGHT]
                          [--faces {all,front,back}] [--custom-art FOLDER]
                          [--custom-art-bleed-crop PERCENT] [--split-pages N]
                          [--art-preference {standard,wild}] [--upscale]
-                         [--upscale-model PATH] [--card-back PATH]
+                         [--upscale-model PATH] [--upscale-all]
+                         [--upscale-target-width PX] [--normalize]
+                         [--shadow-lift] [--card-back PATH]
                          [--card-back-count N]
                          [decklist] outfile
 
@@ -262,6 +276,16 @@ options:
                         replacing them with a different print
   --upscale-model PATH  path to a local .pth upscaling model (default:
                         RealESRGAN anime_6B); implies --upscale
+  --upscale-all         upscale every card, ignoring Scryfall's highres_image
+                        flag (without this, --upscale only upscales cards
+                        Scryfall marks low-res); implies --upscale
+  --upscale-target-width PX
+                        downsample upscaled cards to PX wide before saving
+                        (default: 745, matches Scryfall highres ≈ 298 DPI on a
+                        2.5-inch card)
+  --normalize           border-anchored auto-levels: stretch each card's tone
+                        range so blacks and whites hit the rails
+  --shadow-lift         brighten crushed-shadow regions on each card
   --card-back PATH      path to a card back image; appends one copy per front
                         image collected (decklist, custom art, or both);
                         override count with --card-back-count

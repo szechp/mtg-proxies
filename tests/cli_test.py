@@ -1868,7 +1868,8 @@ def test_upscale_images_uses_cached_4x(tmp_path: pytest.TempPathFactory) -> None
 
     img = tmp_path / "card.png"
     img.write_bytes(b"fake")
-    cached = tmp_path / "card_4x.png"
+    # Default target_width is 745, so cache filename carries that width.
+    cached = tmp_path / "card_4x_w745.png"
     cached.write_bytes(b"upscaled")
 
     # Already cached — model loading code is never reached, so no real spandrel needed
@@ -1902,7 +1903,7 @@ def test_main_print_upscale_calls_upscale_images(tmp_path) -> None:
         main()
 
     flagged_fetch.assert_called_once()
-    mock_upscale.assert_called_once_with(fake_images, highres_flags=fake_flags, model_path=None)
+    mock_upscale.assert_called_once_with(fake_images, highres_flags=fake_flags, model_path=None, target_width=745)
 
 
 def test_main_print_upscale_all_overrides_highres_flags(tmp_path) -> None:
@@ -1924,7 +1925,54 @@ def test_main_print_upscale_all_overrides_highres_flags(tmp_path) -> None:
     ):
         main()
 
-    mock_upscale.assert_called_once_with(fake_images, highres_flags=[False, False, False], model_path=None)
+    mock_upscale.assert_called_once_with(
+        fake_images, highres_flags=[False, False, False], model_path=None, target_width=745
+    )
+
+
+def test_main_print_upscale_target_width_forwarded(tmp_path) -> None:
+    """--upscale-target-width must be threaded through to upscale_images as the target_width kwarg."""
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "out.pdf"
+    fake_decklist = object()
+    fake_images = ["card.png"]
+    fake_flags = [False]
+
+    with (
+        patch(
+            "sys.argv",
+            ["mtg-proxies", "print", "decklist.txt", str(out_file), "--upscale", "--upscale-target-width", "1500"],
+        ),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
+        patch("mtg_proxies.cli.fetch_scans_scryfall_flagged", return_value=(fake_images, fake_flags)),
+        patch("mtg_proxies.upscale.upscale_images", return_value=fake_images) as mock_upscale,
+        patch("mtg_proxies.cli.print_cards_fpdf"),
+    ):
+        main()
+
+    mock_upscale.assert_called_once()
+    assert mock_upscale.call_args.kwargs["target_width"] == 1500
+
+
+def test_main_print_upscale_target_width_default_745(tmp_path) -> None:
+    """Without --upscale-target-width, the default 745 should reach upscale_images."""
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "out.pdf"
+    fake_decklist = object()
+    fake_images = ["card.png"]
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), "--upscale"]),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
+        patch("mtg_proxies.cli.fetch_scans_scryfall_flagged", return_value=(fake_images, [False])),
+        patch("mtg_proxies.upscale.upscale_images", return_value=fake_images) as mock_upscale,
+        patch("mtg_proxies.cli.print_cards_fpdf"),
+    ):
+        main()
+
+    assert mock_upscale.call_args.kwargs["target_width"] == 745
 
 
 def test_main_print_no_upscale_does_not_call_upscale_images(tmp_path) -> None:

@@ -8,9 +8,10 @@ from tqdm import tqdm
 _MODEL_URL = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth"
 _MODEL_CACHE = Path.home() / ".cache" / "mtg-proxies" / "RealESRGAN_x4plus_anime_6B.pth"
 
-# Target width after upscaling: matches Scryfall highres PNG width.
-# AI sharpening survives the downscale while keeping PDF sizes consistent with normal highres cards.
-_TARGET_WIDTH = 745
+# Default target width after upscaling: matches Scryfall highres PNG width (≈298 DPI on a
+# 2.5" card, the right size for desktop printing). The AI sharpening survives the Lanczos
+# downscale while keeping PDF sizes consistent with normal highres cards.
+DEFAULT_TARGET_WIDTH = 745
 
 
 def _download_model() -> Path:
@@ -30,21 +31,23 @@ def _download_model() -> Path:
     return _MODEL_CACHE
 
 
-def _upscaled_path(image_path: str | Path) -> Path:
+def _upscaled_path(image_path: str | Path, target_width: int) -> Path:
     p = Path(image_path)
-    return p.parent / (p.stem + "_4x" + p.suffix)
+    return p.parent / (p.stem + f"_4x_w{target_width}" + p.suffix)
 
 
 def upscale_images(
     image_paths: list[str],
     highres_flags: list[bool] | None = None,
     model_path: str | Path | None = None,
+    target_width: int | None = None,
 ) -> list[str]:
     """Upscale lowres card images using a Real-ESRGAN model via spandrel.
 
     Lowres images are identified by ``highres_flags`` (False = needs upscaling).
-    Upscaled results are cached next to the originals with a ``_4x`` suffix so
-    that subsequent runs skip reprocessing.
+    Upscaled results are cached next to the originals with a ``_4x_w<target_width>``
+    suffix so that subsequent runs skip reprocessing and so that changing
+    ``target_width`` invalidates the cache automatically.
 
     Args:
         image_paths: List of absolute paths to card image files.
@@ -52,10 +55,17 @@ def upscale_images(
             all images are treated as needing upscaling.
         model_path: Path to a local ``.pth`` model file. Defaults to
             RealESRGAN anime_6B (downloaded on first use).
+        target_width: Final width in pixels to downscale upscaled cards to. The
+            AI sharpening survives the Lanczos downsample. Defaults to
+            :data:`DEFAULT_TARGET_WIDTH` (745, matches Scryfall highres). Higher
+            values produce sharper but larger PDFs; lower values produce smaller
+            PDFs at the cost of detail.
 
     Returns:
         List of image paths with lowres entries replaced by their upscaled versions.
     """
+    if target_width is None:
+        target_width = DEFAULT_TARGET_WIDTH
     try:
         import numpy as np
         import torch
@@ -73,7 +83,7 @@ def upscale_images(
     needs_upscale: list[str] = [
         path
         for path, is_highres in zip(image_paths, highres_flags)
-        if not is_highres and not _upscaled_path(path).exists()
+        if not is_highres and not _upscaled_path(path, target_width).exists()
     ]
 
     if needs_upscale:
@@ -95,12 +105,12 @@ def upscale_images(
                 output = model(tensor)
             result = (output.squeeze(0).permute(1, 2, 0).clamp(0, 1) * 255).byte().cpu().numpy()
             upscaled = Image.fromarray(result)
-            # Downscale to Scryfall highres width so PDF sizes stay consistent with normal highres scans.
-            # The AI sharpening is preserved through the resize (upscale-then-downscale technique).
-            if upscaled.width > _TARGET_WIDTH:
-                ratio = _TARGET_WIDTH / upscaled.width
-                upscaled = upscaled.resize((_TARGET_WIDTH, round(upscaled.height * ratio)), Image.LANCZOS)
-            upscaled.save(str(_upscaled_path(path)))
+            # Downscale to ``target_width`` so PDF sizes stay sane while AI sharpening is preserved
+            # by the Lanczos resize (the upscale-then-downscale technique).
+            if upscaled.width > target_width:
+                ratio = target_width / upscaled.width
+                upscaled = upscaled.resize((target_width, round(upscaled.height * ratio)), Image.LANCZOS)
+            upscaled.save(str(_upscaled_path(path, target_width)))
             del tensor, output, result, upscaled
             if device.type == "cuda":
                 torch.cuda.empty_cache()
@@ -110,6 +120,6 @@ def upscale_images(
     # Only substitute the upscaled cache for images that were flagged as needing upscaling.
     # A stale _4x file from a previous run must not be returned for an image that is now highres.
     return [
-        str(_upscaled_path(p)) if not is_highres and _upscaled_path(p).exists() else p
+        str(_upscaled_path(p, target_width)) if not is_highres and _upscaled_path(p, target_width).exists() else p
         for p, is_highres in zip(image_paths, highres_flags, strict=True)
     ]

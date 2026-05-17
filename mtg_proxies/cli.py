@@ -80,31 +80,34 @@ def _cards_per_sheet_dims(paper_inches: np.ndarray, scale: float) -> tuple[int, 
     return int(n[0]), int(n[1])
 
 
-def _build_duplex_layout(
-    fronts: list[str],
-    backs: list[str],
-    filler: str,
+def _build_duplex_layout[T](
+    fronts: list[T],
+    backs: list[T],
+    filler: T,
     cards_per_row: int,
     rows_per_sheet: int,
-) -> list[str]:
-    """Build the interleaved [front sheet, back sheet, front sheet, …] image list for duplex printing.
+) -> list[T]:
+    """Build the interleaved [front sheet, back sheet, front sheet, …] list for duplex printing.
 
     Each back sheet is mirrored row-by-row so that a long-edge duplex flip places each
     card's back behind its front. Partial last sheets are padded with ``filler`` on both
     sides to keep the mirror layout well-defined; the filler cells print as the card back,
     which is harmless to discard.
+
+    Generic in element type so the same rearrangement can be applied in lock-step to the
+    parallel ``highres_flags`` list (with ``filler=True`` to skip filler images during upscale).
     """
     if len(fronts) != len(backs):
         raise ValueError(f"fronts and backs must have equal length (got {len(fronts)} vs {len(backs)})")
     cards_per_sheet = cards_per_row * rows_per_sheet
-    out: list[str] = []
+    out: list[T] = []
     for i in range(0, len(fronts), cards_per_sheet):
         front_sheet = list(fronts[i : i + cards_per_sheet])
         back_sheet = list(backs[i : i + cards_per_sheet])
         pad = cards_per_sheet - len(front_sheet)
         front_sheet.extend([filler] * pad)
         back_sheet.extend([filler] * pad)
-        mirrored_back: list[str] = []
+        mirrored_back: list[T] = []
         for r in range(rows_per_sheet):
             row = back_sheet[r * cards_per_row : (r + 1) * cards_per_row]
             mirrored_back.extend(row[::-1])
@@ -299,6 +302,7 @@ def _apply_per_card_modelines(
     global_normalize: bool = False,
     global_shadow_lift: bool = False,
     upscale_model: Path | None = None,
+    upscale_target_width: int | None = None,
     server: str = MPCFILL_DEFAULT_SERVER,
     cache_root: Path | None = None,
     session: requests.Session | None = None,
@@ -461,16 +465,10 @@ def _apply_per_card_modelines(
             for (idx, _), new in zip(items, new_paths, strict=True):
                 target_lists[list_name][idx] = new
 
-    if not global_upscale:
-        slots = _slots_for_verb("upscale")
-        if slots:
-            from mtg_proxies.upscale import upscale_images
-
-            _run_transform(
-                slots,
-                lambda paths: upscale_images(paths, highres_flags=[False] * len(paths), model_path=upscale_model),
-            )
-
+    # Per-card transforms run in the same order as the bulk pipeline: normalize first
+    # (tone), then shadow-lift (contrast in dark regions), then upscale last so the AI
+    # model sees a cleanly toned input. Each verb is a no-op when its global flag is on
+    # (the bulk pass will handle it).
     if not global_normalize:
         slots = _slots_for_verb("normalize")
         if slots:
@@ -484,6 +482,21 @@ def _apply_per_card_modelines(
             from mtg_proxies.shadow_lift import lift_shadows_images
 
             _run_transform(slots, lambda paths: lift_shadows_images(paths))
+
+    if not global_upscale:
+        slots = _slots_for_verb("upscale")
+        if slots:
+            from mtg_proxies.upscale import upscale_images
+
+            _run_transform(
+                slots,
+                lambda paths: upscale_images(
+                    paths,
+                    highres_flags=[False] * len(paths),
+                    model_path=upscale_model,
+                    target_width=upscale_target_width,
+                ),
+            )
 
     return image_paths
 
@@ -1480,6 +1493,17 @@ def main() -> None:
         ),
     )
     print_parser.add_argument(
+        "--upscale-target-width",
+        type=int,
+        default=745,
+        metavar="PX",
+        help=(
+            "downsample upscaled cards to PX wide before saving (default: 745, matches Scryfall"
+            " highres ≈ 298 DPI on a 2.5-inch card). Higher = sharper but bigger PDFs; lower ="
+            " smaller PDFs at the cost of detail."
+        ),
+    )
+    print_parser.add_argument(
         "--normalize",
         action="store_true",
         default=False,
@@ -1794,6 +1818,9 @@ def main() -> None:
             if args.split_pages is not None and args.split_pages <= 0:
                 print(f"Error: --split-pages must be positive (got {args.split_pages})")
                 raise SystemExit(1)
+            if args.upscale_target_width <= 0:
+                print(f"Error: --upscale-target-width must be positive (got {args.upscale_target_width})")
+                raise SystemExit(1)
 
             # Duplex mode is triggered by --card-back PATH alone (without --card-back-count).
             # In duplex mode the renderer outputs alternating sheets of fronts and (mirrored) backs
@@ -1842,6 +1869,7 @@ def main() -> None:
                             global_normalize=bool(args.normalize),
                             global_shadow_lift=bool(args.shadow_lift),
                             upscale_model=args.upscale_model,
+                            upscale_target_width=args.upscale_target_width,
                         )
                     else:
                         images = _apply_per_card_modelines(
@@ -1853,6 +1881,7 @@ def main() -> None:
                             global_normalize=bool(args.normalize),
                             global_shadow_lift=bool(args.shadow_lift),
                             upscale_model=args.upscale_model,
+                            upscale_target_width=args.upscale_target_width,
                         )
 
             if args.custom_art:
@@ -1885,26 +1914,22 @@ def main() -> None:
                 else:
                     images.extend(custom_images)
 
+            # Build the unified ``images`` list (and parallel ``image_flags``) BEFORE the
+            # normalize/shadow-lift/upscale passes. Order matters: normalize and shadow-lift
+            # run on the Scryfall-resolution original so the AI upscaler in the final step
+            # gets a cleanly toned, shadow-lifted image to reconstruct from — produces a
+            # sharper result than running tone fixes on already-upscaled output.
+            image_flags: list[bool]
             if duplex_mode:
                 if not fronts:
                     print("Error: --card-back requires a decklist or --custom-art to pair backs with")
                     raise SystemExit(1)
-                if args.upscale or args.upscale_model or args.upscale_all:
-                    from mtg_proxies.upscale import upscale_images
-
-                    # --upscale-all ignores Scryfall's highres flag so every card gets upscaled.
-                    fronts_flags = [False] * len(fronts) if args.upscale_all else front_flags
-                    backs_flags = [False] * len(backs) if args.upscale_all else back_flags
-                    fronts = upscale_images(fronts, highres_flags=fronts_flags, model_path=args.upscale_model)
-                    backs = upscale_images(backs, highres_flags=backs_flags, model_path=args.upscale_model)
                 cards_per_row, rows_per_sheet = _cards_per_sheet_dims(args.paper, args.scale)
                 images = _build_duplex_layout(fronts, backs, args.card_back, cards_per_row, rows_per_sheet)
+                # Re-interleave the highres flags via the same layout (filler=True so the
+                # padding cells, which print as the card back, are never upscaled).
+                image_flags = _build_duplex_layout(front_flags, back_flags, True, cards_per_row, rows_per_sheet)
             else:
-                if args.decklist and (args.upscale or args.upscale_model or args.upscale_all):
-                    from mtg_proxies.upscale import upscale_images
-
-                    effective_flags = [False] * len(images) if args.upscale_all else highres_flags
-                    images = upscale_images(images, highres_flags=effective_flags, model_path=args.upscale_model)
                 if args.card_back is not None:
                     # Non-duplex card-back: legacy "append N backs at the end" behavior.
                     n_backs = args.card_back_count if args.card_back_count is not None else (len(images) or 0)
@@ -1915,6 +1940,17 @@ def main() -> None:
                         )
                         raise SystemExit(1)
                     images.extend([args.card_back] * n_backs)
+                # Build a flag list aligned with the final ``images``: decklist slots use the
+                # Scryfall flags collected earlier (if any), custom art and the appended
+                # card-back copies are user-supplied → highres=True so upscale skips them.
+                upscale_requested = args.upscale or args.upscale_model or args.upscale_all
+                if args.decklist and upscale_requested:  # noqa: SIM108  (ternary form runs past line limit)
+                    image_flags = list(highres_flags)
+                else:
+                    image_flags = [True] * len(images)
+                # Pad any tail entries (custom art + card-back) that the decklist flags don't cover.
+                if len(image_flags) < len(images):
+                    image_flags.extend([True] * (len(images) - len(image_flags)))
 
             if not images:
                 print("Error: must provide either a decklist, --custom-art folder, or --card-back PATH")
@@ -1922,13 +1958,16 @@ def main() -> None:
 
             # Custom art and card-back images are user-supplied and assumed pristine — they
             # shouldn't be touched by the auto-correct passes. Decklist scans (Scryfall) get
-            # the full normalize/shadow_lift treatment.
+            # the full normalize/shadow_lift/upscale treatment.
             user_supplied: set[str] = set()
             if args.custom_art:
                 user_supplied.update(custom_images)
             if args.card_back is not None:
                 user_supplied.add(args.card_back)
 
+            # Order: normalize → shadow-lift → upscale. Tone fixes run on the Scryfall original
+            # so the AI upscaler in the final step sees a richer signal (shadow detail intact,
+            # contrast stretched). Running upscale before tone fixes produced flatter output.
             if args.normalize:
                 from mtg_proxies.normalize import normalize_images
 
@@ -1938,6 +1977,21 @@ def main() -> None:
                 from mtg_proxies.shadow_lift import lift_shadows_images
 
                 images = lift_shadows_images(images, skip_paths=user_supplied)
+
+            if args.decklist and (args.upscale or args.upscale_model or args.upscale_all):
+                from mtg_proxies.upscale import upscale_images
+
+                # --upscale-all forces every non-user-supplied card through the model.
+                effective_flags = [
+                    True if p in user_supplied else (False if args.upscale_all else f)
+                    for p, f in zip(images, image_flags, strict=True)
+                ]
+                images = upscale_images(
+                    images,
+                    highres_flags=effective_flags,
+                    model_path=args.upscale_model,
+                    target_width=args.upscale_target_width,
+                )
 
             # Pre-flatten RGBA cards against the chosen background color: fpdf2 composites alpha
             # against white, so without this the rounded corners render white instead of letting
