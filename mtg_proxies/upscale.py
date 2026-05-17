@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import urllib.request
 from pathlib import Path
 
 from tqdm import tqdm
 
-_MODEL_URL = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth"
-_MODEL_CACHE = Path.home() / ".cache" / "mtg-proxies" / "RealESRGAN_x4plus_anime_6B.pth"
+# Default model is MSE-trained Real-ESRNet (no GAN adversarial loss → no hallucinated
+# details, faithful to the source brushwork). Slight softness at 4x is absorbed by the
+# Lanczos downsample to ``target_width``, producing clean print-ready output that
+# matches the artist's painted intent rather than over-sharpening it.
+_MODEL_URL = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.1/RealESRNet_x4plus.pth"
+_MODEL_CACHE = Path.home() / ".cache" / "mtg-proxies" / "RealESRNet_x4plus.pth"
 
 # Default target width after upscaling: matches Scryfall highres PNG width (≈298 DPI on a
 # 2.5" card, the right size for desktop printing). The AI sharpening survives the Lanczos
@@ -31,9 +36,19 @@ def _download_model() -> Path:
     return _MODEL_CACHE
 
 
-def _upscaled_path(image_path: str | Path, target_width: int) -> Path:
+def _model_identity_hash(model_path: str | Path) -> str:
+    """Return a 6-char hash of the model filename.
+
+    Used in the upscale cache filename so different models (e.g. anime_6B vs Net vs
+    UltraSharp) produce independent cache entries instead of returning the previously-cached
+    model's output when ``--upscale-model`` changes.
+    """
+    return hashlib.sha1(Path(model_path).name.encode()).hexdigest()[:6]
+
+
+def _upscaled_path(image_path: str | Path, target_width: int, model_id: str) -> Path:
     p = Path(image_path)
-    return p.parent / (p.stem + f"_4x_w{target_width}" + p.suffix)
+    return p.parent / (p.stem + f"_4x_w{target_width}_m{model_id}" + p.suffix)
 
 
 def upscale_images(
@@ -45,16 +60,17 @@ def upscale_images(
     """Upscale lowres card images using a Real-ESRGAN model via spandrel.
 
     Lowres images are identified by ``highres_flags`` (False = needs upscaling).
-    Upscaled results are cached next to the originals with a ``_4x_w<target_width>``
-    suffix so that subsequent runs skip reprocessing and so that changing
-    ``target_width`` invalidates the cache automatically.
+    Upscaled results are cached next to the originals with a ``_4x_w<target_width>_m<id>``
+    suffix so that subsequent runs skip reprocessing — and so that changing either
+    ``target_width`` or the model invalidates the cache automatically.
 
     Args:
         image_paths: List of absolute paths to card image files.
         highres_flags: Per-image boolean flags from Scryfall metadata. If None,
             all images are treated as needing upscaling.
         model_path: Path to a local ``.pth`` model file. Defaults to
-            RealESRGAN anime_6B (downloaded on first use).
+            RealESRNet_x4plus (downloaded on first use) — MSE-trained, faithful to
+            the source painterly art, no GAN hallucination.
         target_width: Final width in pixels to downscale upscaled cards to. The
             AI sharpening survives the Lanczos downsample. Defaults to
             :data:`DEFAULT_TARGET_WIDTH` (745, matches Scryfall highres). Higher
@@ -66,6 +82,12 @@ def upscale_images(
     """
     if target_width is None:
         target_width = DEFAULT_TARGET_WIDTH
+
+    # Resolve model identity up-front so cache lookups can be model-aware. For the default
+    # case use the would-be cache path so we don't trigger the download just to compute a
+    # hash — the actual download is still deferred until we know we need to run the model.
+    resolved_model_path: Path = Path(model_path) if model_path else _MODEL_CACHE
+    model_id = _model_identity_hash(resolved_model_path)
     try:
         import numpy as np
         import torch
@@ -83,17 +105,16 @@ def upscale_images(
     needs_upscale: list[str] = [
         path
         for path, is_highres in zip(image_paths, highres_flags)
-        if not is_highres and not _upscaled_path(path, target_width).exists()
+        if not is_highres and not _upscaled_path(path, target_width, model_id).exists()
     ]
 
     if needs_upscale:
         if model_path:
-            resolved_model = Path(model_path)
-            if not resolved_model.is_file():
-                raise FileNotFoundError(f"Upscale model not found: {resolved_model}")
+            if not resolved_model_path.is_file():
+                raise FileNotFoundError(f"Upscale model not found: {resolved_model_path}")
         else:
-            resolved_model = _download_model()
-        model = ModelLoader().load_from_file(str(resolved_model))
+            resolved_model_path = _download_model()
+        model = ModelLoader().load_from_file(str(resolved_model_path))
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model = model.eval().to(device)
 
@@ -110,7 +131,7 @@ def upscale_images(
             if upscaled.width > target_width:
                 ratio = target_width / upscaled.width
                 upscaled = upscaled.resize((target_width, round(upscaled.height * ratio)), Image.LANCZOS)
-            upscaled.save(str(_upscaled_path(path, target_width)))
+            upscaled.save(str(_upscaled_path(path, target_width, model_id)))
             del tensor, output, result, upscaled
             if device.type == "cuda":
                 torch.cuda.empty_cache()
@@ -120,6 +141,8 @@ def upscale_images(
     # Only substitute the upscaled cache for images that were flagged as needing upscaling.
     # A stale _4x file from a previous run must not be returned for an image that is now highres.
     return [
-        str(_upscaled_path(p, target_width)) if not is_highres and _upscaled_path(p, target_width).exists() else p
+        str(_upscaled_path(p, target_width, model_id))
+        if not is_highres and _upscaled_path(p, target_width, model_id).exists()
+        else p
         for p, is_highres in zip(image_paths, highres_flags, strict=True)
     ]

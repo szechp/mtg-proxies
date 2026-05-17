@@ -96,7 +96,7 @@ With `--allow-low-res`, prints from the preferred sets are kept even if lowres (
 mtg-proxies print deck-ltr.txt output.pdf --upscale
 ```
 
-Uses RealESRGAN anime_6B by default (downloaded on first use to `~/.cache/mtg-proxies/`). Use any ESRGAN-compatible `.pth` model from [openmodeldb.info](https://openmodeldb.info):
+Uses **RealESRNet_x4plus** by default (downloaded on first use to `~/.cache/mtg-proxies/`). It's MSE-trained (no GAN), so it's faithful to the painterly source art and won't hallucinate textures or rim-light halos. The slight softness at 4× is absorbed by the Lanczos downsample to the print target width. Use any ESRGAN-compatible `.pth` model from [openmodeldb.info](https://openmodeldb.info) if you want a different look (e.g. `RealESRGAN_x4plus_anime_6B.pth` for sharper line-art, `4x-UltraSharp.pth` for aggressive detail enhancement):
 
 ```bash
 mtg-proxies print deck-ltr.txt output.pdf --upscale-model ~/models/4x-UltraSharp.pth
@@ -275,7 +275,7 @@ options:
   --upscale             upscale lowres card images with Real-ESRGAN instead of
                         replacing them with a different print
   --upscale-model PATH  path to a local .pth upscaling model (default:
-                        RealESRGAN anime_6B); implies --upscale
+                        RealESRNet_x4plus); implies --upscale
   --upscale-all         upscale every card, ignoring Scryfall's highres_image
                         flag (without this, --upscale only upscales cards
                         Scryfall marks low-res); implies --upscale

@@ -1481,7 +1481,7 @@ def main() -> None:
         "--upscale-model",
         default=None,
         metavar="PATH",
-        help="path to a local .pth upscaling model (default: RealESRGAN anime_6B); implies --upscale",
+        help="path to a local .pth upscaling model (default: RealESRNet_x4plus); implies --upscale",
     )
     print_parser.add_argument(
         "--upscale-all",
