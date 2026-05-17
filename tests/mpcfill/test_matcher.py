@@ -226,9 +226,7 @@ def test_match_tiered_returns_none_when_nothing_matches(
     assert tier == 0
 
 
-def _seed_embedding_cache(
-    cache_root: Path, drive_id: str, vector: np.ndarray, *, borderless: bool = False
-) -> None:  # type: ignore[name-defined]
+def _seed_embedding_cache(cache_root: Path, drive_id: str, vector: np.ndarray, *, borderless: bool = False) -> None:  # type: ignore[name-defined]
     """Pre-populate the on-disk embedding cache as a (3, D) stack so the matcher skips fetch/decode.
 
     Rows: 0 = art embedding, 1 = frame embedding, 2 = [borderless_flag, 0, ...]. Tests that

@@ -107,18 +107,14 @@ def _fetch_one(
                     _MAX_RETRIES,
                     backoff,
                 )
-                last_exc = ThumbnailFetchError(
-                    f"thumbnail fetch got retryable HTTP {response.status_code} for {url!r}"
-                )
+                last_exc = ThumbnailFetchError(f"thumbnail fetch got retryable HTTP {response.status_code} for {url!r}")
             else:
                 raise ThumbnailFetchError(f"thumbnail fetch returned HTTP {response.status_code} for {url!r}")
         sleeper(backoff)
         backoff = min(backoff * 2.0, _MAX_BACKOFF_S)
     detail = f" (last HTTP {last_status})" if last_status is not None else ""
     if last_exc is not None:
-        raise ThumbnailFetchError(
-            f"thumbnail fetch failed after {_MAX_RETRIES} retries{detail}: {url}"
-        ) from last_exc
+        raise ThumbnailFetchError(f"thumbnail fetch failed after {_MAX_RETRIES} retries{detail}: {url}") from last_exc
     raise ThumbnailFetchError(f"thumbnail fetch failed after {_MAX_RETRIES} retries{detail}: {url}")
 
 

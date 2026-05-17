@@ -307,18 +307,13 @@ mirror the matching CLI options.
 
 Supported verbs:
 
-- `#mpcfill [--similarity F] [--frame-strictness F] [--matcher {embedding,phash}] [--blur PX]` —
+- `#mpcfill [--similarity F] [--frame-strictness F] [--matcher {embedding,phash}]` —
   replace this card's Scryfall art with the visually closest MPCFill community render.
   A miss falls back to Scryfall with a warning. **Implicitly opts out of the bulk
   upscale pass** for the swapped face(s) — MPCFill renders are already at print
   resolution (typically 1500+ px), so re-running ESRGAN on them would be wasteful and
   on CPU can hang. Bulk normalize and shadow-lift still apply unless explicitly
   opted out with `#no-normalize` / `#no-shadow-lift`.
-  - `--blur PX` (default 0) applies a Gaussian blur symmetrically to the reference scan and
-    every candidate render before the CLIP matcher embeds them. Useful when the Scryfall
-    scan is grainy / halftone-patterned and the matcher keeps picking a similarly grainy
-    low-res candidate over the clean high-res one. 1–2 px is enough to suppress halftone
-    without losing card-level distinguishability.
 - `#upscale [--upscale-model PATH]` — upscale this card via Real-ESRGAN. With `--upscale-model`
   it's an **always-on override**: even with `--upscale-all` set globally, this card uses the
   specified model instead of the global default. Use for problem cards — e.g. halftone-pattern

@@ -371,7 +371,6 @@ def _apply_per_card_modelines(
                 similarity = directive.flags.get("--similarity", mpcfill_per_card.DEFAULT_SIMILARITY)
                 frame_strictness = directive.flags.get("--frame-strictness", mpcfill_per_card.DEFAULT_FRAME_STRICTNESS)
                 matcher = directive.flags.get("--matcher", mpcfill_per_card.DEFAULT_MATCHER)
-                blur_radius = directive.flags.get("--blur", 0.0)
 
                 # Front swap. For DFCs the backend search expects the front-face name,
                 # not the joined "Front // Back" name on the card dict.
@@ -407,7 +406,6 @@ def _apply_per_card_modelines(
                     similarity=similarity,
                     frame_strictness=frame_strictness,
                     matcher=matcher,
-                    blur_radius=blur_radius,
                 )
                 if out_front is None:
                     _mpcfill_log.warning(
@@ -445,7 +443,6 @@ def _apply_per_card_modelines(
                     similarity=similarity,
                     frame_strictness=frame_strictness,
                     matcher=matcher,
-                    blur_radius=blur_radius,
                 )
                 if out_back is None:
                     _mpcfill_log.warning(

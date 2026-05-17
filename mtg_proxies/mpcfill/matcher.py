@@ -225,7 +225,6 @@ def match_by_embedding(
     similarity_threshold: float = 0.85,
     frame_strictness: float = 0.03,
     preview_size: int = _PREVIEW_SIZE,
-    blur_radius: float = 0.0,
 ) -> MatchResult | None:
     """Pick the candidate whose CLIP embedding has the highest cosine similarity to the reference.
 
@@ -236,11 +235,6 @@ def match_by_embedding(
         cache_root: Where to persist per-Drive-ID embedding caches.
         similarity_threshold: Minimum cosine similarity required to accept a match.
         preview_size: Pixel-width hint for the per-candidate preview download.
-        blur_radius: Gaussian blur (in pixels) applied symmetrically to the reference and to
-            each candidate before encoding. Use when matching grainy / halftone-pattern scans:
-            CLIP otherwise treats the noise pattern as a similarity signal and ends up
-            matching the low-res / equally-grainy candidate rather than the clean one.
-            ``0.0`` (default) disables.
 
     Returns:
         The best `MatchResult`, or None if no candidate's similarity reaches `similarity_threshold`.
@@ -259,7 +253,7 @@ def match_by_embedding(
     # framing differences (e.g. full-art vs. regular border) live in the bottom half — so we
     # score candidates on min(art_sim, frame_sim) and reject anything where either region
     # drifts. Same artwork with different framing scores low on frame even when art matches.
-    reference_regions = embedder.embed_pil_regions(reference, blur_radius=blur_radius)  # shape (2, dim)
+    reference_regions = embedder.embed_pil_regions(reference)  # shape (2, dim)
     reference_borderless = embedder.is_borderless(reference)
 
     # Cache layout: (3, D) ndarray where row 0 = art embedding, row 1 = frame embedding,
@@ -274,7 +268,7 @@ def match_by_embedding(
     miss_frame_images: list[_Image.Image] = []
     miss_borderless: list[bool] = []
     for candidate in candidates:
-        cache_path = embedder.cached_embedding_path(cache_root, candidate.drive_id, blur_radius=blur_radius)
+        cache_path = embedder.cached_embedding_path(cache_root, candidate.drive_id)
         if cache_path.is_file():
             try:
                 arr = _np.load(cache_path)
@@ -310,7 +304,7 @@ def match_by_embedding(
     # amortize per-call overhead (tokenizer setup, etc.).
     if miss_candidates:
         combined = miss_art_images + miss_frame_images
-        new_embeddings = embedder.embed_pils_batch(combined, blur_radius=blur_radius)
+        new_embeddings = embedder.embed_pils_batch(combined)
         n = len(miss_candidates)
         for idx, candidate in enumerate(miss_candidates):
             art_emb = _np.asarray(new_embeddings[idx], dtype=_np.float32)
@@ -323,9 +317,7 @@ def match_by_embedding(
             border_row[1] = float(embedder.BORDER_DETECTION_VERSION)
             stack3 = _np.stack([art_emb, frame_emb, border_row])
             try:
-                _np.save(
-                    embedder.cached_embedding_path(cache_root, candidate.drive_id, blur_radius=blur_radius), stack3
-                )
+                _np.save(embedder.cached_embedding_path(cache_root, candidate.drive_id), stack3)
             except OSError:
                 _log.warning("could not persist embedding for %s", candidate.drive_id)
 

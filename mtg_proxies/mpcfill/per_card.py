@@ -46,7 +46,6 @@ def resolve_per_card_mpcfill(
     matcher: MatcherName = DEFAULT_MATCHER,
     phash_threshold: int = DEFAULT_PHASH_THRESHOLD,
     output_size: int = DEFAULT_OUTPUT_SIZE,
-    blur_radius: float = 0.0,
 ) -> Path | None:
     """Return a local PNG path for the best MPCFill render of a single card.
 
@@ -66,10 +65,6 @@ def resolve_per_card_mpcfill(
         matcher: Either ``"embedding"`` (CLIP) or ``"phash"``.
         phash_threshold: Maximum acceptable Hamming distance for the pHash matcher.
         output_size: Pixel-width hint for the final render download.
-        blur_radius: Gaussian blur (in pixels) applied symmetrically to the reference and to
-            each candidate before CLIP encoding. Use when matching a grainy / halftone-pattern
-            Scryfall scan that otherwise tricks the matcher into picking a similarly grainy
-            candidate over a clean one. ``0.0`` (default) disables.
 
     Returns:
         Path to the persisted PNG, or ``None`` if no candidate qualifies.
@@ -100,7 +95,6 @@ def resolve_per_card_mpcfill(
             cache_root=cache_root,
             similarity_threshold=similarity,
             frame_strictness=frame_strictness,
-            blur_radius=blur_radius,
         )
     else:
         match_result = match_phash(
@@ -120,11 +114,9 @@ def resolve_per_card_mpcfill(
         cache_root=cache_root,
     )
     # Cache filename includes a short hash of the tuning that controls the *match*: different
-    # similarity / frame-strictness / matcher / blur choices can pick different candidates, so
-    # they must not collide on disk for the same scryfall_id.
-    flag_hash = hashlib.sha1(
-        f"{matcher}:{similarity}:{frame_strictness}:{phash_threshold}:{blur_radius}".encode()
-    ).hexdigest()[:8]
+    # similarity / frame-strictness / matcher choices can pick different candidates, so they
+    # must not collide on disk for the same scryfall_id.
+    flag_hash = hashlib.sha1(f"{matcher}:{similarity}:{frame_strictness}:{phash_threshold}".encode()).hexdigest()[:8]
     output_dir = cache_root / "per_card"
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{scryfall_id}__{flag_hash}.png"

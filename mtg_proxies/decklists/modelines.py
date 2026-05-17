@@ -49,12 +49,6 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         "--similarity": _float_in_range(0.0, 1.0),
         "--frame-strictness": _float_in_range(0.0, 1.0),
         "--matcher": _choice("embedding", "phash"),
-        # ``--blur`` (pixels) applies a Gaussian blur symmetrically to the reference (Scryfall)
-        # and the candidates (MPCFill renders) before CLIP encodes them. Use when matching a
-        # grainy / halftone-pattern Scryfall scan that otherwise tricks the matcher into
-        # picking a similarly grainy low-res candidate over the clean high-res one. 1-2 px is
-        # typically enough; higher values risk collapsing distinct cards into the same embedding.
-        "--blur": _float_in_range(0.0, 10.0),
     },
     "upscale": {
         # When ``--upscale-model`` is supplied, the directive is treated as an *always-on*
