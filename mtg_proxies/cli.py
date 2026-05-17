@@ -2104,19 +2104,37 @@ def main() -> None:
             # contrast stretched). Running upscale before tone fixes produced flatter output.
             # Union the per-card modeline opt-out sets with ``user_supplied`` so the bulk
             # transforms skip both user-provided art AND any card carrying ``#no-<verb>``.
-            normalize_skip = user_supplied | modeline_skip_normalize
-            shadow_lift_skip = user_supplied | modeline_skip_shadow_lift
-            upscale_skip = user_supplied | modeline_skip_upscale
+            #
+            # Skip-set staleness invariant: each bulk pass mutates ``images`` (e.g. ``card.png``
+            # becomes ``card_norm_cp0.5.png``), so any DOWNSTREAM skip set still keyed on the
+            # pre-mutation path would stop matching. After every pass that may mutate ``images``,
+            # remap the downstream skip sets via ``_remap_skip_set`` to track the new paths.
+
+            def _remap_skip_set(before: list[str], after: list[str], *skip_sets: set[str]) -> None:
+                """Update ``skip_sets`` so entries pointing at ``before[i]`` now point at ``after[i]``."""
+                for old, new in zip(before, after, strict=True):
+                    if old == new:
+                        continue
+                    for s in skip_sets:
+                        if old in s:
+                            s.discard(old)
+                            s.add(new)
 
             if args.normalize:
                 from mtg_proxies.normalize import normalize_images
 
+                normalize_skip = user_supplied | modeline_skip_normalize
+                before = list(images)
                 images = normalize_images(images, skip_paths=normalize_skip)
+                _remap_skip_set(before, images, modeline_skip_shadow_lift, modeline_skip_upscale)
 
             if args.shadow_lift:
                 from mtg_proxies.shadow_lift import lift_shadows_images
 
+                shadow_lift_skip = user_supplied | modeline_skip_shadow_lift
+                before = list(images)
                 images = lift_shadows_images(images, skip_paths=shadow_lift_skip)
+                _remap_skip_set(before, images, modeline_skip_upscale)
 
             # Per-card upscale modelines (#upscale --upscale-model PATH overrides + bare
             # #upscale subset) run HERE — after bulk normalize and shadow-lift have given
@@ -2147,17 +2165,16 @@ def main() -> None:
                         upscale_model=args.upscale_model,
                         upscale_target_width=args.upscale_target_width,
                     )
-                # Refresh the upscale_skip union now that the modeline pass has added
-                # post-upscale paths into ``modeline_skip_upscale``.
-                upscale_skip = user_supplied | modeline_skip_upscale
-
             if args.decklist and (args.upscale or args.upscale_model or args.upscale_all):
                 from mtg_proxies.upscale import upscale_images
 
                 # --upscale-all forces every non-user-supplied / non-modeline-skipped card
                 # through the model. ``upscale_skip`` covers ``#no-upscale`` and the
                 # ``#upscale --upscale-model PATH`` overrides (which write their own
-                # already-upscaled output into ``images`` before this pass runs).
+                # already-upscaled output into ``images`` before this pass runs). The
+                # modeline_skip_upscale set has been kept in sync with path mutations via
+                # ``_remap_skip_set`` after each preceding bulk pass.
+                upscale_skip = user_supplied | modeline_skip_upscale
                 effective_flags = [
                     True if p in upscale_skip else (False if args.upscale_all else f)
                     for p, f in zip(images, image_flags, strict=True)
