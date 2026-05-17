@@ -46,6 +46,7 @@ def resolve_per_card_mpcfill(
     matcher: MatcherName = DEFAULT_MATCHER,
     phash_threshold: int = DEFAULT_PHASH_THRESHOLD,
     output_size: int = DEFAULT_OUTPUT_SIZE,
+    drive_id_override: str | None = None,
 ) -> Path | None:
     """Return a local PNG path for the best MPCFill render of a single card.
 
@@ -65,58 +66,72 @@ def resolve_per_card_mpcfill(
         matcher: Either ``"embedding"`` (CLIP) or ``"phash"``.
         phash_threshold: Maximum acceptable Hamming distance for the pHash matcher.
         output_size: Pixel-width hint for the final render download.
+        drive_id_override: When set, bypass search+match entirely and fetch this specific
+            Drive ID's render. Use when the user has pre-picked a candidate (e.g. via the
+            ``mtg-proxies mpcfill-pick`` subcommand) — gives them a durable, deterministic
+            choice that the auto-matcher can never overrule.
 
     Returns:
         Path to the persisted PNG, or ``None`` if no candidate qualifies.
     """
-    query = card_name.lower()
-    results = client_search(server, [query], session=session, cache_root=cache_root)
-    candidates = results.get(query, [])
-    if not candidates:
-        return None
-
-    # Open as context-manager so the file descriptor is released; treat missing/corrupt
-    # reference files as a soft miss so the caller can fall back to Scryfall.
-    try:
-        with Image.open(scryfall_image_path) as img:
-            reference = img.convert("RGB")
-    except (OSError, FileNotFoundError) as exc:
-        _log.warning("per-card mpcfill: cannot read reference %s: %s", scryfall_image_path, exc)
-        return None
-
-    def _drive_fetcher(drive_id: str, size: int) -> bytes:
-        return fetch_thumbnail(drive_id, size, session=session, cache_root=cache_root)
-
-    if matcher == "embedding":
-        match_result = match_by_embedding(
-            reference,
-            candidates,
-            drive_fetcher=_drive_fetcher,
-            cache_root=cache_root,
-            similarity_threshold=similarity,
-            frame_strictness=frame_strictness,
-        )
+    if drive_id_override:
+        # Explicit pick — skip search and match entirely. The user has already chosen via
+        # the picker subcommand (or pasted a known-good drive_id) and we just need to
+        # download that specific render at print resolution.
+        chosen_drive_id = drive_id_override
     else:
-        match_result = match_phash(
-            reference,
-            candidates,
-            drive_fetcher=_drive_fetcher,
-            threshold=phash_threshold,
-        )
+        query = card_name.lower()
+        results = client_search(server, [query], session=session, cache_root=cache_root)
+        candidates = results.get(query, [])
+        if not candidates:
+            return None
 
-    if match_result is None:
-        return None
+        # Open as context-manager so the file descriptor is released; treat missing/corrupt
+        # reference files as a soft miss so the caller can fall back to Scryfall.
+        try:
+            with Image.open(scryfall_image_path) as img:
+                reference = img.convert("RGB")
+        except (OSError, FileNotFoundError) as exc:
+            _log.warning("per-card mpcfill: cannot read reference %s: %s", scryfall_image_path, exc)
+            return None
+
+        def _drive_fetcher(drive_id: str, size: int) -> bytes:
+            return fetch_thumbnail(drive_id, size, session=session, cache_root=cache_root)
+
+        if matcher == "embedding":
+            match_result = match_by_embedding(
+                reference,
+                candidates,
+                drive_fetcher=_drive_fetcher,
+                cache_root=cache_root,
+                similarity_threshold=similarity,
+                frame_strictness=frame_strictness,
+            )
+        else:
+            match_result = match_phash(
+                reference,
+                candidates,
+                drive_fetcher=_drive_fetcher,
+                threshold=phash_threshold,
+            )
+
+        if match_result is None:
+            return None
+        chosen_drive_id = match_result.candidate.drive_id
 
     image_bytes = fetch_thumbnail(
-        match_result.candidate.drive_id,
+        chosen_drive_id,
         output_size,
         session=session,
         cache_root=cache_root,
     )
     # Cache filename includes a short hash of the tuning that controls the *match*: different
     # similarity / frame-strictness / matcher choices can pick different candidates, so they
-    # must not collide on disk for the same scryfall_id.
-    flag_hash = hashlib.sha1(f"{matcher}:{similarity}:{frame_strictness}:{phash_threshold}".encode()).hexdigest()[:8]
+    # must not collide on disk for the same scryfall_id. ``drive_id_override`` joins the hash
+    # so swapping it produces a new cache file.
+    flag_hash = hashlib.sha1(
+        f"{matcher}:{similarity}:{frame_strictness}:{phash_threshold}:{drive_id_override}".encode()
+    ).hexdigest()[:8]
     output_dir = cache_root / "per_card"
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{scryfall_id}__{flag_hash}.png"

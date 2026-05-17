@@ -307,13 +307,28 @@ mirror the matching CLI options.
 
 Supported verbs:
 
-- `#mpcfill [--similarity F] [--frame-strictness F] [--matcher {embedding,phash}]` —
+- `#mpcfill [--similarity F] [--frame-strictness F] [--matcher {embedding,phash}] [--identifier ID]` —
   replace this card's Scryfall art with the visually closest MPCFill community render.
   A miss falls back to Scryfall with a warning. **Implicitly opts out of the bulk
   upscale pass** for the swapped face(s) — MPCFill renders are already at print
   resolution (typically 1500+ px), so re-running ESRGAN on them would be wasteful and
   on CPU can hang. Bulk normalize and shadow-lift still apply unless explicitly
   opted out with `#no-normalize` / `#no-shadow-lift`.
+  - `--identifier <ID>` locks in a specific MPCFill render by its backend Identifier
+    (a Google Drive file ID, ~33 chars). Bypasses the auto-matcher entirely — use when
+    the matcher keeps picking the wrong candidate for a card. Get the Identifier from
+    [MPCFill's UI](https://mpcfill.com) or with the `mtg-proxies mpcfill-pick` subcommand:
+
+    ```bash
+    uv run mtg-proxies mpcfill-pick "Professor of Zoomancy"
+    ```
+
+    Opens a clickable thumbnail grid of every candidate; click the right one and the
+    Identifier is printed for pasting:
+
+    ```
+    1 Professor of Zoomancy (STX) 42 #mpcfill --identifier 1alfUj6vzTgyewlQRomSpXMR0p8bhBqBM
+    ```
 - `#upscale [--upscale-model PATH]` — upscale this card via Real-ESRGAN. With `--upscale-model`
   it's an **always-on override**: even with `--upscale-all` set globally, this card uses the
   specified model instead of the global default. Use for problem cards — e.g. halftone-pattern

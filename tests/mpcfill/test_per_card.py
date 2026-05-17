@@ -29,6 +29,64 @@ def _write_reference(tmp_path: Path) -> Path:
     return ref
 
 
+def test_resolve_per_card_mpcfill_drive_id_override_bypasses_matcher(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``drive_id_override`` skips search+match entirely and fetches the user's chosen Identifier."""
+    from mtg_proxies.mpcfill import per_card
+
+    fake_search = MagicMock()
+    fake_match_embed = MagicMock()
+    fake_fetch = MagicMock(return_value=b"PNG_explicit_pick")
+    monkeypatch.setattr(per_card, "client_search", fake_search)
+    monkeypatch.setattr(per_card, "match_by_embedding", fake_match_embed)
+    monkeypatch.setattr(per_card, "fetch_thumbnail", fake_fetch)
+
+    out = per_card.resolve_per_card_mpcfill(
+        card_name="Professor of Zoomancy",
+        scryfall_image_path=_write_reference(tmp_path),
+        scryfall_id="zoo-uuid",
+        cache_root=tmp_path,
+        server="https://example",
+        session=MagicMock(),
+        drive_id_override="1alfUj6vzTgyewlQRomSpXMR0p8bhBqBM",
+    )
+
+    assert out is not None
+    assert out.read_bytes() == b"PNG_explicit_pick"
+    # Search and matcher are entirely bypassed when an explicit drive_id is given.
+    fake_search.assert_not_called()
+    fake_match_embed.assert_not_called()
+    # fetch_thumbnail is called exactly once, with the override drive_id.
+    fake_fetch.assert_called_once()
+    assert fake_fetch.call_args.args[0] == "1alfUj6vzTgyewlQRomSpXMR0p8bhBqBM"
+
+
+def test_resolve_per_card_mpcfill_drive_id_override_cache_key_differs_from_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Two explicit picks for the same scryfall_id must land in different cache files."""
+    from mtg_proxies.mpcfill import per_card
+
+    monkeypatch.setattr(per_card, "client_search", MagicMock())
+    monkeypatch.setattr(per_card, "match_by_embedding", MagicMock())
+    monkeypatch.setattr(per_card, "fetch_thumbnail", MagicMock(return_value=b"PNG"))
+
+    common = {
+        "card_name": "Sol Ring",
+        "scryfall_image_path": _write_reference(tmp_path),
+        "scryfall_id": "abc-123",
+        "cache_root": tmp_path,
+        "server": "https://example",
+        "session": MagicMock(),
+    }
+    out_A = per_card.resolve_per_card_mpcfill(**common, drive_id_override="DRIVE_ID_A")
+    out_B = per_card.resolve_per_card_mpcfill(**common, drive_id_override="DRIVE_ID_B")
+    assert out_A is not None
+    assert out_B is not None
+    assert out_A != out_B  # filenames must differ across picks
+
+
 def test_resolve_per_card_mpcfill_happy_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from mtg_proxies.mpcfill import per_card
 

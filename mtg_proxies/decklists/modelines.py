@@ -49,6 +49,11 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         "--similarity": _float_in_range(0.0, 1.0),
         "--frame-strictness": _float_in_range(0.0, 1.0),
         "--matcher": _choice("embedding", "phash"),
+        # ``--identifier <ID>`` picks a specific MPCFill render by its backend Identifier
+        # (a Google Drive file ID, ~33 chars). When set, the auto-matcher is bypassed
+        # entirely — used to lock in a manual pick (e.g. from ``mtg-proxies mpcfill-pick``)
+        # when the matcher consistently picks the wrong candidate for a card.
+        "--identifier": _path_str,
     },
     "upscale": {
         # When ``--upscale-model`` is supplied, the directive is treated as an *always-on*

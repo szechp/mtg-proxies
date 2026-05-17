@@ -371,6 +371,7 @@ def _apply_per_card_modelines(
                 similarity = directive.flags.get("--similarity", mpcfill_per_card.DEFAULT_SIMILARITY)
                 frame_strictness = directive.flags.get("--frame-strictness", mpcfill_per_card.DEFAULT_FRAME_STRICTNESS)
                 matcher = directive.flags.get("--matcher", mpcfill_per_card.DEFAULT_MATCHER)
+                identifier_override = directive.flags.get("--identifier")
 
                 # Front swap. For DFCs the backend search expects the front-face name,
                 # not the joined "Front // Back" name on the card dict.
@@ -406,6 +407,7 @@ def _apply_per_card_modelines(
                     similarity=similarity,
                     frame_strictness=frame_strictness,
                     matcher=matcher,
+                    drive_id_override=identifier_override,
                 )
                 if out_front is None:
                     _mpcfill_log.warning(
@@ -433,6 +435,12 @@ def _apply_per_card_modelines(
                         card["name"],
                     )
                     continue
+                # ``--identifier`` is a front-face pick only; the back face still goes through
+                # the auto-matcher (or falls back to Scryfall on miss). A user who needs to
+                # lock in a specific back-face identifier would need a separate flag — out of
+                # scope for now; in practice the failure mode that ``--identifier`` solves is
+                # auto-matcher picking the wrong art, which the back face doesn't share with
+                # the front since it queries a different name.
                 out_back = mpcfill_per_card.resolve_per_card_mpcfill(
                     card_name=back_name,
                     scryfall_image_path=_read(back_slots[0]),
@@ -1079,6 +1087,49 @@ def _write_mpcfill_csv(path: Path, cards: list[OrderCard]) -> None:
                 "slot_indices": " ".join(str(i) for i in card.slot_indices),
                 "image_basename": card.image_basename,
             })
+
+
+def _run_mpcfill_pick(args: argparse.Namespace) -> None:
+    """Open the interactive picker for one card; print the chosen Identifier on success.
+
+    Last-resort tool when the auto-matcher consistently picks the wrong candidate for a
+    card: the user runs this, clicks the right thumbnail, copies the printed Identifier
+    into a ``#mpcfill --identifier <ID>`` modeline on their decklist line, and that pick
+    is then locked in forever.
+    """
+    from mtg_proxies.mpcfill.picker import pick_candidate_interactively
+
+    session = requests.Session()
+    query = args.card_name.lower()
+    print(f"Querying MPCFill for {args.card_name!r}…")
+    try:
+        results = mpcfill_search(args.server, [query], session=session)
+    except MpcfillError as exc:
+        print(f"Error: MPCFill backend unreachable or returned an error: {exc}")
+        raise SystemExit(1) from exc
+    candidates = results.get(query, [])
+    if not candidates:
+        print(f"No candidates found for {args.card_name!r}.")
+        raise SystemExit(1)
+    print(f"Found {len(candidates)} candidate(s). Opening picker…")
+
+    cache_root = default_cache_root()
+
+    def fetcher(drive_id: str, size: int) -> bytes:
+        return mpcfill_drive.fetch_thumbnail(drive_id, size, session=session, cache_root=cache_root)
+
+    pick = pick_candidate_interactively(args.card_name, candidates, fetcher, preview_size=args.preview_size)
+    if pick is None:
+        print("No selection made.")
+        raise SystemExit(1)
+
+    print()
+    print(f"  Identifier: {pick.drive_id}")
+    print(f"  Source:     {pick.source_name}")
+    print(f"  DPI:        {pick.dpi}")
+    print()
+    print("Add this to your decklist line to lock in the pick:")
+    print(f"  #mpcfill --identifier {pick.drive_id}")
 
 
 def _run_mpcfill(args: argparse.Namespace) -> None:
@@ -1927,6 +1978,31 @@ def main() -> None:
             " bypass that protection and re-match everything from scratch."
         ),
     )
+
+    mpcfill_pick_parser = subparsers.add_parser(
+        "mpcfill-pick",
+        help="Open an interactive picker showing every MPCFill render for a card",
+        description=(
+            "Query the MPCFill backend for one card name, download every candidate's preview,"
+            " and open a clickable thumbnail grid so you can manually pick the right render."
+            " Prints the chosen Identifier; paste it into your decklist as"
+            " `#mpcfill --identifier <ID>` to lock that pick in (bypasses the auto-matcher)."
+        ),
+    )
+    mpcfill_pick_parser.add_argument("card_name", help="Card name to query (case-insensitive)")
+    mpcfill_pick_parser.add_argument(
+        "--server",
+        default=MPCFILL_DEFAULT_SERVER,
+        help="MPCFill backend base URL (default: %(default)s)",
+    )
+    mpcfill_pick_parser.add_argument(
+        "--preview-size",
+        type=int,
+        default=300,
+        metavar="PX",
+        help="thumbnail width in the picker grid (default: %(default)d)",
+    )
+
     args = parser.parse_args()
 
     match args.command:
@@ -2453,3 +2529,6 @@ def main() -> None:
 
         case "mpcfill":
             _run_mpcfill(args)
+
+        case "mpcfill-pick":
+            _run_mpcfill_pick(args)
