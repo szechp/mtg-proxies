@@ -584,6 +584,30 @@ def test_apply_per_card_modelines_no_upscale_adds_to_skip_set(monkeypatch: pytes
     assert skip_upscale == {"sol.png"}
 
 
+def test_apply_per_card_modelines_mpcfill_implies_no_upscale(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """``#mpcfill`` swaps must add the resulting render path to ``skip_upscale``.
+
+    Rationale: MPCFill renders come down at print resolution (1500+ px typical), so the
+    bulk upscale would be both wasteful and prone to hang on CPU. The implicit opt-out
+    keeps users from having to remember ``#no-upscale`` on every ``#mpcfill`` line.
+    """
+    from mtg_proxies import cli
+
+    swapped = tmp_path / "mpcfill_render.png"
+    swapped.write_bytes(b"PNG")
+    monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", MagicMock(return_value=swapped))
+
+    decklist = _fake_decklist(_fake_card("Concordant Crossroads", modeline="#mpcfill"))
+    image_paths = ["scry.png"]
+    skip_upscale: set[str] = set()
+
+    cli._apply_per_card_modelines(decklist, image_paths, skip_upscale=skip_upscale)
+
+    assert image_paths == [str(swapped)]
+    # The MPCFill render path must be in skip_upscale so the bulk upscale pass skips it.
+    assert str(swapped) in skip_upscale
+
+
 def test_apply_per_card_modelines_no_shadow_lift_adds_to_skip_set(monkeypatch: pytest.MonkeyPatch) -> None:
     """``#no-shadow-lift`` records the card's path in the caller-provided skip set."""
     from mtg_proxies import cli

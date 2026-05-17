@@ -415,6 +415,12 @@ def _apply_per_card_modelines(
                 else:
                     for slot in front_slots:
                         _write(slot, str(out_front))
+                    # MPCFill renders are already at print resolution (typically 1500+ px).
+                    # Running ESRGAN on them is wasteful and on CPU often hangs because the
+                    # model's 4x intermediate is huge. Implicitly opt out of upscale for any
+                    # slot whose path was successfully swapped to an MPCFill render.
+                    if skip_upscale is not None:
+                        skip_upscale.add(str(out_front))
 
                 # DFC back swap: only when card has multiple faces AND slot map has back slots.
                 back_slots = slot_map[card_idx]["back"]
@@ -446,6 +452,9 @@ def _apply_per_card_modelines(
                     continue
                 for slot in back_slots:
                     _write(slot, str(out_back))
+                # Same implicit-no-upscale logic as the front-face swap above.
+                if skip_upscale is not None:
+                    skip_upscale.add(str(out_back))
 
     # Pass 2: per-card transforms.
     def _slots_for_verb(verb: str) -> list[SlotKey]:

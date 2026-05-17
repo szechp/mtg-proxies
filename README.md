@@ -309,7 +309,11 @@ Supported verbs:
 
 - `#mpcfill [--similarity F] [--frame-strictness F] [--matcher {embedding,phash}]` —
   replace this card's Scryfall art with the visually closest MPCFill community render.
-  A miss falls back to Scryfall with a warning.
+  A miss falls back to Scryfall with a warning. **Implicitly opts out of the bulk
+  upscale pass** for the swapped face(s) — MPCFill renders are already at print
+  resolution (typically 1500+ px), so re-running ESRGAN on them would be wasteful and
+  on CPU can hang. Bulk normalize and shadow-lift still apply unless explicitly
+  opted out with `#no-normalize` / `#no-shadow-lift`.
 - `#upscale [--upscale-model PATH]` — upscale this card via Real-ESRGAN. With `--upscale-model`
   it's an **always-on override**: even with `--upscale-all` set globally, this card uses the
   specified model instead of the global default. Use for problem cards — e.g. halftone-pattern
