@@ -35,6 +35,24 @@ build-backend = "uv_build"
 module-name = "mtg_proxies"
 module-root = ""
 
+# Route torch / torchvision through PyTorch's CUDA 12.1 wheel index on Linux + Windows so
+# users with NVIDIA GPUs get CUDA-accelerated wheels automatically on ``uv sync``. macOS
+# falls through to the default PyPI index (CPU wheels on Intel, MPS on Apple Silicon).
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu121", marker = "sys_platform == 'win32'" },
+    { index = "pytorch-cu121", marker = "sys_platform == 'linux'" },
+]
+torchvision = [
+    { index = "pytorch-cu121", marker = "sys_platform == 'win32'" },
+    { index = "pytorch-cu121", marker = "sys_platform == 'linux'" },
+]
+
 [tool.ruff]
 line-length = 120
 target-version = "py312"
