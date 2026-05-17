@@ -265,6 +265,87 @@ def test_flavor_name_resolves_to_oracle_name(monkeypatch: pytest.MonkeyPatch) ->
     assert len(warnings) == 0
 
 
+def test_arena_printed_name_resolves_to_oracle_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`'The Terminus of Return'` (Arena print of `'The Soul Stone'`) should resolve via printed_name."""
+    import mtg_proxies.decklists.sanitizing as sanitizing
+    from mtg_proxies.decklists.sanitizing import card_names, validate_card_name
+
+    fake_cards = [
+        {
+            "name": "The Soul Stone",
+            "layout": "normal",
+            "lang": "en",
+            "digital": True,
+            "printed_name": "The Terminus of Return",
+        },
+    ]
+    monkeypatch.setattr(sanitizing.scryfall, "get_cards", lambda **kwargs: fake_cards)
+    card_names.cache_clear()
+
+    try:
+        validated_name, warnings = validate_card_name("The Terminus of Return")
+    finally:
+        card_names.cache_clear()
+
+    assert validated_name == "The Soul Stone"
+    assert len(warnings) == 0
+
+
+def test_printed_name_does_not_override_real_oracle_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A `printed_name` colliding with a real English oracle name must not shadow the oracle."""
+    import mtg_proxies.decklists.sanitizing as sanitizing
+    from mtg_proxies.decklists.sanitizing import card_names, validate_card_name
+
+    fake_cards = [
+        {"name": "Lightning Bolt", "layout": "normal", "lang": "en"},
+        # A different card whose printed_name collides with the oracle name above. The
+        # real "Lightning Bolt" must still win.
+        {
+            "name": "Different Card",
+            "layout": "normal",
+            "lang": "en",
+            "digital": True,
+            "printed_name": "Lightning Bolt",
+        },
+    ]
+    monkeypatch.setattr(sanitizing.scryfall, "get_cards", lambda **kwargs: fake_cards)
+    card_names.cache_clear()
+
+    try:
+        validated_name, _ = validate_card_name("Lightning Bolt")
+    finally:
+        card_names.cache_clear()
+
+    assert validated_name == "Lightning Bolt"
+
+
+def test_non_english_printed_name_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`printed_name` on non-English prints must NOT enter the lookup (avoids cross-language collisions)."""
+    import mtg_proxies.decklists.sanitizing as sanitizing
+    from mtg_proxies.decklists.sanitizing import card_names, validate_card_name
+
+    fake_cards = [
+        {"name": "Lightning Bolt", "layout": "normal", "lang": "en"},
+        {
+            "name": "Lightning Bolt",
+            "layout": "normal",
+            "lang": "ja",
+            "printed_name": "稲妻",
+        },
+    ]
+    monkeypatch.setattr(sanitizing.scryfall, "get_cards", lambda **kwargs: fake_cards)
+    card_names.cache_clear()
+
+    try:
+        validated_name, warnings = validate_card_name("稲妻")
+    finally:
+        card_names.cache_clear()
+
+    # Japanese name should NOT resolve via printed_name (lang != "en" → skipped).
+    assert validated_name is None
+    assert any("Unable to find card" in str(w) for w in warnings)
+
+
 def test_flavor_name_paths_of_the_dead_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
     """'Paths of the Dead' is the LTC flavor name for Cavern of Souls and should resolve without a warning."""
     import mtg_proxies.decklists.sanitizing as sanitizing
