@@ -22,7 +22,7 @@ import threading
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 from mtg_proxies.mpcfill.cache import default_cache_root
 
@@ -106,9 +106,16 @@ def embeddings_dir(root: Path) -> Path:
     return path
 
 
-def cached_embedding_path(root: Path, drive_id: str) -> Path:
-    """Return the on-disk path used to cache one Drive ID's embedding."""
-    return embeddings_dir(root) / f"{drive_id}.npy"
+def cached_embedding_path(root: Path, drive_id: str, blur_radius: float = 0.0) -> Path:
+    """Return the on-disk path used to cache one Drive ID's embedding.
+
+    ``blur_radius`` (in pixels) becomes part of the filename so embeddings computed at
+    different blur settings don't collide on disk. ``0.0`` (the default — no blur) keeps
+    the legacy filename so existing caches stay valid.
+    """
+    if blur_radius <= 0:
+        return embeddings_dir(root) / f"{drive_id}.npy"
+    return embeddings_dir(root) / f"{drive_id}_b{blur_radius:g}.npy"
 
 
 def _to_rgb(data: bytes) -> Image.Image:
@@ -222,20 +229,32 @@ def embed_pil(image: Image.Image, *, model_name: str = DEFAULT_MODEL_NAME) -> np
     return embed_pils_batch([image], model_name=model_name)[0]
 
 
-def embed_pil_regions(image: Image.Image, *, model_name: str = DEFAULT_MODEL_NAME) -> np.ndarray:
+def embed_pil_regions(
+    image: Image.Image, *, model_name: str = DEFAULT_MODEL_NAME, blur_radius: float = 0.0
+) -> np.ndarray:
     """Encode the art and frame regions of a card; return a (2, dim) array.
 
     Row 0 is the art region embedding, row 1 is the frame region embedding. The matcher
     scores each region separately and takes the minimum, so a candidate with matching
     artwork but a different border style (e.g. full-art vs. regular frame) gets penalized
     on the frame channel even though the art channel is high.
+
+    ``blur_radius`` (in pixels) applies a Gaussian blur to each region before encoding.
+    Use when matching grainy / halftone-pattern scans: the high-frequency noise becomes a
+    similarity signal in the raw image that CLIP unfairly weights; blurring suppresses it
+    so the matcher scores on actual artistic content (shape, color, composition). A radius
+    of 1-2 px is enough to wipe halftone dots without hurting card-level distinguishability.
     """
     art, frame = split_card_regions(image)
-    return embed_pils_batch([art, frame], model_name=model_name)
+    return embed_pils_batch([art, frame], model_name=model_name, blur_radius=blur_radius)
 
 
 def embed_pils_batch(
-    images: list[Image.Image], *, model_name: str = DEFAULT_MODEL_NAME, batch_size: int = 16
+    images: list[Image.Image],
+    *,
+    model_name: str = DEFAULT_MODEL_NAME,
+    batch_size: int = 16,
+    blur_radius: float = 0.0,
 ) -> np.ndarray:
     """Encode a batch of Pillow images in one model call.
 
@@ -247,6 +266,8 @@ def embed_pils_batch(
         images: List of Pillow images.
         model_name: Sentence-transformers model name.
         batch_size: Forwarded to `model.encode`; tune for memory pressure on very large lists.
+        blur_radius: Optional Gaussian blur applied to each image before encoding. See
+            :func:`embed_pil_regions` for rationale.
 
     Returns:
         A 2-D float32 array of shape `(len(images), embedding_dim)`.
@@ -255,6 +276,8 @@ def embed_pils_batch(
         return np.empty((0, 0), dtype=np.float32)
     model = _load_model(model_name)
     rgbs = [img if img.mode == "RGB" else img.convert("RGB") for img in images]
+    if blur_radius > 0:
+        rgbs = [img.filter(ImageFilter.GaussianBlur(blur_radius)) for img in rgbs]
     embeddings = model.encode(rgbs, batch_size=batch_size, show_progress_bar=False)
     return np.asarray(embeddings, dtype=np.float32)
 

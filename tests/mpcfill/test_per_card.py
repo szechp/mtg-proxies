@@ -29,6 +29,29 @@ def _write_reference(tmp_path: Path) -> Path:
     return ref
 
 
+def test_resolve_per_card_mpcfill_forwards_blur_to_matcher(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """``blur_radius`` must reach the embedding matcher so noise-suppressing matches work."""
+    from mtg_proxies.mpcfill import per_card
+
+    fake_match_embed = MagicMock(return_value=_make_match_result())
+    monkeypatch.setattr(per_card, "client_search", MagicMock(return_value={"sol ring": [_make_candidate()]}))
+    monkeypatch.setattr(per_card, "match_by_embedding", fake_match_embed)
+    monkeypatch.setattr(per_card, "fetch_thumbnail", MagicMock(return_value=b"PNG"))
+
+    per_card.resolve_per_card_mpcfill(
+        card_name="Sol Ring",
+        scryfall_image_path=_write_reference(tmp_path),
+        scryfall_id="abc-123",
+        cache_root=tmp_path,
+        server="https://example",
+        session=MagicMock(),
+        blur_radius=1.5,
+    )
+
+    fake_match_embed.assert_called_once()
+    assert fake_match_embed.call_args.kwargs["blur_radius"] == pytest.approx(1.5)
+
+
 def test_resolve_per_card_mpcfill_happy_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from mtg_proxies.mpcfill import per_card
 
