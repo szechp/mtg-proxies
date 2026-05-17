@@ -498,3 +498,135 @@ def test_apply_per_card_modelines_stacked_verbs(
     assert result == ["m.png_norm_lift", "m.png_norm_lift"]
     fake_normalize.assert_called_once()
     fake_lift.assert_called_once()
+
+
+# -- Per-card model override + opt-out verbs (added later) -----------------------------
+
+
+def test_apply_per_card_modelines_upscale_model_override_runs_with_global_on(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``#upscale --upscale-model PATH`` must run even when global ``--upscale-all`` is on."""
+    from mtg_proxies import cli
+
+    fake_upscale = MagicMock(side_effect=lambda paths, **kw: [f"{p}_anime" for p in paths])
+    monkeypatch.setattr("mtg_proxies.upscale.upscale_images", fake_upscale)
+
+    decklist = _fake_decklist(
+        _fake_card("Sol Ring"),
+        _fake_card(
+            "Concordant Crossroads",
+            modeline=f"#upscale --upscale-model {tmp_path}/anime_6B.pth",
+        ),
+    )
+    image_paths = ["sol.png", "crossroads.png"]
+    skip_upscale: set[str] = set()
+
+    result = cli._apply_per_card_modelines(
+        decklist,
+        image_paths,
+        global_upscale=True,  # mimic --upscale-all
+        skip_upscale=skip_upscale,
+    )
+
+    # Override ran on the modelined card; non-modelined card is untouched at this stage.
+    assert result[0] == "sol.png"
+    assert result[1] == "crossroads.png_anime"
+    fake_upscale.assert_called_once()
+    upscale_kwargs = fake_upscale.call_args.kwargs
+    assert str(upscale_kwargs["model_path"]).endswith("anime_6B.pth")
+    # The new path is recorded in skip_upscale so the bulk pass won't re-upscale.
+    assert "crossroads.png_anime" in skip_upscale
+
+
+def test_apply_per_card_modelines_no_normalize_adds_to_skip_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``#no-normalize`` records the card's path in the caller-provided skip set."""
+    from mtg_proxies import cli
+
+    decklist = _fake_decklist(
+        _fake_card("Sol Ring", modeline="#no-normalize"),
+        _fake_card("Lightning Bolt"),
+    )
+    image_paths = ["sol.png", "bolt.png"]
+    skip_normalize: set[str] = set()
+
+    cli._apply_per_card_modelines(
+        decklist,
+        image_paths,
+        global_normalize=True,  # global on; modeline opts this card out
+        skip_normalize=skip_normalize,
+    )
+
+    assert skip_normalize == {"sol.png"}
+
+
+def test_apply_per_card_modelines_no_upscale_adds_to_skip_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``#no-upscale`` records the card's path in the caller-provided skip set."""
+    from mtg_proxies import cli
+
+    decklist = _fake_decklist(
+        _fake_card("Sol Ring", modeline="#no-upscale"),
+        _fake_card("Lightning Bolt"),
+    )
+    image_paths = ["sol.png", "bolt.png"]
+    skip_upscale: set[str] = set()
+
+    cli._apply_per_card_modelines(
+        decklist,
+        image_paths,
+        global_upscale=True,
+        skip_upscale=skip_upscale,
+    )
+
+    assert skip_upscale == {"sol.png"}
+
+
+def test_apply_per_card_modelines_no_shadow_lift_adds_to_skip_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``#no-shadow-lift`` records the card's path in the caller-provided skip set."""
+    from mtg_proxies import cli
+
+    decklist = _fake_decklist(_fake_card("Sol Ring", modeline="#no-shadow-lift"))
+    image_paths = ["sol.png"]
+    skip_shadow_lift: set[str] = set()
+
+    cli._apply_per_card_modelines(
+        decklist,
+        image_paths,
+        global_shadow_lift=True,
+        skip_shadow_lift=skip_shadow_lift,
+    )
+
+    assert skip_shadow_lift == {"sol.png"}
+
+
+def test_apply_per_card_modelines_upscale_override_skips_subset_pass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A card with ``#upscale --upscale-model PATH`` must NOT be re-upscaled by the subset pass."""
+    from mtg_proxies import cli
+
+    # Each call returns a distinguishable suffix so we can tell which path ran.
+    def _fake_upscale(paths: list[str], **kw: object) -> list[str]:
+        model_path = str(kw.get("model_path") or "default")
+        suffix = "_anime" if "anime" in model_path else "_default"
+        return [f"{p}{suffix}" for p in paths]
+
+    monkeypatch.setattr("mtg_proxies.upscale.upscale_images", MagicMock(side_effect=_fake_upscale))
+
+    decklist = _fake_decklist(
+        _fake_card(
+            "Concordant Crossroads",
+            modeline=f"#upscale --upscale-model {tmp_path}/anime_6B.pth",
+        ),
+    )
+    image_paths = ["crossroads.png"]
+
+    # Global upscale is OFF so the subset pass would normally run for #upscale,
+    # but the override has already handled this card.
+    result = cli._apply_per_card_modelines(
+        decklist,
+        image_paths,
+        global_upscale=False,
+    )
+
+    assert result == ["crossroads.png_anime"]  # NOT "_anime_default"

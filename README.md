@@ -310,13 +310,23 @@ Supported verbs:
 - `#mpcfill [--similarity F] [--frame-strictness F] [--matcher {embedding,phash}]` —
   replace this card's Scryfall art with the visually closest MPCFill community render.
   A miss falls back to Scryfall with a warning.
-- `#upscale [--upscale-model PATH]` — upscale this card via Real-ESRGAN.
+- `#upscale [--upscale-model PATH]` — upscale this card via Real-ESRGAN. With `--upscale-model`
+  it's an **always-on override**: even with `--upscale-all` set globally, this card uses the
+  specified model instead of the global default. Use for problem cards — e.g. halftone-pattern
+  scans get cleaner results from the anime model than from Net.
 - `#normalize [--clip-percent F]` — border-anchored auto-levels on this card.
 - `#shadow-lift [--amount F]` — lift crushed blacks on this card.
 
-Per-card directives are **additive** with the global `--upscale` / `--normalize` /
-`--shadow-lift` flags: when a global flag is on, the bulk pass already handles every
-card, so the per-card directive becomes a no-op. Modelines round-trip through
+**Opt-out verbs** (mirror images — exclude this card from the corresponding global pass):
+
+- `#no-upscale` — skip the bulk `--upscale` / `--upscale-all` for this card.
+- `#no-normalize` — skip the bulk `--normalize` for this card.
+- `#no-shadow-lift` — skip the bulk `--shadow-lift` for this card.
+
+Bare `#upscale` / `#normalize` / `#shadow-lift` (without an override flag) are **additive**
+with the global flags: when a global flag is on, the bulk pass already handles every card,
+so the per-card directive becomes a no-op. `#upscale --upscale-model PATH` and the `#no-*`
+verbs are the exceptions — they always take effect. Modelines round-trip through
 `mtg-proxies convert` — the modeline tokens themselves (including whitespace between
 segments) are preserved exactly.
 

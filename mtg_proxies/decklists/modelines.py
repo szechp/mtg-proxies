@@ -51,6 +51,9 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         "--matcher": _choice("embedding", "phash"),
     },
     "upscale": {
+        # When ``--upscale-model`` is supplied, the directive is treated as an *always-on*
+        # model override — it runs even when the global ``--upscale-all`` is set, so the user
+        # can swap the model for problematic cards (e.g. anime_6B for halftone-print scans).
         "--upscale-model": _path_str,
     },
     "normalize": {
@@ -59,6 +62,12 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     "shadow-lift": {
         "--amount": _float_in_range(0.0, 1.0),
     },
+    # Opt-out verbs — exclude this card from a globally-enabled pass. Mirror of
+    # ``#upscale`` / ``#normalize`` / ``#shadow-lift``: those add for a single card when
+    # the global flag is off; these subtract for a single card when the global flag is on.
+    "no-upscale": {},
+    "no-normalize": {},
+    "no-shadow-lift": {},
 }
 
 

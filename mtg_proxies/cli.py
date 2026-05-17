@@ -298,6 +298,9 @@ def _apply_per_card_modelines(
     faces: Literal["all", "front", "back"] = "all",
     duplex: bool = False,
     user_supplied: set[str] | None = None,
+    skip_normalize: set[str] | None = None,
+    skip_shadow_lift: set[str] | None = None,
+    skip_upscale: set[str] | None = None,
     global_upscale: bool = False,
     global_normalize: bool = False,
     global_shadow_lift: bool = False,
@@ -465,10 +468,28 @@ def _apply_per_card_modelines(
             for (idx, _), new in zip(items, new_paths, strict=True):
                 target_lists[list_name][idx] = new
 
-    # Per-card transforms run in the same order as the bulk pipeline: normalize first
-    # (tone), then shadow-lift (contrast in dark regions), then upscale last so the AI
-    # model sees a cleanly toned input. Each verb is a no-op when its global flag is on
-    # (the bulk pass will handle it).
+    # ----- Opt-out verbs -----------------------------------------------------------------
+    # `#no-normalize` / `#no-shadow-lift` / `#no-upscale` exclude this card from the
+    # globally-enabled bulk pass. We collect the affected slots' *current* paths into the
+    # caller-provided skip sets; the bulk-pass loops downstream union them with
+    # ``user_supplied`` to drop the cards from each transform.
+    def _slots_for(card_idx: int) -> list[SlotKey]:
+        return slot_map[card_idx]["front"] + slot_map[card_idx]["back"]
+
+    for card_idx, directives in enumerate(parsed):
+        verbs = {d.verb for d in directives}
+        if "no-normalize" in verbs and skip_normalize is not None:
+            for lname, idx in _slots_for(card_idx):
+                skip_normalize.add(target_lists[lname][idx])
+        if "no-shadow-lift" in verbs and skip_shadow_lift is not None:
+            for lname, idx in _slots_for(card_idx):
+                skip_shadow_lift.add(target_lists[lname][idx])
+        if "no-upscale" in verbs and skip_upscale is not None:
+            for lname, idx in _slots_for(card_idx):
+                skip_upscale.add(target_lists[lname][idx])
+
+    # ----- Per-card transforms (additive subset; no-ops when global is on) ---------------
+    # Order mirrors the bulk pipeline: normalize → shadow-lift → upscale.
     if not global_normalize:
         slots = _slots_for_verb("normalize")
         if slots:
@@ -483,8 +504,46 @@ def _apply_per_card_modelines(
 
             _run_transform(slots, lambda paths: lift_shadows_images(paths))
 
+    # ----- #upscale --upscale-model PATH: always-on per-card model override --------------
+    # Even when global ``--upscale-all`` is set, a per-card directive carrying an explicit
+    # model path is a "this card uses a different model" override and runs unconditionally.
+    # The resulting upscaled path is added to ``skip_upscale`` so the bulk pass skips it.
+    override_handled: set[tuple[str, int]] = set()
+    overrides: dict[str, list[SlotKey]] = {}
+    for card_idx, directives in enumerate(parsed):
+        for directive in directives:
+            if directive.verb != "upscale" or "--upscale-model" not in directive.flags:
+                continue
+            model_override = directive.flags["--upscale-model"]
+            overrides.setdefault(model_override, []).extend(_slots_for(card_idx))
+
+    if overrides:
+        from mtg_proxies.upscale import upscale_images
+
+        for override_model_path, override_slots in overrides.items():
+            eligible = [(lname, idx) for lname, idx in override_slots if target_lists[lname][idx] not in user_supplied]
+            if not eligible:
+                continue
+            grouped: dict[str, list[tuple[int, str]]] = {}
+            for lname, idx in eligible:
+                grouped.setdefault(lname, []).append((idx, target_lists[lname][idx]))
+            for lname, items in grouped.items():
+                new_paths = upscale_images(
+                    [p for _, p in items],
+                    highres_flags=[False] * len(items),
+                    model_path=override_model_path,
+                    target_width=upscale_target_width,
+                )
+                for (idx, _), new in zip(items, new_paths, strict=True):
+                    target_lists[lname][idx] = new
+                    override_handled.add((lname, idx))
+                    if skip_upscale is not None:
+                        skip_upscale.add(new)
+
+    # Bare ``#upscale`` (no --upscale-model) keeps the additive-subset behavior: only runs
+    # when the global flag is off, and excludes slots already handled by an override above.
     if not global_upscale:
-        slots = _slots_for_verb("upscale")
+        slots = [slot for slot in _slots_for_verb("upscale") if slot not in override_handled]
         if slots:
             from mtg_proxies.upscale import upscale_images
 
@@ -1805,6 +1864,12 @@ def main() -> None:
         case "print":
             images = []
             custom_art_dir: tempfile.TemporaryDirectory[str] | None = None
+            # Per-card modeline opt-out skip sets — populated by ``_apply_per_card_modelines``
+            # when modelines exist on the decklist. Initialized empty so the bulk-pass union
+            # works even when ``args.decklist`` is None.
+            modeline_skip_normalize: set[str] = set()
+            modeline_skip_shadow_lift: set[str] = set()
+            modeline_skip_upscale: set[str] = set()
 
             if args.card_back is None and args.card_back_count is not None:
                 print("Error: --card-back-count requires --card-back PATH")
@@ -1849,10 +1914,12 @@ def main() -> None:
                 else:
                     images = fetch_scans_scryfall(decklist, faces=args.faces)
 
-                # Per-card #verb modelines (#mpcfill / #upscale / #normalize / #shadow-lift).
-                # Runs against either the flat ``images`` list (non-duplex) or the parallel
-                # ``fronts``/``backs`` lists (duplex). Must happen BEFORE the bulk transform
-                # passes so the swapped images flow through them naturally.
+                # Per-card #verb modelines (#mpcfill / #upscale / #normalize / #shadow-lift,
+                # plus #no-* opt-outs and #upscale --upscale-model PATH overrides).
+                # Runs BEFORE the bulk transform passes so swapped images flow through them
+                # naturally. The helper populates the three skip sets in place; downstream
+                # bulk loops union them with ``user_supplied`` to drop the affected cards
+                # from each globally-enabled transform.
                 has_modelines = isinstance(decklist, Decklist) and any(card.modeline for card in decklist.cards)
                 if has_modelines:
                     user_supplied_so_far: set[str] = set()
@@ -1865,6 +1932,9 @@ def main() -> None:
                             backs=backs,
                             duplex=True,
                             user_supplied=user_supplied_so_far,
+                            skip_normalize=modeline_skip_normalize,
+                            skip_shadow_lift=modeline_skip_shadow_lift,
+                            skip_upscale=modeline_skip_upscale,
                             global_upscale=bool(args.upscale or args.upscale_model or args.upscale_all),
                             global_normalize=bool(args.normalize),
                             global_shadow_lift=bool(args.shadow_lift),
@@ -1877,6 +1947,9 @@ def main() -> None:
                             images,
                             faces=args.faces,
                             user_supplied=user_supplied_so_far,
+                            skip_normalize=modeline_skip_normalize,
+                            skip_shadow_lift=modeline_skip_shadow_lift,
+                            skip_upscale=modeline_skip_upscale,
                             global_upscale=bool(args.upscale or args.upscale_model or args.upscale_all),
                             global_normalize=bool(args.normalize),
                             global_shadow_lift=bool(args.shadow_lift),
@@ -1968,22 +2041,31 @@ def main() -> None:
             # Order: normalize → shadow-lift → upscale. Tone fixes run on the Scryfall original
             # so the AI upscaler in the final step sees a richer signal (shadow detail intact,
             # contrast stretched). Running upscale before tone fixes produced flatter output.
+            # Union the per-card modeline opt-out sets with ``user_supplied`` so the bulk
+            # transforms skip both user-provided art AND any card carrying ``#no-<verb>``.
+            normalize_skip = user_supplied | modeline_skip_normalize
+            shadow_lift_skip = user_supplied | modeline_skip_shadow_lift
+            upscale_skip = user_supplied | modeline_skip_upscale
+
             if args.normalize:
                 from mtg_proxies.normalize import normalize_images
 
-                images = normalize_images(images, skip_paths=user_supplied)
+                images = normalize_images(images, skip_paths=normalize_skip)
 
             if args.shadow_lift:
                 from mtg_proxies.shadow_lift import lift_shadows_images
 
-                images = lift_shadows_images(images, skip_paths=user_supplied)
+                images = lift_shadows_images(images, skip_paths=shadow_lift_skip)
 
             if args.decklist and (args.upscale or args.upscale_model or args.upscale_all):
                 from mtg_proxies.upscale import upscale_images
 
-                # --upscale-all forces every non-user-supplied card through the model.
+                # --upscale-all forces every non-user-supplied / non-modeline-skipped card
+                # through the model. ``upscale_skip`` covers ``#no-upscale`` and the
+                # ``#upscale --upscale-model PATH`` overrides (which write their own
+                # already-upscaled output into ``images`` before this pass runs).
                 effective_flags = [
-                    True if p in user_supplied else (False if args.upscale_all else f)
+                    True if p in upscale_skip else (False if args.upscale_all else f)
                     for p, f in zip(images, image_flags, strict=True)
                 ]
                 images = upscale_images(
