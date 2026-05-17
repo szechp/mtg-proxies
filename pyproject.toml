@@ -127,6 +127,7 @@ future-annotations = true
 "convert.py" = ["T20"]
 "deck_value.py" = ["T20"]
 "tokens.py" = ["T20"]
+"upscale.py" = ["T20"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 banned-module-level-imports = ["mtg_proxies"]

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-import urllib.request
 from pathlib import Path
 
+import requests
 from tqdm import tqdm
 
 # Default model is MSE-trained Real-ESRNet (no GAN adversarial loss → no hallucinated
@@ -23,12 +23,29 @@ def _download_model() -> Path:
     if _MODEL_CACHE.exists():
         return _MODEL_CACHE
     _MODEL_CACHE.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Downloading Real-ESRGAN model to {_MODEL_CACHE} …")
-    # Download to a temp file and rename atomically so an interrupted download
-    # does not leave a corrupt .pth at the cache path that future runs would load.
+    # Stream into a temp file and rename atomically so an interrupted download does not
+    # leave a corrupt .pth at the cache path that future runs would load. tqdm reports
+    # bytes-per-second + ETA so the run doesn't look frozen on a slow connection.
     tmp_path = _MODEL_CACHE.with_suffix(_MODEL_CACHE.suffix + ".tmp")
     try:
-        urllib.request.urlretrieve(_MODEL_URL, tmp_path)
+        with requests.get(_MODEL_URL, stream=True, timeout=30) as response:
+            response.raise_for_status()
+            total = int(response.headers.get("content-length", 0)) or None
+            with (
+                tmp_path.open("wb") as fh,
+                tqdm(
+                    desc=f"Downloading {_MODEL_CACHE.name}",
+                    total=total,
+                    unit="B",
+                    unit_scale=True,
+                    unit_divisor=1024,
+                ) as bar,
+            ):
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    fh.write(chunk)
+                    bar.update(len(chunk))
         tmp_path.replace(_MODEL_CACHE)
     except BaseException:
         tmp_path.unlink(missing_ok=True)
@@ -114,8 +131,13 @@ def upscale_images(
                 raise FileNotFoundError(f"Upscale model not found: {resolved_model_path}")
         else:
             resolved_model_path = _download_model()
-        model = ModelLoader().load_from_file(str(resolved_model_path))
+        # Print status lines so the gap between shadow-lift finishing and the first card
+        # being processed isn't perceived as a hang (model loading + first-inference
+        # warmup can take 10-30 s on CPU for a 64 MB checkpoint).
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device_label = torch.cuda.get_device_name(0) if device.type == "cuda" else "CPU"
+        print(f"Loading upscale model {resolved_model_path.name} onto {device_label}…")
+        model = ModelLoader().load_from_file(str(resolved_model_path))
         model = model.eval().to(device)
 
         for path in tqdm(needs_upscale, desc="Upscaling lowres images"):
