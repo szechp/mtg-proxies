@@ -1471,6 +1471,15 @@ def main() -> None:
         help="path to a local .pth upscaling model (default: RealESRGAN anime_6B); implies --upscale",
     )
     print_parser.add_argument(
+        "--upscale-all",
+        action="store_true",
+        default=False,
+        help=(
+            "upscale every card, ignoring Scryfall's highres_image flag. Without this, --upscale only"
+            " upscales cards Scryfall marks as low-res. Implies --upscale."
+        ),
+    )
+    print_parser.add_argument(
         "--normalize",
         action="store_true",
         default=False,
@@ -1779,7 +1788,7 @@ def main() -> None:
             if args.card_back_count is not None and args.card_back_count <= 0:
                 print(f"Error: --card-back-count must be positive (got {args.card_back_count})")
                 raise SystemExit(1)
-            if (args.upscale or args.upscale_model) and not args.decklist:
+            if (args.upscale or args.upscale_model or args.upscale_all) and not args.decklist:
                 print("Error: --upscale requires a decklist (it operates on Scryfall scans)")
                 raise SystemExit(1)
             if args.split_pages is not None and args.split_pages <= 0:
@@ -1808,7 +1817,7 @@ def main() -> None:
                 )
                 if duplex_mode:
                     fronts, backs, front_flags, back_flags = fetch_scans_paired(decklist, args.card_back)
-                elif args.upscale or args.upscale_model:
+                elif args.upscale or args.upscale_model or args.upscale_all:
                     images, highres_flags = fetch_scans_scryfall_flagged(decklist, faces=args.faces)
                 else:
                     images = fetch_scans_scryfall(decklist, faces=args.faces)
@@ -1829,7 +1838,7 @@ def main() -> None:
                             backs=backs,
                             duplex=True,
                             user_supplied=user_supplied_so_far,
-                            global_upscale=bool(args.upscale or args.upscale_model),
+                            global_upscale=bool(args.upscale or args.upscale_model or args.upscale_all),
                             global_normalize=bool(args.normalize),
                             global_shadow_lift=bool(args.shadow_lift),
                             upscale_model=args.upscale_model,
@@ -1840,7 +1849,7 @@ def main() -> None:
                             images,
                             faces=args.faces,
                             user_supplied=user_supplied_so_far,
-                            global_upscale=bool(args.upscale or args.upscale_model),
+                            global_upscale=bool(args.upscale or args.upscale_model or args.upscale_all),
                             global_normalize=bool(args.normalize),
                             global_shadow_lift=bool(args.shadow_lift),
                             upscale_model=args.upscale_model,
@@ -1880,18 +1889,22 @@ def main() -> None:
                 if not fronts:
                     print("Error: --card-back requires a decklist or --custom-art to pair backs with")
                     raise SystemExit(1)
-                if args.upscale or args.upscale_model:
+                if args.upscale or args.upscale_model or args.upscale_all:
                     from mtg_proxies.upscale import upscale_images
 
-                    fronts = upscale_images(fronts, highres_flags=front_flags, model_path=args.upscale_model)
-                    backs = upscale_images(backs, highres_flags=back_flags, model_path=args.upscale_model)
+                    # --upscale-all ignores Scryfall's highres flag so every card gets upscaled.
+                    fronts_flags = [False] * len(fronts) if args.upscale_all else front_flags
+                    backs_flags = [False] * len(backs) if args.upscale_all else back_flags
+                    fronts = upscale_images(fronts, highres_flags=fronts_flags, model_path=args.upscale_model)
+                    backs = upscale_images(backs, highres_flags=backs_flags, model_path=args.upscale_model)
                 cards_per_row, rows_per_sheet = _cards_per_sheet_dims(args.paper, args.scale)
                 images = _build_duplex_layout(fronts, backs, args.card_back, cards_per_row, rows_per_sheet)
             else:
-                if args.decklist and (args.upscale or args.upscale_model):
+                if args.decklist and (args.upscale or args.upscale_model or args.upscale_all):
                     from mtg_proxies.upscale import upscale_images
 
-                    images = upscale_images(images, highres_flags=highres_flags, model_path=args.upscale_model)
+                    effective_flags = [False] * len(images) if args.upscale_all else highres_flags
+                    images = upscale_images(images, highres_flags=effective_flags, model_path=args.upscale_model)
                 if args.card_back is not None:
                     # Non-duplex card-back: legacy "append N backs at the end" behavior.
                     n_backs = args.card_back_count if args.card_back_count is not None else (len(images) or 0)

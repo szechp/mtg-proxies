@@ -102,6 +102,12 @@ Uses RealESRGAN anime_6B by default (downloaded on first use to `~/.cache/mtg-pr
 mtg-proxies print deck-ltr.txt output.pdf --upscale-model ~/models/4x-UltraSharp.pth
 ```
 
+By default `--upscale` only touches cards Scryfall marks low-res. To force every card through the model — regardless of Scryfall's `highres_image` flag — use `--upscale-all`:
+
+```bash
+mtg-proxies print deck-ltr.txt output.pdf --upscale-all
+```
+
 **Choose art style:**
 
 ```bash

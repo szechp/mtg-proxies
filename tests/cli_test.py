@@ -1905,6 +1905,28 @@ def test_main_print_upscale_calls_upscale_images(tmp_path) -> None:
     mock_upscale.assert_called_once_with(fake_images, highres_flags=fake_flags, model_path=None)
 
 
+def test_main_print_upscale_all_overrides_highres_flags(tmp_path) -> None:
+    """--upscale-all must pass [False]*N to upscale_images, ignoring Scryfall's highres flags."""
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "out.pdf"
+    fake_decklist = object()
+    # All three cards are flagged highres by Scryfall — would normally be skipped.
+    fake_images = ["a.png", "b.png", "c.png"]
+    fake_flags = [True, True, True]
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), "--upscale-all"]),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
+        patch("mtg_proxies.cli.fetch_scans_scryfall_flagged", return_value=(fake_images, fake_flags)),
+        patch("mtg_proxies.upscale.upscale_images", return_value=fake_images) as mock_upscale,
+        patch("mtg_proxies.cli.print_cards_fpdf"),
+    ):
+        main()
+
+    mock_upscale.assert_called_once_with(fake_images, highres_flags=[False, False, False], model_path=None)
+
+
 def test_main_print_no_upscale_does_not_call_upscale_images(tmp_path) -> None:
     """Without --upscale, upscale_images must never be called."""
     from mtg_proxies.cli import main
