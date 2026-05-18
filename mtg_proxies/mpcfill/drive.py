@@ -5,7 +5,7 @@ The mpcfill UI serves preview images via Google Drive's public, no-auth thumbnai
     https://drive.google.com/thumbnail?sz=w<N>&id=<DRIVE_ID>
 
 `sz=w<N>` is honored up to the file's actual resolution. Use small sizes (e.g. 400) for
-pHash compares and large sizes (e.g. 2000) for the final print download.
+keypoint matching and large sizes (e.g. 2000) for the final print download.
 
 When `drive.google.com` rate-limits with HTTP 429 or 403, the upstream `chilli-axe/mpc-autofill`
 project documents `https://lh3.googleusercontent.com/d/<ID>=w<N>` as a fallback host that serves

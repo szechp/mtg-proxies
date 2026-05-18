@@ -74,7 +74,7 @@ def test_parsing(data_dir: Path) -> None:
             "1 Counter",
             None,
             [
-                "ERROR: Unable to find card 'Counter'. Did you mean 'Cackling Counterpart', 'Counterspell', 'Counters', 'Countermand', 'Feral Encounter', 'Countervailing Winds', ...?"  # noqa: E501
+                "ERROR: Unable to find card 'Counter'. Did you mean 'Cackling Counterpart', 'Counterspell', 'Counters', 'Countermand', 'Feral Encounter', 'Counterflux', ...?"  # noqa: E501
             ],
         ),
         (  # Non-black border with alternative
@@ -423,11 +423,11 @@ def test_modeline_parse_single_verb_bare() -> None:
 def test_modeline_parse_single_verb_with_flags() -> None:
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#mpcfill --similarity 0.83 --frame-strictness 0.06")
+    directives, warnings = parse_modeline_trailer("#mpcfill --lightglue-threshold 0.12")
 
     assert len(directives) == 1
     assert directives[0].verb == "mpcfill"
-    assert directives[0].flags == {"--similarity": 0.83, "--frame-strictness": 0.06}
+    assert directives[0].flags == {"--lightglue-threshold": pytest.approx(0.12)}
     assert warnings == []
 
 
@@ -464,11 +464,11 @@ def test_modeline_parse_unknown_flag_warns_and_drops_segment() -> None:
 def test_modeline_parse_malformed_flag_value_warns_and_drops_segment() -> None:
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#mpcfill --similarity not-a-float")
+    directives, warnings = parse_modeline_trailer("#mpcfill --lightglue-threshold not-a-float")
 
     assert directives == []
     assert len(warnings) == 1
-    assert "--similarity" in str(warnings[0])
+    assert "--lightglue-threshold" in str(warnings[0])
 
 
 def test_modeline_parse_mixed_known_unknown_keeps_known() -> None:
@@ -564,7 +564,7 @@ def test_decklist_modeline_roundtrip_arena_format(monkeypatch: pytest.MonkeyPatc
     _patch_card_lookup(monkeypatch)
     from mtg_proxies.decklists import parse_decklist_stream
 
-    src = "1 Caves of Koilos (DRC) 148 #mpcfill --similarity 0.83 --frame-strictness 0.06"
+    src = "1 Caves of Koilos (DRC) 148 #mpcfill --lightglue-threshold 0.15"
     decklist, _, _ = parse_decklist_stream(StringIO(src + "\n"))
 
     rendered = format(decklist, "arena")

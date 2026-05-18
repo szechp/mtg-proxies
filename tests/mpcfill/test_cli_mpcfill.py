@@ -21,9 +21,9 @@ def _make_search_stub(decklist: Decklist) -> Callable[..., dict[str, list[Candid
     return _fake
 
 
-def _bogus_match(*_a: object, **_kw: object) -> MatchResult | None:
-    # Force the fallback path so we don't need to mock pHash compares.
-    return None
+def _bogus_match(*_a: object, **_kw: object) -> tuple[MatchResult | None, int, None]:
+    # Force the fallback path so we don't need to run LightGlue.
+    return None, 0, None
 
 
 def test_dry_run_writes_csv_with_expected_columns(
@@ -48,7 +48,7 @@ def test_dry_run_writes_csv_with_expected_columns(
     with (
         patch.object(sys, "argv", argv),
         patch("mtg_proxies.cli.mpcfill_search", _make_search_stub(example_decklist)),
-        patch("mtg_proxies.mpcfill.matcher.match", _bogus_match),
+        patch("mtg_proxies.mpcfill.matcher.match_tiered_keypoints", _bogus_match),
     ):
         from mtg_proxies.cli import main
 

@@ -3,7 +3,7 @@ name = "mtg-proxies"
 version = "0.3.0"
 authors = [{ name = "Robin More", email = "more@diddiz.de" }]
 description = "Print high-resolution MtG proxies."
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.12"
 dependencies = [
     "numpy<2",
     "matplotlib",
@@ -11,11 +11,9 @@ dependencies = [
     "tqdm",
     "fpdf2>=2.3.0",
     "pillow>=10",
-    "imagehash>=4.3",
-    "torch<2.3",
-    "sentence-transformers>=3,<4",
-    "transformers>=4.46,<4.55",
-    "torchvision<0.18",
+    "torch>=2.0.0",
+    "torchvision",
+    "lightglue @ git+https://github.com/cvg/LightGlue.git",
     "spandrel>=0.4.2",
 ]
 

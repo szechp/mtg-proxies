@@ -32,14 +32,12 @@ class MatchResult:
 
     Attributes:
         candidate: The winning candidate.
-        distance: Score expressed as a distance — Hamming distance for pHash, or
-            `round((1 - cosine_similarity) * 1000)` for CLIP embeddings.
+        distance: Score expressed as a distance — `round((1 - match_ratio) * 1000)` where
+            match_ratio is the LightGlue inlier-keypoint ratio.
         decision: One of `matched`, `matched_marginal`, `matched_low_res`, `fallback`, `skipped`, `error`.
-        similarity: Effective score used for acceptance: min(art_similarity, frame_similarity - strictness)
-            for embedding matches; None for pHash matches.
-        art_similarity: Raw cosine similarity on the art region (top 55% of the card).
-        frame_similarity: Raw cosine similarity on the frame region (bottom 45%) — typically
-            lower than art for cross-framing mismatches (e.g. full-art vs. regular border).
+        similarity: LightGlue inlier match ratio (n_matches / min(n_kp_ref, n_kp_cand)).
+        art_similarity: Same as `similarity` — keypoint matching operates on the art window only.
+        frame_similarity: Not used by the keypoint matcher; always None.
     """
 
     candidate: Candidate
@@ -63,7 +61,7 @@ class OrderCard:
         is_back: True when this is the back face of a DFC.
         drive_id: Drive id of the chosen render, or None for Scryfall fallbacks.
         source_name: Source name of the chosen render, or None for fallbacks.
-        hamming_distance: pHash distance for the winning candidate (None for fallbacks).
+        hamming_distance: Retained for CSV schema compatibility; always None for keypoint matches.
         decision: Decision label (mirrors `MatchResult.decision`).
         scryfall_id: Scryfall id of the reference card.
         set_code: Scryfall set code of the reference card (lowercased).

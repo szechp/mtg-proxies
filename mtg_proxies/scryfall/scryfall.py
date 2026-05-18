@@ -9,11 +9,11 @@ from __future__ import annotations
 import json
 import pickle
 import threading
+import time
 from collections import defaultdict
 from functools import cache
 from importlib.metadata import version
 from pathlib import Path
-from tempfile import gettempdir
 from typing import Literal, overload
 
 import numpy as np
@@ -22,8 +22,10 @@ from tqdm import tqdm
 
 from mtg_proxies.scryfall.rate_limit import RateLimiter
 
-_cache_folder = Path(gettempdir()) / "scryfall_cache"
+_cache_folder = Path.home() / ".cache" / "mtg-proxies" / "scryfall"
 _cache_folder.mkdir(parents=True, exist_ok=True)  # Create cache folder
+
+_BULK_CACHE_TTL = 24 * 60 * 60  # 24 h — how long a local pickle is treated as fresh
 scryfall_rate_limiter = RateLimiter(delay=0.1)
 _download_lock = threading.Lock()
 
@@ -119,6 +121,23 @@ def search(q: str) -> list[dict]:
 
 @cache
 def _get_database(database_name: str = "default_cards") -> list[dict]:
+    # Fast path: if a pickle for this database type was written within the TTL, load it
+    # directly without touching the network. The filename glob matches the date-stamped
+    # filenames Scryfall uses (e.g. default-cards-20241201090617.pickle).
+    slug = database_name.replace("_", "-")
+    cached_pickles = sorted(
+        _cache_folder.glob(f"{slug}-*.pickle"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if cached_pickles:
+        newest = cached_pickles[0]
+        age = time.time() - newest.stat().st_mtime
+        if age < _BULK_CACHE_TTL:
+            with newest.open("rb") as f:
+                return pickle.load(f)
+
+    # Cache miss or stale: fetch the bulk-data index to find this week's download URL.
     databases = depaginate("https://api.scryfall.com/bulk-data")
     bulk_data = [database for database in databases if database["type"] == database_name]
     if len(bulk_data) != 1:
@@ -129,8 +148,8 @@ def _get_database(database_name: str = "default_cards") -> list[dict]:
     if not pickle_file.is_file():  # Convert json to pickle
         with open(bulk_file, encoding="utf-8") as json_file:
             data = json.load(json_file)
-        with open(pickle_file, "wb") as pickle_file:
-            pickle.dump(data, pickle_file, protocol=pickle.HIGHEST_PROTOCOL)
+        with open(pickle_file, "wb") as f:
+            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
         return data
     with open(pickle_file, "rb") as f:
         return pickle.load(f)

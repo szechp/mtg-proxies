@@ -50,9 +50,7 @@ def _path_str(s: str) -> str:
 
 VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     "mpcfill": {
-        "--similarity": _float_in_range(0.0, 1.0),
-        "--frame-strictness": _float_in_range(0.0, 1.0),
-        "--matcher": _choice("embedding", "phash"),
+        "--lightglue-threshold": _float_in_range(0.0, 1.0),
         # ``--identifier <ID>`` locks in a specific MPCFill render by its backend Identifier
         # (a Google Drive file ID, ~33 chars). When set, the auto-matcher is bypassed
         # entirely. Use to make a chosen pick durable across runs.

@@ -21,7 +21,7 @@ def _make_candidate(drive_id: str = "drv-1") -> Candidate:
 def _make_match_result(drive_id: str = "drv-1") -> MatchResult:
     from mtg_proxies.mpcfill.types import MatchResult
 
-    return MatchResult(candidate=_make_candidate(drive_id), distance=4, decision="matched", similarity=0.92)
+    return MatchResult(candidate=_make_candidate(drive_id), distance=800, decision="matched", similarity=0.20)
 
 
 def _write_reference(tmp_path: Path) -> Path:
@@ -35,7 +35,7 @@ def test_resolve_per_card_mpcfill_bleed_crop_default_is_off(monkeypatch: pytest.
     from mtg_proxies.mpcfill import per_card
 
     monkeypatch.setattr(per_card, "client_search", MagicMock(return_value={"sol ring": [_make_candidate()]}))
-    monkeypatch.setattr(per_card, "match_by_embedding", MagicMock(return_value=_make_match_result()))
+    monkeypatch.setattr(per_card, "match_by_keypoints", MagicMock(return_value=_make_match_result()))
     monkeypatch.setattr(per_card, "fetch_thumbnail", MagicMock(return_value=b"PNG"))
 
     out = per_card.resolve_per_card_mpcfill(
@@ -52,21 +52,21 @@ def test_resolve_per_card_mpcfill_bleed_crop_default_is_off(monkeypatch: pytest.
     assert "_bc" not in out.name
 
 
-def test_resolve_per_card_mpcfill_bleed_crop_produces_separate_cache_file(
+def test_resolve_per_card_mpcfill_warp_produces_separate_cache_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """With bleed_crop > 0 the resolver writes a SECOND file (cropped) and returns its path."""
+    """The resolver writes a _warped file alongside the raw render and returns its path."""
     import numpy as np
     from PIL import Image
 
     from mtg_proxies.mpcfill import per_card
 
-    # Provide a real PNG (small but valid) so ``crop_bleed`` can actually read+write it.
+    # Provide a real PNG (small but valid) so warp_to_reference can actually process it.
     real_png_bytes = io.BytesIO()
     Image.fromarray(np.full((100, 80, 3), 128, dtype=np.uint8)).save(real_png_bytes, format="PNG")
 
     monkeypatch.setattr(per_card, "client_search", MagicMock(return_value={"sol ring": [_make_candidate()]}))
-    monkeypatch.setattr(per_card, "match_by_embedding", MagicMock(return_value=_make_match_result()))
+    monkeypatch.setattr(per_card, "match_by_keypoints", MagicMock(return_value=_make_match_result()))
     monkeypatch.setattr(per_card, "fetch_thumbnail", MagicMock(return_value=real_png_bytes.getvalue()))
 
     out = per_card.resolve_per_card_mpcfill(
@@ -80,12 +80,9 @@ def test_resolve_per_card_mpcfill_bleed_crop_produces_separate_cache_file(
     )
 
     assert out is not None
-    # Cropped filename carries ``_bc4``; the raw render also exists in the same directory
-    # so different crop percentages can coexist without re-downloading.
-    assert "_bc4" in out.name
-    # The raw file (without _bc suffix) was written first and remains on disk so a future
-    # call with a different crop percent can reuse it without re-downloading.
-    raw_candidates = [p for p in out.parent.iterdir() if "_bc" not in p.name and p.suffix == ".png"]
+    # warp_to_reference produces a _warped file; the raw render also stays on disk.
+    assert "_warped" in out.name
+    raw_candidates = [p for p in out.parent.iterdir() if "_warped" not in p.name and p.suffix == ".png"]
     assert len(raw_candidates) == 1
 
 
@@ -96,10 +93,10 @@ def test_resolve_per_card_mpcfill_drive_id_override_bypasses_matcher(
     from mtg_proxies.mpcfill import per_card
 
     fake_search = MagicMock()
-    fake_match_embed = MagicMock()
+    fake_match = MagicMock()
     fake_fetch = MagicMock(return_value=b"PNG_explicit_pick")
     monkeypatch.setattr(per_card, "client_search", fake_search)
-    monkeypatch.setattr(per_card, "match_by_embedding", fake_match_embed)
+    monkeypatch.setattr(per_card, "match_by_keypoints", fake_match)
     monkeypatch.setattr(per_card, "fetch_thumbnail", fake_fetch)
 
     out = per_card.resolve_per_card_mpcfill(
@@ -116,7 +113,7 @@ def test_resolve_per_card_mpcfill_drive_id_override_bypasses_matcher(
     assert out.read_bytes() == b"PNG_explicit_pick"
     # Search and matcher are entirely bypassed when an explicit drive_id is given.
     fake_search.assert_not_called()
-    fake_match_embed.assert_not_called()
+    fake_match.assert_not_called()
     # fetch_thumbnail is called exactly once, with the override drive_id.
     fake_fetch.assert_called_once()
     assert fake_fetch.call_args.args[0] == "1alfUj6vzTgyewlQRomSpXMR0p8bhBqBM"
@@ -129,7 +126,7 @@ def test_resolve_per_card_mpcfill_drive_id_override_cache_key_differs_from_defau
     from mtg_proxies.mpcfill import per_card
 
     monkeypatch.setattr(per_card, "client_search", MagicMock())
-    monkeypatch.setattr(per_card, "match_by_embedding", MagicMock())
+    monkeypatch.setattr(per_card, "match_by_keypoints", MagicMock())
     monkeypatch.setattr(per_card, "fetch_thumbnail", MagicMock(return_value=b"PNG"))
 
     common = {
@@ -155,13 +152,11 @@ def test_resolve_per_card_mpcfill_happy_path(monkeypatch: pytest.MonkeyPatch, tm
     final_bytes = b"\x89PNG_final_render"
 
     fake_search = MagicMock(return_value={"sol ring": [candidate]})
-    fake_match_embed = MagicMock(return_value=match_result)
-    fake_match_phash = MagicMock(return_value=None)
+    fake_match = MagicMock(return_value=match_result)
     fake_fetch = MagicMock(return_value=final_bytes)
 
     monkeypatch.setattr(per_card, "client_search", fake_search)
-    monkeypatch.setattr(per_card, "match_by_embedding", fake_match_embed)
-    monkeypatch.setattr(per_card, "match_phash", fake_match_phash)
+    monkeypatch.setattr(per_card, "match_by_keypoints", fake_match)
     monkeypatch.setattr(per_card, "fetch_thumbnail", fake_fetch)
 
     session = MagicMock()
@@ -174,9 +169,7 @@ def test_resolve_per_card_mpcfill_happy_path(monkeypatch: pytest.MonkeyPatch, tm
         cache_root=tmp_path,
         server="https://example",
         session=session,
-        similarity=0.83,
-        frame_strictness=0.06,
-        matcher="embedding",
+        match_ratio_threshold=0.12,
     )
 
     assert out is not None
@@ -190,23 +183,20 @@ def test_resolve_per_card_mpcfill_happy_path(monkeypatch: pytest.MonkeyPatch, tm
     assert fake_search.call_args.args[0] == "https://example"
     assert fake_search.call_args.args[1] == ["sol ring"]
 
-    fake_match_embed.assert_called_once()
-    embed_kwargs = fake_match_embed.call_args.kwargs
-    assert embed_kwargs["similarity_threshold"] == pytest.approx(0.83)
-    assert embed_kwargs["frame_strictness"] == pytest.approx(0.06)
-
-    fake_match_phash.assert_not_called()
+    fake_match.assert_called_once()
+    match_kwargs = fake_match.call_args.kwargs
+    assert match_kwargs["match_ratio_threshold"] == pytest.approx(0.12)
 
 
 def test_resolve_per_card_mpcfill_miss_returns_none(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from mtg_proxies.mpcfill import per_card
 
     fake_search = MagicMock(return_value={"sol ring": [_make_candidate()]})
-    fake_match_embed = MagicMock(return_value=None)
+    fake_match = MagicMock(return_value=None)
     fake_fetch = MagicMock()
 
     monkeypatch.setattr(per_card, "client_search", fake_search)
-    monkeypatch.setattr(per_card, "match_by_embedding", fake_match_embed)
+    monkeypatch.setattr(per_card, "match_by_keypoints", fake_match)
     monkeypatch.setattr(per_card, "fetch_thumbnail", fake_fetch)
 
     ref_path = _write_reference(tmp_path)
@@ -224,13 +214,15 @@ def test_resolve_per_card_mpcfill_miss_returns_none(monkeypatch: pytest.MonkeyPa
     fake_fetch.assert_not_called()
 
 
-def test_resolve_per_card_mpcfill_no_candidates_returns_none(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_resolve_per_card_mpcfill_no_candidates_returns_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     from mtg_proxies.mpcfill import per_card
 
     fake_search = MagicMock(return_value={"sol ring": []})
-    fake_match_embed = MagicMock()
+    fake_match = MagicMock()
     monkeypatch.setattr(per_card, "client_search", fake_search)
-    monkeypatch.setattr(per_card, "match_by_embedding", fake_match_embed)
+    monkeypatch.setattr(per_card, "match_by_keypoints", fake_match)
 
     out = per_card.resolve_per_card_mpcfill(
         card_name="Sol Ring",
@@ -243,45 +235,16 @@ def test_resolve_per_card_mpcfill_no_candidates_returns_none(monkeypatch: pytest
 
     assert out is None
     # Matcher must not be invoked when there are no candidates.
-    fake_match_embed.assert_not_called()
+    fake_match.assert_not_called()
 
 
-def test_resolve_per_card_mpcfill_phash_dispatch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    from mtg_proxies.mpcfill import per_card
-
-    candidate = _make_candidate("drv-9")
-    match_result = _make_match_result("drv-9")
-
-    fake_search = MagicMock(return_value={"sol ring": [candidate]})
-    fake_match_embed = MagicMock(return_value=None)
-    fake_match_phash = MagicMock(return_value=match_result)
-    fake_fetch = MagicMock(return_value=b"PNG")
-
-    monkeypatch.setattr(per_card, "client_search", fake_search)
-    monkeypatch.setattr(per_card, "match_by_embedding", fake_match_embed)
-    monkeypatch.setattr(per_card, "match_phash", fake_match_phash)
-    monkeypatch.setattr(per_card, "fetch_thumbnail", fake_fetch)
-
-    out = per_card.resolve_per_card_mpcfill(
-        card_name="Sol Ring",
-        scryfall_image_path=_write_reference(tmp_path),
-        scryfall_id="abc-123",
-        cache_root=tmp_path,
-        server="https://example",
-        session=MagicMock(),
-        matcher="phash",
-    )
-
-    assert out is not None
-    fake_match_phash.assert_called_once()
-    fake_match_embed.assert_not_called()
-
-
-def test_resolve_per_card_mpcfill_output_under_per_card_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_resolve_per_card_mpcfill_output_under_per_card_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     from mtg_proxies.mpcfill import per_card
 
     monkeypatch.setattr(per_card, "client_search", MagicMock(return_value={"sol ring": [_make_candidate()]}))
-    monkeypatch.setattr(per_card, "match_by_embedding", MagicMock(return_value=_make_match_result()))
+    monkeypatch.setattr(per_card, "match_by_keypoints", MagicMock(return_value=_make_match_result()))
     monkeypatch.setattr(per_card, "fetch_thumbnail", MagicMock(return_value=b"PNG"))
 
     out = per_card.resolve_per_card_mpcfill(
@@ -304,9 +267,9 @@ def test_resolve_per_card_mpcfill_missing_reference_image_returns_none(
     from mtg_proxies.mpcfill import per_card
 
     fake_search = MagicMock(return_value={"sol ring": [_make_candidate()]})
-    fake_match_embed = MagicMock()
+    fake_match = MagicMock()
     monkeypatch.setattr(per_card, "client_search", fake_search)
-    monkeypatch.setattr(per_card, "match_by_embedding", fake_match_embed)
+    monkeypatch.setattr(per_card, "match_by_keypoints", fake_match)
 
     out = per_card.resolve_per_card_mpcfill(
         card_name="Sol Ring",
@@ -319,7 +282,7 @@ def test_resolve_per_card_mpcfill_missing_reference_image_returns_none(
 
     assert out is None
     # Matcher must NOT be invoked when the reference image can't be opened.
-    fake_match_embed.assert_not_called()
+    fake_match.assert_not_called()
 
 
 def test_resolve_per_card_mpcfill_different_flags_get_different_cache_files(
@@ -329,7 +292,7 @@ def test_resolve_per_card_mpcfill_different_flags_get_different_cache_files(
     from mtg_proxies.mpcfill import per_card
 
     monkeypatch.setattr(per_card, "client_search", MagicMock(return_value={"sol ring": [_make_candidate()]}))
-    monkeypatch.setattr(per_card, "match_by_embedding", MagicMock(return_value=_make_match_result()))
+    monkeypatch.setattr(per_card, "match_by_keypoints", MagicMock(return_value=_make_match_result()))
     monkeypatch.setattr(per_card, "fetch_thumbnail", MagicMock(return_value=b"PNG"))
 
     kwargs = {
@@ -340,8 +303,8 @@ def test_resolve_per_card_mpcfill_different_flags_get_different_cache_files(
         "server": "https://example",
         "session": MagicMock(),
     }
-    out_a = per_card.resolve_per_card_mpcfill(**kwargs, similarity=0.85)
-    out_b = per_card.resolve_per_card_mpcfill(**kwargs, similarity=0.99)
+    out_a = per_card.resolve_per_card_mpcfill(**kwargs, match_ratio_threshold=0.10)
+    out_b = per_card.resolve_per_card_mpcfill(**kwargs, match_ratio_threshold=0.25)
 
     assert out_a is not None
     assert out_b is not None

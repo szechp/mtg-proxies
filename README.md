@@ -43,7 +43,7 @@ Create a high quality printable PDF from your decklist or a list of cards you wa
   Use ManaStack and Archidekt deck IDs directly as input instead of local files. Archidekt decks must be public.
 
 - **MPCFill art matching**  
-  `mtg-proxies mpcfill` picks the visually-closest community render from [MPCFill](https://mpcfill.com) for each card by CLIP-embedding (default) or perceptual-hash compare against the Scryfall reference, then writes a flat folder of one PNG per slot — front + DFC back — plus a `match_report.csv` audit log. The flat output is designed to feed `mtg-proxies print --custom-art OUTDIR` for the final printable PDF.
+  `mtg-proxies mpcfill` picks the visually-closest community render from [MPCFill](https://mpcfill.com) for each card using LightGlue + SuperPoint keypoint correspondence matching against the Scryfall reference, then writes a flat folder of one PNG per slot — front + DFC back — plus a `match_report.csv` audit log. The flat output is designed to feed `mtg-proxies print --custom-art OUTDIR` for the final printable PDF.
 
 ## Usage
 
@@ -300,15 +300,16 @@ without paying the cost on the rest of the deck. Multiple verbs stack on one lin
 mirror the matching CLI options.
 
 ```
-1 Caves of Koilos (DRC) 148 #mpcfill --similarity 0.83 --frame-strictness 0.06
+1 Caves of Koilos (DRC) 148 #mpcfill --lightglue-threshold 0.15
 1 Birds of Paradise (RVR) 133 #upscale
 4 Mountain (RVR) 271 #normalize #shadow-lift
 ```
 
 Supported verbs:
 
-- `#mpcfill [--similarity F] [--frame-strictness F] [--matcher {embedding,phash}] [--pick | --identifier ID] [--bleed-crop PERCENT]` —
-  replace this card's Scryfall art with the visually closest MPCFill community render.
+- `#mpcfill [--lightglue-threshold F] [--pick | --identifier ID] [--bleed-crop PERCENT]` —
+  replace this card's Scryfall art with the visually closest MPCFill community render,
+  matched using LightGlue + SuperPoint keypoint correspondences on the art window.
   A miss falls back to Scryfall with a warning. **Implicitly opts out of the bulk
   upscale pass** for the swapped face(s) — MPCFill renders are already at print
   resolution (typically 1500+ px), so re-running ESRGAN on them would be wasteful and
@@ -430,20 +431,41 @@ options:
 ### mpcfill
 
 ```
-usage: mtg-proxies mpcfill [-h] [--server SERVER] [--matcher {embedding,phash}]
-                           [--similarity SIMILARITY] [--threshold THRESHOLD]
+usage: mtg-proxies mpcfill [-h] [--server SERVER]
+                           [--lightglue-threshold LIGHTGLUE_THRESHOLD]
+                           [--lightglue-max-keypoints LIGHTGLUE_MAX_KEYPOINTS]
+                           [--dpi-tiers DPI_TIERS]
                            [--fallback {scryfall,skip,error}] [--size SIZE]
-                           [--hash-size HASH_SIZE] [--sources SOURCES]
+                           [--sources SOURCES]
                            [--exclude-sources EXCLUDE_SOURCES] [--cache CACHE]
                            [--no-cache] [--workers WORKERS] [--dry-run]
-                           [--frame-strictness FRAME_STRICTNESS]
-                           [--dfc-tolerance DFC_TOLERANCE] [--rematch-all]
+                           [--rematch-all]
                            [decklist] outdir
 
 Match the visually-closest mpcfill community render for each card against the
 Scryfall reference and write one PNG per slot under OUTDIR (front + DFC back),
 plus a match_report.csv audit log. Designed to be piped into
 `mtg-proxies print --custom-art OUTDIR` for the final PDF.
+
+Matching uses LightGlue + SuperPoint: SuperPoint detects local keypoints in
+the card art window; LightGlue finds geometrically-consistent correspondences
+between the Scryfall reference and each MPCFill candidate. Score =
+n_matched_keypoints / min(n_ref_kp, n_cand_kp). This is robust to border style,
+color grading, and crop differences.
+
+options:
+  --lightglue-threshold F   minimum inlier match ratio to accept a candidate
+                            (≥ 0.30 = strong match, 0.10–0.30 = same art with
+                            treatment differences). Default: 0.10
+  --lightglue-max-keypoints N
+                            maximum SuperPoint keypoints per image. Default: 2048
+  --dpi-tiers TIERS         comma-separated DPI floors tried in order. Default
+                            `800,0` excludes Scryfall-reupload renders (~300 DPI)
+                            from the first pass — they score near-perfectly on
+                            keypoints because they are literally the same image.
+                            Falls through to all candidates only when nothing at
+                            800+ DPI clears the threshold. Pass `0` to disable
+                            tiering (fastest, but Scryfall reuploads always win).
 ```
 
 Usage example — match against MPCFill and render a printable PDF:
@@ -455,7 +477,9 @@ mtg-proxies print --custom-art ./mpc-order --card-back card_back.png proof.pdf
 
 The first command writes `mpc-order/match_report.csv` plus one `<NNNN>-<slug>.png` per slot. The second command renders the printable PDF from those PNGs, using `card_back.png` for the non-DFC card backs.
 
-Use `--dry-run` to compute matches and emit the CSV without downloading full-resolution renders. Use `--sources` / `--exclude-sources` (comma-separated source names) to constrain which MPCFill contributors are considered. Use `--similarity` (embedding matcher) or `--threshold` (pHash) to tighten or loosen the acceptance bar.
+Use `--dry-run` to compute matches and emit the CSV without downloading full-resolution renders. Use `--sources` / `--exclude-sources` (comma-separated source names) to constrain which MPCFill contributors are considered. Use `--lightglue-threshold` to tighten or loosen the acceptance bar.
+
+SuperPoint + LightGlue model weights (~100 MB) are downloaded from the CVG GitHub repository on first run and cached to `~/.cache/torch/`. Feature descriptors per candidate render are cached under `~/.cache/mtg-proxies/mpcfill/features/` so subsequent runs skip re-extraction.
 
 ### deck_value
 
@@ -482,3 +506,4 @@ options:
 - [Scryfall](https://scryfall.com/) for their [excellent API](https://scryfall.com/docs/api).
 - [spandrel](https://github.com/chaiNNer-org/spandrel) for ESRGAN model loading.
 - [openmodeldb.info](https://openmodeldb.info) for community upscaling models.
+- [LightGlue](https://github.com/cvg/LightGlue) (Lindenberger et al., ICCV 2023) for the keypoint matcher powering `mpcfill`.

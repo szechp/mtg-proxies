@@ -14,4 +14,4 @@ class SearchError(MpcfillError):
 
 
 class MatchBelowThresholdError(MpcfillError):
-    """Raised when no candidate scores under the configured pHash distance threshold."""
+    """Raised when no candidate meets the configured keypoint match ratio threshold."""

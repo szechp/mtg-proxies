@@ -219,7 +219,7 @@ def test_apply_per_card_modelines_mpcfill_swap_single_copy(monkeypatch: pytest.M
 
     decklist = _fake_decklist(
         _fake_card("Sol Ring"),
-        _fake_card("Caves of Koilos", modeline="#mpcfill --similarity 0.83"),
+        _fake_card("Caves of Koilos", modeline="#mpcfill --lightglue-threshold 0.12"),
     )
     image_paths = ["sol.png", "caves_scryfall.png"]
 
@@ -230,7 +230,7 @@ def test_apply_per_card_modelines_mpcfill_swap_single_copy(monkeypatch: pytest.M
     fake_resolve.assert_called_once()
     kwargs = fake_resolve.call_args.kwargs
     assert kwargs["card_name"] == "Caves of Koilos"
-    assert kwargs["similarity"] == pytest.approx(0.83)
+    assert kwargs["match_ratio_threshold"] == pytest.approx(0.12)
 
 
 def test_apply_per_card_modelines_mpcfill_miss_falls_back_to_scryfall(

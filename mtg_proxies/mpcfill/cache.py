@@ -2,9 +2,9 @@
 
 Layout under the cache root (default `~/.cache/mtg-proxies/mpcfill/`):
 
-    thumbs/<drive_id>__<size>.<ext>   binary thumbnail, content-addressed, no expiry
-    search/<sha1>.json                 backend search responses, 24h TTL
-    hashes/<drive_id>__<crop>.hash     computed pHashes, persisted to skip re-decode
+    thumbs/<drive_id>__<size>.<ext>      binary thumbnail, content-addressed, no expiry
+    search/<sha1>.json                    backend search responses, 24h TTL
+    features/<drive_id>__<size>.npz      SuperPoint keypoints+descriptors, no expiry
 """
 
 from __future__ import annotations
@@ -42,9 +42,9 @@ def search_dir(root: Path) -> Path:
     return path
 
 
-def hashes_dir(root: Path) -> Path:
-    """Return the path to the persisted-hash directory, creating it if needed."""
-    path = root / "hashes"
+def features_dir(root: Path) -> Path:
+    """Return the path to the SuperPoint feature cache, creating it if needed."""
+    path = root / "features"
     path.mkdir(parents=True, exist_ok=True)
     return path
 

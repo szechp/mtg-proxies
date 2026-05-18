@@ -1,7 +1,7 @@
 """Resolve a single card's MPCFill render for the ``print`` per-card-modeline path.
 
 This is a thin wrapper that composes the existing batch-oriented mpcfill primitives
-(:func:`mtg_proxies.mpcfill.client.search`, the matchers, and
+(:func:`mtg_proxies.mpcfill.client.search`, the keypoint matcher, and
 :func:`mtg_proxies.mpcfill.drive.fetch_thumbnail`) into a per-card path used by
 ``mtg-proxies print`` when a card line carries a ``#mpcfill`` modeline.
 """
@@ -11,23 +11,14 @@ from __future__ import annotations
 import hashlib
 import logging
 from pathlib import Path
-from typing import Literal
 
 import requests
 from PIL import Image
 
 from mtg_proxies.mpcfill.client import search as client_search
 from mtg_proxies.mpcfill.drive import fetch_thumbnail
-from mtg_proxies.mpcfill.matcher import match as match_phash
-from mtg_proxies.mpcfill.matcher import match_by_embedding
+from mtg_proxies.mpcfill.matcher import DEFAULT_MAX_KEYPOINTS, DEFAULT_RATIO_THRESHOLD, match_by_keypoints
 
-MatcherName = Literal["embedding", "phash"]
-
-# Centralized defaults so the per-card path and the modeline registry can't drift apart.
-DEFAULT_SIMILARITY = 0.85
-DEFAULT_FRAME_STRICTNESS = 0.03
-DEFAULT_MATCHER: MatcherName = "embedding"
-DEFAULT_PHASH_THRESHOLD = 12
 DEFAULT_OUTPUT_SIZE = 1500
 # MPCFill renders carry more bleed than Scryfall scans by default (they include the
 # print-bleed trim line the proxy printer expects). Match what the ``--custom-art`` path
@@ -45,19 +36,17 @@ def resolve_per_card_mpcfill(
     cache_root: Path,
     server: str,
     session: requests.Session,
-    similarity: float = DEFAULT_SIMILARITY,
-    frame_strictness: float = DEFAULT_FRAME_STRICTNESS,
-    matcher: MatcherName = DEFAULT_MATCHER,
-    phash_threshold: int = DEFAULT_PHASH_THRESHOLD,
+    match_ratio_threshold: float = DEFAULT_RATIO_THRESHOLD,
+    max_keypoints: int = DEFAULT_MAX_KEYPOINTS,
     output_size: int = DEFAULT_OUTPUT_SIZE,
     drive_id_override: str | None = None,
     bleed_crop_percent: float = 0.0,
 ) -> Path | None:
     """Return a local PNG path for the best MPCFill render of a single card.
 
-    Wires together the existing batch primitives — :func:`client.search` (called with a
-    one-element query list), one of the matchers, and :func:`drive.fetch_thumbnail` — and
-    persists the final render under ``<cache_root>/mpcfill/per_card/<scryfall_id>.png``.
+    Wires together the existing batch primitives — :func:`client.search`, the LightGlue
+    keypoint matcher, and :func:`drive.fetch_thumbnail` — and persists the final render
+    under ``<cache_root>/per_card/<scryfall_id>.png``.
 
     Args:
         card_name: Card name as on Scryfall (case-insensitive; lowercased for the query).
@@ -66,10 +55,8 @@ def resolve_per_card_mpcfill(
         cache_root: Shared mpcfill cache root.
         server: MPCFill backend base URL.
         session: Pre-configured requests session.
-        similarity: Cosine-similarity floor for the embedding matcher (ignored for pHash).
-        frame_strictness: Subtractive penalty applied to frame similarity in the embedding matcher.
-        matcher: Either ``"embedding"`` (CLIP) or ``"phash"``.
-        phash_threshold: Maximum acceptable Hamming distance for the pHash matcher.
+        match_ratio_threshold: Minimum inlier match ratio to accept a candidate.
+        max_keypoints: SuperPoint keypoint budget.
         output_size: Pixel-width hint for the final render download.
         drive_id_override: When set, bypass search+match entirely and fetch this specific
             Drive ID's render. Use when the user has pre-picked a candidate (e.g. via the
@@ -108,22 +95,14 @@ def resolve_per_card_mpcfill(
         def _drive_fetcher(drive_id: str, size: int) -> bytes:
             return fetch_thumbnail(drive_id, size, session=session, cache_root=cache_root)
 
-        if matcher == "embedding":
-            match_result = match_by_embedding(
-                reference,
-                candidates,
-                drive_fetcher=_drive_fetcher,
-                cache_root=cache_root,
-                similarity_threshold=similarity,
-                frame_strictness=frame_strictness,
-            )
-        else:
-            match_result = match_phash(
-                reference,
-                candidates,
-                drive_fetcher=_drive_fetcher,
-                threshold=phash_threshold,
-            )
+        match_result = match_by_keypoints(
+            reference,
+            candidates,
+            drive_fetcher=_drive_fetcher,
+            cache_root=cache_root,
+            match_ratio_threshold=match_ratio_threshold,
+            max_keypoints=max_keypoints,
+        )
 
         if match_result is None:
             return None
@@ -136,23 +115,51 @@ def resolve_per_card_mpcfill(
         cache_root=cache_root,
     )
     # Cache filename includes a short hash of the tuning that controls the *match*: different
-    # similarity / frame-strictness / matcher choices can pick different candidates, so they
-    # must not collide on disk for the same scryfall_id. ``drive_id_override`` joins the hash
-    # so swapping it produces a new cache file.
+    # threshold / keypoints choices can pick different candidates, so they must not collide
+    # on disk for the same scryfall_id. ``drive_id_override`` joins the hash so swapping it
+    # produces a new cache file.
     flag_hash = hashlib.sha1(
-        f"{matcher}:{similarity}:{frame_strictness}:{phash_threshold}:{drive_id_override}".encode()
+        f"lightglue:{match_ratio_threshold}:{max_keypoints}:{drive_id_override}".encode()
     ).hexdigest()[:8]
     output_dir = cache_root / "per_card"
     output_dir.mkdir(parents=True, exist_ok=True)
     raw_path = output_dir / f"{scryfall_id}__{flag_hash}.png"
     raw_path.write_bytes(image_bytes)
 
+    # Apply content-aware bleed normalisation using warp_to_reference. This detects the
+    # actual card-content edges in the render and scales it so the card fills exactly
+    # (1 − 2×4%) = 92 % of the output width, with equal 4 % bleed on each side. This
+    # handles asymmetric bleed (more bleed on one side than the other) far better than the
+    # old symmetric crop_bleed, which caused the card to shift off-centre when the render's
+    # bleed was uneven. The Scryfall reference image is used to determine the correct aspect
+    # ratio and border style (bordered vs borderless).
+    import io as _io
+
+    warped_path = output_dir / f"{scryfall_id}__{flag_hash}_warped.png"
+    try:
+        from mtg_proxies.mpcfill.matcher import warp_to_reference
+
+        with Image.open(_io.BytesIO(image_bytes)) as _cand, \
+             Image.open(scryfall_image_path) as _ref:
+            _cand.load()
+            _ref.load()
+            _warped = warp_to_reference(_cand.convert("RGB"), _ref.convert("RGB"))
+        _buf = _io.BytesIO()
+        _warped.save(_buf, format="PNG")
+        warped_path.write_bytes(_buf.getvalue())
+        return warped_path
+    except Exception as exc:
+        _log.warning(
+            "per-card mpcfill: warp_to_reference failed for %s (%s); falling back to symmetric crop",
+            scryfall_id,
+            exc,
+        )
+
+    # Fallback: symmetric bleed crop. Less accurate for renders with asymmetric bleed but
+    # always produces a valid image.
     if bleed_crop_percent <= 0:
         return raw_path
 
-    # Crop bleed on a SEPARATE filename so the uncropped cache is preserved (different
-    # callers/runs with different crop percents share the same raw render but each get
-    # their own cropped output).
     from mtg_proxies.bleed import crop_bleed
 
     cropped_path = output_dir / f"{scryfall_id}__{flag_hash}_bc{bleed_crop_percent:g}.png"

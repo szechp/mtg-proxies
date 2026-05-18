@@ -364,9 +364,9 @@ def _apply_per_card_modelines(
             for directive in directives:
                 if directive.verb != "mpcfill":
                     continue
-                similarity = directive.flags.get("--similarity", mpcfill_per_card.DEFAULT_SIMILARITY)
-                frame_strictness = directive.flags.get("--frame-strictness", mpcfill_per_card.DEFAULT_FRAME_STRICTNESS)
-                matcher = directive.flags.get("--matcher", mpcfill_per_card.DEFAULT_MATCHER)
+                match_ratio_threshold = directive.flags.get(
+                    "--lightglue-threshold", mpcfill_per_card.DEFAULT_RATIO_THRESHOLD
+                )
                 identifier_override = directive.flags.get("--identifier")
                 pick_interactively = directive.flags.get("--pick", False)
                 bleed_crop = directive.flags.get("--bleed-crop", mpcfill_per_card.DEFAULT_BLEED_CROP_PERCENT)
@@ -452,9 +452,7 @@ def _apply_per_card_modelines(
                     cache_root=cache_root_,
                     server=server,
                     session=session_,
-                    similarity=similarity,
-                    frame_strictness=frame_strictness,
-                    matcher=matcher,
+                    match_ratio_threshold=match_ratio_threshold,
                     drive_id_override=identifier_override,
                     bleed_crop_percent=bleed_crop,
                 )
@@ -497,9 +495,7 @@ def _apply_per_card_modelines(
                     cache_root=cache_root_,
                     server=server,
                     session=session_,
-                    similarity=similarity,
-                    frame_strictness=frame_strictness,
-                    matcher=matcher,
+                    match_ratio_threshold=match_ratio_threshold,
                     bleed_crop_percent=bleed_crop,
                 )
                 if out_back is None:
@@ -1076,40 +1072,31 @@ def _should_preserve(
     row: dict[str, str],
     outdir: Path,
     *,
-    matcher: str,
-    similarity_floor: float,
-    threshold: int,
+    match_ratio_threshold: float,
 ) -> bool:
     """Decide whether `row` can be reused as-is for `card` on a re-run.
 
-    Refuses preservation for rows produced by an older scoring method — currently detected
-    by the absence of `art_similarity` (added when we split into two-region scoring with
-    frame strictness). Those scores aren't comparable to the current method, so we re-evaluate.
+    Args:
+        card: The card to potentially preserve.
+        row: Existing CSV row for this card.
+        outdir: Output directory containing the PNG.
+        match_ratio_threshold: Minimum recorded similarity to accept.
+
+    Returns:
+        True when the prior match is fresh enough to keep.
     """
-    # Schema version gate: legacy CSV without per-region columns → re-evaluate. The old scores
-    # came from single-vector CLIP and aren't comparable to the new two-region min.
-    if matcher == "embedding" and "art_similarity" not in row:
-        return False
     basename = row.get("image_basename", "")
     if not basename:
         return False
     png_path = outdir / basename
     if not png_path.is_file():
         return False
-    if matcher == "embedding":
-        sim_raw = row.get("similarity") or ""
-        try:
-            existing_sim = float(sim_raw)
-        except ValueError:
-            return False
-        return existing_sim >= similarity_floor
-    # phash
-    hd_raw = row.get("hamming_distance") or ""
+    sim_raw = row.get("similarity") or ""
     try:
-        existing_hd = int(hd_raw)
+        existing_sim = float(sim_raw)
     except ValueError:
         return False
-    return existing_hd <= threshold
+    return existing_sim >= match_ratio_threshold
 
 
 def _write_mpcfill_csv(path: Path, cards: list[OrderCard]) -> None:
@@ -1198,12 +1185,6 @@ def _run_mpcfill(args: argparse.Namespace) -> None:
     if not args.decklist:
         print("Error: mpcfill requires a decklist argument")
         raise SystemExit(1)
-    if args.matcher == "phash" and args.dfc_tolerance < 1.0:
-        print(
-            "Error: --dfc-tolerance only applies to --matcher embedding."
-            " Re-run with --matcher embedding or --dfc-tolerance 1.0."
-        )
-        raise SystemExit(1)
 
     try:
         dpi_tiers = [int(t) for t in args.dpi_tiers.split(",") if t.strip()]
@@ -1216,21 +1197,6 @@ def _run_mpcfill(args: argparse.Namespace) -> None:
     # path for cards whose only candidates are low-DPI. User can opt out by passing a single tier.
     if len(dpi_tiers) > 1 and dpi_tiers[-1] != 0:
         dpi_tiers = [*dpi_tiers, 0]
-
-    # Parse --similarity-tiers (descending, for reporting). --similarity is the independent floor.
-    try:
-        similarity_tiers = sorted(
-            {float(t) for t in args.similarity_tiers.split(",") if t.strip()},
-            reverse=True,
-        )
-    except ValueError as exc:
-        print(f"Error: --similarity-tiers must be comma-separated floats (got {args.similarity_tiers!r}): {exc}")
-        raise SystemExit(1) from exc
-    if not similarity_tiers:
-        similarity_tiers = [0.85]
-    # Floor defaults to the lowest tier when not explicitly set; an explicit --similarity ratchets
-    # the floor up independently of the reporting ladder.
-    similarity_floor = args.similarity if args.similarity is not None else min(similarity_tiers)
 
     outdir: Path = args.outdir
     outdir.mkdir(parents=True, exist_ok=True)
@@ -1248,23 +1214,42 @@ def _run_mpcfill(args: argparse.Namespace) -> None:
     session = requests.Session()
     use_cache = not args.no_cache
 
+    # Parse #mpcfill --identifier <drive_id> pins from decklist modelines.
+    # Pinned cards bypass auto-matching and use the specified Drive ID directly.
+    # Only front faces are pinned (DFC backs always auto-match separately).
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer as _parse_mline
+
+    pinned_drive_ids: dict[str, str] = {}  # scryfall_id → drive_id (front faces only)
+    for entry in decklist.cards:
+        if not entry.modeline:
+            continue
+        directives, _ = _parse_mline(entry.modeline)
+        for d in directives:
+            if d.verb == "mpcfill":
+                drive_id = d.flags.get("--identifier")
+                if drive_id:
+                    pinned_drive_ids[str(entry.card.get("id", ""))] = drive_id
+
+    if pinned_drive_ids:
+        print(f"Pinned {len(pinned_drive_ids)} card(s) via #mpcfill --identifier modeline(s).")
+
     # Preserve prior matches when re-running over an existing OUTDIR. A previously-recorded
-    # match that still meets the current acceptance bar (similarity for embedding, hamming for
-    # phash) is kept verbatim — its PNG stays untouched and its row round-trips into the new
-    # CSV. Cards that didn't meet the bar get re-processed normally. `--rematch-all` bypasses.
+    # match that still meets the current acceptance bar (similarity >= lightglue_threshold) is
+    # kept verbatim — its PNG stays untouched and its row round-trips into the new CSV. Cards
+    # that didn't meet the bar get re-processed normally. `--rematch-all` bypasses.
+    # Pinned cards are always re-processed so the explicit Drive ID is always honoured.
     preserved_rows: dict[str, dict[str, str]] = {} if args.rematch_all else _load_existing_csv_rows(outdir)
     preserved_cards: list[OrderCard] = []
     cards_to_process: list[OrderCard] = []
     for card in cards:
         key = f"{card.scryfall_id}::{card.name}"
+        is_pinned = (not card.is_back) and (card.scryfall_id in pinned_drive_ids)
         row = preserved_rows.get(key)
-        if row and _should_preserve(
+        if not is_pinned and row and _should_preserve(
             card,
             row,
             outdir,
-            matcher=args.matcher,
-            similarity_floor=similarity_floor,
-            threshold=args.threshold,
+            match_ratio_threshold=args.lightglue_threshold,
         ):
             _apply_preserved_row(card, row)
             preserved_cards.append(card)
@@ -1272,14 +1257,19 @@ def _run_mpcfill(args: argparse.Namespace) -> None:
             cards_to_process.append(card)
 
     if preserved_cards:
-        bar = f"similarity >= {similarity_floor:.2f}" if args.matcher == "embedding" else f"hamming <= {args.threshold}"
-        print(f"Preserved {len(preserved_cards)} prior match(es) meeting {bar} (pass --rematch-all to re-evaluate)")
+        print(
+            f"Preserved {len(preserved_cards)} prior match(es) meeting"
+            f" ratio >= {args.lightglue_threshold:.2f} (pass --rematch-all to re-evaluate)"
+        )
 
     # Build the unique-query set from cards still needing a match — preserved cards already
-    # have their drive_id / source_name from the prior CSV.
+    # have their drive_id / source_name from the prior CSV.  Pinned cards don't need a backend
+    # search; their Drive ID comes from the modeline.
     unique_queries: list[str] = []
     seen_queries: set[str] = set()
     for card in cards_to_process:
+        if (not card.is_back) and card.scryfall_id in pinned_drive_ids:
+            continue  # pinned — no backend query needed
         if card.query not in seen_queries:
             seen_queries.add(card.query)
             unique_queries.append(card.query)
@@ -1332,36 +1322,60 @@ def _run_mpcfill(args: argparse.Namespace) -> None:
             card.decision = "error"
             return card
 
+        # Pinned card: use the Drive ID from the #mpcfill --identifier modeline directly.
+        # Skip the auto-matcher entirely — the user has already chosen the render manually.
+        pinned_id = pinned_drive_ids.get(card.scryfall_id) if not card.is_back else None
+        if pinned_id is not None:
+            card.drive_id = pinned_id
+            card.source_name = "pinned"
+            card.decision = "pinned"
+            if not args.dry_run:
+                try:
+                    full_bytes = _fetcher_for(pinned_id, args.size)
+                except ThumbnailFetchError:
+                    log.exception("pinned full-res fetch failed for %s (drive_id=%s)", card.name, pinned_id)
+                    card.decision = "error"
+                    return card
+                if mpcfill_matcher.is_low_res(full_bytes):
+                    card.decision = "pinned_low_res"
+                if not args.no_align:
+                    try:
+                        import io as _io
+                        from PIL import Image as _Image
+                        with _Image.open(_io.BytesIO(full_bytes)) as _full_img, \
+                             _Image.open(match_ref_path) as _ref_img:
+                            _full_img.load()
+                            _ref_img.load()
+                            _warped = mpcfill_matcher.warp_to_reference(_full_img, _ref_img)
+                        _buf = _io.BytesIO()
+                        _warped.save(_buf, format="PNG")
+                        full_bytes = _buf.getvalue()
+                    except Exception:
+                        log.warning("bleed alignment failed for pinned %s; using original", card.name)
+                _write_byte_copies(full_bytes, card, outdir)
+            return card
+
         candidates = candidates_by_query.get(card.query, [])
         result = None
         matched_tier = 0
         matched_sim_tier = 0.0
+        alignment = None
         if candidates:
             try:
                 from PIL import Image as _Image
 
                 with _Image.open(match_ref_path) as ref_img:
                     ref_img.load()
-                    if args.matcher == "embedding":
-                        result, matched_tier, matched_sim_tier = mpcfill_matcher.match_tiered_embedding(
-                            ref_img,
-                            candidates,
-                            drive_fetcher=_fetcher_for,
-                            dpi_tiers=dpi_tiers,
-                            cache_root=cache_root,
-                            similarity_tiers=similarity_tiers,
-                            similarity_floor=similarity_floor,
-                            frame_strictness=args.frame_strictness,
-                        )
-                    else:
-                        result, matched_tier = mpcfill_matcher.match_tiered(
-                            ref_img,
-                            candidates,
-                            drive_fetcher=_fetcher_for,
-                            dpi_tiers=dpi_tiers,
-                            threshold=args.threshold,
-                            hash_size=args.hash_size,
-                        )
+                    result, matched_tier, alignment = mpcfill_matcher.match_tiered_keypoints(
+                        ref_img,
+                        candidates,
+                        drive_fetcher=_fetcher_for,
+                        dpi_tiers=dpi_tiers,
+                        cache_root=cache_root,
+                        query=card.query,
+                        match_ratio_threshold=args.lightglue_threshold,
+                        max_keypoints=args.lightglue_max_keypoints,
+                    )
             except OSError:
                 log.exception("could not open reference image for %s", card.name)
 
@@ -1384,8 +1398,8 @@ def _run_mpcfill(args: argparse.Namespace) -> None:
         card.dpi = result.candidate.dpi
         card.dpi_tier = matched_tier
         card.similarity_tier = matched_sim_tier if matched_sim_tier > 0 else None
-        # For the CSV: pHash matches fill `hamming_distance`; embedding matches fill `similarity`
-        # plus raw region values for diagnostics (so the user can see WHY a card scored what it did).
+        # For the CSV: keypoint matches fill `similarity` (the inlier match ratio);
+        # `hamming_distance` is left blank (was the pHash column, retained for CSV schema compat).
         if result.similarity is None:
             card.hamming_distance = result.distance
             card.similarity = None
@@ -1404,30 +1418,56 @@ def _run_mpcfill(args: argparse.Namespace) -> None:
                 return card
             if mpcfill_matcher.is_low_res(full_bytes):
                 card.decision = "matched_low_res"
+            if not args.no_align:
+                try:
+                    import io as _io
+                    from PIL import Image as _Image
+                    with _Image.open(_io.BytesIO(full_bytes)) as _full_img, \
+                         _Image.open(match_ref_path) as _ref_img:
+                        _full_img.load()
+                        _ref_img.load()
+                        _warped = mpcfill_matcher.warp_to_reference(_full_img, _ref_img, alignment)
+                    _buf = _io.BytesIO()
+                    _warped.save(_buf, format="PNG")
+                    full_bytes = _buf.getvalue()
+                except Exception:
+                    log.warning("bleed alignment failed for %s; using original", card.name)
             _write_byte_copies(full_bytes, card, outdir)
         return card
 
     print(f"Matching {len(cards_to_process)} card face(s) (workers={workers})...")
+    if cards_to_process and mpcfill_matcher._sp_model is None:
+        print("Loading LightGlue + SuperPoint models...", end=" ", flush=True)
+        mpcfill_matcher._load_models()
+        print("ready.", flush=True)
+
     errors = 0
     if cards_to_process:
+        from tqdm import tqdm
+
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {pool.submit(_process, card): card for card in cards_to_process}
             try:
-                for future in as_completed(futures):
-                    updated = future.result()
-                    if updated.decision == "error":
-                        errors += 1
+                with tqdm(total=len(futures), unit="card", dynamic_ncols=True, leave=True) as bar:
+                    for future in as_completed(futures):
+                        updated = future.result()
+                        if updated.decision == "error":
+                            errors += 1
+                        if updated.decision.startswith("pinned"):
+                            tqdm.write(f"  ⊡ {updated.name:<30}  pinned")
+                        elif updated.decision.startswith("matched"):
+                            icon = "✓"
+                            ratio_str = f"  ratio={updated.similarity:.2f}" if updated.similarity else ""
+                            tqdm.write(f"  {icon} {updated.name:<30}{ratio_str}")
+                        else:
+                            icon = "↓" if updated.decision == "fallback" else "⊖"
+                            tqdm.write(f"  {icon} {updated.name:<30}  → {updated.decision}")
+                        bar.update(1)
             except _MpcfillFallbackError as exc:
                 for pending in futures:
                     pending.cancel()
                 print(f"Error: {exc}")
                 raise SystemExit(1) from exc
-
-    # DFC consistency check: if the front and back of a DFC matched at meaningfully different
-    # quality levels, the proxy would have visibly inconsistent art across faces. Promote both
-    # faces to skip/fallback so the user can re-handle the card via `mtg-proxies print`.
-    if args.matcher == "embedding" and args.dfc_tolerance < 1.0:
-        _enforce_dfc_consistency(cards, tolerance=args.dfc_tolerance, fallback=args.fallback)
 
     # In skip mode, peel off the skipped cards: write their original decklist entries to
     # `skipped.txt` for re-processing via `mtg-proxies print`, drop their PNGs (and any orphan
@@ -1472,40 +1512,6 @@ def _run_mpcfill(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
     print(f"mpcfill images written: {total_slots} slot(s) under {outdir.resolve()}")
-
-
-def _enforce_dfc_consistency(cards: list[OrderCard], *, tolerance: float, fallback: str) -> None:
-    """Promote DFCs with inconsistent front/back similarity to skip/fallback.
-
-    For each card whose scryfall_id appears more than once (DFCs: front + back), compute the
-    max-min similarity gap across its faces. If the gap exceeds `tolerance`, mark every face of
-    that card as skipped (or fallback, depending on `--fallback`). The downstream all-or-nothing
-    logic then handles cleanup (orphan PNG removal, skipped.txt, etc.). Faces whose match never
-    succeeded (similarity is None) are ignored here — they're already handled by the per-face
-    fallback path.
-    """
-    from collections import defaultdict
-
-    by_id: dict[str, list[OrderCard]] = defaultdict(list)
-    for c in cards:
-        by_id[c.scryfall_id].append(c)
-    for faces in by_id.values():
-        if len(faces) < 2:
-            continue
-        sims = [c.similarity for c in faces if c.similarity is not None]
-        if len(sims) < len(faces):
-            continue  # at least one face missing — leave to per-face fallback path
-        gap = max(sims) - min(sims)
-        if gap <= tolerance:
-            continue
-        new_decision = "skipped" if fallback == "skip" else "fallback"
-        for c in faces:
-            c.decision = new_decision
-            c.drive_id = None
-            c.source_name = None
-            c.similarity = None
-            c.hamming_distance = None
-            c.similarity_tier = None
 
 
 def _write_skipped_decklist(outdir: Path, skipped_cards: list[OrderCard], decklist: Decklist) -> Path | None:
@@ -1884,59 +1890,33 @@ def main() -> None:
         "--server", default=MPCFILL_DEFAULT_SERVER, help="mpcfill backend base URL (default: %(default)s)"
     )
     mpcfill_parser.add_argument(
-        "--matcher",
-        choices=["embedding", "phash"],
-        default="embedding",
-        help=(
-            "matching strategy. `embedding` (default) uses CLIP ViT-B/32 — content-aware,"
-            " matches the same art across different borders/croppings/recolors. `phash` uses"
-            " perceptual hashing — fast, but only works when candidate pixels are structurally"
-            " close to the reference."
-        ),
-    )
-    mpcfill_parser.add_argument(
-        "--similarity",
+        "--lightglue-threshold",
         type=float,
-        default=None,
+        default=0.10,
         help=(
-            "acceptance FLOOR for the embedding matcher — best similarity below this triggers"
-            " --fallback. Independent of --similarity-tiers. Defaults to the LOWEST value in"
-            " --similarity-tiers (0.85 with the default ladder). Set this higher than the lowest"
-            " tier to require stricter matches while still getting tier-quality reporting; e.g."
-            " `--similarity 0.90 --similarity-tiers 0.99,0.95,0.90,0.85` walks the full ladder"
-            " for the CSV label but rejects anything below 0.90."
-        ),
-    )
-    mpcfill_parser.add_argument(
-        "--similarity-tiers",
-        type=str,
-        default="0.99,0.95,0.90,0.85",
-        help=(
-            "comma-separated CLIP cosine similarity tiers, descending (embedding matcher only)."
-            " Used to LABEL each match with a quality band in the CSV `similarity_tier` column."
-            " The matcher picks the best candidate per card; the HIGHEST tier the match cleared"
-            " becomes the label. Acceptance is independently gated by --similarity. 0.99+ = same"
-            " artwork; 0.95-0.99 = same artwork with mild treatment differences; 0.90-0.95 ="
-            " same subject with stylized treatment; 0.85-0.90 = stylized re-imagining."
+            "minimum LightGlue inlier match ratio to accept a candidate"
+            " (n_matched_keypoints / min(n_ref_kp, n_cand_kp)). Below this triggers --fallback."
+            " >= 0.30 is a strong match; 0.10-0.30 is same art with crop/style differences."
             " Default: %(default)s"
         ),
     )
     mpcfill_parser.add_argument(
-        "--threshold",
+        "--lightglue-max-keypoints",
         type=int,
-        default=25,
-        help="maximum pHash Hamming distance (phash matcher only) (default: %(default)d)",
+        default=2048,
+        help="maximum SuperPoint keypoints per image (default: %(default)d)",
     )
     mpcfill_parser.add_argument(
         "--dpi-tiers",
         type=str,
-        default="1200,800,0",
+        default="800,0",
         help=(
-            "comma-separated DPI floors to try in order. The matcher considers only candidates"
-            " with reported DPI >= tier and picks the closest pHash within the tier. If nothing"
-            " in a tier scores at or below --threshold, the next (lower) tier is tried. A `0`"
-            " tier is appended automatically when missing so every card can match. Default:"
-            " %(default)s"
+            "comma-separated DPI floors tried in order. Default `800,0` considers 800+ DPI"
+            " candidates first, which excludes Scryfall-reupload renders (~300 DPI) from"
+            " winning in the first pass — they score near-perfectly on keypoints because"
+            " they are literally the same image. Falls through to all candidates only when"
+            " nothing at 800+ DPI clears the threshold. Pass `0` to disable tiering entirely"
+            " (fastest, but Scryfall reuploads will always win). Default: %(default)s"
         ),
     )
     mpcfill_parser.add_argument(
@@ -1950,12 +1930,6 @@ def main() -> None:
         type=int,
         default=2000,
         help="pixel-width hint for the full-resolution download (default: %(default)d)",
-    )
-    mpcfill_parser.add_argument(
-        "--hash-size",
-        type=int,
-        default=16,
-        help="imagehash pHash hash_size; the hash bit length is hash_size^2 (default: %(default)d)",
     )
     mpcfill_parser.add_argument(
         "--sources",
@@ -1994,30 +1968,6 @@ def main() -> None:
         help="compute matches and write the CSV but skip full-res downloads",
     )
     mpcfill_parser.add_argument(
-        "--frame-strictness",
-        type=float,
-        default=0.03,
-        help=(
-            "extra penalty applied to the bottom-half (frame) similarity before taking"
-            " min(art, frame). A candidate's frame region must score at least this much higher"
-            " than the art region to count equally — catches full-art renders whose colorful"
-            " bottoms partially fool CLIP. 0 disables (pure min); 0.03 (default) ≈ 'frame must"
-            " score 3pp higher than art threshold'; 0.05 is stricter; 0.10+ is aggressive."
-        ),
-    )
-    mpcfill_parser.add_argument(
-        "--dfc-tolerance",
-        type=float,
-        default=0.05,
-        help=(
-            "max acceptable gap between front and back similarity for a DFC. If max - min across"
-            " the DFC's face similarities exceeds this, the whole card is treated as a skip"
-            " (in --fallback=skip mode) or fallback (otherwise). Default %(default)s catches"
-            " obvious inconsistencies (e.g. matched front at 0.97 + back at 0.86, gap 0.11)"
-            " while letting mild render variation through. Set to 1.0 to disable."
-        ),
-    )
-    mpcfill_parser.add_argument(
         "--rematch-all",
         action="store_true",
         default=False,
@@ -2026,6 +1976,18 @@ def main() -> None:
             " that already has a match_report.csv, any prior match whose recorded score meets"
             " the current threshold AND whose PNG is on disk is preserved as-is. Pass this to"
             " bypass that protection and re-match everything from scratch."
+        ),
+    )
+    mpcfill_parser.add_argument(
+        "--no-align",
+        dest="no_align",
+        action="store_true",
+        default=False,
+        help=(
+            "disable automatic bleed/zoom alignment. By default the downloaded render is"
+            " warped to match the Scryfall reference framing using the LightGlue keypoint"
+            " correspondences — correcting for different bleed amounts automatically."
+            " Pass this to write the full-res render as-is."
         ),
     )
 

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
+import torch
 from PIL import Image
 
 
@@ -11,6 +13,23 @@ def _to_bytes(img: Image.Image, fmt: str = "PNG") -> bytes:
     buf = io.BytesIO()
     img.save(buf, format=fmt)
     return buf.getvalue()
+
+
+def _fake_feats(n_kp: int = 10) -> dict:
+    """Return a minimal SuperPoint feature dict with real torch tensors."""
+    return {
+        "keypoints": torch.zeros(1, n_kp, 2),
+        "descriptors": torch.zeros(1, n_kp, 256),
+        "scores": torch.zeros(1, n_kp),
+        "image_size": torch.tensor([[100, 100]]),
+    }
+
+
+def _fake_matches(n: int) -> dict:
+    """Return a LightGlue-style match dict with `n` inlier pairs."""
+    m = MagicMock()
+    m.__getitem__ = MagicMock(return_value=torch.zeros(n, 2, dtype=torch.long))
+    return {"matches": m}
 
 
 def test_crop_art_window_excludes_outer_border(reference_card_image: Image.Image) -> None:
@@ -25,83 +44,6 @@ def test_crop_art_window_excludes_outer_border(reference_card_image: Image.Image
     assert abs(ch - expected_h) <= 1
 
 
-def test_near_duplicates_have_small_distance(
-    reference_card_image: Image.Image, near_duplicate_card_image: Image.Image
-) -> None:
-    from mtg_proxies.mpcfill.matcher import hash_image_bytes
-
-    ref_hash = hash_image_bytes(_to_bytes(reference_card_image))
-    near_hash = hash_image_bytes(_to_bytes(near_duplicate_card_image))
-    distance = int(ref_hash - near_hash)
-    assert distance < 20, f"expected near-duplicate distance < 20, got {distance}"
-
-
-def test_distinct_images_have_large_distance(
-    reference_card_image: Image.Image, distinct_card_image: Image.Image
-) -> None:
-    from mtg_proxies.mpcfill.matcher import hash_image_bytes
-
-    ref_hash = hash_image_bytes(_to_bytes(reference_card_image))
-    other_hash = hash_image_bytes(_to_bytes(distinct_card_image))
-    distance = int(ref_hash - other_hash)
-    assert distance > 40, f"expected distinct distance > 40, got {distance}"
-
-
-def test_match_returns_none_when_no_candidates(reference_card_image: Image.Image) -> None:
-    from mtg_proxies.mpcfill.matcher import match
-
-    result = match(
-        reference_card_image,
-        [],
-        drive_fetcher=lambda drive_id, size: b"",
-    )
-    assert result is None
-
-
-def test_match_picks_lowest_distance_candidate(
-    reference_card_image: Image.Image,
-    near_duplicate_card_image: Image.Image,
-    distinct_card_image: Image.Image,
-) -> None:
-    from mtg_proxies.mpcfill.matcher import match
-    from mtg_proxies.mpcfill.types import Candidate
-
-    candidates = [
-        Candidate(drive_id="far", name="Far", source_name="src"),
-        Candidate(drive_id="near", name="Near", source_name="src"),
-    ]
-    bytes_by_id = {
-        "far": _to_bytes(distinct_card_image),
-        "near": _to_bytes(near_duplicate_card_image),
-    }
-
-    def fetcher(drive_id: str, size: int) -> bytes:
-        return bytes_by_id[drive_id]
-
-    result = match(reference_card_image, candidates, drive_fetcher=fetcher, threshold=25)
-    assert result is not None
-    assert result.candidate.drive_id == "near"
-    assert result.distance < 20
-
-
-def test_match_returns_none_when_all_candidates_exceed_threshold(
-    reference_card_image: Image.Image, distinct_card_image: Image.Image
-) -> None:
-    from mtg_proxies.mpcfill.matcher import match
-    from mtg_proxies.mpcfill.types import Candidate
-
-    def fetcher(drive_id: str, size: int) -> bytes:
-        return _to_bytes(distinct_card_image)
-
-    result = match(
-        reference_card_image,
-        [Candidate(drive_id="far", name="Far", source_name="src")],
-        drive_fetcher=fetcher,
-        threshold=10,
-    )
-    assert result is None
-
-
 def test_is_low_res_threshold(distinct_card_image: Image.Image) -> None:
     from mtg_proxies.mpcfill.matcher import is_low_res
 
@@ -110,19 +52,144 @@ def test_is_low_res_threshold(distinct_card_image: Image.Image) -> None:
     assert is_low_res(data) is True
 
 
-@pytest.mark.parametrize(("distance", "expected"), [(5, "matched"), (22, "matched_marginal")])
-def test_classify_bands(distance: int, expected: str) -> None:
-    from mtg_proxies.mpcfill.matcher import _classify
+def test_ratio_to_distance_perfect_match() -> None:
+    from mtg_proxies.mpcfill.matcher import _ratio_to_distance
 
-    assert _classify(distance, threshold=25) == expected
+    assert _ratio_to_distance(1.0) == 0
+    assert _ratio_to_distance(0.0) == 1000
+    assert _ratio_to_distance(0.10) == 900
 
 
-def test_match_tiered_prefers_high_dpi_candidate(
+@pytest.mark.parametrize(
+    ("ratio", "threshold", "expected"),
+    [
+        (0.35, 0.10, "matched"),
+        (0.15, 0.10, "matched_marginal"),
+        (0.05, 0.10, "fallback"),
+    ],
+)
+def test_classify_ratio_bands(ratio: float, threshold: float, expected: str) -> None:
+    from mtg_proxies.mpcfill.matcher import _classify_ratio
+
+    assert _classify_ratio(ratio, threshold) == expected
+
+
+def _patched_models(sp_extract_fn, lg_fn):  # noqa: ANN001, ANN202
+    """Context manager that patches _load_models with the given SP/LG callables."""
+    sp_mock = MagicMock()
+    sp_mock.extract.side_effect = sp_extract_fn
+    sp_mock.to.return_value = sp_mock
+    lg_mock = MagicMock()
+    lg_mock.side_effect = lg_fn
+    lg_mock.to.return_value = lg_mock
+    return patch("mtg_proxies.mpcfill.matcher._load_models", return_value=(sp_mock, lg_mock, "cpu"))
+
+
+def test_match_by_keypoints_returns_none_when_no_candidates(
+    reference_card_image: Image.Image, tmp_path: Path
+) -> None:
+    from mtg_proxies.mpcfill.matcher import match_by_keypoints
+
+    extract_calls = [0]
+
+    def _sp(t: object) -> dict:
+        extract_calls[0] += 1
+        return _fake_feats(10)
+
+    with _patched_models(_sp, lambda _: _fake_matches(5)):
+        result = match_by_keypoints(
+            reference_card_image,
+            [],
+            drive_fetcher=lambda _id, _size: b"",
+            cache_root=tmp_path,
+        )
+    assert result is None
+
+
+def test_match_by_keypoints_picks_highest_ratio_candidate(
     reference_card_image: Image.Image,
     near_duplicate_card_image: Image.Image,
+    distinct_card_image: Image.Image,
+    tmp_path: Path,
+) -> None:
+    """Candidate with more inlier matches wins."""
+    from mtg_proxies.mpcfill.matcher import match_by_keypoints
+    from mtg_proxies.mpcfill.types import Candidate
+
+    candidates = [
+        Candidate(drive_id="few", name="Few", source_name="src", dpi=1200),
+        Candidate(drive_id="many", name="Many", source_name="src", dpi=1200),
+    ]
+    bytes_by_id = {
+        "few": _to_bytes(distinct_card_image),
+        "many": _to_bytes(near_duplicate_card_image),
+    }
+
+    extract_calls = [0]
+
+    def _sp(t: object) -> dict:
+        extract_calls[0] += 1
+        return _fake_feats(10)
+
+    lg_calls = [0]
+
+    def _lg(data: dict) -> dict:
+        lg_calls[0] += 1
+        n = 1 if lg_calls[0] == 1 else 8
+        return _fake_matches(n)
+
+    with _patched_models(_sp, _lg):
+        outcome = match_by_keypoints(
+            reference_card_image,
+            candidates,
+            drive_fetcher=lambda _id, _size: bytes_by_id[_id],
+            cache_root=tmp_path,
+            match_ratio_threshold=0.05,
+        )
+
+    assert outcome is not None
+    result, _alignment = outcome
+    assert result.candidate.drive_id == "many"
+    assert result.similarity is not None
+    assert result.similarity > 0
+
+
+def test_match_by_keypoints_returns_none_when_below_threshold(
+    reference_card_image: Image.Image,
+    near_duplicate_card_image: Image.Image,
+    tmp_path: Path,
+) -> None:
+    from mtg_proxies.mpcfill.matcher import match_by_keypoints
+    from mtg_proxies.mpcfill.types import Candidate
+
+    candidates = [Candidate(drive_id="x", name="X", source_name="src", dpi=1200)]
+
+    def _sp(t: object) -> dict:
+        return _fake_feats(100)
+
+    def _lg(data: dict) -> dict:
+        # Only 1 match out of 100 keypoints → ratio = 0.01 < 0.10 threshold
+        return _fake_matches(1)
+
+    with _patched_models(_sp, _lg):
+        result = match_by_keypoints(
+            reference_card_image,
+            candidates,
+            drive_fetcher=lambda _id, _size: _to_bytes(near_duplicate_card_image),
+            cache_root=tmp_path,
+            match_ratio_threshold=0.10,
+        )
+
+    assert result is None
+
+
+def test_match_tiered_keypoints_prefers_high_dpi_candidate(
+    reference_card_image: Image.Image,
+    near_duplicate_card_image: Image.Image,
+    tmp_path: Path,
 ) -> None:
     """High-DPI tier wins even when a lower-DPI candidate would also match."""
-    from mtg_proxies.mpcfill.matcher import match_tiered
+    from mtg_proxies.mpcfill.matcher import match_tiered_keypoints
     from mtg_proxies.mpcfill.types import Candidate
 
     candidates = [
@@ -130,302 +197,178 @@ def test_match_tiered_prefers_high_dpi_candidate(
         Candidate(drive_id="high", name="H", source_name="src", dpi=1200),
     ]
 
-    def fetcher(drive_id: str, size: int) -> bytes:
-        # Both candidates resolve to the near-duplicate so both would pass the threshold.
-        return _to_bytes(near_duplicate_card_image)
+    def _sp(t: object) -> dict:
+        return _fake_feats(10)
 
-    result, tier = match_tiered(
-        reference_card_image,
-        candidates,
-        drive_fetcher=fetcher,
-        dpi_tiers=[1200, 800, 0],
-        threshold=25,
-    )
+    def _lg(data: dict) -> dict:
+        return _fake_matches(8)
+
+    with _patched_models(_sp, _lg):
+        result, tier, _alignment = match_tiered_keypoints(
+            reference_card_image,
+            candidates,
+            drive_fetcher=lambda _id, _size: _to_bytes(near_duplicate_card_image),
+            dpi_tiers=[1200, 800, 0],
+            cache_root=tmp_path,
+            match_ratio_threshold=0.05,
+        )
+
     assert result is not None
     assert tier == 1200
     assert result.candidate.drive_id == "high"
 
 
-def test_match_tiered_falls_through_when_high_tier_empty(
+def test_match_tiered_keypoints_falls_through_when_high_tier_empty(
     reference_card_image: Image.Image,
     near_duplicate_card_image: Image.Image,
+    tmp_path: Path,
 ) -> None:
     """When no candidate meets the top tier, the matcher drops to the next tier."""
-    from mtg_proxies.mpcfill.matcher import match_tiered
+    from mtg_proxies.mpcfill.matcher import match_tiered_keypoints
     from mtg_proxies.mpcfill.types import Candidate
 
     candidates = [Candidate(drive_id="med", name="M", source_name="src", dpi=800)]
 
-    def fetcher(drive_id: str, size: int) -> bytes:
-        return _to_bytes(near_duplicate_card_image)
+    def _sp(t: object) -> dict:
+        return _fake_feats(10)
 
-    result, tier = match_tiered(
-        reference_card_image,
-        candidates,
-        drive_fetcher=fetcher,
-        dpi_tiers=[1200, 800, 0],
-        threshold=25,
-    )
+    def _lg(data: dict) -> dict:
+        return _fake_matches(5)
+
+    with _patched_models(_sp, _lg):
+        result, tier, _alignment = match_tiered_keypoints(
+            reference_card_image,
+            candidates,
+            drive_fetcher=lambda _id, _size: _to_bytes(near_duplicate_card_image),
+            dpi_tiers=[1200, 800, 0],
+            cache_root=tmp_path,
+            match_ratio_threshold=0.05,
+        )
+
     assert result is not None
     assert tier == 800
 
 
-def test_match_tiered_falls_through_when_high_tier_fails_threshold(
+def test_match_tiered_keypoints_returns_none_when_nothing_matches(
     reference_card_image: Image.Image,
     near_duplicate_card_image: Image.Image,
-    distinct_card_image: Image.Image,
+    tmp_path: Path,
 ) -> None:
-    """High-DPI candidate that doesn't match is rejected and the next tier is tried."""
-    from mtg_proxies.mpcfill.matcher import match_tiered
+    from mtg_proxies.mpcfill.matcher import match_tiered_keypoints
     from mtg_proxies.mpcfill.types import Candidate
 
-    candidates = [
-        Candidate(drive_id="hi_far", name="HFar", source_name="src", dpi=1200),
-        Candidate(drive_id="lo_near", name="LNear", source_name="src", dpi=600),
-    ]
-    bytes_by_id = {
-        "hi_far": _to_bytes(distinct_card_image),
-        "lo_near": _to_bytes(near_duplicate_card_image),
-    }
+    candidates = [Candidate(drive_id="x", name="X", source_name="src", dpi=1200)]
 
-    def fetcher(drive_id: str, size: int) -> bytes:
-        return bytes_by_id[drive_id]
+    def _sp(t: object) -> dict:
+        return _fake_feats(100)
 
-    result, tier = match_tiered(
-        reference_card_image,
-        candidates,
-        drive_fetcher=fetcher,
-        dpi_tiers=[1200, 0],
-        threshold=25,
-    )
-    assert result is not None
-    assert tier == 0
-    assert result.candidate.drive_id == "lo_near"
+    def _lg(data: dict) -> dict:
+        return _fake_matches(0)
 
+    with _patched_models(_sp, _lg):
+        result, tier, _alignment = match_tiered_keypoints(
+            reference_card_image,
+            candidates,
+            drive_fetcher=lambda _id, _size: _to_bytes(near_duplicate_card_image),
+            dpi_tiers=[1200, 0],
+            cache_root=tmp_path,
+            match_ratio_threshold=0.10,
+        )
 
-def test_match_tiered_returns_none_when_nothing_matches(
-    reference_card_image: Image.Image,
-    distinct_card_image: Image.Image,
-) -> None:
-    from mtg_proxies.mpcfill.matcher import match_tiered
-    from mtg_proxies.mpcfill.types import Candidate
-
-    candidates = [Candidate(drive_id="far", name="F", source_name="src", dpi=1200)]
-
-    def fetcher(drive_id: str, size: int) -> bytes:
-        return _to_bytes(distinct_card_image)
-
-    result, tier = match_tiered(
-        reference_card_image,
-        candidates,
-        drive_fetcher=fetcher,
-        dpi_tiers=[1200, 0],
-        threshold=10,
-    )
     assert result is None
     assert tier == 0
+    assert _alignment is None
 
 
-def _seed_embedding_cache(cache_root: Path, drive_id: str, vector: np.ndarray, *, borderless: bool = False) -> None:  # type: ignore[name-defined]
-    """Pre-populate the on-disk embedding cache as a (3, D) stack so the matcher skips fetch/decode.
-
-    Rows: 0 = art embedding, 1 = frame embedding, 2 = [borderless_flag, 0, ...]. Tests that
-    don't care about region split just duplicate the art vector — min(art, frame) then equals
-    the art similarity. `borderless` controls the cross-framing penalty path.
-    """
+def test_fit_similarity_2d_identity() -> None:
+    """Perfect scale-1 no-rotation match returns identity transform."""
     import numpy as np
+    from mtg_proxies.mpcfill.matcher import _fit_similarity_2d
 
-    cache_dir = cache_root / "embeddings"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    from mtg_proxies.mpcfill import embedder
-
-    arr = np.asarray(vector, dtype=np.float32)
-    if arr.ndim == 1:
-        arr = np.stack([arr, arr])
-    border_row = np.zeros_like(arr[0])
-    border_row[0] = 1.0 if borderless else 0.0
-    border_row[1] = float(embedder.BORDER_DETECTION_VERSION)
-    stack = np.stack([arr[0], arr[1], border_row])
-    np.save(cache_dir / f"{drive_id}.npy", stack)
-
-
-def test_match_by_embedding_picks_highest_similarity(
-    reference_card_image: Image.Image,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Embedding matcher should pick the candidate with the highest cosine similarity."""
-    import numpy as np
-
-    from mtg_proxies.mpcfill import embedder, matcher
-    from mtg_proxies.mpcfill.types import Candidate
-
-    # Stub the reference embedding and pre-seed candidate embeddings in the cache so the
-    # matcher never has to fetch or decode bytes (no real CLIP load, no real PIL decode).
-    ref_vec = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-    monkeypatch.setattr(embedder, "embed_pil_regions", lambda img, **kw: np.stack([ref_vec, ref_vec]))
-    monkeypatch.setattr(embedder, "is_borderless", lambda img, **kw: False)
-    _seed_embedding_cache(tmp_path, "close", np.array([0.99, 0.10, 0.05], dtype=np.float32))
-    _seed_embedding_cache(tmp_path, "far", np.array([-1.0, 0.0, 0.0], dtype=np.float32))
-
-    candidates = [
-        Candidate(drive_id="far", name="Far", source_name="src", dpi=1200),
-        Candidate(drive_id="close", name="Close", source_name="src", dpi=1200),
-    ]
-
-    result = matcher.match_by_embedding(
-        reference_card_image,
-        candidates,
-        drive_fetcher=lambda _id, _size: b"",  # cache hits short-circuit the fetch
-        cache_root=tmp_path,
-        similarity_threshold=0.85,
-    )
+    pts = np.array([[0.0, 0.0], [10.0, 0.0], [0.0, 10.0], [5.0, 5.0]])
+    result = _fit_similarity_2d(pts, pts)
     assert result is not None
-    assert result.candidate.drive_id == "close"
+    s, R, t = result
+    assert abs(s - 1.0) < 1e-6
+    np.testing.assert_allclose(R, np.eye(2), atol=1e-6)
+    np.testing.assert_allclose(t, [0.0, 0.0], atol=1e-6)
 
 
-def test_match_by_embedding_returns_none_when_below_threshold(
-    reference_card_image: Image.Image,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
+def test_fit_similarity_2d_known_transform() -> None:
+    """Umeyama recovers a known scale + rotation + translation."""
+    import math
     import numpy as np
+    from mtg_proxies.mpcfill.matcher import _fit_similarity_2d
 
-    from mtg_proxies.mpcfill import embedder, matcher
-    from mtg_proxies.mpcfill.types import Candidate
-
-    ref_vec = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-    monkeypatch.setattr(embedder, "embed_pil_regions", lambda img, **kw: np.stack([ref_vec, ref_vec]))
-    monkeypatch.setattr(embedder, "is_borderless", lambda img, **kw: False)
-    _seed_embedding_cache(tmp_path, "x", np.array([0.5, 0.5, 0.5], dtype=np.float32))
-    candidates = [Candidate(drive_id="x", name="X", source_name="src", dpi=800)]
-
-    result = matcher.match_by_embedding(
-        reference_card_image,
-        candidates,
-        drive_fetcher=lambda _id, _size: b"",
-        cache_root=tmp_path,
-        similarity_threshold=0.95,
-    )
-    assert result is None
-
-
-def test_border_mismatch_filters_candidate_out(
-    reference_card_image: Image.Image,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Borderless candidate against a bordered reference is filtered out before CLIP scoring."""
-    import numpy as np
-
-    from mtg_proxies.mpcfill import embedder, matcher
-    from mtg_proxies.mpcfill.types import Candidate
-
-    ref = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-    monkeypatch.setattr(embedder, "embed_pil_regions", lambda img, **kw: np.stack([ref, ref]))
-    monkeypatch.setattr(embedder, "is_borderless", lambda img, **kw: False)
-    # Candidate has near-perfect art similarity but is a borderless render.
-    _seed_embedding_cache(tmp_path, "fullart", np.array([0.99, 0.10, 0.10], dtype=np.float32), borderless=True)
-
-    candidates = [Candidate(drive_id="fullart", name="X", source_name="src", dpi=1200)]
-    result = matcher.match_by_embedding(
-        reference_card_image,
-        candidates,
-        drive_fetcher=lambda _id, _size: b"",
-        cache_root=tmp_path,
-        similarity_threshold=0.50,
-    )
-    assert result is None
-
-
-def test_border_match_admits_candidate(
-    reference_card_image: Image.Image,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Matching border style on both sides: candidate is scored normally."""
-    import numpy as np
-
-    from mtg_proxies.mpcfill import embedder, matcher
-    from mtg_proxies.mpcfill.types import Candidate
-
-    ref = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-    monkeypatch.setattr(embedder, "embed_pil_regions", lambda img, **kw: np.stack([ref, ref]))
-    monkeypatch.setattr(embedder, "is_borderless", lambda img, **kw: False)
-    _seed_embedding_cache(tmp_path, "ok", np.array([0.99, 0.10, 0.10], dtype=np.float32), borderless=False)
-
-    candidates = [Candidate(drive_id="ok", name="X", source_name="src", dpi=1200)]
-    result = matcher.match_by_embedding(
-        reference_card_image,
-        candidates,
-        drive_fetcher=lambda _id, _size: b"",
-        cache_root=tmp_path,
-        similarity_threshold=0.85,
-    )
+    theta = math.pi / 6
+    s_true = 1.5
+    R_true = np.array([[math.cos(theta), -math.sin(theta)],
+                        [math.sin(theta),  math.cos(theta)]])
+    t_true = np.array([3.0, -2.0])
+    src = np.array([[0.0, 0.0], [4.0, 0.0], [0.0, 4.0], [2.0, 3.0]])
+    dst = (s_true * (R_true @ src.T).T) + t_true
+    result = _fit_similarity_2d(src, dst)
     assert result is not None
-    assert result.candidate.drive_id == "ok"
+    s, R, t = result
+    assert abs(s - s_true) < 1e-4
+    np.testing.assert_allclose(R, R_true, atol=1e-4)
+    np.testing.assert_allclose(t, t_true, atol=1e-4)
 
 
-def test_borderless_reference_does_not_filter_bordered_candidate(
-    reference_card_image: Image.Image,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """When Scryfall only has a borderless print, a bordered MPCFill render is still acceptable."""
+def _make_bordered_ref(w: int = 745, h: int = 1040) -> Image.Image:
+    """Return a synthetic bordered-card reference with a white text box."""
+    from PIL import ImageDraw
+    ref = Image.new("RGB", (w, h), color=(5, 5, 5))
+    draw = ImageDraw.Draw(ref)
+    draw.rectangle([round(w * 0.04), round(h * 0.55), round(w * 0.96), round(h * 0.93)],
+                   fill=(240, 240, 240))
+    return ref
+
+
+def test_warp_to_reference_output_dimensions() -> None:
+    """Warped image always has candidate width and reference aspect ratio."""
+    from mtg_proxies.mpcfill.matcher import warp_to_reference
+
+    ref = _make_bordered_ref()
+    candidate = Image.new("RGB", (2000, 2800), color=(100, 150, 200))
+    warped = warp_to_reference(candidate, ref)
+    assert warped is not None
+    assert warped.size == (2000, round(2000 * 1040 / 745))
+
+
+def test_warp_to_reference_borderless_reference_skips_crop() -> None:
+    """Borderless reference (colorful edges) → aspect-ratio only, no crop applied."""
+    from mtg_proxies.mpcfill.matcher import warp_to_reference
+
+    ref = Image.new("RGB", (745, 1040), color=(80, 120, 200))
+    candidate = Image.new("RGB", (2000, 2800), color=(100, 150, 200))
+    warped = warp_to_reference(candidate, ref)
+    assert warped is not None
+    assert warped.size == (2000, round(2000 * 1040 / 745))
+
+
+def test_save_load_features_roundtrip_with_thumb_size(tmp_path: Path) -> None:
+    """_save_features / _load_features round-trip preserves thumb_size and title strip."""
     import numpy as np
+    from mtg_proxies.mpcfill.matcher import _load_features, _save_features
 
-    from mtg_proxies.mpcfill import embedder, matcher
-    from mtg_proxies.mpcfill.types import Candidate
-
-    ref = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-    monkeypatch.setattr(embedder, "embed_pil_regions", lambda img, **kw: np.stack([ref, ref]))
-    monkeypatch.setattr(embedder, "is_borderless", lambda img, **kw: True)
-    # Best candidate is bordered, but reference is borderless — the filter should allow it.
-    _seed_embedding_cache(tmp_path, "bordered", np.array([0.99, 0.10, 0.10], dtype=np.float32), borderless=False)
-
-    candidates = [Candidate(drive_id="bordered", name="X", source_name="src", dpi=1200)]
-    result = matcher.match_by_embedding(
-        reference_card_image,
-        candidates,
-        drive_fetcher=lambda _id, _size: b"",
-        cache_root=tmp_path,
-        similarity_threshold=0.85,
-    )
+    feats = _fake_feats(5)
+    title_arr = np.zeros(64 * 8, dtype=np.float32)
+    cache_path = tmp_path / "test.npz"
+    _save_features(cache_path, feats, thumb_size=(400, 560), title_arr=title_arr)
+    result = _load_features(cache_path, "cpu")
     assert result is not None
-    assert result.candidate.drive_id == "bordered"
+    loaded_feats, thumb_size, loaded_title = result
+    assert thumb_size == (400, 560)
+    assert loaded_title.shape == title_arr.shape
+    assert set(loaded_feats.keys()) == set(feats.keys())
 
 
-def test_match_tiered_embedding_prefers_top_tier(
-    reference_card_image: Image.Image,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Top-tier match wins even though a lower-DPI candidate would also qualify."""
+def test_load_features_rejects_old_format(tmp_path: Path) -> None:
+    """Old .npz files without __title_strip are treated as cache misses."""
     import numpy as np
+    from mtg_proxies.mpcfill.matcher import _load_features
 
-    from mtg_proxies.mpcfill import embedder, matcher
-    from mtg_proxies.mpcfill.types import Candidate
-
-    ref = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-    monkeypatch.setattr(embedder, "embed_pil_regions", lambda img, **kw: np.stack([ref, ref]))
-    monkeypatch.setattr(embedder, "is_borderless", lambda img, **kw: False)
-    _seed_embedding_cache(tmp_path, "low", np.array([0.95, 0.0, 0.31], dtype=np.float32))
-    _seed_embedding_cache(tmp_path, "high", np.array([0.99, 0.05, 0.10], dtype=np.float32))
-
-    candidates = [
-        Candidate(drive_id="low", name="L", source_name="src", dpi=600),
-        Candidate(drive_id="high", name="H", source_name="src", dpi=1200),
-    ]
-
-    result, tier, sim_tier = matcher.match_tiered_embedding(
-        reference_card_image,
-        candidates,
-        drive_fetcher=lambda _id, _size: b"",
-        dpi_tiers=[1200, 800, 0],
-        cache_root=tmp_path,
-        similarity_tiers=[0.99, 0.95, 0.90, 0.85],
-    )
-    assert sim_tier > 0.0
-    assert result is not None
-    assert tier == 1200
-    assert result.candidate.drive_id == "high"
+    old_path = tmp_path / "old.npz"
+    np.savez(str(old_path), keypoints=np.zeros((1, 5, 2)), descriptors=np.zeros((1, 5, 256)))
+    assert _load_features(old_path, "cpu") is None
