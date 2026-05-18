@@ -307,7 +307,7 @@ mirror the matching CLI options.
 
 Supported verbs:
 
-- `#mpcfill [--similarity F] [--frame-strictness F] [--matcher {embedding,phash}] [--pick | --identifier ID]` —
+- `#mpcfill [--similarity F] [--frame-strictness F] [--matcher {embedding,phash}] [--pick | --identifier ID] [--bleed-crop PERCENT]` —
   replace this card's Scryfall art with the visually closest MPCFill community render.
   A miss falls back to Scryfall with a warning. **Implicitly opts out of the bulk
   upscale pass** for the swapped face(s) — MPCFill renders are already at print
@@ -332,6 +332,15 @@ Supported verbs:
 
     ```
     1 Professor of Zoomancy (STX) 42 #mpcfill --identifier 1alfUj6vzTgyewlQRomSpXMR0p8bhBqBM
+    ```
+  - `--bleed-crop PERCENT` trims each side of the MPCFill render by this percentage
+    before placing it in the PDF. Defaults to **4 %** (same as `--custom-art-bleed-crop`)
+    because MPCFill renders carry more bleed than Scryfall scans by default. Pass `0`
+    to skip cropping when the render already has tight art:
+
+    ```
+    1 Tight-art card #mpcfill --bleed-crop 0
+    1 Wide-bleed card #mpcfill --bleed-crop 6
     ```
 - `#upscale [--upscale-model PATH]` — upscale this card via Real-ESRGAN. With `--upscale-model`
   it's an **always-on override**: even with `--upscale-all` set globally, this card uses the

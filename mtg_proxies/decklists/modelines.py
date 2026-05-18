@@ -62,6 +62,11 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         # using their pick. After picking, the chosen Identifier is logged so the user can
         # paste it into ``--identifier <ID>`` for durability across future runs.
         "--pick": NO_VALUE,
+        # ``--bleed-crop PERCENT`` — edge bleed-crop applied to the MPCFill render before
+        # it replaces the Scryfall scan in the layout. Default 4 % (matches
+        # ``--custom-art-bleed-crop``). Pass ``0`` to disable cropping when the render
+        # already has tight art.
+        "--bleed-crop": _float_in_range(0.0, 50.0),
     },
     "upscale": {
         # When ``--upscale-model`` is supplied, the directive is treated as an *always-on*

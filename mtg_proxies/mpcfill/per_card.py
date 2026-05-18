@@ -29,6 +29,10 @@ DEFAULT_FRAME_STRICTNESS = 0.03
 DEFAULT_MATCHER: MatcherName = "embedding"
 DEFAULT_PHASH_THRESHOLD = 12
 DEFAULT_OUTPUT_SIZE = 1500
+# MPCFill renders carry more bleed than Scryfall scans by default (they include the
+# print-bleed trim line the proxy printer expects). Match what the ``--custom-art`` path
+# has used for ages so the swapped image lays out in the PDF the same as a Scryfall scan.
+DEFAULT_BLEED_CROP_PERCENT = 4.0
 
 _log = logging.getLogger(__name__)
 
@@ -47,6 +51,7 @@ def resolve_per_card_mpcfill(
     phash_threshold: int = DEFAULT_PHASH_THRESHOLD,
     output_size: int = DEFAULT_OUTPUT_SIZE,
     drive_id_override: str | None = None,
+    bleed_crop_percent: float = 0.0,
 ) -> Path | None:
     """Return a local PNG path for the best MPCFill render of a single card.
 
@@ -70,6 +75,11 @@ def resolve_per_card_mpcfill(
             Drive ID's render. Use when the user has pre-picked a candidate (e.g. via the
             ``mtg-proxies mpcfill-pick`` subcommand) — gives them a durable, deterministic
             choice that the auto-matcher can never overrule.
+        bleed_crop_percent: Edge bleed-crop applied to the downloaded render before it
+            replaces a Scryfall scan. Defaults to ``0.0`` (no crop) at the API layer so
+            this function has no surprising side effects; the CLI applies the policy
+            default :data:`DEFAULT_BLEED_CROP_PERCENT` (4 %, matching
+            ``--custom-art-bleed-crop``) when the modeline doesn't override it.
 
     Returns:
         Path to the persisted PNG, or ``None`` if no candidate qualifies.
@@ -134,6 +144,25 @@ def resolve_per_card_mpcfill(
     ).hexdigest()[:8]
     output_dir = cache_root / "per_card"
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{scryfall_id}__{flag_hash}.png"
-    output_path.write_bytes(image_bytes)
-    return output_path
+    raw_path = output_dir / f"{scryfall_id}__{flag_hash}.png"
+    raw_path.write_bytes(image_bytes)
+
+    if bleed_crop_percent <= 0:
+        return raw_path
+
+    # Crop bleed on a SEPARATE filename so the uncropped cache is preserved (different
+    # callers/runs with different crop percents share the same raw render but each get
+    # their own cropped output).
+    from mtg_proxies.bleed import crop_bleed
+
+    cropped_path = output_dir / f"{scryfall_id}__{flag_hash}_bc{bleed_crop_percent:g}.png"
+    try:
+        crop_bleed(raw_path, cropped_path, bleed_crop_percent)
+    except ValueError as exc:
+        _log.warning(
+            "per-card mpcfill: bleed crop failed for %s (%s); returning uncropped render",
+            scryfall_id,
+            exc,
+        )
+        return raw_path
+    return cropped_path

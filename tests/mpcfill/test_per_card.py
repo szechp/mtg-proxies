@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
@@ -27,6 +28,65 @@ def _write_reference(tmp_path: Path) -> Path:
     ref = tmp_path / "ref.png"
     Image.new("RGB", (40, 56), color=(200, 200, 200)).save(ref)
     return ref
+
+
+def test_resolve_per_card_mpcfill_bleed_crop_default_is_off(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Library-level default is no crop — keeps the function side-effect-free for callers."""
+    from mtg_proxies.mpcfill import per_card
+
+    monkeypatch.setattr(per_card, "client_search", MagicMock(return_value={"sol ring": [_make_candidate()]}))
+    monkeypatch.setattr(per_card, "match_by_embedding", MagicMock(return_value=_make_match_result()))
+    monkeypatch.setattr(per_card, "fetch_thumbnail", MagicMock(return_value=b"PNG"))
+
+    out = per_card.resolve_per_card_mpcfill(
+        card_name="Sol Ring",
+        scryfall_image_path=_write_reference(tmp_path),
+        scryfall_id="abc-123",
+        cache_root=tmp_path,
+        server="https://example",
+        session=MagicMock(),
+    )
+
+    assert out is not None
+    # No ``_bc`` suffix → no crop was applied.
+    assert "_bc" not in out.name
+
+
+def test_resolve_per_card_mpcfill_bleed_crop_produces_separate_cache_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """With bleed_crop > 0 the resolver writes a SECOND file (cropped) and returns its path."""
+    import numpy as np
+    from PIL import Image
+
+    from mtg_proxies.mpcfill import per_card
+
+    # Provide a real PNG (small but valid) so ``crop_bleed`` can actually read+write it.
+    real_png_bytes = io.BytesIO()
+    Image.fromarray(np.full((100, 80, 3), 128, dtype=np.uint8)).save(real_png_bytes, format="PNG")
+
+    monkeypatch.setattr(per_card, "client_search", MagicMock(return_value={"sol ring": [_make_candidate()]}))
+    monkeypatch.setattr(per_card, "match_by_embedding", MagicMock(return_value=_make_match_result()))
+    monkeypatch.setattr(per_card, "fetch_thumbnail", MagicMock(return_value=real_png_bytes.getvalue()))
+
+    out = per_card.resolve_per_card_mpcfill(
+        card_name="Sol Ring",
+        scryfall_image_path=_write_reference(tmp_path),
+        scryfall_id="abc-123",
+        cache_root=tmp_path,
+        server="https://example",
+        session=MagicMock(),
+        bleed_crop_percent=4.0,
+    )
+
+    assert out is not None
+    # Cropped filename carries ``_bc4``; the raw render also exists in the same directory
+    # so different crop percentages can coexist without re-downloading.
+    assert "_bc4" in out.name
+    # The raw file (without _bc suffix) was written first and remains on disk so a future
+    # call with a different crop percent can reuse it without re-downloading.
+    raw_candidates = [p for p in out.parent.iterdir() if "_bc" not in p.name and p.suffix == ".png"]
+    assert len(raw_candidates) == 1
 
 
 def test_resolve_per_card_mpcfill_drive_id_override_bypasses_matcher(

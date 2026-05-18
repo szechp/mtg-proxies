@@ -9,7 +9,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Literal, cast
 
-import matplotlib.pyplot as plt
 import numpy as np
 import requests
 
@@ -214,19 +213,16 @@ def _normalize_custom_art_images(
     if output_dir is None:
         raise ValueError("output_dir must be provided when custom art bleed crop is positive")
 
+    from mtg_proxies.bleed import crop_bleed
+
     normalized_images = []
     for image_path in images:
-        image = plt.imread(image_path)
-        height, width = image.shape[:2]
-        crop_x = round(width * bleed_crop_percent / 100)
-        crop_y = round(height * bleed_crop_percent / 100)
-        if crop_x * 2 >= width or crop_y * 2 >= height:
-            raise ValueError(f"Custom art bleed crop too large for '{image_path}'")
-        cropped = image[crop_y : height - crop_y, crop_x : width - crop_x]
-        # Always write PNG so a .jpg input doesn't get a lossy re-encode through plt.imsave's
-        # default JPEG quality.
+        # Always write PNG so a .jpg input doesn't get a lossy re-encode.
         normalized_image_path = output_dir / f"{image_path.stem}.png"
-        plt.imsave(normalized_image_path, cropped)
+        try:
+            crop_bleed(image_path, normalized_image_path, bleed_crop_percent)
+        except ValueError as exc:
+            raise ValueError(f"Custom art bleed crop too large for '{image_path}': {exc}") from exc
         normalized_images.append(str(normalized_image_path))
 
     return normalized_images
@@ -373,6 +369,7 @@ def _apply_per_card_modelines(
                 matcher = directive.flags.get("--matcher", mpcfill_per_card.DEFAULT_MATCHER)
                 identifier_override = directive.flags.get("--identifier")
                 pick_interactively = directive.flags.get("--pick", False)
+                bleed_crop = directive.flags.get("--bleed-crop", mpcfill_per_card.DEFAULT_BLEED_CROP_PERCENT)
 
                 # ``--pick`` opens the interactive picker for this card on first encounter.
                 # The chosen Identifier is persisted to a global picks cache so subsequent
@@ -459,6 +456,7 @@ def _apply_per_card_modelines(
                     frame_strictness=frame_strictness,
                     matcher=matcher,
                     drive_id_override=identifier_override,
+                    bleed_crop_percent=bleed_crop,
                 )
                 if out_front is None:
                     _mpcfill_log.warning(
@@ -502,6 +500,7 @@ def _apply_per_card_modelines(
                     similarity=similarity,
                     frame_strictness=frame_strictness,
                     matcher=matcher,
+                    bleed_crop_percent=bleed_crop,
                 )
                 if out_back is None:
                     _mpcfill_log.warning(
