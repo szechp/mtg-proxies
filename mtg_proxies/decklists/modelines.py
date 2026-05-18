@@ -20,6 +20,10 @@ from mtg_proxies.decklists.sanitizing import ParseWarning
 
 FlagValidator = Callable[[str], Any]
 
+# Sentinel used as the "validator" for flags that take no value (e.g. ``--pick``). When the
+# parser sees this, it stores ``True`` for the flag and does NOT consume the next token.
+NO_VALUE = object()
+
 
 def _float_in_range(lo: float, hi: float) -> FlagValidator:
     def _check(s: str) -> float:
@@ -49,11 +53,15 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         "--similarity": _float_in_range(0.0, 1.0),
         "--frame-strictness": _float_in_range(0.0, 1.0),
         "--matcher": _choice("embedding", "phash"),
-        # ``--identifier <ID>`` picks a specific MPCFill render by its backend Identifier
+        # ``--identifier <ID>`` locks in a specific MPCFill render by its backend Identifier
         # (a Google Drive file ID, ~33 chars). When set, the auto-matcher is bypassed
-        # entirely — used to lock in a manual pick (e.g. from ``mtg-proxies mpcfill-pick``)
-        # when the matcher consistently picks the wrong candidate for a card.
+        # entirely. Use to make a chosen pick durable across runs.
         "--identifier": _path_str,
+        # ``--pick`` (no value) opens an interactive Tkinter thumbnail picker when this card
+        # is processed mid-print-run. The user clicks the right candidate; the run continues
+        # using their pick. After picking, the chosen Identifier is logged so the user can
+        # paste it into ``--identifier <ID>`` for durability across future runs.
+        "--pick": NO_VALUE,
     },
     "upscale": {
         # When ``--upscale-model`` is supplied, the directive is treated as an *always-on*
@@ -152,13 +160,19 @@ def parse_modeline_trailer(trailer: str) -> tuple[list[Directive], list[ParseWar
                 warnings.append(ParseWarning("WARNING", f"Unknown flag {flag!r} for #{verb}; dropping segment."))
                 dropped = True
                 break
+            validator = flag_specs[flag]
+            if validator is NO_VALUE:
+                # No-value flag (e.g. ``--pick``) — record presence and advance one token.
+                parsed_flags[flag] = True
+                i += 1
+                continue
             if i + 1 >= len(flag_tokens):
                 warnings.append(ParseWarning("WARNING", f"Flag {flag!r} for #{verb} missing value; dropping segment."))
                 dropped = True
                 break
             value_str = flag_tokens[i + 1]
             try:
-                parsed_flags[flag] = flag_specs[flag](value_str)
+                parsed_flags[flag] = validator(value_str)
             except ValueError as exc:
                 warnings.append(
                     ParseWarning(

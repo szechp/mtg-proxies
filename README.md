@@ -307,24 +307,28 @@ mirror the matching CLI options.
 
 Supported verbs:
 
-- `#mpcfill [--similarity F] [--frame-strictness F] [--matcher {embedding,phash}] [--identifier ID]` —
+- `#mpcfill [--similarity F] [--frame-strictness F] [--matcher {embedding,phash}] [--pick | --identifier ID]` —
   replace this card's Scryfall art with the visually closest MPCFill community render.
   A miss falls back to Scryfall with a warning. **Implicitly opts out of the bulk
   upscale pass** for the swapped face(s) — MPCFill renders are already at print
   resolution (typically 1500+ px), so re-running ESRGAN on them would be wasteful and
   on CPU can hang. Bulk normalize and shadow-lift still apply unless explicitly
   opted out with `#no-normalize` / `#no-shadow-lift`.
-  - `--identifier <ID>` locks in a specific MPCFill render by its backend Identifier
-    (a Google Drive file ID, ~33 chars). Bypasses the auto-matcher entirely — use when
-    the matcher keeps picking the wrong candidate for a card. Get the Identifier from
-    [MPCFill's UI](https://mpcfill.com) or with the `mtg-proxies mpcfill-pick` subcommand:
+  - `--pick` opens an interactive Tkinter popup mid-print-run showing every candidate
+    as a clickable thumbnail grid. You click the right one; the print continues with
+    your pick. **Your choice is cached globally** (keyed by card name) in
+    `~/.cache/mtg-proxies/mpcfill/picks.json`, so subsequent runs reuse the pick
+    without popping up again:
 
-    ```bash
-    uv run mtg-proxies mpcfill-pick "Professor of Zoomancy"
+    ```
+    1 Professor of Zoomancy (STX) 42 #mpcfill --pick
     ```
 
-    Opens a clickable thumbnail grid of every candidate; click the right one and the
-    Identifier is printed for pasting:
+    First run: popup → click → continues. Every run after that: silent reuse.
+  - `--identifier <ID>` locks in a specific MPCFill render by its backend Identifier
+    (a Google Drive file ID, ~33 chars). Bypasses the auto-matcher AND the picker
+    cache — useful when you want the decklist itself to be portable (the `<ID>` is
+    durable; the cache lives in your home directory). Find IDs in MPCFill's UI:
 
     ```
     1 Professor of Zoomancy (STX) 42 #mpcfill --identifier 1alfUj6vzTgyewlQRomSpXMR0p8bhBqBM
