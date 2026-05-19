@@ -95,7 +95,7 @@ def resolve_per_card_mpcfill(
         def _drive_fetcher(drive_id: str, size: int) -> bytes:
             return fetch_thumbnail(drive_id, size, session=session, cache_root=cache_root)
 
-        match_result = match_by_keypoints(
+        outcome = match_by_keypoints(
             reference,
             candidates,
             drive_fetcher=_drive_fetcher,
@@ -104,8 +104,9 @@ def resolve_per_card_mpcfill(
             max_keypoints=max_keypoints,
         )
 
-        if match_result is None:
+        if outcome is None:
             return None
+        match_result, _alignment = outcome
         chosen_drive_id = match_result.candidate.drive_id
 
     image_bytes = fetch_thumbnail(

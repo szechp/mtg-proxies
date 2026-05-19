@@ -18,10 +18,10 @@ def _make_candidate(drive_id: str = "drv-1") -> Candidate:
     return Candidate(drive_id=drive_id, name="Sol Ring", source_name="src", priority=0, dpi=600)
 
 
-def _make_match_result(drive_id: str = "drv-1") -> MatchResult:
+def _make_match_result(drive_id: str = "drv-1") -> tuple[MatchResult, None]:
     from mtg_proxies.mpcfill.types import MatchResult
 
-    return MatchResult(candidate=_make_candidate(drive_id), distance=800, decision="matched", similarity=0.20)
+    return MatchResult(candidate=_make_candidate(drive_id), distance=800, decision="matched", similarity=0.20), None
 
 
 def _write_reference(tmp_path: Path) -> Path:
