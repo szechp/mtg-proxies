@@ -265,14 +265,9 @@ def print_cards_fpdf(
             b = papersize - N * a
             for x in range(N[0] + 1):
                 for y in range(N[1] + 1):
-                    inner = b / 2 + a * [x, y]
-                    # Outer marks sit at the physical card edge (offset), not the cropped-content
-                    # edge (b/2). This prevents them from appearing 1.2 mm inside the outermost
-                    # cards. Inner marks are already correct.
-                    mx = offset[0] if x == 0 else (offset[0] + grid_size[0] if x == N[0] else inner[0])
-                    my = offset[1] if y == 0 else (offset[1] + grid_size[1] if y == N[1] else inner[1])
-                    pdf.line(mx - 0.8, my, mx + 0.8, my)
-                    pdf.line(mx, my - 0.8, mx, my + 0.8)
+                    mark = b / 2 + a * [x, y]
+                    pdf.line(mark[0] - 0.8, mark[1], mark[0] + 0.8, mark[1])
+                    pdf.line(mark[0], mark[1] - 0.8, mark[0], mark[1] + 0.8)
 
     current_path = filepath
     if cards_per_file is not None and len(images) > 0:
