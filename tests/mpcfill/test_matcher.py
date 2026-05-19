@@ -364,6 +364,32 @@ def test_warp_to_reference_borderless_candidate_skips_crop() -> None:
     assert arr.max() > 10, "warped image should not be mostly black"
 
 
+def test_warp_to_reference_square_card_fills_slot_without_black_bars() -> None:
+    """Square custom card (no bleed, scale<1) → scale-to-fill, no black bars."""
+    import numpy as np
+    from mtg_proxies.mpcfill.matcher import warp_to_reference
+    from PIL import ImageDraw
+
+    ref = _make_bordered_ref(w=745, h=1040)
+    # Square card with a dark background (simulates dark custom proxy art).
+    # Dark edges mean _is_borderless returns False, so we fall through to the
+    # bleed-normalisation path where scale < 1 triggers the scale-to-fill branch.
+    sq = Image.new("RGB", (500, 500), color=(5, 5, 5))
+    draw = ImageDraw.Draw(sq)
+    draw.rectangle([50, 50, 450, 450], fill=(180, 60, 20))  # coloured centre
+    warped = warp_to_reference(sq, ref)
+    assert warped is not None
+    out_w, out_h = 500, round(500 * 1040 / 745)
+    assert warped.size == (out_w, out_h)
+    arr = np.asarray(warped)
+    # The card content (coloured centre) must appear — no column should be all-black.
+    col_max = arr.max(axis=(0, 2))        # max brightness per column
+    assert col_max.max() > 50, "warped image should not be all black"
+    # Verify no large black bars: at most 10 % of columns can be near-black.
+    near_black_cols = (col_max < 20).sum()
+    assert near_black_cols / len(col_max) < 0.10, "too many near-black columns — black bar present"
+
+
 def test_save_load_features_roundtrip_with_thumb_size(tmp_path: Path) -> None:
     """_save_features / _load_features round-trip preserves thumb_size and title strip."""
     import numpy as np

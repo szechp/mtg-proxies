@@ -406,14 +406,19 @@ def warp_to_reference(
     scaled = img.resize((scaled_W, scaled_H), Image.Resampling.LANCZOS)
 
     if scale < 1.0:
-        # Card had no bleed — scaled down to add room. Center-paste on a black canvas
-        # so bleed is equal on all sides. (Cropping from a smaller image would produce
-        # black bars at whichever edges the crop box extends past.)
-        result = Image.new("RGB", (out_W, out_H), (0, 0, 0))
-        paste_x = (out_W - scaled_W) // 2
-        paste_y = max(0, (out_H - scaled_H) // 2)
-        result.paste(scaled, (paste_x, paste_y))
-        return result
+        # Card content already fills (nearly) the full render — no excess bleed to remove.
+        # Shrinking and padding with black would produce a small card floating in a large
+        # black frame (even worse for square or near-square custom cards where the portrait
+        # aspect ratio compounds the mismatch).  Scale-to-fill instead: scale up until the
+        # shorter dimension matches the output, then center-crop the longer dimension.
+        # This removes any mismatch in aspect ratio and keeps the card filling the slot.
+        sf = max(out_W / full_W, out_H / full_H)
+        fill_W = round(full_W * sf)
+        fill_H = round(full_H * sf)
+        filled = img.resize((fill_W, fill_H), Image.Resampling.LANCZOS)
+        cx = max(0, (fill_W - out_W) // 2)
+        cy = max(0, (fill_H - out_H) // 2)
+        return filled.crop((cx, cy, cx + out_W, cy + out_H))
 
     # Card had excess bleed — scaled up. Center-crop to out_W × out_H.
     x_center_scaled = round((x_left + x_right) / 2 * scale)
