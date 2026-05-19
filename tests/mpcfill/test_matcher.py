@@ -347,6 +347,23 @@ def test_warp_to_reference_borderless_reference_skips_crop() -> None:
     assert warped.size == (2000, round(2000 * 1040 / 745))
 
 
+def test_warp_to_reference_borderless_candidate_skips_crop() -> None:
+    """Borderless candidate → aspect-ratio only, no black bars added on any side."""
+    from mtg_proxies.mpcfill.matcher import warp_to_reference
+
+    ref = _make_bordered_ref()
+    # Solid-color image: high variance at the edge → _is_borderless returns True.
+    candidate = Image.new("RGB", (2000, 2800), color=(120, 60, 200))
+    warped = warp_to_reference(candidate, ref)
+    assert warped is not None
+    expected = (2000, round(2000 * 1040 / 745))
+    assert warped.size == expected
+    # Must not produce black bars: no pixel column should be entirely black.
+    import numpy as np
+    arr = np.asarray(warped)
+    assert arr.max() > 10, "warped image should not be mostly black"
+
+
 def test_save_load_features_roundtrip_with_thumb_size(tmp_path: Path) -> None:
     """_save_features / _load_features round-trip preserves thumb_size and title strip."""
     import numpy as np

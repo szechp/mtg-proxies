@@ -367,9 +367,16 @@ def warp_to_reference(
     out_W = full_W
     out_H = round(full_W * ref_H / ref_W)
 
-    # Guard: borderless reference → aspect-ratio only.
+    # Guard 1: borderless reference → aspect-ratio only.
     if _is_borderless(reference):
         _log.debug("warp: reference is borderless — aspect-ratio only")
+        return img.resize((out_W, out_H), Image.Resampling.LANCZOS)
+
+    # Guard 2: borderless candidate → aspect-ratio only.
+    # A genuinely borderless render (artwork to the card edge) has nothing to normalise —
+    # adding artificial bleed around it would produce black bars.
+    if _is_borderless(img):
+        _log.debug("warp: candidate is borderless — aspect-ratio only")
         return img.resize((out_W, out_H), Image.Resampling.LANCZOS)
 
     extent = _card_horizontal_extent(img)
@@ -398,7 +405,17 @@ def warp_to_reference(
     scaled_H = round(full_H * scale)
     scaled = img.resize((scaled_W, scaled_H), Image.Resampling.LANCZOS)
 
-    # Center-crop to out_W × out_H (card will be at ~PRINT_BLEED_FRAC from each edge).
+    if scale < 1.0:
+        # Card had no bleed — scaled down to add room. Center-paste on a black canvas
+        # so bleed is equal on all sides. (Cropping from a smaller image would produce
+        # black bars at whichever edges the crop box extends past.)
+        result = Image.new("RGB", (out_W, out_H), (0, 0, 0))
+        paste_x = (out_W - scaled_W) // 2
+        paste_y = max(0, (out_H - scaled_H) // 2)
+        result.paste(scaled, (paste_x, paste_y))
+        return result
+
+    # Card had excess bleed — scaled up. Center-crop to out_W × out_H.
     x_center_scaled = round((x_left + x_right) / 2 * scale)
     crop_x = max(0, min(scaled_W - out_W, x_center_scaled - out_W // 2))
     crop_y = max(0, (scaled_H - out_H) // 2)
