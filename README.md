@@ -118,7 +118,9 @@ mtg-proxies print deck.txt out.pdf --upscale --upscale-target-width 480
 mtg-proxies print deck.txt out.pdf --upscale --upscale-target-width 1500
 ```
 
-**Pipeline order** when you combine the post-processing flags: `--normalize` → `--shadow-lift` → `--upscale` / `--upscale-all`. Tone and shadow fixes run on the Scryfall-resolution original, so the upscaler sees a cleanly toned image and reconstructs a sharper output than if you ran the tone passes after upscaling. The cache file names include each step's parameters, so changing any of them invalidates only what's downstream.
+**Pipeline order** when you combine the post-processing flags: `--normalize` → `--shadow-lift` → `--upscale` / `--upscale-all` → `--black-vignette`. Tone and shadow fixes run on the Scryfall-resolution original, so the upscaler sees a cleanly toned image and reconstructs a sharper output than if you ran the tone passes after upscaling. `--black-vignette` runs last, on the final-resolution image, so its edge fraction is geometrically meaningful. The cache file names include each step's parameters, so changing any of them invalidates only what's downstream.
+
+**Fix gray card rims:** Scryfall scans often render the outer black border at luminance 15-30 instead of pure #000. With `--background black` and `--border_crop 0` this shows up as a visible gray halo around each card on the page. `--black-vignette` pulls those rim pixels to true black without touching the art or white-bordered cards. The default tuning (5 % edge zone, max-black 40, strength 1.0) is safe for the common case; bump `--black-vignette-max-black` if your scans render lighter, or lower `--black-vignette-strength` if you want only a partial pull.
 
 **Choose art style:**
 
@@ -238,8 +240,11 @@ usage: mtg-proxies print [-h] [--dpi DPI] [--paper WIDTHxHEIGHT]
                          [--art-preference {standard,wild}] [--upscale]
                          [--upscale-model PATH] [--upscale-all]
                          [--upscale-target-width PX] [--normalize]
-                         [--shadow-lift] [--card-back PATH]
-                         [--card-back-count N]
+                         [--shadow-lift] [--black-vignette]
+                         [--black-vignette-strength F]
+                         [--black-vignette-edge F]
+                         [--black-vignette-max-black N]
+                         [--card-back PATH] [--card-back-count N]
                          [decklist] outfile
 
 Prepare a decklist for printing.
@@ -286,6 +291,19 @@ options:
   --normalize           border-anchored auto-levels: stretch each card's tone
                         range so blacks and whites hit the rails
   --shadow-lift         brighten crushed-shadow regions on each card
+  --black-vignette      pull near-black pixels near the card edges to true
+                        #000; only affects the outer rim and only pixels
+                        already close to black (art interior, white borders,
+                        and pixels above --black-vignette-max-black are
+                        untouched)
+  --black-vignette-strength F
+                        how aggressive the pull is (default: 1.0; 0.0 = no-op)
+  --black-vignette-edge F
+                        fraction of the shorter side covered by the vignette,
+                        from the rim inward (default: 0.05 = outer 5 %)
+  --black-vignette-max-black N
+                        only pixels with mean RGB at or below N are touched
+                        (default: 40)
   --card-back PATH      path to a card back image; appends one copy per front
                         image collected (decklist, custom art, or both);
                         override count with --card-back-count

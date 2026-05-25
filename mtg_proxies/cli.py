@@ -1345,6 +1345,7 @@ def _run_mpcfill(args: argparse.Namespace) -> None:
                 if not args.no_align:
                     try:
                         import io as _io
+
                         from PIL import Image as _Image
 
                         with _Image.open(_io.BytesIO(full_bytes)) as _full_img, _Image.open(match_ref_path) as _ref_img:
@@ -1425,6 +1426,7 @@ def _run_mpcfill(args: argparse.Namespace) -> None:
             if not args.no_align:
                 try:
                     import io as _io
+
                     from PIL import Image as _Image
 
                     with _Image.open(_io.BytesIO(full_bytes)) as _full_img, _Image.open(match_ref_path) as _ref_img:
@@ -1763,6 +1765,44 @@ def main() -> None:
             " detail; flat-black cards and bright-art cards are left untouched. The base black"
             " level (lum < 5) is preserved exactly — lift kicks in above it. Borders, frames,"
             " and text boxes stay intact (the lift is masked to the art rectangle)."
+        ),
+    )
+    print_parser.add_argument(
+        "--black-vignette",
+        action="store_true",
+        default=False,
+        help=(
+            "pull near-black pixels near the card edges to true #000. Targets the gray-ish"
+            " outer rim that scans often render at luminance 15-30 instead of pure black. Art"
+            " interior, white-bordered cards, and any pixel above ``--black-vignette-max-black``"
+            " are left untouched."
+        ),
+    )
+    print_parser.add_argument(
+        "--black-vignette-strength",
+        type=float,
+        default=1.0,
+        metavar="F",
+        help="how aggressive the pull is (0.0 = no-op, 1.0 = full pull to black). Default 1.0.",
+    )
+    print_parser.add_argument(
+        "--black-vignette-edge",
+        type=float,
+        default=0.05,
+        metavar="F",
+        help=(
+            "fraction of the shorter side that the vignette covers from the edge inward."
+            " Default 0.05 (outer 5%%). Smooth falloff over this range."
+        ),
+    )
+    print_parser.add_argument(
+        "--black-vignette-max-black",
+        type=float,
+        default=40.0,
+        metavar="N",
+        help=(
+            "pixels with mean RGB above N are not touched. Default 40 — covers gray borders"
+            " without touching mid-luminance art. Higher = affects lighter pixels too."
         ),
     )
     print_parser.add_argument(
@@ -2261,6 +2301,22 @@ def main() -> None:
                     highres_flags=effective_flags,
                     model_path=args.upscale_model,
                     target_width=args.upscale_target_width,
+                )
+
+            # Black-vignette pass: pulls near-black pixels near the card rim to true #000.
+            # Runs AFTER upscale (so the edge fraction is geometrically meaningful on the
+            # final-resolution image) and BEFORE composite (so it operates on RGBA and
+            # preserves the transparent-corner alpha for the composite to flatten against
+            # the page background).
+            if args.black_vignette:
+                from mtg_proxies.black_vignette import darken_borders_to_black
+
+                images = darken_borders_to_black(
+                    images,
+                    strength=args.black_vignette_strength,
+                    edge_fraction=args.black_vignette_edge,
+                    max_black_threshold=args.black_vignette_max_black,
+                    skip_paths=user_supplied,
                 )
 
             # Pre-flatten RGBA cards against the chosen background color: fpdf2 composites alpha
