@@ -51,7 +51,15 @@ def composite_against_bg(
             continue
         src_path = Path(path)
         out_path = src_path.with_name(f"{src_path.stem}{suffix}")
-        if not out_path.is_file():
+        # Stale-cache guard: if the source was rewritten after the composite was last
+        # produced (e.g. an upstream step like upscale_images regenerated its cache to
+        # preserve alpha), the cached composite is from the old broken input and would
+        # silently render the pre-fix bug (white corners despite ``--background <color>``).
+        # Re-composite when the source mtime is newer than the cached output's mtime.
+        cache_is_stale = (
+            out_path.is_file() and src_path.exists() and src_path.stat().st_mtime > out_path.stat().st_mtime
+        )
+        if not out_path.is_file() or cache_is_stale:
             with Image.open(src_path) as im:
                 src = np.array(im.convert("RGBA"), dtype=np.uint8)
             alpha = src[..., 3:4].astype(np.float32) / 255.0
