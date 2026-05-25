@@ -85,9 +85,7 @@ def _patched_models(sp_extract_fn, lg_fn):  # noqa: ANN001, ANN202
     return patch("mtg_proxies.mpcfill.matcher._load_models", return_value=(sp_mock, lg_mock, "cpu"))
 
 
-def test_match_by_keypoints_returns_none_when_no_candidates(
-    reference_card_image: Image.Image, tmp_path: Path
-) -> None:
+def test_match_by_keypoints_returns_none_when_no_candidates(reference_card_image: Image.Image, tmp_path: Path) -> None:
     from mtg_proxies.mpcfill.matcher import match_by_keypoints
 
     extract_calls = [0]
@@ -302,8 +300,7 @@ def test_fit_similarity_2d_known_transform() -> None:
 
     theta = math.pi / 6
     s_true = 1.5
-    R_true = np.array([[math.cos(theta), -math.sin(theta)],
-                        [math.sin(theta),  math.cos(theta)]])
+    R_true = np.array([[math.cos(theta), -math.sin(theta)], [math.sin(theta), math.cos(theta)]])
     t_true = np.array([3.0, -2.0])
     src = np.array([[0.0, 0.0], [4.0, 0.0], [0.0, 4.0], [2.0, 3.0]])
     dst = (s_true * (R_true @ src.T).T) + t_true
@@ -318,10 +315,10 @@ def test_fit_similarity_2d_known_transform() -> None:
 def _make_bordered_ref(w: int = 745, h: int = 1040) -> Image.Image:
     """Return a synthetic bordered-card reference with a white text box."""
     from PIL import ImageDraw
+
     ref = Image.new("RGB", (w, h), color=(5, 5, 5))
     draw = ImageDraw.Draw(ref)
-    draw.rectangle([round(w * 0.04), round(h * 0.55), round(w * 0.96), round(h * 0.93)],
-                   fill=(240, 240, 240))
+    draw.rectangle([round(w * 0.04), round(h * 0.55), round(w * 0.96), round(h * 0.93)], fill=(240, 240, 240))
     return ref
 
 
@@ -360,6 +357,7 @@ def test_warp_to_reference_borderless_candidate_skips_crop() -> None:
     assert warped.size == expected
     # Must not produce black bars: no pixel column should be entirely black.
     import numpy as np
+
     arr = np.asarray(warped)
     assert arr.max() > 10, "warped image should not be mostly black"
 
@@ -383,7 +381,7 @@ def test_warp_to_reference_square_card_fills_slot_without_black_bars() -> None:
     assert warped.size == (out_w, out_h)
     arr = np.asarray(warped)
     # The card content (coloured centre) must appear — no column should be all-black.
-    col_max = arr.max(axis=(0, 2))        # max brightness per column
+    col_max = arr.max(axis=(0, 2))  # max brightness per column
     assert col_max.max() > 50, "warped image should not be all black"
     # Verify no large black bars: at most 10 % of columns can be near-black.
     near_black_cols = (col_max < 20).sum()

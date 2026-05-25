@@ -142,10 +142,29 @@ def upscale_images(
     if highres_flags is None:
         highres_flags = [False] * len(image_paths)
 
+    def _cache_is_stale(cache_path: Path) -> bool:
+        """Detect pre-alpha-aware cache files written by older builds.
+
+        Older builds called ``Image.open(path).convert("RGB")`` before inference, which
+        flattened Scryfall's transparent corners against white. The cached PNG had no
+        alpha channel; downstream ``composite_against_bg`` then no-op'd and ``--background
+        <color>`` rendered white corners. New builds preserve alpha — but use the SAME
+        cache filename, so without invalidation old runs keep returning the broken file.
+        Treat any cached image that isn't RGBA as stale so the upscale re-runs.
+        """
+        if not cache_path.is_file():
+            return True
+        try:
+            with Image.open(cache_path) as img:
+                mode = img.mode
+        except OSError:
+            return True
+        return mode != "RGBA"
+
     needs_upscale: list[str] = [
         path
         for path, is_highres in zip(image_paths, highres_flags)
-        if not is_highres and not _upscaled_path(path, target_width, model_id).exists()
+        if not is_highres and _cache_is_stale(_upscaled_path(path, target_width, model_id))
     ]
 
     if needs_upscale:
@@ -183,9 +202,7 @@ def upscale_images(
             # preserved by the Lanczos resize (the upscale-then-downscale technique).
             if upscaled_rgb.width > target_width:
                 ratio = target_width / upscaled_rgb.width
-                upscaled_rgb = upscaled_rgb.resize(
-                    (target_width, round(upscaled_rgb.height * ratio)), Image.LANCZOS
-                )
+                upscaled_rgb = upscaled_rgb.resize((target_width, round(upscaled_rgb.height * ratio)), Image.LANCZOS)
             upscaled_rgba = _attach_alpha_from_source(upscaled_rgb, rgba)
             upscaled_rgba.save(str(_upscaled_path(path, target_width, model_id)))
             del tensor, output, result, upscaled_rgb, upscaled_rgba, rgba

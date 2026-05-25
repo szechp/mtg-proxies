@@ -117,12 +117,18 @@ def print_cards_matplotlib(
                         img = img[top:, left:]
 
                         # Compute extent
-                        lower = (offset + _occupied_space(cardsize, np.array([x, y]), border_crop)) / papersize
-                        upper = (
-                            offset
-                            + _occupied_space(cardsize, np.array([x, y]), border_crop)
-                            + cardsize * (image_size - [left, top]) / image_size
-                        ) / papersize
+                        slot_lower = offset + _occupied_space(cardsize, np.array([x, y]), border_crop)
+                        slot_size = cardsize * (image_size - [left, top]) / image_size
+                        # MPCFill ``_warped`` renders carry a 4 % bleed margin; scale up so
+                        # card content fills the slot (matches the fpdf renderer's behavior).
+                        if "_warped" in Path(images[idx - 1]).stem:
+                            content_fraction = 1.0 - 2.0 * 0.04
+                            slot_size = slot_size / content_fraction
+                            slot_lower = (
+                                slot_lower - (slot_size - cardsize * (image_size - [left, top]) / image_size) / 2.0
+                            )
+                        lower = slot_lower / papersize
+                        upper = (slot_lower + slot_size) / papersize
                         extent = (lower[0], upper[0], 1 - upper[1], 1 - lower[1])  # flip y-axis
 
                         plt.imshow(
@@ -254,8 +260,21 @@ def print_cards_fpdf(
         lower = offset + _occupied_space(cardsize, np.array([x, y]), border_crop)
         size = cardsize * (image_size - [left, top]) / image_size
 
-        # Plot image
-        pdf.image(cropped_image, x=lower[0], y=lower[1], w=size[0], h=size[1])
+        # MPCFill ``_warped`` renders have a 4 % bleed margin baked in by
+        # ``warp_to_reference`` — card content fills only the central 92 % of the image.
+        # Placing them at ``cardsize`` (the same as a Scryfall scan, where content fills
+        # ~100 %) makes the card visually 8 % smaller than its neighbours. Compensate by
+        # scaling up so card content fills the slot; the bleed extends past the slot edge
+        # and gets clipped by the printer (or covered by the adjacent card's image).
+        if "_warped" in Path(image).stem:
+            warped_bleed_fraction = 0.04  # set by warp_to_reference
+            content_fraction = 1.0 - 2.0 * warped_bleed_fraction
+            place_size = size / content_fraction
+            place_offset = (place_size - size) / 2.0
+            place_pos = lower - place_offset
+            pdf.image(cropped_image, x=place_pos[0], y=place_pos[1], w=place_size[0], h=place_size[1])
+        else:
+            pdf.image(cropped_image, x=lower[0], y=lower[1], w=size[0], h=size[1])
 
         if cropmarks and ((i + 1) % cards_per_sheet == 0 or i + 1 == len(images)):
             # If this was the last card on a page, add crop marks

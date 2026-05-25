@@ -1863,22 +1863,28 @@ def test_upscale_images_skips_highres(tmp_path: pytest.TempPathFactory) -> None:
 
 
 def test_upscale_images_uses_cached_4x(tmp_path: pytest.TempPathFactory) -> None:
-    """upscale_images must return the cached _4x path without re-running the model."""
+    """upscale_images must return the cached _4x path without re-running the model.
+
+    The cache file must be a *real* RGBA PNG: the staleness check refuses non-RGBA
+    cache files (the alpha-preservation fix invalidates pre-fix RGB output that would
+    otherwise silently render white corners on ``--background <color>``).
+    """
     import hashlib
     import sys
 
+    import numpy as np
+    from PIL import Image as RealImage  # before the sys.modules patch hides PIL
+
     img = tmp_path / "card.png"
-    img.write_bytes(b"fake")
-    # Cache filename carries (target_width, model_identity_hash). With no --upscale-model,
-    # model_id derives from the default RealESRNet_x4plus.pth filename.
+    RealImage.fromarray(np.full((40, 30, 4), 200, dtype=np.uint8), mode="RGBA").save(img)
     model_id = hashlib.sha1(b"RealESRNet_x4plus.pth").hexdigest()[:6]
     cached = tmp_path / f"card_4x_w745_m{model_id}.png"
-    cached.write_bytes(b"upscaled")
+    RealImage.fromarray(np.full((40, 30, 4), 220, dtype=np.uint8), mode="RGBA").save(cached)
 
-    # Already cached — model loading code is never reached, so no real spandrel needed
-    with patch.dict(
-        sys.modules, {"spandrel": Mock(), "torch": Mock(), "numpy": Mock(), "PIL": Mock(), "PIL.Image": Mock()}
-    ):
+    # spandrel/torch/numpy can stay mocked — only the cache-stale check needs PIL, and
+    # we keep real PIL by not stubbing it. If the cache passes the staleness check, the
+    # inference path is skipped entirely.
+    with patch.dict(sys.modules, {"spandrel": Mock(), "torch": Mock()}):
         from mtg_proxies.upscale import upscale_images
 
         result = upscale_images([str(img)], highres_flags=[False])

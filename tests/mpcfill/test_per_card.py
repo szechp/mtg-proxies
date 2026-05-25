@@ -214,9 +214,7 @@ def test_resolve_per_card_mpcfill_miss_returns_none(monkeypatch: pytest.MonkeyPa
     fake_fetch.assert_not_called()
 
 
-def test_resolve_per_card_mpcfill_no_candidates_returns_none(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_resolve_per_card_mpcfill_no_candidates_returns_none(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from mtg_proxies.mpcfill import per_card
 
     fake_search = MagicMock(return_value={"sol ring": []})
@@ -238,9 +236,7 @@ def test_resolve_per_card_mpcfill_no_candidates_returns_none(
     fake_match.assert_not_called()
 
 
-def test_resolve_per_card_mpcfill_output_under_per_card_dir(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_resolve_per_card_mpcfill_output_under_per_card_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from mtg_proxies.mpcfill import per_card
 
     monkeypatch.setattr(per_card, "client_search", MagicMock(return_value={"sol ring": [_make_candidate()]}))

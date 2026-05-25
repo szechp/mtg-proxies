@@ -54,6 +54,7 @@ class AlignmentParams:
     thumb_size: tuple[int, int]
     ref_size: tuple[int, int]
 
+
 _log = logging.getLogger(__name__)
 
 _ART_TOP_FRACTION = 0.07
@@ -84,13 +85,13 @@ _BORDER_STD_MAX = 16.0  # max std for a "uniform border" top edge (any colour)
 # stopping before the mana cost symbols so those universal symbols don't inflate similarity.
 # Resize to a fixed tiny array, z-score, and compute Pearson r against the reference strip.
 # Same language → r ≈ 0.4–0.9; different language → r ≈ −0.1–0.15.
-_TITLE_LEFT_FRAC   = 0.07   # inside the left border (= _ART_SIDE_FRACTION)
-_TITLE_TOP_FRAC    = 0.025  # just below the top border
-_TITLE_RIGHT_FRAC  = 0.72   # stop before mana-cost symbols (universal across languages)
+_TITLE_LEFT_FRAC = 0.07  # inside the left border (= _ART_SIDE_FRACTION)
+_TITLE_TOP_FRAC = 0.025  # just below the top border
+_TITLE_RIGHT_FRAC = 0.72  # stop before mana-cost symbols (universal across languages)
 _TITLE_BOTTOM_FRAC = 0.075  # just above the art window top (= _ART_TOP_FRACTION)
-_TITLE_RENDER_W    = 64     # fixed render width for comparison
-_TITLE_RENDER_H    = 8      # fixed render height for comparison
-_TITLE_NCC_MIN     = 0.15   # reject candidates whose title strip correlates below this
+_TITLE_RENDER_W = 64  # fixed render width for comparison
+_TITLE_RENDER_H = 8  # fixed render height for comparison
+_TITLE_NCC_MIN = 0.15  # reject candidates whose title strip correlates below this
 
 _sp_model = None
 _lg_model = None
@@ -193,7 +194,7 @@ def name_jaccard(candidate_name: str, query: str) -> float:
 
     a, b = _normalise(candidate_name), _normalise(query)
     if not a or not b:
-        return 1.0   # can't compare → accept
+        return 1.0  # can't compare → accept
     return len(a & b) / len(a | b)
 
 
@@ -219,21 +220,21 @@ def _is_borderless(img: Image.Image) -> bool:
     h, w = arr.shape[:2]
     if h < 10 or w < 10:
         return True
-    ew  = max(2, round(h * 0.02))   # strip height: top 2 % of image
-    skip = round(w * 0.10)          # skip 10 % from each side (rounded corners)
+    ew = max(2, round(h * 0.02))  # strip height: top 2 % of image
+    skip = round(w * 0.10)  # skip 10 % from each side (rounded corners)
     if skip * 2 >= w:
         return True
     strip = arr[:ew, skip : w - skip, :]
     if strip.size == 0:
         return True
     pixels = strip.reshape(-1, 3)
-    std  = float(pixels.std())
+    std = float(pixels.std())
     # Any uniform top edge (low variance across pixels) is a border — dark, white, or
     # silver/gray on non-standard proxy frames. Only high variance (artwork at the edge)
     # means the card is genuinely borderless.
     if std <= _BORDER_STD_MAX:
-        return False   # uniform border (any colour)
-    return True        # high variance = artwork at edge = borderless
+        return False  # uniform border (any colour)
+    return True  # high variance = artwork at edge = borderless
 
 
 def _title_strip_arr(img: Image.Image) -> np.ndarray:
@@ -259,9 +260,7 @@ def _title_strip_arr(img: Image.Image) -> np.ndarray:
         round(w * _TITLE_RIGHT_FRAC),
         round(h * _TITLE_BOTTOM_FRAC),
     )
-    strip = img.crop(box).convert("L").resize(
-        (_TITLE_RENDER_W, _TITLE_RENDER_H), Image.Resampling.LANCZOS
-    )
+    strip = img.crop(box).convert("L").resize((_TITLE_RENDER_W, _TITLE_RENDER_H), Image.Resampling.LANCZOS)
     arr = np.asarray(strip, dtype=np.float32).flatten()
     std = arr.std()
     if std < 1.0:
@@ -269,9 +268,7 @@ def _title_strip_arr(img: Image.Image) -> np.ndarray:
     return (arr - arr.mean()) / std  # z-score so Pearson r = dot(a, b) / N
 
 
-def _fit_similarity_2d(
-    src: np.ndarray, dst: np.ndarray
-) -> tuple[float, np.ndarray, np.ndarray] | None:
+def _fit_similarity_2d(src: np.ndarray, dst: np.ndarray) -> tuple[float, np.ndarray, np.ndarray] | None:
     """Umeyama least-squares similarity: dst ≈ s * R @ src + t.
 
     Args:
@@ -322,7 +319,7 @@ def _card_horizontal_extent(img: Image.Image) -> tuple[int, int] | None:
     arr = np.asarray(img.convert("L"), dtype=np.float32)
     h, w = arr.shape
     mid_strip = arr[int(h * 0.40) : int(h * 0.60), :]
-    col_max = mid_strip.max(axis=0)   # max across the strip, robust to single dark rows
+    col_max = mid_strip.max(axis=0)  # max across the strip, robust to single dark rows
     above = np.where(col_max > _CARD_CONTENT_THRESHOLD)[0]
     if len(above) == 0:
         return None
@@ -388,11 +385,14 @@ def warp_to_reference(
     current_fill = card_W / full_W
     # Target: card fills (1 − 2×PRINT_BLEED_FRAC) of the output so that after the
     # bleed crop the card occupies the full effective width.
-    target_fill = 1.0 - 2.0 * PRINT_BLEED_FRAC   # 0.92
+    target_fill = 1.0 - 2.0 * PRINT_BLEED_FRAC  # 0.92
 
     _log.debug(
         "warp: card=[%d,%d] fill=%.3f target=%.3f",
-        x_left, x_right, current_fill, target_fill,
+        x_left,
+        x_right,
+        current_fill,
+        target_fill,
     )
 
     if abs(current_fill - target_fill) < 0.02:
@@ -537,8 +537,8 @@ def _load_features(path: Path, device) -> tuple[dict, tuple[int, int], np.ndarra
             _log.debug("dropping stale features cache (missing metadata): %s", path)
             return None
         thumb_size = (int(data["__thumb_w"][0]), int(data["__thumb_h"][0]))
-        title_arr  = data["__title_strip"]
-        feat_keys  = [k for k in data.files if not k.startswith("__")]
+        title_arr = data["__title_strip"]
+        feat_keys = [k for k in data.files if not k.startswith("__")]
         feats = {k: torch.from_numpy(data[k]).to(device) for k in feat_keys}
         return feats, thumb_size, title_arr
     except (OSError, ValueError) as exc:
@@ -617,7 +617,9 @@ def match_by_keypoints(
     ref_is_borderless = _is_borderless(reference)
     _log.debug(
         "reference frame_ratio=%.3f standard_frame=%s borderless=%s",
-        ref_frame_ratio, ref_is_standard_frame, ref_is_borderless,
+        ref_frame_ratio,
+        ref_is_standard_frame,
+        ref_is_borderless,
     )
 
     with torch.no_grad():
@@ -647,7 +649,8 @@ def match_by_keypoints(
             skipped_frame_mismatch += 1
             _log.debug(
                 "candidate %s (%s) name Jaccard=0 — wrong language or wrong card, skipping",
-                candidate.name, candidate.drive_id,
+                candidate.name,
+                candidate.drive_id,
             )
             continue
 
@@ -690,14 +693,17 @@ def match_by_keypoints(
                     skipped_frame_mismatch += 1
                     _log.debug(
                         "candidate %s (%s) frame_ratio=%.3f — full-art mismatch, skipping",
-                        candidate.name, candidate.drive_id, cand_frame_ratio,
+                        candidate.name,
+                        candidate.drive_id,
+                        cand_frame_ratio,
                     )
                     continue
             if not ref_is_borderless and _is_borderless(rgb):
                 skipped_frame_mismatch += 1
                 _log.debug(
                     "candidate %s (%s) is borderless but reference is bordered — skipping",
-                    candidate.name, candidate.drive_id,
+                    candidate.name,
+                    candidate.drive_id,
                 )
                 continue
 
@@ -722,13 +728,18 @@ def match_by_keypoints(
             title_r = float(np.dot(ref_title_arr, cand_title_arr) / n) if n else 0.0
             _log.debug(
                 "candidate %s (%s) title_r=%.3f",
-                candidate.name, candidate.drive_id, title_r,
+                candidate.name,
+                candidate.drive_id,
+                title_r,
             )
             if title_r < _TITLE_NCC_MIN:
                 skipped_frame_mismatch += 1
                 _log.debug(
                     "candidate %s (%s) title strip r=%.3f < %.2f — likely wrong language, skipping",
-                    candidate.name, candidate.drive_id, title_r, _TITLE_NCC_MIN,
+                    candidate.name,
+                    candidate.drive_id,
+                    title_r,
+                    _TITLE_NCC_MIN,
                 )
                 continue
 
@@ -788,15 +799,17 @@ def match_by_keypoints(
     alignment: AlignmentParams | None = None
     n_inliers = len(best_match_idx)
     if n_inliers >= 6:
-        kp_ref_all  = ref_feats["keypoints"][0].cpu().numpy()
+        kp_ref_all = ref_feats["keypoints"][0].cpu().numpy()
         kp_cand_all = best_cand_feats["keypoints"][0].cpu().numpy()
-        kp_ref_matched  = kp_ref_all [best_match_idx[:, 0]]
+        kp_ref_matched = kp_ref_all[best_match_idx[:, 0]]
         kp_cand_matched = kp_cand_all[best_match_idx[:, 1]]
         fit = _fit_similarity_2d(kp_cand_matched, kp_ref_matched)
         if fit is not None:
             s, R, t = fit
             alignment = AlignmentParams(
-                s=s, R=R, t=t,
+                s=s,
+                R=R,
+                t=t,
                 thumb_size=best_thumb_size,
                 ref_size=reference.size,
             )

@@ -140,8 +140,7 @@ def resolve_per_card_mpcfill(
     try:
         from mtg_proxies.mpcfill.matcher import warp_to_reference
 
-        with Image.open(_io.BytesIO(image_bytes)) as _cand, \
-             Image.open(scryfall_image_path) as _ref:
+        with Image.open(_io.BytesIO(image_bytes)) as _cand, Image.open(scryfall_image_path) as _ref:
             _cand.load()
             _ref.load()
             _warped = warp_to_reference(_cand.convert("RGB"), _ref.convert("RGB"))

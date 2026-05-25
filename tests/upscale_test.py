@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import sys
+from pathlib import Path
+from unittest.mock import Mock, patch
+
 import numpy as np
 from PIL import Image
 
@@ -73,3 +79,53 @@ def test_attach_alpha_from_source_round_corner_pattern_survives_4x() -> None:
     assert res_arr[5, 5, 3] < 30  # well inside the upscaled transparent corner
     # And the opaque region stays opaque.
     assert res_arr[80, 80, 3] > 240
+
+
+def _model_id() -> str:
+    return hashlib.sha1(b"RealESRNet_x4plus.pth").hexdigest()[:6]
+
+
+def test_upscale_images_treats_rgb_cache_as_stale_and_reprocesses(tmp_path: Path) -> None:
+    """Regression: pre-alpha-aware cache files (RGB) must be invalidated.
+
+    Older builds wrote RGB PNGs to the upscale cache (alpha was flattened against white
+    before inference). After upgrading, the cache key is the same — so the broken file
+    would silently get returned and ``--background black`` would render white corners.
+    The staleness check rejects non-RGBA cache files so they get re-upscaled.
+    """
+    img = tmp_path / "card.png"
+    Image.fromarray(np.full((40, 30, 4), 200, dtype=np.uint8), mode="RGBA").save(img)
+    cached = tmp_path / f"card_4x_w745_m{_model_id()}.png"
+    # Pre-alpha-aware cache: RGB, no transparent corners. Should NOT be returned as-is.
+    Image.fromarray(np.full((40, 30, 3), 220, dtype=np.uint8), mode="RGB").save(cached)
+
+    upscale_run_count = 0
+
+    def _fake_upscale_run() -> None:
+        nonlocal upscale_run_count
+        upscale_run_count += 1
+
+    # Mock spandrel/torch so the inference itself doesn't actually run; assert that the
+    # function chose to TRY the inference path (i.e. needs_upscale was non-empty).
+    fake_spandrel = Mock()
+    fake_torch = Mock()
+    fake_torch.cuda.is_available.return_value = False
+    fake_torch.device.return_value = Mock(type="cpu")
+    fake_model = Mock()
+    fake_spandrel.ModelLoader.return_value.load_from_file.return_value = fake_model
+    fake_model.eval.return_value.to.return_value = fake_model
+
+    with patch.dict(sys.modules, {"spandrel": fake_spandrel, "torch": fake_torch}):
+        from mtg_proxies.upscale import upscale_images
+
+        # Patch the model loader to count attempts at running inference. If the cache had
+        # been accepted as fresh, no model would be loaded.
+        with patch.object(fake_spandrel, "ModelLoader") as mock_loader:
+            mock_loader.return_value.load_from_file.side_effect = lambda *_: _fake_upscale_run() or fake_model
+            # Mocked torch tensor ops will raise once they actually try to compute — we
+            # don't care, we only want to know the cache check refused the RGB file.
+            with contextlib.suppress(Exception):
+                upscale_images([str(img)], highres_flags=[False])
+
+    # Cache was stale → upscale path was attempted (model loader called once).
+    assert upscale_run_count == 1

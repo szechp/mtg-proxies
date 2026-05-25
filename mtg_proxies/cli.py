@@ -1245,11 +1245,15 @@ def _run_mpcfill(args: argparse.Namespace) -> None:
         key = f"{card.scryfall_id}::{card.name}"
         is_pinned = (not card.is_back) and (card.scryfall_id in pinned_drive_ids)
         row = preserved_rows.get(key)
-        if not is_pinned and row and _should_preserve(
-            card,
-            row,
-            outdir,
-            match_ratio_threshold=args.lightglue_threshold,
+        if (
+            not is_pinned
+            and row
+            and _should_preserve(
+                card,
+                row,
+                outdir,
+                match_ratio_threshold=args.lightglue_threshold,
+            )
         ):
             _apply_preserved_row(card, row)
             preserved_cards.append(card)
@@ -1342,8 +1346,8 @@ def _run_mpcfill(args: argparse.Namespace) -> None:
                     try:
                         import io as _io
                         from PIL import Image as _Image
-                        with _Image.open(_io.BytesIO(full_bytes)) as _full_img, \
-                             _Image.open(match_ref_path) as _ref_img:
+
+                        with _Image.open(_io.BytesIO(full_bytes)) as _full_img, _Image.open(match_ref_path) as _ref_img:
                             _full_img.load()
                             _ref_img.load()
                             _warped = mpcfill_matcher.warp_to_reference(_full_img, _ref_img)
@@ -1422,8 +1426,8 @@ def _run_mpcfill(args: argparse.Namespace) -> None:
                 try:
                     import io as _io
                     from PIL import Image as _Image
-                    with _Image.open(_io.BytesIO(full_bytes)) as _full_img, \
-                         _Image.open(match_ref_path) as _ref_img:
+
+                    with _Image.open(_io.BytesIO(full_bytes)) as _full_img, _Image.open(match_ref_path) as _ref_img:
                         _full_img.load()
                         _ref_img.load()
                         _warped = mpcfill_matcher.warp_to_reference(_full_img, _ref_img, alignment)
