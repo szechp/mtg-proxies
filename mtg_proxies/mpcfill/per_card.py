@@ -136,14 +136,20 @@ def resolve_per_card_mpcfill(
     # ratio and border style (bordered vs borderless).
     import io as _io
 
-    warped_path = output_dir / f"{scryfall_id}__{flag_hash}_warped.png"
     try:
         from mtg_proxies.mpcfill.matcher import warp_to_reference
 
         with Image.open(_io.BytesIO(image_bytes)) as _cand, Image.open(scryfall_image_path) as _ref:
             _cand.load()
             _ref.load()
-            _warped = warp_to_reference(_cand.convert("RGB"), _ref.convert("RGB"))
+            _warped, _content_fill = warp_to_reference(_cand.convert("RGB"), _ref.convert("RGB"))
+        # Filename encodes the achieved card-content fill fraction (×100, rounded). The
+        # print renderer parses this to compute the right scale-up factor: a 0.92-fill image
+        # gets scaled up 8.7 % so card content fills the slot, a 1.00-fill image doesn't get
+        # scaled at all. Without this marker every variant assumes 0.92 and the borderless /
+        # scale-down variants get over-zoomed and spill onto neighbouring cards.
+        fill_pct = max(1, min(100, round(_content_fill * 100)))
+        warped_path = output_dir / f"{scryfall_id}__{flag_hash}_warped{fill_pct}.png"
         _buf = _io.BytesIO()
         _warped.save(_buf, format="PNG")
         warped_path.write_bytes(_buf.getvalue())

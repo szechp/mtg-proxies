@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -12,6 +13,27 @@ from tqdm import tqdm
 from mtg_proxies.plotting import SplitPages
 
 image_size = np.array([745, 1040])
+
+# Matches the per-card MPCFill warped output: ``<id>__<hash>_warped<NN>.png`` where NN is the
+# achieved card-content fill percentage. Legacy ``_warped.png`` (no NN) means "assume 0.92" —
+# old caches from before this marker existed.
+_WARPED_RE = re.compile(r"_warped(\d+)?$")
+
+
+def _warped_content_fraction(image_path: str | Path) -> float | None:
+    """Return the card-content fill fraction encoded in a ``_warped<NN>`` filename, or None.
+
+    ``None`` means the file is not an MPCFill warped render and should be placed at the slot
+    boundary with no rescale. ``1.0`` means card content already fills the image (borderless,
+    scale-to-fill, or extent-detection failed) — also no rescale needed. Any value below 1.0
+    means there's a bleed margin and the renderer should scale the image up by 1/fraction so
+    card content fills the slot.
+    """
+    m = _WARPED_RE.search(Path(image_path).stem)
+    if m is None:
+        return None
+    nn = m.group(1)
+    return 0.92 if nn is None else int(nn) / 100.0
 
 
 def _occupied_space(cardsize: np.ndarray, pos: np.ndarray, border_crop: int, closed: bool = False) -> np.ndarray:
@@ -119,10 +141,13 @@ def print_cards_matplotlib(
                         # Compute extent
                         slot_lower = offset + _occupied_space(cardsize, np.array([x, y]), border_crop)
                         slot_size = cardsize * (image_size - [left, top]) / image_size
-                        # MPCFill ``_warped`` renders carry a 4 % bleed margin; scale up so
-                        # card content fills the slot (matches the fpdf renderer's behavior).
-                        if "_warped" in Path(images[idx - 1]).stem:
-                            content_fraction = 1.0 - 2.0 * 0.04
+                        # MPCFill ``_warped<NN>`` renders carry a bleed margin (``NN``/100
+                        # is the card-content fill fraction); scale up so card content fills
+                        # the slot (matches the fpdf renderer's behavior). If the encoded
+                        # fraction is 1.0 (borderless/scale-down branches), no rescale —
+                        # placing them at slot size is already correct.
+                        content_fraction = _warped_content_fraction(images[idx - 1])
+                        if content_fraction is not None and content_fraction < 1.0:
                             slot_size = slot_size / content_fraction
                             slot_lower = (
                                 slot_lower - (slot_size - cardsize * (image_size - [left, top]) / image_size) / 2.0
@@ -260,15 +285,17 @@ def print_cards_fpdf(
         lower = offset + _occupied_space(cardsize, np.array([x, y]), border_crop)
         size = cardsize * (image_size - [left, top]) / image_size
 
-        # MPCFill ``_warped`` renders have a 4 % bleed margin baked in by
-        # ``warp_to_reference`` — card content fills only the central 92 % of the image.
-        # Placing them at ``cardsize`` (the same as a Scryfall scan, where content fills
-        # ~100 %) makes the card visually 8 % smaller than its neighbours. Compensate by
-        # scaling up so card content fills the slot; the bleed extends past the slot edge
-        # and gets clipped by the printer (or covered by the adjacent card's image).
-        if "_warped" in Path(image).stem:
-            warped_bleed_fraction = 0.04  # set by warp_to_reference
-            content_fraction = 1.0 - 2.0 * warped_bleed_fraction
+        # MPCFill ``_warped<NN>`` renders carry a bleed margin baked in by
+        # ``warp_to_reference`` — card content fills only ``NN`` % of the image's width.
+        # Placing them at ``cardsize`` would make the card visually smaller than its
+        # neighbours. Scale up by ``1/content_fraction`` so card content fills the slot;
+        # the bleed extends past the slot edge and gets clipped by the printer (or covered
+        # by the adjacent card's image). When the encoded fraction is 1.0 — borderless,
+        # scale-to-fill, or within-tolerance branches where there's no measurable bleed —
+        # we DON'T rescale; the image fills the slot exactly. Doing otherwise over-zooms
+        # the card content by 8 % and spills it onto neighbouring slots.
+        content_fraction = _warped_content_fraction(image)
+        if content_fraction is not None and content_fraction < 1.0:
             place_size = size / content_fraction
             place_offset = (place_size - size) / 2.0
             place_pos = lower - place_offset

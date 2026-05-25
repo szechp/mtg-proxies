@@ -1351,7 +1351,7 @@ def _run_mpcfill(args: argparse.Namespace) -> None:
                         with _Image.open(_io.BytesIO(full_bytes)) as _full_img, _Image.open(match_ref_path) as _ref_img:
                             _full_img.load()
                             _ref_img.load()
-                            _warped = mpcfill_matcher.warp_to_reference(_full_img, _ref_img)
+                            _warped, _ = mpcfill_matcher.warp_to_reference(_full_img, _ref_img)
                         _buf = _io.BytesIO()
                         _warped.save(_buf, format="PNG")
                         full_bytes = _buf.getvalue()
@@ -1432,7 +1432,7 @@ def _run_mpcfill(args: argparse.Namespace) -> None:
                     with _Image.open(_io.BytesIO(full_bytes)) as _full_img, _Image.open(match_ref_path) as _ref_img:
                         _full_img.load()
                         _ref_img.load()
-                        _warped = mpcfill_matcher.warp_to_reference(_full_img, _ref_img, alignment)
+                        _warped, _ = mpcfill_matcher.warp_to_reference(_full_img, _ref_img, alignment)
                     _buf = _io.BytesIO()
                     _warped.save(_buf, format="PNG")
                     full_bytes = _buf.getvalue()

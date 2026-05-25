@@ -330,7 +330,7 @@ def warp_to_reference(
     candidate_full: Image.Image,
     reference: Image.Image,
     alignment: AlignmentParams | None = None,
-) -> Image.Image:
+) -> tuple[Image.Image, float]:
     """Scale and crop `candidate_full` so it matches the Scryfall reference framing.
 
     After `mtg-proxies print --custom-art` applies the default 4 % bleed crop the
@@ -356,7 +356,11 @@ def warp_to_reference(
         alignment: Reserved; currently unused.
 
     Returns:
-        Corrected RGB image at the reference aspect ratio.
+        ``(image, content_fill_fraction)``. The fraction reports how much of the output
+        width the card content actually occupies after warping — used by the print
+        renderer to know how much to scale the image up so card content fills the slot.
+        Standard bleed-normalised renders return ``0.92``; borderless / scale-down /
+        within-tolerance branches return their actual fill (~1.0 in most cases).
     """
     img = candidate_full.convert("RGB")
     full_W, full_H = img.size
@@ -365,20 +369,22 @@ def warp_to_reference(
     out_H = round(full_W * ref_H / ref_W)
 
     # Guard 1: borderless reference → aspect-ratio only.
+    # Card content already fills the image; no measurable bleed margin → fill = 1.0.
     if _is_borderless(reference):
         _log.debug("warp: reference is borderless — aspect-ratio only")
-        return img.resize((out_W, out_H), Image.Resampling.LANCZOS)
+        return img.resize((out_W, out_H), Image.Resampling.LANCZOS), 1.0
 
     # Guard 2: borderless candidate → aspect-ratio only.
     # A genuinely borderless render (artwork to the card edge) has nothing to normalise —
     # adding artificial bleed around it would produce black bars.
     if _is_borderless(img):
         _log.debug("warp: candidate is borderless — aspect-ratio only")
-        return img.resize((out_W, out_H), Image.Resampling.LANCZOS)
+        return img.resize((out_W, out_H), Image.Resampling.LANCZOS), 1.0
 
     extent = _card_horizontal_extent(img)
     if extent is None:
-        return img.resize((out_W, out_H), Image.Resampling.LANCZOS)
+        # Couldn't measure card extent — be conservative and assume content fills the frame.
+        return img.resize((out_W, out_H), Image.Resampling.LANCZOS), 1.0
 
     x_left, x_right = extent
     card_W = x_right - x_left + 1
@@ -396,8 +402,10 @@ def warp_to_reference(
     )
 
     if abs(current_fill - target_fill) < 0.02:
-        # Already within 2 % of target — just normalise aspect ratio.
-        return img.resize((out_W, out_H), Image.Resampling.LANCZOS)
+        # Already within 2 % of target — just normalise aspect ratio. Report the actual
+        # measured fill so the print step scales correctly (the bleed margin is whatever
+        # the source render had, not 4 % exactly).
+        return img.resize((out_W, out_H), Image.Resampling.LANCZOS), current_fill
 
     # Scale the render so the card content spans target_fill * out_W pixels.
     scale = (target_fill * out_W) / card_W
@@ -418,7 +426,8 @@ def warp_to_reference(
         filled = img.resize((fill_W, fill_H), Image.Resampling.LANCZOS)
         cx = max(0, (fill_W - out_W) // 2)
         cy = max(0, (fill_H - out_H) // 2)
-        return filled.crop((cx, cy, cx + out_W, cy + out_H))
+        # Scale-to-fill puts card content edge-to-edge in the output → fill = 1.0.
+        return filled.crop((cx, cy, cx + out_W, cy + out_H)), 1.0
 
     # Card had excess bleed — scaled up. Center-crop to out_W × out_H.
     x_center_scaled = round((x_left + x_right) / 2 * scale)
@@ -429,8 +438,8 @@ def warp_to_reference(
     if cropped.size != (out_W, out_H):
         result = Image.new("RGB", (out_W, out_H), (0, 0, 0))
         result.paste(cropped, (0, 0))
-        return result
-    return cropped
+        return result, target_fill
+    return cropped, target_fill
 
 
 def _pil_to_tensor(img: Image.Image):  # noqa: ANN202

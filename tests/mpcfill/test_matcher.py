@@ -281,6 +281,7 @@ def test_match_tiered_keypoints_returns_none_when_nothing_matches(
 def test_fit_similarity_2d_identity() -> None:
     """Perfect scale-1 no-rotation match returns identity transform."""
     import numpy as np
+
     from mtg_proxies.mpcfill.matcher import _fit_similarity_2d
 
     pts = np.array([[0.0, 0.0], [10.0, 0.0], [0.0, 10.0], [5.0, 5.0]])
@@ -295,7 +296,9 @@ def test_fit_similarity_2d_identity() -> None:
 def test_fit_similarity_2d_known_transform() -> None:
     """Umeyama recovers a known scale + rotation + translation."""
     import math
+
     import numpy as np
+
     from mtg_proxies.mpcfill.matcher import _fit_similarity_2d
 
     theta = math.pi / 6
@@ -328,20 +331,24 @@ def test_warp_to_reference_output_dimensions() -> None:
 
     ref = _make_bordered_ref()
     candidate = Image.new("RGB", (2000, 2800), color=(100, 150, 200))
-    warped = warp_to_reference(candidate, ref)
+    warped, _fill = warp_to_reference(candidate, ref)
     assert warped is not None
     assert warped.size == (2000, round(2000 * 1040 / 745))
 
 
 def test_warp_to_reference_borderless_reference_skips_crop() -> None:
-    """Borderless reference (colorful edges) → aspect-ratio only, no crop applied."""
+    """Borderless reference (colorful edges) → aspect-ratio only, no crop applied.
+
+    Reports fill=1.0 because the card content fills the whole frame (no measurable bleed).
+    """
     from mtg_proxies.mpcfill.matcher import warp_to_reference
 
     ref = Image.new("RGB", (745, 1040), color=(80, 120, 200))
     candidate = Image.new("RGB", (2000, 2800), color=(100, 150, 200))
-    warped = warp_to_reference(candidate, ref)
+    warped, fill = warp_to_reference(candidate, ref)
     assert warped is not None
     assert warped.size == (2000, round(2000 * 1040 / 745))
+    assert fill == 1.0, "borderless reference → fill must be 1.0 so print step doesn't rescale"
 
 
 def test_warp_to_reference_borderless_candidate_skips_crop() -> None:
@@ -351,10 +358,11 @@ def test_warp_to_reference_borderless_candidate_skips_crop() -> None:
     ref = _make_bordered_ref()
     # Solid-color image: high variance at the edge → _is_borderless returns True.
     candidate = Image.new("RGB", (2000, 2800), color=(120, 60, 200))
-    warped = warp_to_reference(candidate, ref)
+    warped, fill = warp_to_reference(candidate, ref)
     assert warped is not None
     expected = (2000, round(2000 * 1040 / 745))
     assert warped.size == expected
+    assert fill == 1.0, "borderless candidate → fill must be 1.0 so print step doesn't rescale"
     # Must not produce black bars: no pixel column should be entirely black.
     import numpy as np
 
@@ -365,8 +373,9 @@ def test_warp_to_reference_borderless_candidate_skips_crop() -> None:
 def test_warp_to_reference_square_card_fills_slot_without_black_bars() -> None:
     """Square custom card (no bleed, scale<1) → scale-to-fill, no black bars."""
     import numpy as np
-    from mtg_proxies.mpcfill.matcher import warp_to_reference
     from PIL import ImageDraw
+
+    from mtg_proxies.mpcfill.matcher import warp_to_reference
 
     ref = _make_bordered_ref(w=745, h=1040)
     # Square card with a dark background (simulates dark custom proxy art).
@@ -375,7 +384,7 @@ def test_warp_to_reference_square_card_fills_slot_without_black_bars() -> None:
     sq = Image.new("RGB", (500, 500), color=(5, 5, 5))
     draw = ImageDraw.Draw(sq)
     draw.rectangle([50, 50, 450, 450], fill=(180, 60, 20))  # coloured centre
-    warped = warp_to_reference(sq, ref)
+    warped, _fill = warp_to_reference(sq, ref)
     assert warped is not None
     out_w, out_h = 500, round(500 * 1040 / 745)
     assert warped.size == (out_w, out_h)
@@ -388,9 +397,34 @@ def test_warp_to_reference_square_card_fills_slot_without_black_bars() -> None:
     assert near_black_cols / len(col_max) < 0.10, "too many near-black columns — black bar present"
 
 
+def test_warp_to_reference_standard_bleed_reports_092_fill() -> None:
+    """Standard MPCFill render (card content surrounded by visible black bleed) reports 0.92 fill.
+
+    Regression: this is the case where print_cards.py's 1/0.92 scale-up is correct. The
+    other branches (borderless / scale-down / within-tolerance) report fill==1.0 so the
+    renderer doesn't over-zoom them onto neighbouring slots.
+    """
+    from PIL import ImageDraw
+
+    from mtg_proxies.mpcfill.matcher import warp_to_reference
+
+    ref = _make_bordered_ref(w=745, h=1040)
+    # Candidate: a card with ~15 % black bleed on each side (card fills central 70 %).
+    # warp_to_reference will scale it down so card content fills 92 % of the output.
+    full_w, full_h = 2000, 2800
+    cand = Image.new("RGB", (full_w, full_h), color=(0, 0, 0))  # solid black bleed
+    draw = ImageDraw.Draw(cand)
+    inset = round(full_w * 0.15)
+    draw.rectangle([inset, inset, full_w - inset - 1, full_h - inset - 1], fill=(180, 120, 60))
+    warped, fill = warp_to_reference(cand, ref)
+    assert warped is not None
+    assert abs(fill - 0.92) < 0.01, f"standard-bleed render must report 0.92 fill, got {fill}"
+
+
 def test_save_load_features_roundtrip_with_thumb_size(tmp_path: Path) -> None:
     """_save_features / _load_features round-trip preserves thumb_size and title strip."""
     import numpy as np
+
     from mtg_proxies.mpcfill.matcher import _load_features, _save_features
 
     feats = _fake_feats(5)
@@ -408,6 +442,7 @@ def test_save_load_features_roundtrip_with_thumb_size(tmp_path: Path) -> None:
 def test_load_features_rejects_old_format(tmp_path: Path) -> None:
     """Old .npz files without __title_strip are treated as cache misses."""
     import numpy as np
+
     from mtg_proxies.mpcfill.matcher import _load_features
 
     old_path = tmp_path / "old.npz"
