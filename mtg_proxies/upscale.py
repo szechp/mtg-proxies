@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import requests
 from tqdm import tqdm
+
+if TYPE_CHECKING:
+    from PIL import Image
 
 # Default model is MSE-trained Real-ESRNet (no GAN adversarial loss → no hallucinated
 # details, faithful to the source brushwork). Slight softness at 4x is absorbed by the
@@ -51,6 +55,25 @@ def _download_model() -> Path:
         tmp_path.unlink(missing_ok=True)
         raise
     return _MODEL_CACHE
+
+
+def _attach_alpha_from_source(upscaled_rgb: Image.Image, source_rgba: Image.Image) -> Image.Image:
+    """Return an RGBA image: ``upscaled_rgb`` with ``source_rgba``'s alpha channel re-applied.
+
+    The source alpha is Lanczos-resized to match the upscaled output's dimensions, so
+    Scryfall's rounded-corner transparency survives the upscale-then-downscale dance and
+    ``--background <color>`` can flatten the corners against the chosen color downstream.
+    Pulled out so the alpha-preservation logic is unit-testable without loading the
+    upscale model or running torch.
+    """
+    from PIL import Image  # local — module-level import would force torch/spandrel at import time
+
+    alpha = source_rgba.split()[-1]
+    if alpha.size != upscaled_rgb.size:
+        alpha = alpha.resize(upscaled_rgb.size, Image.LANCZOS)
+    out = upscaled_rgb.copy()
+    out.putalpha(alpha)
+    return out
 
 
 def _model_identity_hash(model_path: str | Path) -> str:
@@ -141,20 +164,31 @@ def upscale_images(
         model = model.eval().to(device)
 
         for path in tqdm(needs_upscale, desc="Upscaling lowres images"):
-            img = Image.open(path).convert("RGB")
-            tensor = torch.from_numpy(np.array(img)).permute(2, 0, 1).float() / 255.0
+            # Open RGBA so the rounded-corner transparency Scryfall provides survives the
+            # upscale; the model only takes RGB, so we run RGB through inference and
+            # re-attach the source alpha (Lanczos-resized to the output dimensions).
+            # Without this, ``--background black`` would render white corners because the
+            # upscaled output had alpha pre-flattened against white.
+            with Image.open(path) as raw:
+                raw.load()
+                rgba = raw.convert("RGBA") if raw.mode != "RGBA" else raw.copy()
+            rgb_input = rgba.convert("RGB")
+            tensor = torch.from_numpy(np.array(rgb_input)).permute(2, 0, 1).float() / 255.0
             tensor = tensor.unsqueeze(0).to(device)
             with torch.inference_mode():
                 output = model(tensor)
             result = (output.squeeze(0).permute(1, 2, 0).clamp(0, 1) * 255).byte().cpu().numpy()
-            upscaled = Image.fromarray(result)
-            # Downscale to ``target_width`` so PDF sizes stay sane while AI sharpening is preserved
-            # by the Lanczos resize (the upscale-then-downscale technique).
-            if upscaled.width > target_width:
-                ratio = target_width / upscaled.width
-                upscaled = upscaled.resize((target_width, round(upscaled.height * ratio)), Image.LANCZOS)
-            upscaled.save(str(_upscaled_path(path, target_width, model_id)))
-            del tensor, output, result, upscaled
+            upscaled_rgb = Image.fromarray(result)
+            # Downscale to ``target_width`` so PDF sizes stay sane while AI sharpening is
+            # preserved by the Lanczos resize (the upscale-then-downscale technique).
+            if upscaled_rgb.width > target_width:
+                ratio = target_width / upscaled_rgb.width
+                upscaled_rgb = upscaled_rgb.resize(
+                    (target_width, round(upscaled_rgb.height * ratio)), Image.LANCZOS
+                )
+            upscaled_rgba = _attach_alpha_from_source(upscaled_rgb, rgba)
+            upscaled_rgba.save(str(_upscaled_path(path, target_width, model_id)))
+            del tensor, output, result, upscaled_rgb, upscaled_rgba, rgba
             if device.type == "cuda":
                 torch.cuda.empty_cache()
     else:
