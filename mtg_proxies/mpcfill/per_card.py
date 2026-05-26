@@ -86,6 +86,11 @@ def resolve_per_card_mpcfill(
             this function has no surprising side effects; the CLI applies the policy
             default :data:`DEFAULT_BLEED_CROP_PERCENT` (4 %, matching
             ``--custom-art-bleed-crop``) when the modeline doesn't override it.
+        prefer_retro: When True, bias candidate selection toward retro / old-frame
+            renders. Filters by source name keywords first; if that empties the list,
+            falls back to a per-candidate visual classifier that detects the retro
+            type-bar signature in each thumbnail. If both stages empty the list, keeps
+            all candidates so the card isn't silently dropped.
 
     Returns:
         Path to the persisted PNG, or ``None`` if no candidate qualifies.
@@ -103,18 +108,46 @@ def resolve_per_card_mpcfill(
             return None
 
         if prefer_retro:
-            # Filter to renders whose source advertises an old-frame style. If the keyword
-            # filter empties the list, fall back to the full set — the user asked for retro
-            # but a hard miss is worse than a modern render they can still use.
-            retro_candidates = [c for c in candidates if _is_retro_source(c.source_name)]
-            if retro_candidates:
-                candidates = retro_candidates
+            # Hybrid filter: source-name keyword first (fast, no extra fetches). If the
+            # keyword pass empties the list, fall back to the visual classifier — fetch a
+            # small thumbnail of each candidate and run the type-bar detector on it. If
+            # neither stage finds a retro candidate, keep the full list so the card isn't
+            # silently dropped.
+            keyword_pass = [c for c in candidates if _is_retro_source(c.source_name)]
+            if keyword_pass:
+                candidates = keyword_pass
             else:
                 _log.info(
-                    "#mpcfill --retro on %r: no retro-named source found among %d candidates; using full set",
+                    "#mpcfill --retro on %r: no retro-named source found among %d candidates; trying visual classifier",
                     card_name,
                     len(candidates),
                 )
+                from mtg_proxies.mpcfill.retro_classifier import is_retro as _is_retro_visual
+
+                # 256 px is a sweet spot — large enough that the type bar signature shows
+                # cleanly, small enough that each thumbnail downloads / caches fast.
+                visual_pass = []
+                for cand in candidates:
+                    try:
+                        thumb = fetch_thumbnail(cand.drive_id, 256, session=session, cache_root=cache_root)
+                    except Exception as exc:
+                        _log.debug("retro visual classifier: thumb fetch failed for %s (%s)", cand.drive_id, exc)
+                        continue
+                    if _is_retro_visual(thumb):
+                        visual_pass.append(cand)
+                if visual_pass:
+                    candidates = visual_pass
+                    _log.info(
+                        "#mpcfill --retro on %r: visual classifier kept %d of %d candidates",
+                        card_name,
+                        len(visual_pass),
+                        len(results.get(query, [])),
+                    )
+                else:
+                    _log.info(
+                        "#mpcfill --retro on %r: no retro candidate via visual classifier either; using full set",
+                        card_name,
+                    )
 
         # Open as context-manager so the file descriptor is released; treat missing/corrupt
         # reference files as a soft miss so the caller can fall back to Scryfall.

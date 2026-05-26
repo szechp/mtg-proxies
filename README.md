@@ -365,11 +365,18 @@ Supported verbs:
     1 Tight-art card #mpcfill --bleed-crop 0
     1 Wide-bleed card #mpcfill --bleed-crop 6
     ```
-  - `--retro` restricts MPCFill candidate selection to sources whose name contains
-    retro-frame keywords (`retro`, `old border`, `1993`, `1997`, `classic`, `vintage`,
-    case-insensitive substring). Useful when a card has no real retro Scryfall print and
-    you want a community-rendered old-frame version. Falls back to the full candidate
-    set if no retro-named source exists for the card. Works for both faces of a DFC:
+  - `--retro` biases MPCFill candidate selection toward retro / old-frame renders.
+    Two-stage filter:
+    1. **Keyword match on source name** (`retro`, `old border`, `1993`, `1997`,
+       `classic`, `vintage`, case-insensitive substring) — fast, picks up
+       contributors who advertise old-frame proxies in their source name.
+    2. **Visual classifier fallback** if no source matches — looks at each
+       candidate thumbnail and detects the retro type-bar signature directly
+       (binarize the type-bar zone, find long continuous horizontal black runs).
+       Catches retro renders whose source name doesn't say "retro".
+
+    If both stages find nothing, falls back to the full candidate set so the card
+    isn't silently dropped. Works for both faces of a DFC:
 
     ```
     1 Sol Ring (LEA) 270 #mpcfill --retro

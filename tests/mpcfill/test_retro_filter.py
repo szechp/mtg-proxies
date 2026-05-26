@@ -138,6 +138,79 @@ def test_retro_flag_falls_back_when_no_retro_candidates(
     assert drive_ids == {"modern1", "modern2"}, "fallback must restore all candidates"
 
 
+def test_visual_classifier_fallback_when_keyword_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Run the visual classifier as fallback when no source name matches retro keywords.
+
+    Candidates with a strong type-bar signature in their thumbnail are kept; modern-
+    looking candidates are dropped. If the visual pass also yields nothing, fall back
+    to all candidates (covered by ``test_retro_flag_falls_back_when_no_retro_candidates``).
+    """
+    import numpy as np
+    from PIL import Image as _Image
+
+    from mtg_proxies.mpcfill import per_card
+
+    # All candidate source names are generic — keyword filter empties → visual classifier runs.
+    candidates = [
+        _make_candidate(drive_id="visually_retro", source_name="Some Generic Proxies"),
+        _make_candidate(drive_id="visually_modern", source_name="Other Generic Proxies"),
+    ]
+
+    def synth_retro_png() -> bytes:
+        size = 200
+        arr = np.full((size, size, 3), 240, dtype=np.uint8)
+        rim = int(size * 0.06)
+        arr[:rim, :, :] = 0
+        arr[-rim:, :, :] = 0
+        arr[:, :rim, :] = 0
+        arr[:, -rim:, :] = 0
+        # Type-bar signature in the [55%, 85%] zone.
+        arr[int(size * 0.62) : int(size * 0.66), rim:-rim, :] = 0
+        b = io.BytesIO()
+        _Image.fromarray(arr).save(b, format="PNG")
+        return b.getvalue()
+
+    def synth_modern_png() -> bytes:
+        size = 200
+        arr = np.full((size, size, 3), 200, dtype=np.uint8)
+        b = io.BytesIO()
+        _Image.fromarray(arr).save(b, format="PNG")
+        return b.getvalue()
+
+    thumb_by_id = {"visually_retro": synth_retro_png(), "visually_modern": synth_modern_png()}
+
+    def fake_fetch_thumbnail(drive_id: str, _size: int, **_kw: object) -> bytes:
+        return thumb_by_id[drive_id]
+
+    seen_candidates: list[list[object]] = []
+
+    def fake_match(_ref: object, cands: list[object], **_kw: object) -> object:
+        seen_candidates.append(list(cands))
+        return _make_match_result(cands[0])
+
+    monkeypatch.setattr(per_card, "client_search", MagicMock(return_value={"sol ring": candidates}))
+    monkeypatch.setattr(per_card, "match_by_keypoints", fake_match)
+    monkeypatch.setattr(per_card, "fetch_thumbnail", fake_fetch_thumbnail)
+
+    per_card.resolve_per_card_mpcfill(
+        card_name="Sol Ring",
+        scryfall_image_path=_write_reference(tmp_path),
+        scryfall_id="x",
+        cache_root=tmp_path,
+        server="https://example",
+        session=MagicMock(),
+        prefer_retro=True,
+    )
+
+    assert len(seen_candidates) == 1
+    drive_ids = {c.drive_id for c in seen_candidates[0]}
+    assert drive_ids == {"visually_retro"}, (
+        f"visual classifier should have kept only the type-bar candidate, got {drive_ids}"
+    )
+
+
 def test_no_retro_flag_passes_all_candidates_unchanged(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
