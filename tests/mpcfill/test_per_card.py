@@ -52,6 +52,58 @@ def test_resolve_per_card_mpcfill_bleed_crop_default_is_off(monkeypatch: pytest.
     assert "_bc" not in out.name
 
 
+def test_resolve_per_card_mpcfill_applies_bleed_crop_when_warp_finds_no_margin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression: when warp_to_reference returns content_fill ~ 1.0 (gold/white-bordered or
+    borderless candidate where the rim is rolled into "card content"), the user's
+    ``bleed_crop_percent`` must still take effect. Before this fix the bleed-crop param was
+    only honoured when warp_to_reference raised, so gold-bordered MPCFill renders kept their
+    rim in the final PDF.
+    """
+    import numpy as np
+    from PIL import Image
+
+    from mtg_proxies.mpcfill import per_card
+
+    real_png = io.BytesIO()
+    Image.fromarray(np.full((200, 200, 3), 128, dtype=np.uint8)).save(real_png, format="PNG")
+
+    # Stub warp_to_reference so it returns a known 1.0-fill image. The bleed-crop step
+    # should then crop a margin off each side.
+    def fake_warp(cand: Image.Image, _ref: Image.Image):  # noqa: ANN202
+        return cand, 1.0  # content_fill = 1.0 → warp couldn't detect a real bleed margin
+
+    monkeypatch.setattr(per_card, "client_search", MagicMock(return_value={"sol ring": [_make_candidate()]}))
+    monkeypatch.setattr(per_card, "match_by_keypoints", MagicMock(return_value=_make_match_result()))
+    monkeypatch.setattr(per_card, "fetch_thumbnail", MagicMock(return_value=real_png.getvalue()))
+    from mtg_proxies.mpcfill import matcher as _matcher
+
+    monkeypatch.setattr(_matcher, "warp_to_reference", fake_warp)
+
+    out = per_card.resolve_per_card_mpcfill(
+        card_name="Sol Ring",
+        scryfall_image_path=_write_reference(tmp_path),
+        scryfall_id="x",
+        cache_root=tmp_path,
+        server="https://example",
+        session=MagicMock(),
+        bleed_crop_percent=4.0,
+    )
+
+    assert out is not None
+    with Image.open(out) as im:
+        arr = np.array(im)
+    # Source render is 200x200; cropping 4% off each side should land us at ~184x184.
+    assert arr.shape[0] < 200 and arr.shape[1] < 200, (
+        f"bleed crop didn't shrink the warped output: {arr.shape}"
+    )
+    # And not so aggressive that the image disappeared.
+    assert arr.shape[0] >= 180 and arr.shape[1] >= 180, (
+        f"bleed crop over-shrunk the warped output: {arr.shape}"
+    )
+
+
 def test_resolve_per_card_mpcfill_warp_produces_separate_cache_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -273,6 +273,21 @@ def resolve_per_card_mpcfill(
             _cand.load()
             _ref.load()
             _warped, _content_fill = warp_to_reference(_cand.convert("RGB"), _ref.convert("RGB"))
+
+        # When warp reports content_fill ~ 1.0 it couldn't detect a real bleed margin —
+        # the "card" extent spans the whole image (gold/white-bordered, borderless, or
+        # otherwise) and the rim is rolled into "card content". The user's explicit
+        # bleed_crop_percent is now the only signal we have to trim the rim, so apply it
+        # on top of the warp output. Done in-memory (no extra file I/O) and the new
+        # content_fill is still ~1.0 because the cropped image is just a tighter view of
+        # the same card content.
+        if _content_fill >= 0.95 and bleed_crop_percent > 0:
+            w, h = _warped.size
+            cx = round(w * bleed_crop_percent / 100.0)
+            cy = round(h * bleed_crop_percent / 100.0)
+            if cx > 0 and cy > 0 and 2 * cx < w and 2 * cy < h:
+                _warped = _warped.crop((cx, cy, w - cx, h - cy))
+
         # Filename encodes the achieved card-content fill fraction (×100, rounded). The
         # print renderer parses this to compute the right scale-up factor: a 0.92-fill image
         # gets scaled up 8.7 % so card content fills the slot, a 1.00-fill image doesn't get
