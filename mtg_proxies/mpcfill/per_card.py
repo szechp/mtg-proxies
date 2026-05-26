@@ -25,6 +25,24 @@ DEFAULT_OUTPUT_SIZE = 1500
 # has used for ages so the swapped image lays out in the PDF the same as a Scryfall scan.
 DEFAULT_BLEED_CROP_PERCENT = 4.0
 
+# Substrings (case-insensitive) on a candidate's ``source_name`` that mark it as retro /
+# old-border / classic-frame. Matched as substrings so a source like "Old Border Retro
+# Frames" or "Classic 1997 Reframes" both qualify.
+_RETRO_SOURCE_KEYWORDS: tuple[str, ...] = (
+    "retro",
+    "old border",
+    "1993",
+    "1997",
+    "classic",
+    "vintage",
+)
+
+
+def _is_retro_source(candidate_source_name: str) -> bool:
+    """Return True when the source name matches any retro-keyword substring."""
+    lowered = candidate_source_name.lower()
+    return any(kw in lowered for kw in _RETRO_SOURCE_KEYWORDS)
+
 _log = logging.getLogger(__name__)
 
 
@@ -41,6 +59,7 @@ def resolve_per_card_mpcfill(
     output_size: int = DEFAULT_OUTPUT_SIZE,
     drive_id_override: str | None = None,
     bleed_crop_percent: float = 0.0,
+    prefer_retro: bool = False,
 ) -> Path | None:
     """Return a local PNG path for the best MPCFill render of a single card.
 
@@ -83,6 +102,20 @@ def resolve_per_card_mpcfill(
         if not candidates:
             return None
 
+        if prefer_retro:
+            # Filter to renders whose source advertises an old-frame style. If the keyword
+            # filter empties the list, fall back to the full set — the user asked for retro
+            # but a hard miss is worse than a modern render they can still use.
+            retro_candidates = [c for c in candidates if _is_retro_source(c.source_name)]
+            if retro_candidates:
+                candidates = retro_candidates
+            else:
+                _log.info(
+                    "#mpcfill --retro on %r: no retro-named source found among %d candidates; using full set",
+                    card_name,
+                    len(candidates),
+                )
+
         # Open as context-manager so the file descriptor is released; treat missing/corrupt
         # reference files as a soft miss so the caller can fall back to Scryfall.
         try:
@@ -120,7 +153,7 @@ def resolve_per_card_mpcfill(
     # on disk for the same scryfall_id. ``drive_id_override`` joins the hash so swapping it
     # produces a new cache file.
     flag_hash = hashlib.sha1(
-        f"lightglue:{match_ratio_threshold}:{max_keypoints}:{drive_id_override}".encode()
+        f"lightglue:{match_ratio_threshold}:{max_keypoints}:{drive_id_override}:retro={prefer_retro}".encode()
     ).hexdigest()[:8]
     output_dir = cache_root / "per_card"
     output_dir.mkdir(parents=True, exist_ok=True)

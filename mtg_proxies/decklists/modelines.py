@@ -65,6 +65,11 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         # ``--custom-art-bleed-crop``). Pass ``0`` to disable cropping when the render
         # already has tight art.
         "--bleed-crop": _float_in_range(0.0, 50.0),
+        # ``--retro`` (no value) restricts MPCFill candidate selection to sources whose
+        # display name matches retro / old-border keywords (case-insensitive substring).
+        # Useful when the user wants the legacy frame look for a card that has no real
+        # retro Scryfall print. Falls back to the full candidate set if no source matches.
+        "--retro": NO_VALUE,
     },
     "upscale": {
         # When ``--upscale-model`` is supplied, the directive is treated as an *always-on*
@@ -73,7 +78,10 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         "--upscale-model": _path_str,
     },
     "normalize": {
-        "--clip-percent": _float_in_range(0.0, 10.0),
+        # ``--lift VALUE`` — boost applied at the ~25 % mid-shadow point on the 0-255 scale.
+        # Default 6; set 0 for pure black-point remap with no mid-tone lift. Matches the
+        # ``lift`` arg on :func:`normalize_images`.
+        "--lift": _float_in_range(0.0, 64.0),
     },
     "shadow-lift": {
         "--amount": _float_in_range(0.0, 1.0),

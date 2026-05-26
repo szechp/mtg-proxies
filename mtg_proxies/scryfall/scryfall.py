@@ -357,6 +357,7 @@ def recommend_print(
     art_preference: Literal["standard", "wild"] = "standard",
     preferred_sets: list[str] | None = None,
     allow_low_res: bool = False,
+    prefer_retro_frame: bool = False,
     mode: Literal["best"] = "best",
 ) -> dict: ...
 
@@ -370,8 +371,13 @@ def recommend_print(
     art_preference: Literal["standard", "wild"] = "standard",
     preferred_sets: list[str] | None = None,
     allow_low_res: bool = False,
+    prefer_retro_frame: bool = False,
     mode: Literal["all", "choices"],
 ) -> list[dict]: ...
+
+
+# Pre-2015 Magic card frames — collectively "retro" / "old-school" / "blocky".
+RETRO_FRAMES: frozenset[str] = frozenset({"1993", "1997", "2003"})
 
 
 def recommend_print(
@@ -382,6 +388,7 @@ def recommend_print(
     art_preference: Literal["standard", "wild"] = "standard",
     preferred_sets: list[str] | None = None,
     allow_low_res: bool = False,
+    prefer_retro_frame: bool = False,
     mode: Literal["best", "all", "choices"] = "best",
 ) -> dict | list[dict]:
     """Recommend a (better) print of a card.
@@ -399,6 +406,10 @@ def recommend_print(
             instead of being filtered out — useful when the user explicitly wants a set even
             if only low-res scans exist. When False (default), low-res preferred-set prints are
             ignored and the recommender falls back to high-res alternatives.
+        prefer_retro_frame: When True, prints with pre-2015 frames (``1993`` / ``1997`` / ``2003``)
+            get a large scoring bonus so retro reprints (Brothers' War Retro, Mystery Booster
+            old-frame, Time Spiral Remastered, etc.) win over the default 2015 picks. Falls
+            back silently to the regular winner when no retro candidate exists for the card.
         mode: Recommendation mode.
     """
     if current is not None and oracle_id is None:  # Use oracle id of current
@@ -440,7 +451,13 @@ def recommend_print(
         }
         if card["set"] != "mb1" and card["border_color"] != "gold":
             points += 1
-        if card["frame"] == "2015":
+        if prefer_retro_frame:
+            # Replaces the +2 "modern frame" bonus with a heavy retro boost. Must outrank
+            # combined highres (+32) + en (+64) + black border (+8) so any retro print
+            # beats a polished modern one when both exist.
+            if card["frame"] in RETRO_FRAMES:
+                points += 128
+        elif card["frame"] == "2015":
             points += 2
         if not card["digital"]:
             points += 4

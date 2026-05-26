@@ -121,6 +121,7 @@ def parse_decklist_spec(
     art_preference: Literal["standard", "wild"] = "standard",
     preferred_sets: list[str] | None = None,
     allow_low_res: bool = False,
+    prefer_retro_frame: bool = False,
 ) -> Decklist:
     """Attempt to parse a decklist from different locations.
 
@@ -131,6 +132,8 @@ def parse_decklist_spec(
         preferred_sets: Ordered list of Scryfall set codes to prefer when recommending prints (e.g. ["ltr", "lto"])
         allow_low_res: When True with `preferred_sets`, keep low-res prints from preferred sets
             instead of upgrading to highres alternatives.
+        prefer_retro_frame: When True, prefer pre-2015 retro frames (1993 / 1997 / 2003); falls
+            back silently when no retro print is available for a card.
     """
     print("Parsing decklist ...")
     if Path(decklist_spec).is_file():  # Decklist is file
@@ -139,6 +142,7 @@ def parse_decklist_spec(
             art_preference=art_preference,
             preferred_sets=preferred_sets,
             allow_low_res=allow_low_res,
+            prefer_retro_frame=prefer_retro_frame,
         )
     elif decklist_spec.lower().startswith("manastack:") and decklist_spec.split(":")[-1].isdigit():
         # Decklist on Manastack
@@ -148,6 +152,7 @@ def parse_decklist_spec(
             art_preference=art_preference,
             preferred_sets=preferred_sets,
             allow_low_res=allow_low_res,
+            prefer_retro_frame=prefer_retro_frame,
         )
     elif decklist_spec.lower().startswith("archidekt:") and decklist_spec.split(":")[-1].isdigit():
         # Decklist on Archidekt
@@ -157,6 +162,7 @@ def parse_decklist_spec(
             art_preference=art_preference,
             preferred_sets=preferred_sets,
             allow_low_res=allow_low_res,
+            prefer_retro_frame=prefer_retro_frame,
         )
     else:
         print(f"Cant find decklist '{decklist_spec}'")
@@ -370,6 +376,7 @@ def _apply_per_card_modelines(
                 identifier_override = directive.flags.get("--identifier")
                 pick_interactively = directive.flags.get("--pick", False)
                 bleed_crop = directive.flags.get("--bleed-crop", mpcfill_per_card.DEFAULT_BLEED_CROP_PERCENT)
+                prefer_retro = directive.flags.get("--retro", False)
 
                 # ``--pick`` opens the interactive picker for this card on first encounter.
                 # The chosen Identifier is persisted to a global picks cache so subsequent
@@ -455,6 +462,7 @@ def _apply_per_card_modelines(
                     match_ratio_threshold=match_ratio_threshold,
                     drive_id_override=identifier_override,
                     bleed_crop_percent=bleed_crop,
+                    prefer_retro=prefer_retro,
                 )
                 if out_front is None:
                     _mpcfill_log.warning(
@@ -497,6 +505,7 @@ def _apply_per_card_modelines(
                     session=session_,
                     match_ratio_threshold=match_ratio_threshold,
                     bleed_crop_percent=bleed_crop,
+                    prefer_retro=prefer_retro,
                 )
                 if out_back is None:
                     _mpcfill_log.warning(
@@ -1882,6 +1891,15 @@ def main() -> None:
             "when used with --set, keep low-res prints from preferred sets instead of upgrading to highres alternatives"
         ),
     )
+    convert_parser.add_argument(
+        "--prefer-retro-frame",
+        action="store_true",
+        default=False,
+        help=(
+            "prefer pre-2015 (retro / old-school / blocky) frames when they exist (1993 / 1997 / 2003);"
+            " falls back silently when no retro print is available for a card"
+        ),
+    )
 
     # Tokens tool
     tokens_parser = subparsers.add_parser(
@@ -2420,6 +2438,7 @@ def main() -> None:
                         art_preference=args.art_preference,
                         preferred_sets=args.set or None,
                         allow_low_res=allow_low_res,
+                        prefer_retro_frame=getattr(args, "prefer_retro_frame", False),
                     )
                     if decklist.entries and not (
                         isinstance(decklist.entries[-1], Comment) and not decklist.entries[-1].text.strip()
@@ -2460,6 +2479,7 @@ def main() -> None:
                     art_preference=args.art_preference,
                     preferred_sets=args.set or None,
                     allow_low_res=allow_low_res,
+                    prefer_retro_frame=getattr(args, "prefer_retro_frame", False),
                 )
 
             # If preferred sets were specified, move cards not from those sets to the bottom
