@@ -26,15 +26,20 @@ DEFAULT_OUTPUT_SIZE = 1500
 DEFAULT_BLEED_CROP_PERCENT = 4.0
 
 # Substrings (case-insensitive) on a candidate's ``source_name`` that mark it as retro /
-# old-border / classic-frame. Matched as substrings so a source like "Old Border Retro
-# Frames" or "Classic 1997 Reframes" both qualify.
+# old-frame. Matched as substrings so well-known retro contributors like ``Inretrosp3ct``
+# match via ``retro``, and a source explicitly named "Old Border 1997 Reframes" also matches.
+# ``classic`` / ``vintage`` were tried but dropped — too noisy on modern source names like
+# "Classic Cube" or "Vintage Magic".
 _RETRO_SOURCE_KEYWORDS: tuple[str, ...] = (
     "retro",
     "old border",
+    "old-border",
+    "old frame",
+    "old-frame",
+    "old school",
+    "old-school",
     "1993",
     "1997",
-    "classic",
-    "vintage",
 )
 
 
@@ -112,42 +117,50 @@ def resolve_per_card_mpcfill(
             # keyword pass empties the list, fall back to the visual classifier — fetch a
             # small thumbnail of each candidate and run the type-bar detector on it. If
             # neither stage finds a retro candidate, keep the full list so the card isn't
-            # silently dropped.
+            # silently dropped. Stage transitions are printed (not just logged) because
+            # debugging real-world MPCFill data needs visible output.
+            total = len(candidates)
             keyword_pass = [c for c in candidates if _is_retro_source(c.source_name)]
             if keyword_pass:
+                kept_sources = sorted({c.source_name for c in keyword_pass})
+                print(
+                    f"#mpcfill --retro {card_name!r}: keyword filter kept {len(keyword_pass)}/{total}"
+                    f" candidates from sources {kept_sources}"
+                )
                 candidates = keyword_pass
             else:
-                _log.info(
-                    "#mpcfill --retro on %r: no retro-named source found among %d candidates; trying visual classifier",
-                    card_name,
-                    len(candidates),
+                source_sample = sorted({c.source_name for c in candidates})[:8]
+                print(
+                    f"#mpcfill --retro {card_name!r}: keyword filter empty"
+                    f" (sources seen: {source_sample}{'...' if len(source_sample) == 8 else ''})"
+                    f" — running visual classifier on {total} thumbnails"
                 )
-                from mtg_proxies.mpcfill.retro_classifier import is_retro as _is_retro_visual
+                from mtg_proxies.mpcfill.retro_classifier import retro_score
 
                 # 256 px is a sweet spot — large enough that the type bar signature shows
                 # cleanly, small enough that each thumbnail downloads / caches fast.
-                visual_pass = []
+                scored: list[tuple[float, object]] = []
                 for cand in candidates:
                     try:
                         thumb = fetch_thumbnail(cand.drive_id, 256, session=session, cache_root=cache_root)
-                    except Exception as exc:
-                        _log.debug("retro visual classifier: thumb fetch failed for %s (%s)", cand.drive_id, exc)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"  thumb fetch failed for {cand.drive_id}: {exc}")
                         continue
-                    if _is_retro_visual(thumb):
-                        visual_pass.append(cand)
+                    scored.append((retro_score(thumb), cand))
+                # Sort highest-scoring first so when scores tie the keypoint matcher gets
+                # the strongest retro candidate.
+                scored.sort(key=lambda sc: -sc[0])
+                top_scored = scored[:5]
+                print(
+                    "  top retro scores: "
+                    + ", ".join(f"{c.source_name}={s:.2f}" for s, c in top_scored)
+                )
+                visual_pass = [c for s, c in scored if s >= 0.6]
                 if visual_pass:
                     candidates = visual_pass
-                    _log.info(
-                        "#mpcfill --retro on %r: visual classifier kept %d of %d candidates",
-                        card_name,
-                        len(visual_pass),
-                        len(results.get(query, [])),
-                    )
+                    print(f"  visual classifier kept {len(visual_pass)}/{total} candidates (threshold 0.60)")
                 else:
-                    _log.info(
-                        "#mpcfill --retro on %r: no retro candidate via visual classifier either; using full set",
-                        card_name,
-                    )
+                    print(f"  no candidate scored >= 0.60; falling back to full {total}-candidate set")
 
         # Open as context-manager so the file descriptor is released; treat missing/corrupt
         # reference files as a soft miss so the caller can fall back to Scryfall.

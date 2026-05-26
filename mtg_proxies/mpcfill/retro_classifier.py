@@ -32,9 +32,10 @@ from PIL import Image
 
 # Default luminance threshold used by the binarization step. Pixels at or below this value
 # are treated as "dark" (part of a frame element); anything brighter is "light" (art / text-
-# box background). 40 catches printed-black type bars (luminance ~0-30 in real scans) without
-# triggering on the gradient bottoms of modern frames (which only reach luminance ~60-90).
-DEFAULT_DARK_THRESHOLD: int = 40
+# box background). 60 catches printed-black type bars in real scans (which often render at
+# luminance 20-50 due to JPEG compression and rendering — not pure 0) without triggering on
+# the gradient bottoms of modern frames (which stay above ~80 inside the type-bar zone).
+DEFAULT_DARK_THRESHOLD: int = 60
 
 # Vertical region of the image scanned for the type-bar signature, expressed as
 # (top, bottom) fractions of card height. Roughly 55-85 % — covers the type-line zone
