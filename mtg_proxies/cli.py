@@ -589,7 +589,7 @@ def _apply_per_card_upscale_modelines(
     upscale_model: Path | None = None,
     upscale_target_width: int | None = None,
 ) -> None:
-    """Apply per-card upscale directives. Runs AFTER the bulk normalize/shadow-lift passes.
+    """Apply per-card upscale directives. Runs BEFORE the bulk upscale + tone passes.
 
     Two effects:
 
@@ -601,9 +601,10 @@ def _apply_per_card_upscale_modelines(
       runs only when ``global_upscale`` is off, and excludes slots already handled by an
       override above.
 
-    Called from the print dispatch between the bulk shadow-lift pass and the bulk
-    upscale pass, so the per-card output is the same as what the bulk pass would do —
-    just with a different model (or with no global flag involved at all).
+    Called from the print dispatch immediately before the bulk upscale pass, so the
+    per-card output is the same as what the bulk pass would do — just with a different
+    model (or with no global flag involved at all). Tone passes (normalize / shadow-lift /
+    black-vignette) run after both upscale paths.
     """
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
@@ -2166,10 +2167,9 @@ def main() -> None:
                     images.extend(custom_images)
 
             # Build the unified ``images`` list (and parallel ``image_flags``) BEFORE the
-            # normalize/shadow-lift/upscale passes. Order matters: normalize and shadow-lift
-            # run on the Scryfall-resolution original so the AI upscaler in the final step
-            # gets a cleanly toned, shadow-lifted image to reconstruct from — produces a
-            # sharper result than running tone fixes on already-upscaled output.
+            # upscale/normalize/shadow-lift passes. Order: upscale runs first so iterative
+            # tuning of normalize / shadow-lift / black-vignette parameters doesn't re-trigger
+            # the slow 4× pass — tone passes operate on the upscaled output.
             image_flags: list[bool]
             if duplex_mode:
                 if not fronts:
@@ -2216,16 +2216,20 @@ def main() -> None:
             if args.card_back is not None:
                 user_supplied.add(args.card_back)
 
-            # Order: normalize → shadow-lift → upscale. Tone fixes run on the Scryfall original
-            # so the AI upscaler in the final step sees a richer signal (shadow detail intact,
-            # contrast stretched). Running upscale before tone fixes produced flatter output.
-            # Union the per-card modeline opt-out sets with ``user_supplied`` so the bulk
-            # transforms skip both user-provided art AND any card carrying ``#no-<verb>``.
+            # Order: upscale → normalize → shadow-lift → black-vignette → composite.
+            # Upscale runs first so iterative tuning of normalize / shadow-lift /
+            # black-vignette parameters doesn't re-trigger the slow 4× pass. The
+            # AI upscaler doesn't care much about tone (it sharpens edges and structure,
+            # not luminance), so doing tone fixes on the upscaled output costs a small
+            # amount of extra per-pixel work but avoids re-upscaling every time you
+            # tweak a tone knob. Union the per-card modeline opt-out sets with
+            # ``user_supplied`` so the bulk transforms skip both user-provided art AND
+            # any card carrying ``#no-<verb>``.
             #
             # Skip-set staleness invariant: each bulk pass mutates ``images`` (e.g. ``card.png``
-            # becomes ``card_norm_cp0.5.png``), so any DOWNSTREAM skip set still keyed on the
-            # pre-mutation path would stop matching. After every pass that may mutate ``images``,
-            # remap the downstream skip sets via ``_remap_skip_set`` to track the new paths.
+            # becomes ``card_4x_w<w>_m<hash>.png``), so any DOWNSTREAM skip set still keyed on
+            # the pre-mutation path would stop matching. After every pass that may mutate
+            # ``images``, remap the downstream skip sets via ``_remap_skip_set``.
 
             def _remap_skip_set(before: list[str], after: list[str], *skip_sets: set[str]) -> None:
                 """Update ``skip_sets`` so entries pointing at ``before[i]`` now point at ``after[i]``."""
@@ -2237,26 +2241,9 @@ def main() -> None:
                             s.discard(old)
                             s.add(new)
 
-            if args.normalize:
-                from mtg_proxies.normalize import normalize_images
-
-                normalize_skip = user_supplied | modeline_skip_normalize
-                before = list(images)
-                images = normalize_images(images, skip_paths=normalize_skip)
-                _remap_skip_set(before, images, modeline_skip_shadow_lift, modeline_skip_upscale)
-
-            if args.shadow_lift:
-                from mtg_proxies.shadow_lift import lift_shadows_images
-
-                shadow_lift_skip = user_supplied | modeline_skip_shadow_lift
-                before = list(images)
-                images = lift_shadows_images(images, skip_paths=shadow_lift_skip)
-                _remap_skip_set(before, images, modeline_skip_upscale)
-
             # Per-card upscale modelines (#upscale --upscale-model PATH overrides + bare
-            # #upscale subset) run HERE — after bulk normalize and shadow-lift have given
-            # us cleanly-toned input, and before the bulk upscale pass. Each override
-            # writes its already-upscaled output into ``images`` and records the new path
+            # #upscale subset). Each override writes its already-upscaled output into
+            # ``images`` (or ``fronts``/``backs`` for duplex) and records the new path
             # in ``modeline_skip_upscale`` so the bulk pass below skips that slot.
             if has_modelines:
                 if duplex_mode:
@@ -2272,6 +2259,7 @@ def main() -> None:
                         upscale_target_width=args.upscale_target_width,
                     )
                 else:
+                    before = list(images)
                     _apply_per_card_upscale_modelines(
                         decklist,
                         images,
@@ -2282,32 +2270,48 @@ def main() -> None:
                         upscale_model=args.upscale_model,
                         upscale_target_width=args.upscale_target_width,
                     )
+                    # Per-card-upscale mutates ``images`` for the #upscale slots; the downstream
+                    # tone passes' opt-out sets were keyed on the pre-upscale paths.
+                    _remap_skip_set(before, images, modeline_skip_normalize, modeline_skip_shadow_lift)
             if args.decklist and (args.upscale or args.upscale_model or args.upscale_all):
                 from mtg_proxies.upscale import upscale_images
 
                 # --upscale-all forces every non-user-supplied / non-modeline-skipped card
                 # through the model. ``upscale_skip`` covers ``#no-upscale`` and the
-                # ``#upscale --upscale-model PATH`` overrides (which write their own
-                # already-upscaled output into ``images`` before this pass runs). The
-                # modeline_skip_upscale set has been kept in sync with path mutations via
-                # ``_remap_skip_set`` after each preceding bulk pass.
+                # ``#upscale --upscale-model PATH`` overrides (which already wrote their
+                # upscaled output into ``images`` above).
                 upscale_skip = user_supplied | modeline_skip_upscale
                 effective_flags = [
                     True if p in upscale_skip else (False if args.upscale_all else f)
                     for p, f in zip(images, image_flags, strict=True)
                 ]
+                before = list(images)
                 images = upscale_images(
                     images,
                     highres_flags=effective_flags,
                     model_path=args.upscale_model,
                     target_width=args.upscale_target_width,
                 )
+                # Downstream tone passes had their opt-out sets keyed on pre-upscale paths.
+                _remap_skip_set(before, images, modeline_skip_normalize, modeline_skip_shadow_lift)
+
+            if args.normalize:
+                from mtg_proxies.normalize import normalize_images
+
+                normalize_skip = user_supplied | modeline_skip_normalize
+                before = list(images)
+                images = normalize_images(images, skip_paths=normalize_skip)
+                _remap_skip_set(before, images, modeline_skip_shadow_lift)
+
+            if args.shadow_lift:
+                from mtg_proxies.shadow_lift import lift_shadows_images
+
+                shadow_lift_skip = user_supplied | modeline_skip_shadow_lift
+                images = lift_shadows_images(images, skip_paths=shadow_lift_skip)
 
             # Black-vignette pass: pulls near-black pixels near the card rim to true #000.
-            # Runs AFTER upscale (so the edge fraction is geometrically meaningful on the
-            # final-resolution image) and BEFORE composite (so it operates on RGBA and
-            # preserves the transparent-corner alpha for the composite to flatten against
-            # the page background).
+            # Runs on the final-resolution image (edge fraction is geometrically meaningful)
+            # and BEFORE composite (operates on RGBA, preserving alpha for the corner flatten).
             if args.black_vignette:
                 from mtg_proxies.black_vignette import darken_borders_to_black
 

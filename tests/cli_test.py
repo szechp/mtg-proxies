@@ -1940,10 +1940,11 @@ def test_main_print_upscale_all_overrides_highres_flags(tmp_path) -> None:
 
 
 def test_main_print_no_upscale_modeline_survives_normalize_and_shadow_lift(tmp_path) -> None:
-    """Regression: ``#no-upscale`` must skip a card from bulk upscale EVEN AFTER bulk normalize
-    and shadow-lift have mutated the card's path. Previous bug: the skip set was keyed on the
-    pre-mutation path, so the bulk upscale check stopped matching and the model ran on a card
-    the user had explicitly opted out of.
+    """Regression: ``#no-upscale`` must skip a card from bulk upscale.
+
+    Pipeline order is upscale → normalize → shadow-lift, so by the time bulk upscale runs
+    the paths are still the original Scryfall ones — but the skip-set logic must still
+    correctly opt the modelined card out of the bulk model.
     """
     from mtg_proxies.cli import main
     from mtg_proxies.decklists.decklist import Card, Decklist
@@ -1982,8 +1983,8 @@ def test_main_print_no_upscale_modeline_survives_normalize_and_shadow_lift(tmp_p
 
     fetched_paths = ["a.png", "b.png"]
     fetched_flags = [False, False]
-    # Bulk normalize → suffix every path. Bulk shadow-lift → suffix again. Verifies the
-    # remap logic tracks mutations end-to-end.
+    # Bulk upscale runs first under the new order — paths are still the original Scryfall
+    # ones when the bulk upscaler is invoked. normalize and shadow-lift run after.
     fake_normalize = MagicMock(side_effect=lambda paths, **kw: [f"{p}_norm" for p in paths])
     fake_shadow_lift = MagicMock(side_effect=lambda paths, **kw: [f"{p}_shadow" for p in paths])
     fake_upscale = MagicMock(side_effect=lambda paths, highres_flags, **kw: list(paths))
@@ -2010,16 +2011,88 @@ def test_main_print_no_upscale_modeline_survives_normalize_and_shadow_lift(tmp_p
     ):
         main()
 
-    # By the time bulk upscale runs, card B's path is "b.png_norm_shadow". The #no-upscale
-    # modeline must still cause the upscaler to receive highres=True for that slot.
+    # Bulk upscale receives the original Scryfall paths (it runs first). The #no-upscale
+    # modeline must cause the upscaler to receive highres=True for that slot.
     fake_upscale.assert_called_once()
     upscaled_paths = fake_upscale.call_args.args[0]
     upscaled_flags = fake_upscale.call_args.kwargs["highres_flags"]
     flag_by_path = dict(zip(upscaled_paths, upscaled_flags, strict=True))
     # Card A: not modelined → goes through the model (flag False)
-    assert flag_by_path["a.png_norm_shadow"] is False
+    assert flag_by_path["a.png"] is False
     # Card B: #no-upscale → skipped by the model (flag True)
-    assert flag_by_path["b.png_norm_shadow"] is True
+    assert flag_by_path["b.png"] is True
+
+
+def test_main_print_pipeline_order_is_upscale_then_normalize_then_shadow_lift(tmp_path) -> None:
+    """Lock the dispatch order so a future refactor can't silently swap it.
+
+    Why this order: iterative tuning of normalize / shadow-lift / black-vignette params
+    must not re-trigger the slow 4x upscale pass. Running upscale first means the
+    upscale output is cached once and the tone passes operate on it cheaply.
+    """
+    from mtg_proxies.cli import main
+    from mtg_proxies.decklists.decklist import Card, Decklist
+
+    out_file = tmp_path / "out.pdf"
+    decklist = Decklist()
+    decklist.entries.append(
+        Card(
+            count=1,
+            card={
+                "id": "a",
+                "name": "A",
+                "set": "x",
+                "collector_number": "1",
+                "layout": "normal",
+                "image_uris": {"png": "a"},
+            },
+            modeline="",
+        )
+    )
+    fetched_paths = ["card.png"]
+    fetched_flags = [False]
+
+    call_order: list[str] = []
+
+    def _record(name: str, suffix: str):  # noqa: ANN202
+        def _fake(paths, **_kw):  # noqa: ANN001, ANN202
+            call_order.append(name)
+            return [f"{p}_{suffix}" for p in paths]
+
+        return _fake
+
+    fake_upscale = MagicMock(side_effect=_record("upscale", "4x"))
+    fake_normalize = MagicMock(side_effect=_record("normalize", "norm"))
+    fake_shadow = MagicMock(side_effect=_record("shadow", "sh"))
+
+    with (
+        patch(
+            "sys.argv",
+            [
+                "mtg-proxies",
+                "print",
+                "decklist.txt",
+                str(out_file),
+                "--upscale",
+                "--normalize",
+                "--shadow-lift",
+            ],
+        ),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
+        patch("mtg_proxies.cli.fetch_scans_scryfall_flagged", return_value=(fetched_paths, fetched_flags)),
+        patch("mtg_proxies.upscale.upscale_images", fake_upscale),
+        patch("mtg_proxies.normalize.normalize_images", fake_normalize),
+        patch("mtg_proxies.shadow_lift.lift_shadows_images", fake_shadow),
+        patch("mtg_proxies.cli.print_cards_fpdf"),
+    ):
+        main()
+
+    assert call_order == ["upscale", "normalize", "shadow"], (
+        f"Pipeline order regressed; expected upscale → normalize → shadow-lift, got {call_order}"
+    )
+    # Confirm chaining: each later pass received the previous pass's output.
+    assert fake_normalize.call_args.args[0] == ["card.png_4x"]
+    assert fake_shadow.call_args.args[0] == ["card.png_4x_norm"]
 
 
 def test_main_print_upscale_target_width_forwarded(tmp_path) -> None:
