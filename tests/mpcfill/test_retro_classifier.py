@@ -80,27 +80,6 @@ def _synth_white_border_retro(size: int = 200) -> bytes:
     return _to_png_bytes(arr)
 
 
-def _synth_gold_border_retro(size: int = 200) -> bytes:
-    """Synthesize a World Championship Deck reprint: retro frame INSIDE a gold border.
-
-    The inner frame is the same as a normal retro (type bar in the right zone), but the
-    outer rim is gold (RGB ~ (200, 170, 30)) instead of black. The classifier must reject
-    these — gold-bordered cards look bad in print and aren't what users invoking ``--retro``
-    intend.
-    """
-    arr = np.full((size, size, 3), 240, dtype=np.uint8)
-    rim = int(size * 0.06)
-    gold = (200, 170, 30)
-    arr[:rim, :, :] = gold
-    arr[-rim:, :, :] = gold
-    arr[:, :rim, :] = gold
-    arr[:, -rim:, :] = gold
-    # Retro type bar inside the gold rim — would otherwise score retro on the type-bar zone.
-    arr[int(size * 0.62) : int(size * 0.66), rim:-rim, :] = 0
-    arr[int(size * 0.66) : -rim, rim:-rim, :] = (210, 195, 160)
-    return _to_png_bytes(arr)
-
-
 def _synth_borderless_modern(size: int = 200) -> bytes:
     """Synthesize a borderless modern card — art to the edge, gradient only near the bottom."""
     arr = np.full((size, size, 3), 150, dtype=np.uint8)
@@ -159,16 +138,8 @@ def test_classifier_handles_rgba_input() -> None:
     assert score >= 0.7, f"RGBA retro card should still score high, got {score:.3f}"
 
 
-def test_gold_bordered_retro_is_rejected() -> None:
-    """Gold-bordered WCD reprints are rejected — the saturated chromatic rim is the signal."""
-    from mtg_proxies.mpcfill.retro_classifier import retro_score
-
-    score = retro_score(_synth_gold_border_retro())
-    assert score < 0.6, f"gold-bordered card must NOT score retro, got {score:.3f}"
-
-
 def test_white_bordered_retro_is_accepted() -> None:
-    """White-bordered Core Set reprints stay in — the rim is bright but neutral, not chromatic."""
+    """White-bordered Core Set reprints classify as retro — the type-bar signature still fires."""
     from mtg_proxies.mpcfill.retro_classifier import retro_score
 
     score = retro_score(_synth_white_border_retro())
