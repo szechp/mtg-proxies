@@ -267,6 +267,67 @@ def test_main_print_custom_art_empty_folder_warns_and_continues_with_decklist(
     assert print_cards_fpdf.call_args.args[0] == fake_images
 
 
+def test_main_convert_prefer_retro_frame_groups_non_retro_under_comment(tmp_path) -> None:
+    """Cards without a retro frame must end up under a clear comment at the bottom of the output.
+
+    Mirrors how --set groups non-preferred-set cards. Silent failures are bad — the user needs
+    to see which cards had no retro print available so they can decide what to do (find an
+    alternate art, use #mpcfill --retro, etc.).
+    """
+    from mtg_proxies.cli import main
+    from mtg_proxies.decklists.decklist import Card, Comment, Decklist
+
+    out_file = tmp_path / "out.txt"
+
+    retro_card = Card(1, {"name": "Lightning Bolt", "set": "leb", "collector_number": "1", "frame": "1993"})
+    modern_card = Card(1, {"name": "Sheoldred", "set": "one", "collector_number": "118", "frame": "2015"})
+    decklist = Decklist(entries=[retro_card, Comment("Mainboard"), modern_card])
+
+    with (
+        patch(
+            "sys.argv",
+            ["mtg-proxies", "convert", "deck.txt", str(out_file), "--prefer-retro-frame"],
+        ),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
+    ):
+        main()
+
+    content = out_file.read_text(encoding="utf-8")
+    assert "# No retro frame available" in content, f"expected retro-fallback comment, got:\n{content}"
+    retro_pos = content.index("Lightning Bolt")
+    comment_pos = content.index("# No retro frame available")
+    modern_pos = content.index("Sheoldred")
+    assert retro_pos < comment_pos < modern_pos, (
+        f"order regression: retro={retro_pos}, comment={comment_pos}, modern={modern_pos}"
+    )
+
+
+def test_main_convert_prefer_retro_frame_no_comment_when_all_retro(tmp_path) -> None:
+    """No comment must appear when every card already has a retro frame."""
+    from mtg_proxies.cli import main
+    from mtg_proxies.decklists.decklist import Card, Decklist
+
+    out_file = tmp_path / "out.txt"
+    decklist = Decklist(
+        entries=[
+            Card(1, {"name": "Lightning Bolt", "set": "leb", "collector_number": "1", "frame": "1993"}),
+            Card(1, {"name": "Sol Ring", "set": "brr", "collector_number": "10", "frame": "2003"}),
+        ]
+    )
+
+    with (
+        patch(
+            "sys.argv",
+            ["mtg-proxies", "convert", "deck.txt", str(out_file), "--prefer-retro-frame"],
+        ),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
+    ):
+        main()
+
+    content = out_file.read_text(encoding="utf-8")
+    assert "# No retro frame available" not in content
+
+
 def test_main_convert_preferred_set_moves_fallback_cards_to_bottom(tmp_path) -> None:
     """Cards not from a preferred set should be moved to the bottom of the output with a comment."""
     from mtg_proxies.cli import main

@@ -2547,6 +2547,30 @@ def main() -> None:
 
                 decklist.entries = main_entries
 
+            # --prefer-retro-frame: mirror the --set pattern. recommend_print silently
+            # returns the best modern print when no retro candidate exists, so the user
+            # has no idea which cards missed. Group those under a comment at the bottom
+            # so they're easy to spot and re-resolve (manually, with #mpcfill --retro,
+            # or by adding a retro reprint set via --set).
+            if getattr(args, "prefer_retro_frame", False):
+                from mtg_proxies.scryfall.scryfall import RETRO_FRAMES
+
+                retro_entries: list[object] = []
+                missed_retro: list[Card] = []
+                for entry in decklist.entries:
+                    if isinstance(entry, Card) and entry.card.get("frame") not in RETRO_FRAMES:
+                        missed_retro.append(entry)
+                    else:
+                        retro_entries.append(entry)
+                if missed_retro:
+                    while (
+                        retro_entries and isinstance(retro_entries[-1], Comment) and not retro_entries[-1].text.strip()
+                    ):
+                        retro_entries.pop()
+                    retro_entries.extend([Comment(""), Comment("# No retro frame available")])
+                    retro_entries.extend(missed_retro)
+                    decklist.entries = retro_entries
+
             # Move low-res cards to the bottom (skip when --allow-low-res is set; those
             # are already in their own section).
             lowres_cards: list[Card] = []
