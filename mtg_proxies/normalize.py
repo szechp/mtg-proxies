@@ -1,3 +1,22 @@
+"""Luminance-only curve-lift "normalize" pass for Scryfall scans.
+
+Photoshop-curves-style approach the user describes manually:
+
+1. **Black-point eyedropper** — sample the card's printed black border; remap that value to
+   true (0, 0, 0). Border is sampled from whichever edges qualify (some full-bleed Secret
+   Lair scans only have a black strip at the bottom).
+2. **Anchored curve with a small mid-shadow lift** — pin (0, 0), anchor identity points
+   near 10 %, 50 %, 90 %, pin (255, 255), and lift the ~25 % point by ``lift`` (default
+   small) so muddy shadows open up without affecting blacks, mids, or highlights.
+3. **Apply as luminance delta** — compute ``new_lum - old_lum`` from the curve and add that
+   single delta to every channel. R-G and G-B differences are preserved exactly, so
+   hue/saturation don't drift. The old per-channel stretch warmed skin tones because the
+   red channel of a portrait stretches differently from blue. This eliminates that.
+
+Alpha is preserved when the source is RGBA. Cached as ``{path}_norm_l<lift>.png``; mtime is
+checked against the source so a re-fetch invalidates the cache.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -14,138 +33,115 @@ def _load_rgba(path: str | Path) -> np.ndarray:
         return np.array(im.convert("RGBA"), dtype=np.uint8)
 
 
-def _border_black(image: np.ndarray) -> np.ndarray | None:
-    """Mean RGB of the card's printed black border, sampled from whichever edges qualify.
+def _border_black(image: np.ndarray) -> float | None:
+    """Mean *luminance* of the card's printed black border, sampled from whichever edges qualify.
 
-    The MTG card border is supposed to print pure black; some scans have it elevated
-    (e.g. Bomat Courier hovers around (24, 21, 16) instead of (0, 0, 0)). We sample the inner
-    strip of all four edges (excluding the rounded corners) and average the ones that look
-    plausibly black — full-bleed Secret Lair scans like Jaws have a bright top but still carry
-    the standard black strip at the bottom for the artist credit, so this picks that up where a
-    top-only sampler would have failed.
-
-    Returns None when no edge qualifies (truly borderless scan, or alpha channel missing).
+    Operates on luminance only — the new normalize is luminance-driven, no per-channel anchors.
+    Some scans render the border elevated (e.g. ~24 instead of 0); we use that elevated value
+    as the floor and remap it back to 0. Returns None when no edge qualifies (truly borderless
+    scan or alpha-only).
     """
     if image.shape[2] != 4:
         return None
     h, w = image.shape[:2]
     strips = (
-        image[5:15, int(w * 0.3) : int(w * 0.7)],  # top
-        image[h - 15 : h - 5, int(w * 0.3) : int(w * 0.7)],  # bottom
-        image[int(h * 0.3) : int(h * 0.7), 5:15],  # left
-        image[int(h * 0.3) : int(h * 0.7), w - 15 : w - 5],  # right
+        image[5:15, int(w * 0.3) : int(w * 0.7)],
+        image[h - 15 : h - 5, int(w * 0.3) : int(w * 0.7)],
+        image[int(h * 0.3) : int(h * 0.7), 5:15],
+        image[int(h * 0.3) : int(h * 0.7), w - 15 : w - 5],
     )
-    means = []
+    lums: list[float] = []
     for strip in strips:
         opaque = strip[strip[..., 3] > 0]
         if opaque.size == 0:
             continue
-        m = opaque[..., :3].mean(axis=0)
-        # Strict "near black" gate: real card borders are very dark. A dark-but-chromatic edge
-        # (e.g. a dark blue sky on a borderless full-art card) must not be mistaken for a black
-        # border anchor. Accept only when the brightest channel is low AND either the channel
-        # range is small (Bomat-style elevated near-neutral) OR the darkest channel is near zero
-        # (tinted-but-zeroed borders — _auto_levels percentile fallback handles those too).
+        rgb = opaque[..., :3].astype(np.float32)
+        m = rgb.mean(axis=0)
+        # "Near black" gate: real card borders are very dark. Reject dark-but-chromatic
+        # full-art edges (e.g. dark blue sky) by requiring max channel low AND either small
+        # channel range or min channel near zero.
         m_max = float(m.max())
         m_min = float(m.min())
         if m_max <= 35.0 and (m_max - m_min <= 10.0 or m_min <= 5.0):
-            means.append(m)
-    if not means:
+            lum = 0.299 * float(m[0]) + 0.587 * float(m[1]) + 0.114 * float(m[2])
+            lums.append(lum)
+    if not lums:
         return None
-    return np.mean(means, axis=0)
+    return float(np.mean(lums))
 
 
-def _desaturate_darks(
-    image: np.ndarray,
-    full_below: float = 20.0,
-    none_above: float = 40.0,
-    chroma_full_below: float = 6.0,
-    chroma_none_above: float = 18.0,
-) -> np.ndarray:
-    """Pull *near-neutral* dark pixels toward true neutral black.
+def _build_lut(black_point: float, lift: float) -> np.ndarray:
+    """Construct a 256-entry uint8 LUT for the luminance curve.
 
-    Some scans render the card's "black" with a mild cast — a near-grey shadow that ends up
-    slightly green or blue from scanner white-balance drift. This pass replaces such pixels
-    with their luminance so the cast is neutralized. **Saturated dark art is preserved**: a
-    dark blue ocean or a Phyrexian deep red sits at low luminance but with strong chroma, so
-    the chroma gate keeps them untouched. The border anchor in ``_auto_levels`` handles the
-    truly tinted (high-chroma low-lum) border case already.
+    Two-stage curve:
 
-    The blend weight is the product of two soft masks: luminance (full strength below
-    ``full_below``, zero above ``none_above``) and chroma (full strength below
-    ``chroma_full_below``, zero above ``chroma_none_above``). Alpha is preserved untouched.
+    1. Black-point remap: linearly stretch ``[black_point, 255] → [0, 255]``. Pixels below
+       the black point clip to 0. This matches Photoshop's "black eyedropper" — the user's
+       step 1 ("make black real black").
+    2. Anchored lift: piecewise-linear through control points so most of the tonal range is
+       identity. Only the ~25 % point gets ``+lift``; the surrounding anchors at ~10 % and
+       ~50 % constrain the bulge so blacks, mids, and highlights are untouched.
+
+    The LUT is the COMPOSITION ``curve(black_point_remap(x))``.
+    """
+    x = np.arange(256, dtype=np.float32)
+    bp = float(np.clip(black_point, 0.0, 254.0))
+    if bp > 0:
+        stretched = np.clip((x - bp) * (255.0 / (255.0 - bp)), 0.0, 255.0)
+    else:
+        stretched = x.copy()
+
+    # Anchor points on the post-black-point axis. Lift is concentrated at ~25 % (input 64);
+    # surrounding anchors keep everything else at identity within ~2 LSBs.
+    control_in = np.array([0.0, 26.0, 64.0, 128.0, 200.0, 255.0], dtype=np.float32)
+    control_out = np.array(
+        [0.0, 26.0 + 0.25 * lift, 64.0 + lift, 128.0 + 0.25 * lift, 200.0, 255.0],
+        dtype=np.float32,
+    )
+    curved = np.interp(stretched, control_in, control_out)
+    return np.clip(curved, 0.0, 255.0).astype(np.uint8)
+
+
+def _apply_curve_lift(image: np.ndarray, lift: float) -> np.ndarray:
+    """Apply the black-point + lift curve to luminance, adding a single delta to every channel.
+
+    The same ``new_lum - old_lum`` delta lands on R, G, B → hue and saturation are preserved
+    exactly. Alpha (when present) passes through untouched.
     """
     rgb = image[..., :3].astype(np.float32)
     lum = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
-    chroma = rgb.max(axis=-1) - rgb.min(axis=-1)
-    lum_span = max(none_above - full_below, 1e-3)
-    chroma_span = max(chroma_none_above - chroma_full_below, 1e-3)
-    lum_w = np.clip((none_above - lum) / lum_span, 0.0, 1.0)
-    chroma_w = np.clip((chroma_none_above - chroma) / chroma_span, 0.0, 1.0)
-    blend = (lum_w * chroma_w)[..., None]
-    new_rgb = rgb * (1.0 - blend) + lum[..., None] * blend
+    black_point = _border_black(image)
+    if black_point is None:
+        black_point = 0.0
+
+    lut = _build_lut(black_point, lift).astype(np.float32)
+    new_lum = lut[np.clip(np.round(lum), 0, 255).astype(np.int32)]
+    delta = (new_lum - lum)[..., None]
+    new_rgb = np.clip(rgb + delta, 0.0, 255.0).astype(np.uint8)
     out = image.copy()
-    out[..., :3] = np.clip(new_rgb, 0, 255).astype(np.uint8)
-    return out
-
-
-def _auto_levels(image: np.ndarray, clip_percent: float = 0.5) -> np.ndarray:
-    """Per-channel border-anchored black-point + percentile white-point stretch.
-
-    Black point per channel is the card's top-border mean (when available — RGBA only), so the
-    printed border ends up at true black across the batch even when individual scans have
-    elevated/tinted shadows. Falls back to a percentile clip if no usable border sample exists.
-    White point is the ``100 - clip_percent`` percentile of opaque pixels. Range between the two
-    is stretched to [0, 255]. Alpha is preserved untouched.
-    """
-    out = image.copy()
-    opaque_mask = image[..., 3] > 0 if image.shape[2] == 4 else None
-    border_lo = _border_black(image)
-    for c in range(3):
-        plane = image[..., c]
-        sample = plane[opaque_mask] if opaque_mask is not None else plane
-        if sample.size == 0:
-            continue
-        # Strict border anchor when available: every card's border ends up at (0,0,0), so the
-        # base black level is consistent across the batch. Pixels darker than the border in
-        # any channel get clipped — those become true black, which you've explicitly opted into
-        # ("0 should stay 0"). Chromatic clipping artifacts are neutralized by _desaturate_darks.
-        hi = float(np.percentile(sample, 100.0 - clip_percent))
-        # Fall back to percentile lo if the border anchor exceeds hi (very dark card whose art
-        # max sits below the border mean) — otherwise this channel would be silently skipped
-        # while the other two get stretched, producing a chromatic shift.
-        if border_lo is not None and float(border_lo[c]) < hi:
-            lo = float(border_lo[c])
-        else:
-            lo = float(np.percentile(sample, clip_percent))
-        if hi <= lo:
-            continue
-        scaled = (plane.astype(np.float32) - lo) * (255.0 / (hi - lo))
-        out[..., c] = np.clip(scaled, 0, 255).astype(np.uint8)
+    out[..., :3] = new_rgb
     return out
 
 
 def normalize_images(
     paths: Sequence[str | Path],
-    clip_percent: float = 0.5,
+    lift: float = 6.0,
     skip_paths: Sequence[str | Path] | None = None,
 ) -> list[str]:
-    """Apply per-card auto-levels to each image, return new paths.
-
-    Each card is normalized independently — no reference, no cross-card forcing. Reduces
-    washed-out / over-saturated scans without making the batch look uniform. Cached as
-    ``{path}_norm_cp{clip_percent}.png`` so changing the parameter invalidates the cache.
+    """Apply the luminance-curve normalize to each image, return new paths.
 
     Args:
         paths: Image paths to normalize.
-        clip_percent: Percentage of darkest/brightest pixels per channel to clip before stretching.
-            Default 0.5 (matches Photoshop Auto-Color defaults).
+        lift: Boost applied at the ~25 % mid-shadow point (8-bit units). Default 6 — gentle,
+            opens up muddy shadows without skin-tone warming or banding. Set 0 for pure
+            black-point remap with no mid-tone lift.
         skip_paths: Paths to leave untouched (returned as-is). Use this for user-supplied
-            content like custom art or a card-back image, which is already pristine and
-            shouldn't be auto-corrected.
+            content like custom art or a card-back image.
 
     Returns:
         List of paths to normalized PNGs (one per input, in order; duplicates are deduped).
+        Cached as ``{path}_norm_l{lift}.png``; cache is invalidated when the source mtime is
+        newer than the cached output (matches the staleness pattern in composite.py).
     """
     if not paths:
         return []
@@ -159,13 +155,14 @@ def normalize_images(
             out_paths[i] = seen[key]
             continue
         src_path = Path(path)
-        out_path = src_path.with_name(f"{src_path.stem}_norm_cp{clip_percent:g}.png")
-        if not out_path.is_file():
+        out_path = src_path.with_name(f"{src_path.stem}_norm_l{lift:g}.png")
+        cache_is_stale = (
+            out_path.is_file() and src_path.exists() and src_path.stat().st_mtime > out_path.stat().st_mtime
+        )
+        if not out_path.is_file() or cache_is_stale:
             source = _load_rgba(src_path)
-            normalized = _desaturate_darks(_auto_levels(source, clip_percent=clip_percent))
+            normalized = _apply_curve_lift(source, lift=lift)
             mode = "RGBA" if normalized.shape[2] == 4 else "RGB"
-            # Atomic write so a SIGKILL mid-save can't poison the cache with a half-written PNG.
-            # PIL infers format from the destination extension, so we pass format= explicitly.
             tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
             Image.fromarray(normalized, mode=mode).save(tmp_path, format="PNG")
             tmp_path.replace(out_path)

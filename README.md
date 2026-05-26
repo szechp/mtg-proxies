@@ -288,8 +288,12 @@ options:
                         downsample upscaled cards to PX wide before saving
                         (default: 745, matches Scryfall highres ≈ 298 DPI on a
                         2.5-inch card)
-  --normalize           border-anchored auto-levels: stretch each card's tone
-                        range so blacks and whites hit the rails
+  --normalize           Photoshop-curves-style pass: set black point from the
+                        card's printed border, then a gentle luminance-only
+                        lift around the 25% mid-shadow region. Hue and
+                        saturation are preserved (single delta applied to all
+                        channels) — fixes the orange-skin warming the old per-
+                        channel stretch produced
   --shadow-lift         brighten crushed-shadow regions on each card
   --black-vignette      pull near-black pixels near the card edges to true
                         #000; only affects the outer rim and only pixels
@@ -325,7 +329,7 @@ mirror the matching CLI options.
 
 Supported verbs:
 
-- `#mpcfill [--lightglue-threshold F] [--pick | --identifier ID] [--bleed-crop PERCENT]` —
+- `#mpcfill [--lightglue-threshold F] [--pick | --identifier ID] [--bleed-crop PERCENT] [--retro]` —
   replace this card's Scryfall art with the visually closest MPCFill community render,
   matched using LightGlue + SuperPoint keypoint correspondences on the art window.
   A miss falls back to Scryfall with a warning. **Implicitly opts out of the bulk
@@ -361,11 +365,20 @@ Supported verbs:
     1 Tight-art card #mpcfill --bleed-crop 0
     1 Wide-bleed card #mpcfill --bleed-crop 6
     ```
+  - `--retro` restricts MPCFill candidate selection to sources whose name contains
+    retro-frame keywords (`retro`, `old border`, `1993`, `1997`, `classic`, `vintage`,
+    case-insensitive substring). Useful when a card has no real retro Scryfall print and
+    you want a community-rendered old-frame version. Falls back to the full candidate
+    set if no retro-named source exists for the card. Works for both faces of a DFC:
+
+    ```
+    1 Sol Ring (LEA) 270 #mpcfill --retro
+    ```
 - `#upscale [--upscale-model PATH]` — upscale this card via Real-ESRGAN. With `--upscale-model`
   it's an **always-on override**: even with `--upscale-all` set globally, this card uses the
   specified model instead of the global default. Use for problem cards — e.g. halftone-pattern
   scans get cleaner results from the anime model than from Net.
-- `#normalize [--clip-percent F]` — border-anchored auto-levels on this card.
+- `#normalize` — Photoshop-curves-style luminance lift on this card (see `--normalize`).
 - `#shadow-lift [--amount F]` — lift crushed blacks on this card.
 
 **Opt-out verbs** (mirror images — exclude this card from the corresponding global pass):
@@ -397,6 +410,7 @@ usage: mtg-proxies convert [-h] [--format {arena,text}] [--clean]
                            [--basic-lands NAME=COUNT [NAME=COUNT ...]]
                            [--art-preference {standard,wild,premium}]
                            [--set SET [SET ...]] [--allow-low-res]
+                           [--prefer-retro-frame]
                            [decklist] [outfile]
 
 Convert a decklist to text or arena format.
@@ -425,6 +439,9 @@ options:
   --allow-low-res       when used with --set, keep low-res prints from
                         preferred sets instead of upgrading to highres
                         alternatives
+  --prefer-retro-frame  prefer pre-2015 (retro / old-school / blocky) frames
+                        when they exist (1993 / 1997 / 2003); falls back
+                        silently when no retro print is available
 ```
 
 Low-res cards that cannot be upgraded are sorted to the bottom of the output file, under a comment indicating why (not in set, or no highres available).
