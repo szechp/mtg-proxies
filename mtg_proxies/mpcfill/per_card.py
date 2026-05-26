@@ -30,6 +30,13 @@ DEFAULT_BLEED_CROP_PERCENT = 4.0
 # match via ``retro``, and a source explicitly named "Old Border 1997 Reframes" also matches.
 # ``classic`` / ``vintage`` were tried but dropped — too noisy on modern source names like
 # "Classic Cube" or "Vintage Magic".
+# Limits for the visual-classifier fallback. ``MAX_SCANNED`` caps the worst-case thumbnail
+# fetches per card so popular cards (Sol Ring has ~670 candidates) don't take minutes.
+# ``EARLY_STOP`` halts once we've collected enough strong retro matches for the keypoint
+# matcher to pick from — no point scanning further if we already have good options.
+_VISUAL_CLASSIFIER_MAX_SCANNED: int = 60
+_VISUAL_CLASSIFIER_EARLY_STOP: int = 8
+
 _RETRO_SOURCE_KEYWORDS: tuple[str, ...] = (
     "retro",
     "old border",
@@ -117,50 +124,73 @@ def resolve_per_card_mpcfill(
             # keyword pass empties the list, fall back to the visual classifier — fetch a
             # small thumbnail of each candidate and run the type-bar detector on it. If
             # neither stage finds a retro candidate, keep the full list so the card isn't
-            # silently dropped. Stage transitions are printed (not just logged) because
-            # debugging real-world MPCFill data needs visible output.
+            # silently dropped. Each ``print`` flushes immediately because stdout is often
+            # redirected (uv run, log files) and block-buffering hides the diagnostic until
+            # the program exits — defeating the whole point of the visibility.
+            def _emit(msg: str) -> None:
+                print(msg, flush=True)  # noqa: T201
+
             total = len(candidates)
             keyword_pass = [c for c in candidates if _is_retro_source(c.source_name)]
             if keyword_pass:
                 kept_sources = sorted({c.source_name for c in keyword_pass})
-                print(
+                _emit(
                     f"#mpcfill --retro {card_name!r}: keyword filter kept {len(keyword_pass)}/{total}"
                     f" candidates from sources {kept_sources}"
                 )
                 candidates = keyword_pass
             else:
                 source_sample = sorted({c.source_name for c in candidates})[:8]
-                print(
+                _emit(
                     f"#mpcfill --retro {card_name!r}: keyword filter empty"
                     f" (sources seen: {source_sample}{'...' if len(source_sample) == 8 else ''})"
-                    f" — running visual classifier on {total} thumbnails"
+                    f" — running visual classifier"
                 )
                 from mtg_proxies.mpcfill.retro_classifier import retro_score
 
-                # 256 px is a sweet spot — large enough that the type bar signature shows
-                # cleanly, small enough that each thumbnail downloads / caches fast.
+                # Popular cards (Sol Ring etc.) have hundreds of candidates — fetching every
+                # thumbnail is impractical (slow + Google Drive starts rate-limiting). Sort by
+                # backend priority (the source's "closeness" rank), scan in order, and stop
+                # early once we've collected enough retros. ``_VISUAL_CLASSIFIER_MAX_SCANNED``
+                # bounds worst-case fetches; ``_VISUAL_CLASSIFIER_EARLY_STOP`` caps once the
+                # filter has enough strong matches for the keypoint matcher to pick from.
+                ranked = sorted(candidates, key=lambda c: -getattr(c, "priority", 0))
+                budget = min(_VISUAL_CLASSIFIER_MAX_SCANNED, total)
                 scored: list[tuple[float, object]] = []
-                for cand in candidates:
+                early_stop_count = 0
+                scanned = 0
+                for cand in ranked[:budget]:
                     try:
                         thumb = fetch_thumbnail(cand.drive_id, 256, session=session, cache_root=cache_root)
                     except Exception as exc:  # noqa: BLE001
-                        print(f"  thumb fetch failed for {cand.drive_id}: {exc}")
+                        _emit(f"  thumb fetch failed for {cand.drive_id}: {exc}")
                         continue
-                    scored.append((retro_score(thumb), cand))
-                # Sort highest-scoring first so when scores tie the keypoint matcher gets
-                # the strongest retro candidate.
+                    s = retro_score(thumb)
+                    scored.append((s, cand))
+                    scanned += 1
+                    if s >= 0.6:
+                        early_stop_count += 1
+                        if early_stop_count >= _VISUAL_CLASSIFIER_EARLY_STOP:
+                            _emit(
+                                f"  visual classifier: found {early_stop_count} retros in first {scanned}"
+                                f" candidates — stopping early"
+                            )
+                            break
                 scored.sort(key=lambda sc: -sc[0])
                 top_scored = scored[:5]
-                print(
-                    "  top retro scores: "
-                    + ", ".join(f"{c.source_name}={s:.2f}" for s, c in top_scored)
-                )
+                _emit("  top retro scores: " + ", ".join(f"{c.source_name}={s:.2f}" for s, c in top_scored))
                 visual_pass = [c for s, c in scored if s >= 0.6]
                 if visual_pass:
                     candidates = visual_pass
-                    print(f"  visual classifier kept {len(visual_pass)}/{total} candidates (threshold 0.60)")
+                    _emit(
+                        f"  visual classifier kept {len(visual_pass)}/{scanned} scanned (out of {total} total,"
+                        f" threshold 0.60)"
+                    )
                 else:
-                    print(f"  no candidate scored >= 0.60; falling back to full {total}-candidate set")
+                    _emit(
+                        f"  no retro candidate scored >= 0.60 in {scanned} scanned candidates"
+                        f" (out of {total} total); falling back to full set"
+                    )
 
         # Open as context-manager so the file descriptor is released; treat missing/corrupt
         # reference files as a soft miss so the caller can fall back to Scryfall.
@@ -174,19 +204,40 @@ def resolve_per_card_mpcfill(
         def _drive_fetcher(drive_id: str, size: int) -> bytes:
             return fetch_thumbnail(drive_id, size, session=session, cache_root=cache_root)
 
+        # When --retro pre-filtered the pool to retro candidates, drop the keypoint
+        # threshold to ~0. The matcher's default 10% inlier ratio is calibrated against
+        # *the same art* (Scryfall scan vs a re-render of that art). Retro reframes have
+        # different artists, frame layouts, and mana symbol positions — they would never
+        # cross 10% even when they're exactly what the user wants. With threshold 0 the
+        # matcher just picks the visually-closest retro from the pool we already trust.
+        effective_threshold = 0.0 if prefer_retro else match_ratio_threshold
         outcome = match_by_keypoints(
             reference,
             candidates,
             drive_fetcher=_drive_fetcher,
             cache_root=cache_root,
-            match_ratio_threshold=match_ratio_threshold,
+            match_ratio_threshold=effective_threshold,
             max_keypoints=max_keypoints,
         )
 
         if outcome is None:
-            return None
-        match_result, _alignment = outcome
-        chosen_drive_id = match_result.candidate.drive_id
+            # With prefer_retro the threshold is 0 so this branch only fires when ALL
+            # candidates returned zero matches (very rare). Fall back to the
+            # highest-scoring retro from the visual pass — at least the user gets a
+            # retro frame, which is what they asked for.
+            if prefer_retro and candidates:
+                chosen_drive_id = candidates[0].drive_id
+                _emit(
+                    f"  keypoint matcher returned no result; using highest-scoring retro candidate"
+                    f" ({candidates[0].source_name})"
+                )
+            else:
+                return None
+        else:
+            match_result, _alignment = outcome
+            chosen_drive_id = match_result.candidate.drive_id
+            if prefer_retro:
+                _emit(f"  keypoint matcher picked {match_result.candidate.source_name}")
 
     image_bytes = fetch_thumbnail(
         chosen_drive_id,
