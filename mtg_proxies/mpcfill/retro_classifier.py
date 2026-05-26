@@ -49,6 +49,15 @@ _TYPE_BAR_ZONE: tuple[float, float] = (0.55, 0.85)
 # runs that pass through the rim.
 _SIDE_INSET_FRACTION: float = 0.10
 
+# Outer rim chroma gate. World Championship Deck gold-bordered reprints have retro frames
+# inside but the saturated yellow rim looks wrong in print — reject them. White-bordered
+# Core Set reprints are fine though, so we can't gate on luminance alone (would also block
+# white-border). Use the per-pixel ``max - min`` chroma proxy: black and white rims are
+# both achromatic (chroma ~0), gold rim has chroma ~170. Threshold 40 cleanly separates
+# them even with JPEG compression noise.
+_RIM_CHROMA_THRESHOLD: int = 40
+_RIM_SAMPLE_FRACTION: float = 0.025  # sample the outer 2.5 % of each edge
+
 # Score at or above which a candidate is classified as retro. Tuned to give clear margin
 # on both sides of the synthetic fixtures; real-world tuning may want a sweep.
 DEFAULT_RETRO_THRESHOLD: float = 0.7
@@ -66,10 +75,30 @@ def retro_score(image_bytes: bytes, *, dark_threshold: int = DEFAULT_DARK_THRESH
     is downscaled to 0 so it can't false-positive on brute black-pixel count alone.
     """
     with Image.open(io.BytesIO(image_bytes)) as im:
-        gray = np.array(im.convert("L"), dtype=np.uint8)
-    h, w = gray.shape
+        rgb = np.array(im.convert("RGB"), dtype=np.uint8)
+    h, w = rgb.shape[:2]
     if h == 0 or w == 0:
         return 0.0
+
+    # Gold-rim gate: WCD reprints have retro frames inside a saturated yellow border.
+    # Reject those (look bad in print) but keep white-bordered Core Set reprints (rim is
+    # bright but achromatic). Use chroma (max-min RGB per pixel) — black=0, white=0,
+    # gold=~170.
+    rim_px = max(1, int(min(h, w) * _RIM_SAMPLE_FRACTION))
+    rim_pixels = np.concatenate(
+        [
+            rgb[:rim_px, :].reshape(-1, 3),
+            rgb[-rim_px:, :].reshape(-1, 3),
+            rgb[:, :rim_px].reshape(-1, 3),
+            rgb[:, -rim_px:].reshape(-1, 3),
+        ]
+    )
+    if rim_pixels.size:
+        rim_chroma = rim_pixels.max(axis=1).astype(np.int16) - rim_pixels.min(axis=1).astype(np.int16)
+        if float(rim_chroma.mean()) > _RIM_CHROMA_THRESHOLD:
+            return 0.0
+
+    gray = np.array(Image.fromarray(rgb).convert("L"), dtype=np.uint8)
     top = int(h * _TYPE_BAR_ZONE[0])
     bottom = int(h * _TYPE_BAR_ZONE[1])
     side = int(w * _SIDE_INSET_FRACTION)
