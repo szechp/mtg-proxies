@@ -486,7 +486,51 @@ def test_modeline_parse_empty_trailer() -> None:
     directives, warnings = parse_modeline_trailer("")
 
     assert directives == []
+
+
+def test_modeline_parse_cardconjourer_8th() -> None:
+    """`#cardconjourer --8th` registers as a no-value-flag directive."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjourer --8th")
+
+    assert len(directives) == 1
+    assert directives[0].verb == "cardconjourer"
+    assert directives[0].flags == {"--8th": True}
     assert warnings == []
+
+
+def test_modeline_parse_cardconjourer_retro() -> None:
+    """`--retro` is the future companion flag; parses the same way as `--8th`."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjourer --retro")
+
+    assert len(directives) == 1
+    assert directives[0].flags == {"--retro": True}
+    assert warnings == []
+
+
+def test_modeline_parse_cardconjourer_upscale() -> None:
+    """`--upscale` opts this card in to ESRGAN upres before rendering."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjourer --8th --upscale")
+
+    assert len(directives) == 1
+    assert directives[0].flags == {"--8th": True, "--upscale": True}
+    assert warnings == []
+
+
+def test_modeline_parse_cardconjourer_unknown_flag_warns() -> None:
+    """An unrecognised flag drops the whole segment with a warning, like other verbs."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjourer --bogus")
+
+    assert directives == []
+    assert len(warnings) == 1
+    assert "--bogus" in warnings[0].message
 
 
 def test_decklist_card_no_modeline_has_empty_field(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -519,6 +519,47 @@ def _apply_per_card_modelines(
                 if skip_upscale is not None:
                     skip_upscale.add(str(out_back))
 
+    # Pass 1b: #cardconjourer swaps. All flagged cards go through the headless CC
+    # harness in a single batched subprocess (~1-2s engine boot amortizes across
+    # the whole deck). Per-card frame is `--retro` if set, else `--8th` (the bare
+    # `#cardconjourer` modeline also defaults to 8th to stay consistent with the
+    # standalone subcommand's flag requirement). Misses fall back to Scryfall art.
+    if any(any(d.verb == "cardconjourer" for d in dl) for dl in parsed):
+        from mtg_proxies.cardconjourer.per_card import CardConjourerRequest, render_per_card_batch
+
+        cc_requests: list[CardConjourerRequest] = []
+        cc_slots_by_id: dict[str, list[SlotKey]] = {}
+        for card_idx, (card, directives) in enumerate(zip(decklist.cards, parsed, strict=True)):
+            for directive in directives:
+                if directive.verb != "cardconjourer":
+                    continue
+                front_slots = slot_map[card_idx]["front"]
+                if not front_slots:
+                    _mpcfill_log.warning(
+                        "#cardconjourer on %r has no front-face slot for --faces=%s; directive ignored.",
+                        card["name"],
+                        faces,
+                    )
+                    continue
+                frame = "retro" if directive.flags.get("--retro") else "8th"
+                upscale = bool(directive.flags.get("--upscale"))
+                slot_id = f"{card_idx + 1:04d}"
+                cc_requests.append(
+                    CardConjourerRequest(slot_id=slot_id, name=card["name"], frame=frame, upscale=upscale)
+                )
+                cc_slots_by_id[slot_id] = list(front_slots)
+                break  # one directive per card is enough; ignore stacked duplicates
+
+        if cc_requests:
+            rendered = render_per_card_batch(cc_requests)
+            for slot_id, png_path in rendered.items():
+                for slot in cc_slots_by_id.get(slot_id, []):
+                    _write(slot, str(png_path))
+                # CC output is already at print resolution — implicit no-upscale, same
+                # rationale as #mpcfill above.
+                if skip_upscale is not None:
+                    skip_upscale.add(str(png_path))
+
     # Pass 2: per-card transforms.
     def _slots_for_verb(verb: str) -> list[SlotKey]:
         slots: list[SlotKey] = []
@@ -1177,6 +1218,76 @@ def _run_mpcfill_pick(args: argparse.Namespace) -> None:
     print()
     print("Add this to your decklist line to lock in the pick:")
     print(f"  #mpcfill --identifier {pick.drive_id}")
+
+
+def _run_cardconjourer(args: argparse.Namespace) -> None:
+    """Orchestrate the `cardconjourer` subcommand end-to-end.
+
+    Reads the decklist, extracts ``(count, name)`` per line, spawns the node
+    harness from ``mtg_proxies/cardconjourer/node/harness.js`` with the
+    cached CC engine at ``~/.cache/mtg-proxies/cardconjurer`` (cloned via
+    ``make cardconjurer``). Writes per-card PNGs to OUTDIR plus
+    ``fallback.txt`` (decklist format for skipped cards) and ``report.csv``.
+    """
+    import os
+
+    from mtg_proxies.cardconjourer import runner as cc_runner
+
+    frame = "8th" if args.frame_8th else "retro"
+
+    # Parse the decklist as plain (count, name) tuples. The standalone
+    # subcommand renders whatever the user lists; modeline-driven per-card
+    # rendering is handled inside the `print` subcommand instead.
+    cards: list[tuple[int, str]] = []
+    for raw_line in args.decklist.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line.startswith("//"):
+            continue
+        if " #" in line:
+            line = line.split(" #", 1)[0]
+        parts = line.split(maxsplit=1)
+        if len(parts) == 2 and parts[0].isdigit():
+            cards.append((int(parts[0]), parts[1]))
+        else:
+            cards.append((1, line))
+
+    # Default harness wrapper: locate the bundled harness.js + the cached CC
+    # engine, spawn node with the right env. Tests can swap this out via the
+    # injectable run_harness on render_deck. The cache-existence check is
+    # inside the closure so it fires only when the real harness runs (tests
+    # mocking ``render_deck`` never reach it).
+    harness_path = Path(__file__).resolve().parent / "cardconjourer" / "node" / "harness.js"
+    cc_cache = Path.home() / ".cache" / "mtg-proxies" / "cardconjurer"
+
+    def _run(jobs: list[dict]) -> list[dict]:
+        import json as _json
+        import subprocess
+        if not cc_cache.is_dir():
+            print(
+                "[cardconjourer] Card Conjurer source not found at "
+                f"{cc_cache}. Run `make cardconjurer` first."
+            )
+            raise SystemExit(2)
+        proc = subprocess.Popen(
+            ["node", str(harness_path)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={**os.environ, "CC_ROOT": str(cc_cache)},
+        )
+        payload = "".join(_json.dumps(j) + "\n" for j in jobs)
+        out, _err = proc.communicate(input=payload)
+        return [r for r in (cc_runner.parse_response(line) for line in out.splitlines()) if r]
+
+    summary = cc_runner.render_deck(
+        cards,
+        args.outdir,
+        frame=frame,
+        upscale=args.upscale,
+        run_harness=_run,
+    )
+    print(f"[cardconjourer] {summary['ok']}/{summary['total']} rendered, {summary['skipped']} skipped")
 
 
 def _run_mpcfill(args: argparse.Namespace) -> None:
@@ -2054,6 +2165,40 @@ def main() -> None:
         ),
     )
 
+    cardconjourer_parser = subparsers.add_parser(
+        "cardconjourer",
+        help="Render an 8th-edition (later: retro) frame for each card via headless Card Conjurer",
+        description=(
+            "For each card in DECKLIST, render a fresh PNG via the headless Card Conjurer engine"
+            " in the chosen frame style and write it to OUTDIR as <NNNN>-<slug>.png. Cards the"
+            " engine can't render (saga / transform / planeswalker / 404) are listed in"
+            " OUTDIR/fallback.txt (decklist format) so you can pipe them into a normal"
+            " `mtg-proxies print` run, while `--custom-art OUTDIR/` appends the rendered PNGs."
+        ),
+    )
+    cardconjourer_parser.add_argument(
+        "decklist", type=Path, help="path to a decklist in text/arena format"
+    )
+    cardconjourer_parser.add_argument(
+        "outdir", type=Path, help="output directory (will be created if missing)"
+    )
+    frame_group = cardconjourer_parser.add_mutually_exclusive_group(required=True)
+    frame_group.add_argument(
+        "--8th", dest="frame_8th", action="store_true",
+        help="render every card in the 8th-edition (2003) frame style"
+    )
+    frame_group.add_argument(
+        "--retro", dest="frame_retro", action="store_true",
+        help="render every card in the retro pre-modern frame style (not implemented yet)"
+    )
+    cardconjourer_parser.add_argument(
+        "--upscale", action="store_true", default=False,
+        help=(
+            "before rendering, run each card's Scryfall art_crop through Real-ESRGAN."
+            " Same model and cache as `mtg-proxies print --upscale`."
+        ),
+    )
+
     args = parser.parse_args()
 
     match args.command:
@@ -2625,3 +2770,6 @@ def main() -> None:
 
         case "mpcfill":
             _run_mpcfill(args)
+
+        case "cardconjourer":
+            _run_cardconjourer(args)

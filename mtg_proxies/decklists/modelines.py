@@ -92,6 +92,16 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     "no-upscale": {},
     "no-normalize": {},
     "no-shadow-lift": {},
+    # ``#cardconjourer`` — render this single card via the headless Card Conjurer engine
+    # (the ``cardconjourer`` subcommand also does the whole deck). Mutually-exclusive frame
+    # selectors ``--8th`` / ``--retro`` pick the style; ``--upscale`` pre-runs the art
+    # through Real-ESRGAN before the harness loads it, sharpening the small Scryfall
+    # ``art_crop`` JPEG up to print-ready resolution.
+    "cardconjourer": {
+        "--8th":     NO_VALUE,
+        "--retro":   NO_VALUE,
+        "--upscale": NO_VALUE,
+    },
 }
 
 

@@ -1,0 +1,812 @@
+// Minimal headless Card Conjurer renderer.
+//
+// Input:  a decklist (one card per line, optional "<count> " prefix —
+//         matches what `mtg-proxies convert` emits).
+// Output: output/<slug>.png — one 8th-edition card per name.
+//
+// Flow per card: importCard([scryfallObject]) → changeCardIndex() →
+// autoFrame() → drawText() → drawFrames(). That's the GUI's "Import from
+// Scryfall" button, run headless. Everything custom (face picking,
+// crown overlays, set-icon fetching, manual field setting) is gone — the
+// engine handles all layouts the same way it does in a browser.
+//
+// Run:   node harness.js [decklist.txt]    (defaults to ../koni-lifegain.txt)
+
+'use strict';
+const fs        = require('node:fs');
+const path      = require('node:path');
+const vm        = require('node:vm');
+const canvasPkg = require('canvas');
+const { createCanvas, loadImage, registerFont } = canvasPkg;
+
+const ROOT    = __dirname;
+// In production CC lives in ~/.cache/mtg-proxies/cardconjurer (cloned by the
+// Makefile) — the Python runner sets CC_ROOT in the subprocess env. Fall back
+// to ./cardconjurer for the legacy spike workflow.
+const CC_ROOT = process.env.CC_ROOT || path.join(ROOT, 'cardconjurer');
+const INPUTS  = process.env.CC_INPUTS || path.join(ROOT, 'inputs');
+const OUTPUT  = process.env.CC_OUTPUT || path.join(ROOT, 'output');
+fs.mkdirSync(INPUTS, { recursive: true });
+fs.mkdirSync(OUTPUT, { recursive: true });
+
+// Flavor text (italic lore quotes) is stripped by default. Pass --with-flavor
+// to keep it the way the GUI renders it.
+const INCLUDE_FLAVOR = process.argv.includes('--with-flavor');
+
+// ---------------------------------------------------------------------------
+// 1. Font registration. node-canvas v3 requires each font FILE to be mapped
+//    to exactly ONE family name; registering the same file twice (e.g. matrix-b
+//    as both 'matrixb' and 'matrixbsc') silently breaks family lookup so
+//    fillText falls back to sans-serif even when ctx.font reports the right
+//    family. Confirmed with reproducer scripts.
+// ---------------------------------------------------------------------------
+const FONT_DIR = path.join(CC_ROOT, 'fonts');
+function reg(file, family) {
+    const fp = path.join(FONT_DIR, file);
+    if (!fs.existsSync(fp)) return;
+    try { registerFont(fp, { family }); } catch (_) {}
+}
+reg('matrix.ttf',                 'matrix');
+reg('matrix-b.ttf',               'matrixb');
+reg('Matrix Bold Small Caps.ttf', 'matrixbsc');
+reg('mplantin.ttf',               'mplantin');
+reg('mplantin-i.ttf',             'mplantini');
+reg('beleren-b.ttf',              'belerenb');
+reg('beleren-bsc.ttf',            'belerenbsc');
+reg('gotham-medium.ttf',          'gothammedium');
+reg('gothambold.otf',             'gothambold');
+reg('goudy-medieval.ttf',         'goudymedieval');
+reg('phyrexian.ttf',              'phyrexian');
+reg('NotoSans-Regular.ttf',       'notosans');
+
+// ---------------------------------------------------------------------------
+// 2. Image polyfill. Engine code writes `img.src = ...` and expects `onload`
+//    to fire. node-canvas's loadImage decodes asynchronously; wrap it as a
+//    setter so the engine code is unmodified.
+//    Handles: data URIs, http(s) URLs (via fetch), file paths, and CC's
+//    web-root paths like '/img/frames/8th/b.png'.
+// ---------------------------------------------------------------------------
+const pendingImages = [];
+function resolveSrc(src) {
+    if (!src) return null;
+    if (src.startsWith('data:'))                    return src;
+    if (src.startsWith('http://') || src.startsWith('https://')) return src;
+    if (src.startsWith('file://'))                  return src.slice(7);
+    if (src.startsWith('/') && fs.existsSync(src))  return src;
+    if (src.startsWith('/'))                        return path.join(CC_ROOT, src.slice(1));
+    return src;
+}
+// Patch any SVG whose root <svg> uses width="100%"/height="100%" (librsvg
+// can't render those — needs explicit pixel dimensions). Also upscale tiny
+// intrinsic dimensions so glyphs raster crisp before drawImage scales them.
+const SVG_UPSCALE = 12;
+function patchSvgIfNeeded(filePath) {
+    if (!filePath.endsWith('.svg') || !fs.existsSync(filePath)) return null;
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const vb  = raw.match(/viewBox="\s*[-\d.]+\s+[-\d.]+\s+([\d.]+)\s+([\d.]+)\s*"/);
+    if (!vb) return null;
+    const w = Math.max(1, Math.round(parseFloat(vb[1]) * SVG_UPSCALE));
+    const h = Math.max(1, Math.round(parseFloat(vb[2]) * SVG_UPSCALE));
+    let p = raw.replace(/width="[^"]*"/, `width="${w}"`)
+               .replace(/height="[^"]*"/, `height="${h}"`);
+    if (!/width="/.test(p))  p = p.replace(/<svg\b/, `<svg width="${w}"`);
+    if (!/height="/.test(p)) p = p.replace(/<svg\b/, `<svg height="${h}"`);
+    return Buffer.from(p, 'utf8');
+}
+class HarnessImage {
+    constructor() {
+        this._src = null; this._inner = null;
+        this.onload = null; this.onerror = null;
+        this.crossOrigin = null;
+        this.width = 0; this.height = 0;
+    }
+    get src() { return this._src; }
+    set src(v) {
+        this._src = v;
+        const resolved = resolveSrc(v);
+        if (!resolved) return;
+        const fire = (img) => {
+            this._inner = img; this.width = img.width; this.height = img.height;
+            if (typeof this.onload === 'function') {
+                try { this.onload.call(this); } catch (_) {}
+            }
+        };
+        const fail = (err) => {
+            if (typeof this.onerror === 'function') {
+                try { this.onerror.call(this, err); } catch (_) {}
+            }
+        };
+        let promise;
+        // Special-case the 8th Black Frame asset — see getPatchedBlackFrame.
+        if (resolved === BLACK_FRAME_PATH) {
+            promise = getPatchedBlackFrame().then(fire, fail);
+            pendingImages.push(promise);
+            return;
+        }
+        if (typeof resolved === 'string' &&
+            (resolved.startsWith('http://') || resolved.startsWith('https://'))) {
+            if (process.env.TRACE) console.log('[img-http] fetch', resolved);
+            promise = fetch(resolved, { headers: { 'User-Agent': 'mtg-proxies/spike-min' } })
+                .then(async r => { if (!r.ok) throw new Error('HTTP ' + r.status);
+                                   return Buffer.from(await r.arrayBuffer()); })
+                .then(buf => { if (process.env.TRACE) console.log('[img-http] decoded', resolved.slice(-40), buf.length, 'bytes'); return loadImage(buf); })
+                .then(img => { if (process.env.TRACE) console.log('[img-http] image', img.width, 'x', img.height); return img; })
+                .then(fire, (err) => { console.warn('[img-http] FAIL', resolved, err.message); fail(err); });
+        } else {
+            const patched = (typeof resolved === 'string') ? patchSvgIfNeeded(resolved) : null;
+            promise = loadImage(patched || resolved).then(fire, fail);
+        }
+        pendingImages.push(promise);
+    }
+}
+function unwrap(arg) { return (arg && arg._inner) ? arg._inner : arg; }
+
+// CC's img/frames/8th/b.png ends its colored body at y=2692; every other
+// 8th color ends at y=2707. Patch the asset in memory: take a vertical slice
+// of the frame body and stretch it to fill the missing 15px so black-
+// bordered cards have the same bottom strip as the others.
+const BLACK_FRAME_PATH = path.join(CC_ROOT, 'img/frames/8th/b.png');
+let _patchedBlackFrame = null;
+async function getPatchedBlackFrame() {
+    if (_patchedBlackFrame) return _patchedBlackFrame;
+    const orig = await loadImage(BLACK_FRAME_PATH);
+    const cv = createCanvas(orig.width, orig.height);
+    const ctx = cv.getContext('2d');
+    // Top portion (untouched): source 0..2600 → dest 0..2600
+    ctx.drawImage(orig, 0, 0, orig.width, 2600,   0, 0, orig.width, 2600);
+    // Stretch the bottom-body slice: source y=2600..2700 (100px) →
+    // dest y=2600..2707 (107px). Factor 1.07 — small enough that columns
+    // whose non-black bottom in b.png reaches y=2700 land at exactly 2707,
+    // matching the other 8th color frames.
+    ctx.drawImage(orig, 0, 2600, orig.width, 100, 0, 2600, orig.width, 107);
+    // Border tail (mostly solid black anyway): source 2700..2814 →
+    // dest 2707..2821. Slight overflow at the bottom is clipped by the
+    // rounded-corner cutout in drawCard, so it doesn't matter visually.
+    const tailH = orig.height - 2700;
+    ctx.drawImage(orig, 0, 2700, orig.width, tailH, 0, 2707, orig.width, tailH);
+    _patchedBlackFrame = cv;
+    return cv;
+}
+function wrapContext(ctx) {
+    const orig = ctx.drawImage.bind(ctx);
+    ctx.drawImage = function (img, ...rest) { return orig(unwrap(img), ...rest); };
+    return ctx;
+}
+function wrapCanvas(c) {
+    const origCtx = c.getContext.bind(c);
+    c.getContext = function (kind) {
+        const ctx = origCtx(kind);
+        if (kind === '2d' && !ctx.__wrapped) { wrapContext(ctx); ctx.__wrapped = true; }
+        return ctx;
+    };
+    return c;
+}
+
+// ---------------------------------------------------------------------------
+// 3. DOM stub. querySelector returns Proxy elements with sensible defaults.
+//    Per-selector overrides set the few values the engine reads at runtime.
+// ---------------------------------------------------------------------------
+function makeFakeChildren(id) {
+    return new Proxy([], {
+        get(t, p) {
+            if (p in t) return t[p];
+            if (typeof p === 'string' && /^\d+$/.test(p)) return makeFakeElement(id + '>child[' + p + ']');
+            if (p === 'length') return 0;
+            return undefined;
+        },
+    });
+}
+function makeFakeElement(id = '?') {
+    const state = { _id: id, checked: false, value: '', innerHTML: '', textContent: '',
+                    disabled: false, selectedIndex: 0,
+                    classList: { add(){}, remove(){}, contains(){return false;}, toggle(){} },
+                    style: {} };
+    return new Proxy(state, {
+        deleteProperty(t, p) { delete t[p]; return true; },
+        get(target, prop) {
+            if (prop in target) return target[prop];
+            if (prop === 'children')        return makeFakeChildren(id);
+            if (prop === 'firstChild' || prop === 'lastChild') return makeFakeElement(id + '>' + prop);
+            if (prop === 'appendChild' || prop === 'prepend' || prop === 'remove'
+                || prop === 'insertBefore' || prop === 'replaceChild' || prop === 'append') return (c) => c;
+            if (prop === 'addEventListener' || prop === 'removeEventListener') return () => {};
+            if (prop === 'querySelector')    return () => makeFakeElement(id + '>?');
+            if (prop === 'querySelectorAll') return () => makeFakeChildren(id + '>all');
+            if (prop === 'getBoundingClientRect') return () => ({ top:0,bottom:0,left:0,right:0,width:0,height:0 });
+            if (prop === 'parentElement' || prop === 'parentNode') return makeFakeElement(id + '>parent');
+            if (prop === 'closest')   return () => makeFakeElement(id + '>closest');
+            if (prop === 'cloneNode') return () => makeFakeElement(id + '#clone');
+            if (prop === 'getAttribute') return () => null;
+            if (prop === 'setAttribute') return () => {};
+            if (prop === 'click') return () => {};
+            if (prop === 'focus' || prop === 'blur') return () => {};
+            if (typeof prop === 'string' && prop.startsWith('on')) return null;
+            return undefined;
+        },
+        set(target, prop, value) { target[prop] = value; return true; },
+    });
+}
+// Engine-read defaults. enableCollectorInfo=true so the engine's
+// bottomInfoEdited filters out the WotC/NFS/CardConjurer.com entries and
+// renders only the brush+artist line (matches what the GUI shows after
+// "Import from Scryfall").
+const SELECTOR_OVERRIDES = {
+    '#autoFrame':                 { value: '8th' },
+    // Engine's bottomInfoEdited filters out NFS/WotC/CC.com when this is
+    // true. We do our own bottom-info rendering (see setLeanBottomInfo +
+    // renderBottomInfo below), so we keep this off to stop the engine from
+    // also drawing its filtered version on top.
+    '#enableCollectorInfo':       { checked: false },
+    '#autoframe-always-nyx':      { checked: false },
+    '#grayscale-art':             { checked: false },
+    '#show-guidelines':           { checked: false },
+    '#hide-reminder-text':        { checked: false },
+    '#italicize-reminder-text':   { checked: false },
+    '#enableNewCollectorStyle':   { checked: false },
+    '#info-language':             { value: 'EN' },
+    '#info-year':                 { value: String(new Date().getFullYear()) },
+    '#set-symbol-source':         { value: 'official' },
+    '#lockSetSymbolCode':         { checked: false },
+    // Block changeCardIndex's fetchSetSymbol() call so it doesn't queue the
+    // per-set icon (we force the 8th-edition glyph in renderFace instead).
+    // Otherwise the per-set icon load races with our 8ed load and the engine's
+    // setSymbolEdited fires with stale zoom values, drawing the icon tiny.
+    '#lockSetSymbolURL':          { checked: true },
+};
+const fakeElements = new Map();
+function querySelector(sel) {
+    if (fakeElements.has(sel)) return fakeElements.get(sel);
+    // Canvas-backed selectors need real node-canvas instances.
+    if (sel === '#previewCanvas') {
+        const c = wrapCanvas(createCanvas(1, 1));
+        fakeElements.set(sel, c);
+        return c;
+    }
+    const el = makeFakeElement(sel);
+    if (SELECTOR_OVERRIDES[sel]) Object.assign(el, SELECTOR_OVERRIDES[sel]);
+    fakeElements.set(sel, el);
+    return el;
+}
+const fakeDocument = {
+    querySelector,
+    querySelectorAll(sel) { return sel === 'head' ? [querySelector('head')] : []; },
+    createElement(tag) {
+        if (tag === 'canvas') return wrapCanvas(createCanvas(1, 1));
+        return makeFakeElement(`<${tag}>`);
+    },
+    body: makeFakeElement('body'),
+    head: makeFakeElement('head'),
+    fonts: { load() { return Promise.resolve([]); }, check() { return true; }, ready: Promise.resolve() },
+    addEventListener() {}, removeEventListener() {}, dispatchEvent() { return true; },
+};
+const fakeLocalStorage = {
+    // Seeded so the engine populates #info-number from cardToImport.collector_number
+    // (creator-23.js:4395 is gated on enableImportCollectorInfo === 'true'),
+    // and so we don't hit the fallback at creator-23.js:4953 that writes the
+    // current year into #info-number when defaultCollectorInfo is absent.
+    _s: {
+        enableImportCollectorInfo: 'true',
+        defaultCollectorInfo: JSON.stringify({ number: '', rarity: '', setCode: '', lang: 'EN' }),
+        // Engine's bottom-of-file init does `#lockSetSymbolCode.checked = '' != localStorage.getItem(...)`,
+        // which is `true` whenever the key isn't an empty string — including null.
+        // Set it to '' explicitly so the engine doesn't auto-fetch a default set
+        // icon on startup that would race with our 8ed override.
+        lockSetSymbolCode: '',
+        lockSetSymbolURL: '',
+    },
+    getItem(k) { return Object.prototype.hasOwnProperty.call(this._s, k) ? this._s[k] : null; },
+    setItem(k, v) { this._s[k] = String(v); },
+    removeItem(k) { delete this._s[k]; },
+    clear() { this._s = {}; },
+};
+
+// ---------------------------------------------------------------------------
+// 4. Sandbox. window === globalThis so engine assignments like
+//    `window.cardCanvas = ...` land where later reads find them.
+// ---------------------------------------------------------------------------
+Object.assign(global, { location: { search: '', href: 'file:///' }, open: () => null,
+                        addEventListener: () => {}, removeEventListener: () => {} });
+global.window           = global;
+global.document         = fakeDocument;
+global.localStorage     = fakeLocalStorage;
+global.URLSearchParams  = URLSearchParams;
+global.Image            = HarnessImage;
+global.HTMLCanvasElement = function () {};
+// node-canvas's Context2d is what the engine extends with fillTextArc et al.
+global.CanvasRenderingContext2D = canvasPkg.Context2d || createCanvas(1, 1).getContext('2d').constructor;
+global.notify  = () => {};
+global.alert   = () => {};
+global.XMLHttpRequest = class { open(){} send(){} setRequestHeader(){} overrideMimeType(){} };
+global.FileReader     = class { readAsDataURL(){} };
+global.params         = new URLSearchParams('');
+
+// loadScript: the engine uses this to pull in additional packs (e.g.
+// versionSaga.js, frame group files). We do it synchronously off disk so
+// the side effects land in our global scope.
+const loadedScripts = new Set();
+global.loadScript = function (scriptPath) {
+    const rel = scriptPath.startsWith('/') ? scriptPath.slice(1) : scriptPath;
+    const fp = path.join(CC_ROOT, rel);
+    if (loadedScripts.has(fp)) return Promise.resolve();
+    if (!fs.existsSync(fp))    { console.warn('[loadScript] missing:', fp); return Promise.resolve(); }
+    loadedScripts.add(fp);
+    let code = fs.readFileSync(fp, 'utf8');
+    code = code.replace(/^(const|let) (mana|debugging|cardConjurer|setSymbolAliases|baseWidth|baseHeight|highResScale)\b/gm, 'var $2');
+    try { vm.runInThisContext(code, { filename: fp }); console.log('[loadScript] ok:', rel); }
+    catch (e) { console.warn('[loadScript]', fp, e.message); }
+    return Promise.resolve();
+};
+function loadEngineFile(rel) {
+    const fp = path.join(CC_ROOT, rel);
+    let code = fs.readFileSync(fp, 'utf8');
+    // vm.runInThisContext block-scopes top-level const/let; rewrite to var
+    // for the few names other engine files and our harness need to read.
+    code = code.replace(/^(const|let) (mana|debugging|cardConjurer|setSymbolAliases|baseWidth|baseHeight|highResScale)\b/gm, 'var $2');
+    vm.runInThisContext(code, { filename: fp });
+}
+
+// Suppress the UI side effects every pack file ends with.
+global.loadFramePack  = function () {};
+global.loadFramePacks = function () {};
+
+// ---------------------------------------------------------------------------
+// 5. Load the engine.
+// ---------------------------------------------------------------------------
+loadEngineFile('js/main-1.js');
+loadEngineFile('js/creator-23.js');
+// creator-23.js defines its own loadScript (line 4736) that depends on the
+// DOM to inject a <script> tag — useless headless. Swap ours back in.
+const fsLoadScript = (function () {
+    const fp_known = new Set();
+    return function (scriptPath) {
+        const rel = scriptPath.startsWith('/') ? scriptPath.slice(1) : scriptPath;
+        const fp  = path.join(CC_ROOT, rel);
+        if (fp_known.has(fp)) return Promise.resolve();
+        if (!fs.existsSync(fp)) { console.warn('[loadScript] missing:', fp); return Promise.resolve(); }
+        fp_known.add(fp);
+        let code = fs.readFileSync(fp, 'utf8');
+        code = code.replace(/^(const|let) (mana|debugging|cardConjurer|setSymbolAliases|baseWidth|baseHeight|highResScale)\b/gm, 'var $2');
+        try { vm.runInThisContext(code, { filename: fp }); }
+        catch (e) { console.warn('[loadScript]', fp, e.message); }
+        return Promise.resolve();
+    };
+})();
+global.loadScript = fsLoadScript;
+loadEngineFile('js/autoFrame.js');
+loadEngineFile('js/frames/pack8th.js');
+
+// Engine init (creator-23.js:5002) overwrites #lockSetSymbolURL.checked
+// based on localStorage, undoing our SELECTOR_OVERRIDES default. Force it
+// back to true so changeCardIndex's fetchSetSymbol() at line 4457 is skipped
+// — we provide our own 8ed set icon per render.
+querySelector('#lockSetSymbolURL').checked = true;
+querySelector('#lockSetSymbolCode').checked = true;
+
+// pack8th.js does not redefine loadScript, but be defensive and reassign.
+global.loadScript = fsLoadScript;
+
+// Brush mana symbol is registered with size [2.85, 2.85] but its viewBox is
+// 32x12; both axes scale by 2.85, squaring it. Fix by recomputing height
+// from the SVG aspect.
+for (const key of ['brush', 'whitebrush']) {
+    const sym = global.mana && global.mana.get && global.mana.get(key);
+    if (!sym) continue;
+    const sp = path.join(CC_ROOT, 'img', 'manaSymbols', sym.path + '.svg');
+    if (!fs.existsSync(sp)) continue;
+    const vb = fs.readFileSync(sp, 'utf8').match(/viewBox="\s*[-\d.]+\s+[-\d.]+\s+([\d.]+)\s+([\d.]+)\s*"/);
+    if (vb) sym.height = sym.width * (parseFloat(vb[2]) / parseFloat(vb[1]));
+}
+
+// Trigger pack8th's loadFrameVersion onclick ONCE at startup. This is the
+// engine's own "Load Frame Version" workflow: it calls resetCardIrregularities,
+// sets card.version='8th', card.artBounds, card.setSymbolBounds, card.
+// watermarkBounds, and runs loadTextOptions + loadBottomInfo with the pack8th
+// template (with WotC/NFS/CC.com entries that bottomInfoEdited will filter
+// out because we have enableCollectorInfo=true).
+async function loadFrameVersion8thOnce() {
+    const handler = querySelector('#loadFrameVersion').onclick;
+    if (typeof handler === 'function') await handler();
+}
+
+// ---------------------------------------------------------------------------
+// 6. Per-card render.
+// ---------------------------------------------------------------------------
+function slugify(name) {
+    return name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+async function fetchScryfall(name) {
+    const slug = slugify(name);
+    const jsonPath = path.join(INPUTS, slug + '.json');
+    if (!fs.existsSync(jsonPath)) {
+        const url = 'https://api.scryfall.com/cards/named?exact=' + encodeURIComponent(name);
+        const r = await fetch(url, {
+            headers: { 'User-Agent': 'mtg-proxies/spike-min', 'Accept': 'application/json' },
+        });
+        if (!r.ok) throw new Error(`Scryfall ${r.status} for ${name}`);
+        fs.writeFileSync(jsonPath, await r.text());
+        await new Promise(res => setTimeout(res, 120)); // be polite (100 ms rate-limit)
+    }
+    return { scry: JSON.parse(fs.readFileSync(jsonPath, 'utf8')), slug };
+}
+
+// Layouts we punt on — the harness throws and the caller can fall back to
+// the Scryfall card image. Sagas need a custom template; transform /
+// modal_dfc DFCs are close-but-imperfect (color, indicator, type-clip have
+// open quirks); planeswalkers need versionPlaneswalker.js which has heavy
+// DOM dependencies our headless context doesn't satisfy.
+const SKIP_LAYOUTS = new Set(['saga', 'transform', 'modal_dfc', 'reversible_card']);
+function shouldSkip(scry) {
+    if (SKIP_LAYOUTS.has(scry.layout)) return `layout '${scry.layout}'`;
+    // Planeswalker isn't a Scryfall layout (Ashiok's layout is 'normal') — gate on type_line.
+    if ((scry.type_line || '').toLowerCase().includes('planeswalker')) return 'planeswalker';
+    return null;
+}
+
+// Pack routing per Scryfall layout. The transform / modal_dfc packs
+// (pack8thTransformFront) set card.version='8thTransformFront' which makes
+// changeCardIndex's multi-faced branch fire correctly, so parseMultiFacedCards
+// fills in front-face data and the back-face indicator gets a reminder slot.
+function packForLayout(layout) {
+    if (layout === 'transform' || layout === 'modal_dfc' || layout === 'reversible_card') {
+        return 'pack8thTransformFront.js';
+    }
+    return 'pack8th.js';
+}
+
+// Load the given pack file and trigger its loadFrameVersion onclick. The pack
+// replaces availableFrames + sets card.version + populates card.text via
+// loadTextOptions. Called per-card so we can switch packs (e.g. transform
+// front → vanilla 8th) across the deck without restarting the engine.
+let _lastPack = null;
+async function ensurePackLoaded(packFile) {
+    if (_lastPack !== packFile) {
+        const fp = path.join(CC_ROOT, 'js/frames/', packFile);
+        if (!fs.existsSync(fp)) throw new Error('pack not found: ' + packFile);
+        let code = fs.readFileSync(fp, 'utf8');
+        code = code.replace(/^(const|let) (mana|debugging|cardConjurer|setSymbolAliases|baseWidth|baseHeight|highResScale)\b/gm, 'var $2');
+        vm.runInThisContext(code, { filename: fp });
+        _lastPack = packFile;
+    }
+    // Re-trigger the pack's loadFrameVersion onclick each render so card.text
+    // / card.frames are reset to the pack template before importCard overwrites
+    // them — otherwise residual fields from the previous card leak through.
+    const handler = querySelector('#loadFrameVersion').onclick;
+    if (typeof handler === 'function') await handler();
+}
+
+// ---------------------------------------------------------------------------
+// 5b. Bottom info template + render.
+//
+//     CALIBRATE HERE:   edit y / size / font / x / width in the two entries
+//     below. Re-render with:   node harness.js /tmp/m.txt
+//     (where /tmp/m.txt is just one line:   Murder).
+//
+//     - cond switches text to white on dark-bordered frames (black/colorless/
+//       land/black-nyx) and keeps it black on light frames (gold, etc.).
+//     - {elemidinfo-artist}, {elemidinfo-year}, {elemidinfo-set},
+//       {elemidinfo-number} are token placeholders the engine resolves at
+//       writeText time from the matching #info-* form values.
+// ---------------------------------------------------------------------------
+function setLeanBottomInfo() {
+    const cond = '{conditionalcolor:Black_Frame*Frame*!Right_Half,Land_Frame*Frame*!Right_Half,Black_Nyx_Frame*Frame*!Right_Half,Colorless_Frame:white}';
+    global.card.bottomInfo = {
+        // === artist line (brush + artist) ===
+        top: { name: 'top',
+               text: cond + '{brush}{elemidinfo-artist}',
+               x:      150 / 2010,
+               y:     1927 / 2100,
+               width:  0.8107,
+               height: 0.0248,
+               oneLine: true, font: 'matrixb', size: 0.0248, color: 'black' },
+        // === copyright line ===
+        wizards: { name: 'wizards',
+                   text: cond + '™ & © 1993-{elemidinfo-year} Wizards of the Coast LLC {elemidinfo-set} {elemidinfo-number}',
+                   x:      155 / 2010,
+                   y:     1989 / 2100,
+                   width:  0.8107,
+                   height: 0.0153,
+                   oneLine: true, font: 'mplantin', size: 0.0153, color: 'black' },
+    };
+}
+
+async function renderBottomInfo() {
+    // Mirror the first half of bottomInfoEdited (creator-23.js:2867) so the
+    // engine's writeText path resolves the tokens against fresh values.
+    global.card.infoNumber   = querySelector('#info-number').value;
+    global.card.infoRarity   = querySelector('#info-rarity').value;
+    global.card.infoSet      = querySelector('#info-set').value;
+    global.card.infoLanguage = querySelector('#info-language').value;
+    global.card.infoArtist   = querySelector('#info-artist').value;
+    global.card.infoYear     = querySelector('#info-year').value;
+    global.card.infoNote     = querySelector('#info-note').value;
+
+    // Drain mana-symbol loads (the {brush} glyph) before writeText.
+    if (pendingImages.length) await Promise.allSettled(pendingImages.splice(0));
+
+    // The engine's writeText tries to read card.bottomInfo.midLeft.text when
+    // it sees {elemidinfo-set}. We don't have midLeft, so substitute the
+    // value in by hand first.
+    const setValue = querySelector('#info-set').value;
+    for (const k of Object.keys(global.card.bottomInfo)) {
+        global.card.bottomInfo[k].text = global.card.bottomInfo[k].text.replace('{elemidinfo-set}', setValue);
+    }
+
+    if (process.env.TRACE) {
+        console.log('  bottomInfo wizards.text:', JSON.stringify(global.card.bottomInfo.wizards.text));
+        console.log('  #info-number value:', JSON.stringify(querySelector('#info-number').value),
+                    'type:', typeof querySelector('#info-number').value);
+    }
+    global.bottomInfoContext.clearRect(0, 0, global.bottomInfoCanvas.width, global.bottomInfoCanvas.height);
+    for (const k of Object.keys(global.card.bottomInfo)) {
+        try { await global.writeText(global.card.bottomInfo[k], global.bottomInfoContext); }
+        catch (e) { if (process.env.TRACE) console.warn('[bottom-info]', k, e.stack); else console.warn('[bottom-info]', k, e.message); }
+    }
+}
+
+// Wipe every shared canvas back to a clean state so the next render doesn't
+// inherit pixels from the previous card.
+function resetCanvases() {
+    global.card.frames = [];
+    for (const name of ['card', 'frame', 'frameMasking', 'frameCompositing',
+                        'text', 'paragraph', 'line', 'watermark',
+                        'bottomInfo', 'guidelines', 'prePT', 'preview']) {
+        const c = global[name + 'Canvas'];
+        if (!c) continue;
+        const ctx = global[name + 'Context'] || c.getContext('2d');
+        ctx.clearRect(0, 0, c.width, c.height);
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1;
+    }
+    pendingImages.splice(0);
+}
+
+// Render a single face: load the pack, import + select the indicated face,
+// upload the matching art, autoframe, drain images, draw, save.
+async function renderFace({ packFile, processed, faceIdx, scry, outName }) {
+    resetCanvases();
+    await ensurePackLoaded(packFile);
+
+    querySelector('#import-index').value = String(faceIdx);
+    global.importCard(processed);
+
+    // Trim the `type` text width: pack8th* templates set the type box to
+    // x=0.102..0.899 (width 0.797), but the set symbol sits at x=0.9079
+    // (right-anchored, width 0.12), so long type lines on transform cards
+    // ("Legendary Creature — Human Advisor") get clipped by the set symbol.
+    // Shrink the right edge to give the symbol room.
+    if (global.card.text && global.card.text.type) {
+        global.card.text.type.width = 0.74;
+    }
+
+    // Shrink the set symbol bounds ~2% from pack8th's default (height 0.0391)
+    // to better match the real 8th-edition reference card. resetSetSymbol
+    // sizes the icon to fit these bounds, so multiplying the height scales
+    // both axes proportionally.
+    if (global.card.setSymbolBounds) {
+        global.card.setSymbolBounds.height = 0.0391 * 0.94;
+        global.card.setSymbolBounds.width  = 0.12   * 0.94;
+    }
+
+    // Pick the art URL for THIS face. processScryfallCard propagates the
+    // top-level image_uris into faces that don't have their own (older split
+    // cards) — but DFC faces almost always have their own face.image_uris.
+    const face = processed[faceIdx] || {};
+    const artUrl = (face.image_uris && face.image_uris.art_crop) ||
+                   (scry.image_uris && scry.image_uris.art_crop) ||
+                   (scry.card_faces && scry.card_faces[faceIdx] && scry.card_faces[faceIdx].image_uris &&
+                    scry.card_faces[faceIdx].image_uris.art_crop);
+    if (artUrl) global.uploadArt(artUrl, 'autoFit');
+    // Artist can differ between faces — face.artist is what we want.
+    const artist = face.artist || scry.artist || '';
+    if (artist && typeof global.artistEdited === 'function') global.artistEdited(artist);
+
+    if (scry.released_at) querySelector('#info-year').value = scry.released_at.slice(0, 4);
+
+    // Force the 8th Edition set icon for ALL cards — it matches the 8th frame
+    // aesthetically and avoids the per-set aspect-ratio inconsistencies users
+    // were seeing. Preserve rarity by picking 8ed-{c,u,r,m,s}.svg.
+    const rChar = ((scry.rarity || 'c')[0] || 'c').toLowerCase();
+    const rFile = ['c', 'u', 'r', 'm', 's'].includes(rChar) ? rChar : 'c';
+    if (typeof global.uploadSetSymbol === 'function') {
+        global.uploadSetSymbol(`/img/setSymbols/official/8ed-${rFile}.svg`, 'resetSetSymbol');
+    }
+
+    if (!INCLUDE_FLAVOR) {
+        const stripFlavor = (s) => (typeof s === 'string') ? s.replace(/\{flavor\}[\s\S]*$/, '') : s;
+        for (const k of ['rules', 'rules2', 'rules3',
+                         'ability0', 'ability1', 'ability2', 'ability3']) {
+            const t = global.card.text && global.card.text[k];
+            if (t && typeof t.text === 'string') t.text = stripFlavor(t.text);
+        }
+    }
+
+    // autoFrame() reads card.text.mana.text to detect non-land colors. DFC
+    // back faces have no mana cost, so autoFrame would build a colorless
+    // frame even when the back face is e.g. Blue. Bypass autoFrame and
+    // drive autoFrameUnified directly with the face's Scryfall .colors when
+    // the face provides them.
+    // changeCardIndex → textEdited → autoFrameBuffer schedules autoFrame()
+    // on a 500ms timeout. autoFrame() reads card.text.mana.text to detect
+    // colors, but DFC back faces have empty mana_cost → colors=[] → frame
+    // defaults to Artifact + Land. Cancel the pending timer so our explicit
+    // autoFrameUnified call (with face.colors) is the final word.
+    if (global.autoFrameTimer) clearTimeout(global.autoFrameTimer);
+
+    const faceColors = (face && Array.isArray(face.colors) && face.colors.length) ? face.colors : null;
+    if (faceColors) {
+        await global.autoFrameUnified('8th',
+            faceColors,
+            (face.mana_cost || global.card.text.mana?.text || ''),
+            (face.type_line || global.card.text.type?.text || ''),
+            (face.power || global.card.text.pt?.text || ''));
+    } else {
+        await global.autoFrame();
+    }
+
+    // DFC indicator (small icon at top-left next to title) — pack8thTransform
+    // packs include this as a separate availableFrames entry ('Up Arrow', etc.)
+    // but autoFrame doesn't add it automatically. We add it for transform /
+    // modal_dfc layouts so the rendered card shows the flip indicator like
+    // the real printed card.
+    if (['transform', 'modal_dfc', 'reversible_card'].includes(scry.layout)) {
+        const idx = (global.availableFrames || []).findIndex(f => f && f.name === 'Up Arrow');
+        if (idx >= 0) {
+            const prevIdx = global.selectedFrameIndex;
+            global.selectedFrameIndex = idx;
+            try { await global.addFrame(); }
+            catch (e) { console.warn('[dfc-icon]', e.message); }
+            global.selectedFrameIndex = prevIdx;
+        }
+    }
+
+    await Promise.allSettled(pendingImages.splice(0));
+    for (let round = 0; round < 5 && pendingImages.length; round++) {
+        await Promise.allSettled(pendingImages.splice(0));
+    }
+
+    await global.drawText();
+    setLeanBottomInfo();
+    await renderBottomInfo();
+    global.drawFrames();
+
+    const outPath = path.join(OUTPUT, outName + '.png');
+    fs.writeFileSync(outPath, global.cardCanvas.toBuffer('image/png'));
+    return outPath;
+}
+
+async function renderCard(scry, slug) {
+    const skipReason = shouldSkip(scry);
+    if (skipReason) {
+        throw new Error(`${skipReason} not supported on 8th frame — fall back to Scryfall image`);
+    }
+
+    // Pre-process the Scryfall card the same way the GUI does. For DFC /
+    // adventure / split layouts, processScryfallCard splits card_faces into
+    // separate face objects (front + back).
+    const processed = [];
+    global.processScryfallCard(scry, processed);
+    const isDfc = ['transform', 'modal_dfc', 'reversible_card'].includes(scry.layout) &&
+                  processed.length >= 2;
+
+    if (isDfc) {
+        await renderFace({ packFile: 'pack8thTransformFront.js', processed, faceIdx: 0, scry, outName: slug + '_front' });
+        await renderFace({ packFile: 'pack8thTransformBack.js',  processed, faceIdx: 1, scry, outName: slug + '_back'  });
+        return path.join(OUTPUT, slug + '_front.png') + ', ' + slug + '_back.png';
+    }
+    return await renderFace({ packFile: 'pack8th.js', processed, faceIdx: 0, scry, outName: slug });
+}
+
+
+// ---------------------------------------------------------------------------
+// 7. Driver.
+// ---------------------------------------------------------------------------
+function parseDecklist(filePath) {
+    return fs.readFileSync(filePath, 'utf8').split(/\r?\n/)
+        .map(l => l.trim())
+        .filter(l => l && !l.startsWith('#') && !l.startsWith('//'))
+        // strip optional "<count> " prefix from `mtg-proxies convert` output
+        .map(l => l.replace(/^\d+\s+/, ''));
+}
+
+async function main() {
+    const args = process.argv.slice(2).filter(a => !a.startsWith('--'));
+    const deckPath = args[0] || path.resolve(ROOT, '..', 'koni-lifegain.txt');
+    const names = parseDecklist(deckPath);
+    console.log(`[deck] ${deckPath} — ${names.length} cards`);
+
+    // ensurePackLoaded() in renderCard handles the per-card pack selection.
+    let ok = 0; const skipped = [];
+    for (const name of names) {
+        try {
+            const { scry, slug } = await fetchScryfall(name);
+            const out = await renderCard(scry, slug);
+            console.log(`[ok]   ${name} → ${path.basename(out)}`);
+            ok++;
+        } catch (e) {
+            console.warn(`[skip] ${name}: ${e.message}`);
+            if (process.env.TRACE) console.warn(e.stack);
+            skipped.push({ name, reason: e.message });
+        }
+    }
+    console.log(`\n[summary] rendered ${ok}/${names.length}`);
+    for (const s of skipped) console.log(`  skipped: ${s.name} — ${s.reason}`);
+}
+
+// ---------------------------------------------------------------------------
+// ND-JSON mode (production, driven by mtg_proxies.cardconjourer.runner).
+//
+// Reads one job per line on stdin:
+//   {"slot": "0001", "name": "Murder", "frame": "8th", "art_path": "/abs/.png"?}
+// Writes one response per line on stdout:
+//   {"slot": "0001", "status": "ok",   "out": "/abs/0001-murder.png", "ms": 1240}
+//   {"slot": "0003", "status": "skip", "reason": "layout 'saga' …"}
+//
+// One process for the whole deck — engine boot (~1-2 s) amortises across all
+// cards. Engine debug / [notify] etc. go to stderr so they don't poison the
+// stdout ND-JSON stream.
+// ---------------------------------------------------------------------------
+function writeResponse(obj) {
+    process.stdout.write(JSON.stringify(obj) + "\n");
+}
+
+async function runOneJob(job) {
+    const start = Date.now();
+    try {
+        const { scry } = await fetchScryfall(job.name);
+        // art_path override: ESRGAN-upscaled local file from the Python runner.
+        // Threaded into scry.image_uris.art_crop so renderFace's existing art
+        // resolution picks it up — our HarnessImage polyfill treats absolute
+        // file paths as local loads, no HTTP fetch.
+        if (job.art_path) {
+            scry.image_uris = scry.image_uris || {};
+            scry.image_uris.art_crop = job.art_path;
+        }
+        // Slot-prefixed slug so the harness's local OUTPUT/<file>.png already
+        // carries the slot that the Python runner expects for OUTDIR copying.
+        const slug = job.slot + '-' + slugify(job.name);
+        const outPath = await renderCard(scry, slug);
+        writeResponse({
+            slot:   job.slot,
+            status: 'ok',
+            out:    outPath,
+            ms:     Date.now() - start,
+        });
+    } catch (e) {
+        writeResponse({
+            slot:   job.slot,
+            status: 'skip',
+            reason: e.message || String(e),
+        });
+    }
+}
+
+async function runNdjson() {
+    // Collect stdin as a single string. Even a 500-card deck is ~50 KB so
+    // buffering up front is trivial and simpler than streaming line-by-line.
+    let buf = '';
+    process.stdin.setEncoding('utf8');
+    for await (const chunk of process.stdin) buf += chunk;
+    const lines = buf.split(/\r?\n/).filter(l => l.trim());
+    for (const line of lines) {
+        let job;
+        try { job = JSON.parse(line); }
+        catch (e) { writeResponse({ slot: '?', status: 'skip', reason: 'bad json: ' + e.message }); continue; }
+        await runOneJob(job);
+    }
+}
+
+// Pending image onloads can fire after main() returns and chain into
+// engine code that mutates DOM state that no longer makes sense (e.g.
+// addFrame's tail-call to bottomInfoEdited touches #info-* values that
+// we don't repopulate per-card). Swallow late async noise — the PNGs are
+// already written to disk by then.
+process.on('uncaughtException', () => {});
+process.on('unhandledRejection', () => {});
+
+// Pick mode by stdin: a TTY means "interactive / decklist file" (legacy spike
+// usage); a pipe means "ND-JSON from the Python runner."
+const entry = process.stdin.isTTY ? main() : runNdjson();
+entry.then(() => process.exit(0), err => {
+    console.error('[fatal]', err.stack || err);
+    process.exit(1);
+});
