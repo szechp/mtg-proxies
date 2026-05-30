@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, TextIO
@@ -10,6 +11,60 @@ from typing import Any, Literal, TextIO
 import mtg_proxies.scryfall as scryfall
 from mtg_proxies.decklists.modelines import parse_modeline_trailer, split_modeline_trailer
 from mtg_proxies.decklists.sanitizing import ParseWarning, validate_card_name, validate_print
+
+# Scryfall URL / shorthand input. Two complementary regexes; both anchored, both
+# tolerant of an optional ``/slug`` segment and trailing query/fragment.
+# Full URL: optional scheme + optional www. + ``scryfall.com/card/<set>/<cn>[/...]``.
+_SCRYFALL_URL_RE = re.compile(
+    r"^(?:https?://)?(?:www\.)?scryfall\.com/card/([^/?#]+)/([^/?#]+)(?:/[^?#]*)?(?:[?#].*)?$",
+    re.IGNORECASE,
+)
+# Shorthand: optional ``card/`` prefix, then set/cn with optional slug. Set
+# segment is locked to 2-6 alphanumerics so a plain card name (no slash) never
+# matches and a single-character "set" can't swallow garbage like ``a/1``.
+_SCRYFALL_SHORT_RE = re.compile(
+    r"^(?:card/)?([a-z0-9]{2,6})/([^/?#]+)(?:/[^?#]*)?$",
+    re.IGNORECASE,
+)
+
+
+def parse_scryfall_ref(token: str) -> tuple[str, str] | None:
+    """Parse a Scryfall URL or shorthand into ``(set, collector_number)``.
+
+    Returns ``None`` for anything that doesn't look like a Scryfall ref so the
+    caller can fall through to the normal card-name regex. Case is preserved;
+    the resolver lowercases for index lookup.
+    """
+    token = token.strip()
+    if not token:
+        return None
+    m = _SCRYFALL_URL_RE.match(token)
+    if m:
+        return m.group(1), m.group(2)
+    m = _SCRYFALL_SHORT_RE.match(token)
+    if m:
+        return m.group(1), m.group(2)
+    return None
+
+
+def resolve_printing(
+    set_code: str,
+    collector_number: str,
+    *,
+    index: dict[tuple[str, str], dict],
+    fetcher: Callable[[str, str], dict | None],
+) -> dict | None:
+    """Look up a printing by ``(set, cn)`` against ``index``, then ``fetcher``.
+
+    Both lookups use lowercased keys. ``index`` is intended to be the cached
+    ``scryfall.card_by_set_collector()``; ``fetcher`` is the live-API fallback
+    for printings newer than the local bulk cache. Returns ``None`` on miss.
+    """
+    key = (set_code.lower(), collector_number.lower())
+    hit = index.get(key)
+    if hit is not None:
+        return hit
+    return fetcher(key[0], key[1])
 
 
 @dataclass(slots=True)
@@ -204,6 +259,37 @@ def parse_decklist_stream(
             if new_stripped == stripped:
                 break
             stripped = new_stripped
+
+        # Scryfall URL / shorthand line form: ``[<count> ] (URL|set/cn[/slug])``.
+        # Pull an optional count prefix, then try to parse the remainder as a
+        # Scryfall ref. On hit we resolve the printing directly and skip
+        # ``validate_card_name`` (the printing is the identity; name is irrelevant).
+        # On miss we fall through to the existing card-name regex.
+        url_count_match = re.match(r"^(?:([0-9]{1,3})x?\s+)?(.+?)\s*$", stripped)
+        if url_count_match:
+            url_count = int(url_count_match.group(1)) if url_count_match.group(1) else 1
+            url_remainder = url_count_match.group(2)
+            ref = parse_scryfall_ref(url_remainder)
+            if ref is not None:
+                set_code, collector_number = ref
+                card = resolve_printing(
+                    set_code,
+                    collector_number,
+                    index=scryfall.scryfall.card_by_set_collector(),
+                    fetcher=scryfall.scryfall.fetch_printing_live,
+                )
+                if card is None:
+                    warnings.append(
+                        ParseWarning(
+                            "ERROR",
+                            f"Could not resolve Scryfall ref {set_code}/{collector_number}.",
+                        )
+                    )
+                    decklist.append_comment(line.rstrip())
+                    ok = False
+                    continue
+                decklist.append_card(url_count, card, modeline=modeline_trailer)
+                continue
         m = re.search(r"(?:([0-9]{1,3})x?\s+)?(.+?)(?:\s+\((\S*)\)\s+(\S+))?\s*$", stripped)
         if m and m.group(2) and m.group(2).strip():
             # Extract relevant data

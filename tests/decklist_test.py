@@ -649,3 +649,202 @@ def test_reversible_cards() -> None:
     images = fetch_scans_scryfall(decklist)
 
     assert len(images) == 2  # Front and back
+
+
+# ---------------------------------------------------------------------------
+# Scryfall URL / shorthand input (MR2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("token", "expected"),
+    [
+        # Full URLs.
+        ("https://scryfall.com/card/soc/128/sol-ring", ("soc", "128")),
+        ("http://scryfall.com/card/soc/128/sol-ring", ("soc", "128")),
+        ("https://www.scryfall.com/card/soc/128/sol-ring", ("soc", "128")),
+        ("scryfall.com/card/soc/128/sol-ring", ("soc", "128")),
+        # No slug.
+        ("https://scryfall.com/card/soc/128", ("soc", "128")),
+        ("scryfall.com/card/soc/128", ("soc", "128")),
+        # Trailing query / fragment.
+        ("https://scryfall.com/card/soc/128/sol-ring?utm=x", ("soc", "128")),
+        ("https://scryfall.com/card/soc/128/sol-ring#art", ("soc", "128")),
+        # `card/` shorthand.
+        ("card/soc/128/sol-ring", ("soc", "128")),
+        ("card/soc/128", ("soc", "128")),
+        # Bare shorthand (the ergonomic one).
+        ("soc/128/sol-ring", ("soc", "128")),
+        ("soc/128", ("soc", "128")),
+        # Sets with digits (real Scryfall codes — 2x2, 30a etc.).
+        ("2x2/123", ("2x2", "123")),
+        ("30a/45", ("30a", "45")),
+        # Mixed-case is preserved by the parser; the resolver lowercases.
+        ("SOC/128", ("SOC", "128")),
+        # Plain card name — must NOT match (no slash).
+        ("Sol Ring", None),
+        # Existing-form pinned line — must NOT match (parens + collector tail).
+        ("Sol Ring (SOC) 128", None),
+        # Empty / blank.
+        ("", None),
+        ("   ", None),
+        # Too-short / too-long set code — fall through.
+        ("a/1", None),
+        ("toolongsetcode/1", None),
+    ],
+)
+def test_parse_scryfall_ref(token: str, expected: tuple[str, str] | None) -> None:
+    from mtg_proxies.decklists.decklist import parse_scryfall_ref
+
+    assert parse_scryfall_ref(token) == expected
+
+
+def test_resolve_printing_hits_local_index_first() -> None:
+    """Local cached index resolves without invoking the live fetcher."""
+    from mtg_proxies.decklists.decklist import resolve_printing
+
+    fake_card = {"id": "x", "name": "Sol Ring", "set": "soc", "collector_number": "128"}
+    fake_index = {("soc", "128"): fake_card}
+
+    def fetcher(_set: str, _cn: str) -> dict | None:
+        raise AssertionError("live fetcher must not be called when index hits")
+
+    assert resolve_printing("soc", "128", index=fake_index, fetcher=fetcher) is fake_card
+
+
+def test_resolve_printing_lowercases_keys() -> None:
+    from mtg_proxies.decklists.decklist import resolve_printing
+
+    fake_card = {"id": "x", "name": "Sol Ring"}
+    fake_index = {("soc", "128"): fake_card}
+
+    def fetcher(_set: str, _cn: str) -> dict | None:
+        return None
+
+    assert resolve_printing("SOC", "128", index=fake_index, fetcher=fetcher) is fake_card
+
+
+def test_resolve_printing_falls_back_to_live_fetcher_on_index_miss() -> None:
+    from mtg_proxies.decklists.decklist import resolve_printing
+
+    called: list[tuple[str, str]] = []
+    live = {"id": "y", "name": "Brand-new card", "set": "fut", "collector_number": "999"}
+
+    def fetcher(set_code: str, cn: str) -> dict | None:
+        called.append((set_code, cn))
+        return live
+
+    card = resolve_printing("FUT", "999", index={}, fetcher=fetcher)
+
+    assert card is live
+    assert called == [("fut", "999")]
+
+
+def test_resolve_printing_returns_none_when_both_miss() -> None:
+    from mtg_proxies.decklists.decklist import resolve_printing
+
+    def fetcher(_set: str, _cn: str) -> dict | None:
+        return None
+
+    assert resolve_printing("xxx", "999", index={}, fetcher=fetcher) is None
+
+
+def test_parse_decklist_url_line_resolves_via_injected_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A line that's a Scryfall URL resolves to the indexed printing, bypassing validate_card_name."""
+    from mtg_proxies.decklists import parse_decklist_stream
+
+    fake_card = {
+        "id": "fake-sol-soc",
+        "name": "Sol Ring",
+        "set": "soc",
+        "collector_number": "128",
+        "layout": "normal",
+        "image_uris": {"png": "https://example/sol.png"},
+        "highres_image": True,
+    }
+    monkeypatch.setattr(
+        "mtg_proxies.scryfall.scryfall.card_by_set_collector",
+        lambda: {("soc", "128"): fake_card},
+    )
+    monkeypatch.setattr(
+        "mtg_proxies.scryfall.scryfall.fetch_printing_live",
+        lambda set_code, cn: (_ for _ in ()).throw(AssertionError("live fetcher must not run")),
+    )
+
+    decklist, ok, _warnings = parse_decklist_stream(
+        StringIO("2 https://scryfall.com/card/soc/128/sol-ring\n")
+    )
+
+    assert ok
+    assert len(decklist.cards) == 1
+    assert decklist.cards[0].count == 2
+    assert decklist.cards[0]["set"] == "soc"
+    assert decklist.cards[0]["collector_number"] == "128"
+
+
+def test_parse_decklist_shorthand_line_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mtg_proxies.decklists import parse_decklist_stream
+
+    fake_card = {
+        "id": "fake-sol-soc",
+        "name": "Sol Ring",
+        "set": "soc",
+        "collector_number": "128",
+        "layout": "normal",
+        "image_uris": {"png": "https://example/sol.png"},
+        "highres_image": True,
+    }
+    monkeypatch.setattr(
+        "mtg_proxies.scryfall.scryfall.card_by_set_collector",
+        lambda: {("soc", "128"): fake_card},
+    )
+
+    decklist, ok, _ = parse_decklist_stream(StringIO("soc/128\n"))
+
+    assert ok
+    assert decklist.cards[0].count == 1
+    assert decklist.cards[0]["id"] == "fake-sol-soc"
+
+
+def test_parse_decklist_url_line_with_modeline_keeps_trailer(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mtg_proxies.decklists import parse_decklist_stream
+
+    fake_card = {
+        "id": "fake-sol-soc",
+        "name": "Sol Ring",
+        "set": "soc",
+        "collector_number": "128",
+        "layout": "normal",
+        "image_uris": {"png": "https://example/sol.png"},
+        "highres_image": True,
+    }
+    monkeypatch.setattr(
+        "mtg_proxies.scryfall.scryfall.card_by_set_collector",
+        lambda: {("soc", "128"): fake_card},
+    )
+
+    decklist, ok, _ = parse_decklist_stream(
+        StringIO("1 https://scryfall.com/card/soc/128 #upscale\n")
+    )
+
+    assert ok
+    assert decklist.cards[0].modeline.strip().startswith("#upscale")
+
+
+def test_parse_decklist_url_line_miss_warns_and_comments(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unknown set/collector emits ERROR and the line becomes a comment."""
+    from mtg_proxies.decklists import parse_decklist_stream
+
+    monkeypatch.setattr("mtg_proxies.scryfall.scryfall.card_by_set_collector", lambda: {})
+    monkeypatch.setattr(
+        "mtg_proxies.scryfall.scryfall.fetch_printing_live",
+        lambda set_code, cn: None,
+    )
+
+    decklist, ok, warnings = parse_decklist_stream(
+        StringIO("1 https://scryfall.com/card/xxx/999/nope\n")
+    )
+
+    assert not ok
+    assert len(decklist.cards) == 0
+    assert any("xxx" in str(w).lower() or "999" in str(w) for w in warnings)

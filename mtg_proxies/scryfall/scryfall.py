@@ -558,6 +558,43 @@ def card_by_id() -> dict[str, dict]:
 
 
 @cache
+def card_by_set_collector() -> dict[tuple[str, str], dict]:
+    """Index every printing by ``(set_lower, collector_number_lower)``.
+
+    Used by the Scryfall-URL line form in ``parse_decklist_stream`` so a line
+    like ``soc/128`` resolves locally without an API roundtrip. First-write-wins
+    on duplicate keys (the bulk default-cards dump has one English printing per
+    set+collector, so collisions are rare and benign).
+    """
+    idx: dict[tuple[str, str], dict] = {}
+    for c in get_cards():
+        key = (str(c.get("set", "")).lower(), str(c.get("collector_number", "")).lower())
+        if not key[0] or not key[1]:
+            continue
+        idx.setdefault(key, c)
+    return idx
+
+
+def fetch_printing_live(set_code: str, collector_number: str) -> dict | None:
+    """Resolve a printing by set + collector via the live Scryfall API.
+
+    Fallback for ``parse_decklist_stream`` when the local bulk cache does not
+    yet have a newly-released printing. Goes through the same rate-limiter as
+    every other Scryfall call. Returns ``None`` on 404 or any non-2xx response
+    so the parser can downgrade the line to a comment + warning.
+    """
+    url = f"https://api.scryfall.com/cards/{set_code.lower()}/{collector_number.lower()}"
+    with scryfall_rate_limiter:
+        resp = requests.get(url, timeout=10)
+    if resp.status_code != 200:
+        return None
+    try:
+        return resp.json()
+    except ValueError:
+        return None
+
+
+@cache
 def cards_by_oracle_id() -> dict[str, list[dict]]:
     """Create dictionary to look up cards by their oracle id.
 
