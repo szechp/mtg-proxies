@@ -373,6 +373,17 @@ function loadEngineFile(rel) {
     // vm.runInThisContext block-scopes top-level const/let; rewrite to var
     // for the few names other engine files and our harness need to read.
     code = code.replace(/^(const|let) (mana|debugging|cardConjurer|setSymbolAliases|baseWidth|baseHeight|highResScale)\b/gm, 'var $2');
+    // Disable the Nyx (starfield-sparkle) overlay on enchantments for the 8th
+    // frame. The engine auto-applies Nyx to "Enchantment Creature" / "Enchantment
+    // Artifact" / (with the always-nyx checkbox) any Enchantment — that's the
+    // sparkly upper frame the user doesn't want. Force-disable by neutering the
+    // 8th branch of the style selector.
+    if (rel.endsWith('autoFrame.js')) {
+        code = code.replace(
+            /\}\s*else if\s*\(\s*frameType\s*===\s*['"]8th['"]\s*&&\s*isNyxEnchantment\s*\)\s*\{[\s\S]*?style\s*=\s*['"]Nyx['"]\s*;\s*\}/,
+            '} else if (false) { /* harness: Nyx disabled on 8th frame */ }',
+        );
+    }
     vm.runInThisContext(code, { filename: fp });
 }
 
