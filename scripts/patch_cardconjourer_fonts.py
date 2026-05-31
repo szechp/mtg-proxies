@@ -56,30 +56,25 @@ except ImportError:
 
 # (source_filename, copy_filename, canonical_family, canonical_postscript)
 #
-# Naming rule: family names MUST NOT contain the CSS keywords "Bold",
-# "Italic", "Medium", "Oblique" (case-insensitive) as a hyphen- or
-# space-separated token. Windows node-canvas's CSS font parser splits on
-# both delimiters and treats those tokens as weight/style keywords — so
-# "Matrix-Bold" gets parsed as family="Matrix" + weight="Bold" and the
-# registerFont alias never matches. Use the ``mtg*`` prefix + opaque
-# abbreviations (b/bsc/it/md/hv) to dodge keyword detection.
-#
-# A font shim in harness.js rewrites the engine's keyword-containing
-# strings to these safe names at ctx.font set time.
+# Where the canonical name already matches the source's intrinsic family AND
+# the source has subfamily=Regular, no copy is needed (Phyrexian, MPlantin,
+# Matrix). For Matrix we DO make a copy because the engine asks for both
+# "Matrix" (Regular) and "Matrix-Bold" as distinct families, and the source
+# matrix.ttf has subfamily=Bold (sic) which Windows interprets weirdly.
 COPIES: list[tuple[str, str, str, str]] = [
-    # source                          copy                                family                postscript
-    ("matrix.ttf",                    "matrix-regular.ttf",                "MtgMatrix",          "MtgMatrix"),
-    ("matrix-b.ttf",                  "matrix-bold.ttf",                   "MtgMatrixB",         "MtgMatrixB"),
-    ("Matrix Bold Small Caps.ttf",    "matrix-bold-small-caps.ttf",        "MtgMatrixBsc",       "MtgMatrixBsc"),
-    ("mplantin.ttf",                  "mplantin-regular.ttf",              "MtgMPlantin",        "MtgMPlantin"),
-    ("mplantin-i.ttf",                "mplantin-italic.ttf",               "MtgMPlantinIt",      "MtgMPlantinIt"),
-    ("beleren-b.ttf",                 "beleren-bold.ttf",                  "MtgBelerenB",        "MtgBelerenB"),
-    ("beleren-bsc.ttf",               "beleren-bold-small-caps.ttf",       "MtgBelerenBsc",      "MtgBelerenBsc"),
-    ("gotham-medium.ttf",             "gotham-medium-patched.ttf",         "MtgGothamMd",        "MtgGothamMd"),
-    ("gothambold.otf",                "gotham-bold-patched.otf",           "MtgGothamHv",        "MtgGothamHv"),
-    ("goudy-medieval.ttf",            "goudy-medieval-patched.ttf",        "MtgGoudyMedieval",   "MtgGoudyMedieval"),
-    ("phyrexian.ttf",                 "phyrexian-patched.ttf",             "MtgPhyrexian",       "MtgPhyrexian"),
-    ("NotoSans-Regular.ttf",          "notosans-patched.ttf",              "MtgNotoSans",        "MtgNotoSans"),
+    # source                          copy                                family                       postscript
+    ("matrix.ttf",                    "matrix-regular.ttf",                "Matrix",                    "Matrix"),
+    ("matrix-b.ttf",                  "matrix-bold.ttf",                   "Matrix-Bold",               "Matrix-Bold"),
+    ("Matrix Bold Small Caps.ttf",    "matrix-bold-small-caps.ttf",        "Matrix Bold Small Caps",    "MatrixBoldSmallCaps"),
+    ("mplantin.ttf",                  "mplantin-regular.ttf",              "MPlantin",                  "MPlantin"),
+    ("mplantin-i.ttf",                "mplantin-italic.ttf",               "MPlantin-Italic",           "MPlantin-Italic"),
+    ("beleren-b.ttf",                 "beleren-bold.ttf",                  "Beleren-Bold",              "Beleren-Bold"),
+    ("beleren-bsc.ttf",               "beleren-bold-small-caps.ttf",       "Beleren-Bold-Small-Caps",   "Beleren-Bold-Small-Caps"),
+    ("gotham-medium.ttf",             "gotham-medium-patched.ttf",         "Gotham-Medium",             "Gotham-Medium"),
+    ("gothambold.otf",                "gotham-bold-patched.otf",           "Gotham-Bold",               "Gotham-Bold"),
+    ("goudy-medieval.ttf",            "goudy-medieval-patched.ttf",        "Goudy Medieval",            "GoudyMedieval"),
+    ("phyrexian.ttf",                 "phyrexian-patched.ttf",             "Phyrexian",                 "Phyrexian"),
+    ("NotoSans-Regular.ttf",          "notosans-patched.ttf",              "NotoSans",                  "NotoSans"),
 ]
 
 
