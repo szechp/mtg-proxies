@@ -812,15 +812,36 @@ async function runOneJob(job) {
 }
 
 async function runNdjson() {
-    // Collect stdin as a single string. Even a 500-card deck is ~50 KB so
-    // buffering up front is trivial and simpler than streaming line-by-line.
-    let buf = '';
-    process.stdin.setEncoding('utf8');
-    for await (const chunk of process.stdin) buf += chunk;
-    const lines = buf.split(/\r?\n/).filter(l => l.trim());
-    for (const line of lines) {
+    // Streaming line-by-line: process each job as it arrives on stdin and emit
+    // its response on stdout before reading the next line. This is the contract
+    // the Python runner's interleaved --upscale mode depends on (it writes one
+    // line, flushes, blocks on the response, repeats). The previous
+    // ``for await chunk; buf += chunk`` form buffered until EOF and deadlocked
+    // the interleaved path: Python waiting on stdout, harness waiting on stdin
+    // to close. node's ``readline`` module is the standard line-streamer; we
+    // pause/resume around each job so JSON lines can't pile up unprocessed.
+    const readline = require('readline');
+    const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+    const queue = [];
+    let resolveNext = null;
+    let done = false;
+    rl.on('line', (line) => {
+        if (resolveNext) { const r = resolveNext; resolveNext = null; r(line); }
+        else queue.push(line);
+    });
+    rl.on('close', () => { done = true; if (resolveNext) { const r = resolveNext; resolveNext = null; r(null); } });
+    function nextLine() {
+        if (queue.length) return Promise.resolve(queue.shift());
+        if (done) return Promise.resolve(null);
+        return new Promise((res) => { resolveNext = res; });
+    }
+    while (true) {
+        const line = await nextLine();
+        if (line === null) return;
+        const trimmed = line.trim();
+        if (!trimmed) continue;
         let job;
-        try { job = JSON.parse(line); }
+        try { job = JSON.parse(trimmed); }
         catch (e) { writeResponse({ slot: '?', status: 'skip', reason: 'bad json: ' + e.message }); continue; }
         await runOneJob(job);
     }
