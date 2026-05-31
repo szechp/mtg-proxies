@@ -68,6 +68,21 @@ EXCLUDED_BASIC_LAND_PRINTS = {
 }
 
 
+def resolve_upscale_scope(args: argparse.Namespace) -> Literal["auto", "all"] | None:
+    """Collapse the upscale CLI flags into a single scope value.
+
+    Returns ``None`` (off), ``"auto"`` (lowres-only), or ``"all"`` (every card). Bare
+    ``--upscale`` parses to ``"auto"`` via argparse's ``const="auto"``; ``--upscale-model``
+    without ``--upscale`` is treated as an implicit ``"auto"``.
+    """
+    scope = getattr(args, "upscale", None)
+    if scope is not None:
+        return scope  # type: ignore[no-any-return]
+    if getattr(args, "upscale_model", None):
+        return "auto"
+    return None
+
+
 def _cards_per_sheet_dims(paper_inches: np.ndarray, scale: float) -> tuple[int, int]:
     """Return (cards_per_row, rows_per_sheet) for the given paper and card scale.
 
@@ -1835,24 +1850,20 @@ def main() -> None:
     )
     print_parser.add_argument(
         "--upscale",
-        action="store_true",
-        default=False,
-        help="upscale lowres card images with Real-ESRGAN instead of replacing them with a different print",
+        nargs="?",
+        choices=["auto", "all"],
+        const="auto",
+        default=None,
+        help=(
+            "upscale lowres card images with Real-ESRGAN. 'auto' (default when bare) only "
+            "upscales cards Scryfall marks lowres; 'all' upscales every card. Off when omitted."
+        ),
     )
     print_parser.add_argument(
         "--upscale-model",
         default=None,
         metavar="PATH",
-        help="path to a local .pth upscaling model (default: RealESRNet_x4plus); implies --upscale",
-    )
-    print_parser.add_argument(
-        "--upscale-all",
-        action="store_true",
-        default=False,
-        help=(
-            "upscale every card, ignoring Scryfall's highres_image flag. Without this, --upscale only"
-            " upscales cards Scryfall marks as low-res. Implies --upscale."
-        ),
+        help="path to a local .pth upscaling model (default: RealESRNet_x4plus); implies --upscale auto",
     )
     print_parser.add_argument(
         "--upscale-target-width",
@@ -2212,6 +2223,7 @@ def main() -> None:
             modeline_skip_shadow_lift: set[str] = set()
             modeline_skip_upscale: set[str] = set()
             has_modelines = False
+            upscale_scope = resolve_upscale_scope(args)
 
             if args.card_back is None and args.card_back_count is not None:
                 print("Error: --card-back-count requires --card-back PATH")
@@ -2219,7 +2231,7 @@ def main() -> None:
             if args.card_back_count is not None and args.card_back_count <= 0:
                 print(f"Error: --card-back-count must be positive (got {args.card_back_count})")
                 raise SystemExit(1)
-            if (args.upscale or args.upscale_model or args.upscale_all) and not args.decklist:
+            if upscale_scope is not None and not args.decklist:
                 print("Error: --upscale requires a decklist (it operates on Scryfall scans)")
                 raise SystemExit(1)
             if args.split_pages is not None and args.split_pages <= 0:
@@ -2251,7 +2263,7 @@ def main() -> None:
                 )
                 if duplex_mode:
                     fronts, backs, front_flags, back_flags = fetch_scans_paired(decklist, args.card_back)
-                elif args.upscale or args.upscale_model or args.upscale_all:
+                elif upscale_scope is not None:
                     images, highres_flags = fetch_scans_scryfall_flagged(decklist, faces=args.faces)
                 else:
                     images = fetch_scans_scryfall(decklist, faces=args.faces)
@@ -2277,7 +2289,7 @@ def main() -> None:
                             skip_normalize=modeline_skip_normalize,
                             skip_shadow_lift=modeline_skip_shadow_lift,
                             skip_upscale=modeline_skip_upscale,
-                            global_upscale=bool(args.upscale or args.upscale_model or args.upscale_all),
+                            global_upscale=upscale_scope is not None,
                             global_normalize=bool(args.normalize),
                             global_shadow_lift=bool(args.shadow_lift),
                             upscale_model=args.upscale_model,
@@ -2292,7 +2304,7 @@ def main() -> None:
                             skip_normalize=modeline_skip_normalize,
                             skip_shadow_lift=modeline_skip_shadow_lift,
                             skip_upscale=modeline_skip_upscale,
-                            global_upscale=bool(args.upscale or args.upscale_model or args.upscale_all),
+                            global_upscale=upscale_scope is not None,
                             global_normalize=bool(args.normalize),
                             global_shadow_lift=bool(args.shadow_lift),
                             upscale_model=args.upscale_model,
@@ -2357,8 +2369,7 @@ def main() -> None:
                 # Build a flag list aligned with the final ``images``: decklist slots use the
                 # Scryfall flags collected earlier (if any), custom art and the appended
                 # card-back copies are user-supplied → highres=True so upscale skips them.
-                upscale_requested = args.upscale or args.upscale_model or args.upscale_all
-                if args.decklist and upscale_requested:  # noqa: SIM108  (ternary form runs past line limit)
+                if args.decklist and upscale_scope is not None:  # noqa: SIM108  (ternary runs past line limit)
                     image_flags = list(highres_flags)
                 else:
                     image_flags = [True] * len(images)
@@ -2417,7 +2428,7 @@ def main() -> None:
                         duplex=True,
                         user_supplied=user_supplied,
                         skip_upscale=modeline_skip_upscale,
-                        global_upscale=bool(args.upscale or args.upscale_model or args.upscale_all),
+                        global_upscale=upscale_scope is not None,
                         upscale_model=args.upscale_model,
                         upscale_target_width=args.upscale_target_width,
                     )
@@ -2429,23 +2440,24 @@ def main() -> None:
                         faces=args.faces,
                         user_supplied=user_supplied,
                         skip_upscale=modeline_skip_upscale,
-                        global_upscale=bool(args.upscale or args.upscale_model or args.upscale_all),
+                        global_upscale=upscale_scope is not None,
                         upscale_model=args.upscale_model,
                         upscale_target_width=args.upscale_target_width,
                     )
                     # Per-card-upscale mutates ``images`` for the #upscale slots; the downstream
                     # tone passes' opt-out sets were keyed on the pre-upscale paths.
                     _remap_skip_set(before, images, modeline_skip_normalize, modeline_skip_shadow_lift)
-            if args.decklist and (args.upscale or args.upscale_model or args.upscale_all):
+            if args.decklist and upscale_scope is not None:
                 from mtg_proxies.upscale import upscale_images
 
-                # --upscale-all forces every non-user-supplied / non-modeline-skipped card
+                # ``--upscale all`` forces every non-user-supplied / non-modeline-skipped card
                 # through the model. ``upscale_skip`` covers ``#no-upscale`` and the
                 # ``#upscale --upscale-model PATH`` overrides (which already wrote their
                 # upscaled output into ``images`` above).
                 upscale_skip = user_supplied | modeline_skip_upscale
+                force_all = upscale_scope == "all"
                 effective_flags = [
-                    True if p in upscale_skip else (False if args.upscale_all else f)
+                    True if p in upscale_skip else (False if force_all else f)
                     for p, f in zip(images, image_flags, strict=True)
                 ]
                 before = list(images)

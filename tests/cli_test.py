@@ -1977,7 +1977,7 @@ def test_main_print_upscale_calls_upscale_images(tmp_path) -> None:
 
 
 def test_main_print_upscale_all_overrides_highres_flags(tmp_path) -> None:
-    """--upscale-all must pass [False]*N to upscale_images, ignoring Scryfall's highres flags."""
+    """`--upscale all` must pass [False]*N to upscale_images, ignoring Scryfall's highres flags."""
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "out.pdf"
@@ -1987,7 +1987,7 @@ def test_main_print_upscale_all_overrides_highres_flags(tmp_path) -> None:
     fake_flags = [True, True, True]
 
     with (
-        patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), "--upscale-all"]),
+        patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), "--upscale", "all"]),
         patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
         patch("mtg_proxies.cli.fetch_scans_scryfall_flagged", return_value=(fake_images, fake_flags)),
         patch("mtg_proxies.upscale.upscale_images", return_value=fake_images) as mock_upscale,
@@ -1998,6 +1998,89 @@ def test_main_print_upscale_all_overrides_highres_flags(tmp_path) -> None:
     mock_upscale.assert_called_once_with(
         fake_images, highres_flags=[False, False, False], model_path=None, target_width=745
     )
+
+
+# ---------------------------------------------------------------------------
+# resolve_upscale_scope + --upscale [auto|all] flag collapse (MR3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("upscale", "upscale_model", "expected"),
+    [
+        # Flag absent and no model → off.
+        (None, None, None),
+        # Bare --upscale defaults to auto (lowres-only).
+        ("auto", None, "auto"),
+        # Explicit all.
+        ("all", None, "all"),
+        # --upscale-model without --upscale implies auto.
+        (None, "/path/to/model.pth", "auto"),
+        # Explicit auto + model override.
+        ("auto", "/path/to/model.pth", "auto"),
+        # Explicit all + model override (all wins).
+        ("all", "/path/to/model.pth", "all"),
+    ],
+)
+def test_resolve_upscale_scope(upscale: str | None, upscale_model: str | None, expected: str | None) -> None:
+    import argparse
+
+    from mtg_proxies.cli import resolve_upscale_scope
+
+    args = argparse.Namespace(upscale=upscale, upscale_model=upscale_model)
+
+    assert resolve_upscale_scope(args) == expected
+
+
+def test_main_print_upscale_bare_defaults_to_auto(tmp_path) -> None:
+    """`--upscale` (no scope) is equivalent to `--upscale auto` — same flagged-fetch path as before."""
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "out.pdf"
+    fake_decklist = object()
+    fake_images = ["a.png", "b.png"]
+    fake_flags = [False, True]
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), "--upscale"]),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
+        patch("mtg_proxies.cli.fetch_scans_scryfall_flagged", return_value=(fake_images, fake_flags)) as flagged,
+        patch("mtg_proxies.upscale.upscale_images", return_value=fake_images) as mock_upscale,
+        patch("mtg_proxies.cli.print_cards_fpdf"),
+    ):
+        main()
+
+    flagged.assert_called_once()
+    # auto preserves Scryfall's highres flags as-is (only lowres cards upscale).
+    mock_upscale.assert_called_once_with(fake_images, highres_flags=[False, True], model_path=None, target_width=745)
+
+
+def test_main_print_upscale_model_alone_implies_auto(tmp_path) -> None:
+    """`--upscale-model PATH` without `--upscale` enables auto-scope upscale with that model."""
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "out.pdf"
+    fake_decklist = object()
+    fake_images = ["a.png", "b.png"]
+    fake_flags = [False, True]
+
+    with (
+        patch(
+            "sys.argv",
+            ["mtg-proxies", "print", "decklist.txt", str(out_file), "--upscale-model", "/tmp/m.pth"],
+        ),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
+        patch("mtg_proxies.cli.fetch_scans_scryfall_flagged", return_value=(fake_images, fake_flags)) as flagged,
+        patch("mtg_proxies.upscale.upscale_images", return_value=fake_images) as mock_upscale,
+        patch("mtg_proxies.cli.print_cards_fpdf"),
+    ):
+        main()
+
+    flagged.assert_called_once()
+    mock_upscale.assert_called_once()
+    assert mock_upscale.call_args.kwargs["model_path"] == "/tmp/m.pth"
+    # Auto scope → flagged paths unchanged.
+    assert mock_upscale.call_args.kwargs["highres_flags"] == [False, True]
 
 
 def test_main_print_no_upscale_modeline_survives_normalize_and_shadow_lift(tmp_path) -> None:
@@ -2060,7 +2143,8 @@ def test_main_print_no_upscale_modeline_survives_normalize_and_shadow_lift(tmp_p
                 str(out_file),
                 "--normalize",
                 "--shadow-lift",
-                "--upscale-all",
+                "--upscale",
+                "all",
             ],
         ),
         patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
