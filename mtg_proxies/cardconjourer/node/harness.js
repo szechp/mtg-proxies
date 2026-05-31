@@ -198,9 +198,77 @@ async function getPatchedBlackFrame() {
     _patchedBlackFrame = cv;
     return cv;
 }
+// Engine font-name → registered alias normalizer. The engine (creator-23.js)
+// occasionally produces font strings like ``"MPlantin-Italic Not-Rotated 102px"``
+// that don't match the alias names we passed to registerFont (``mplantini``).
+// macOS/Linux Cairo's fuzzy matching forgives this; Windows GDI+ does not and
+// falls back to Sans with a clear ``couldn't load font ... expect ugly output``
+// warning. Rewrite the family portion to our alias and put the string in
+// canonical ``"<size> <family>"`` form so node-canvas's strict CSS parser is
+// happy.
+//
+// Order matters in this list: longer / more-specific patterns must come first
+// so e.g. ``matrix bold small caps`` doesn't shortcut to ``matrix``.
+const FONT_ALIAS_PATTERNS = [
+    [/\bmatrix[\s-]*bold[\s-]*small[\s-]*caps\b/i, 'matrixbsc'],
+    [/\bmatrix[\s-]*bold\b/i,                       'matrixb'],
+    [/\bmatrix\b/i,                                 'matrix'],
+    [/\bmplantin[\s-]*italic\b/i,                   'mplantini'],
+    [/\bmplantin\b/i,                               'mplantin'],
+    [/\bbeleren[\s-]*bold[\s-]*small[\s-]*caps\b/i, 'belerenbsc'],
+    [/\bbeleren[\s-]*bold\b/i,                      'belerenb'],
+    [/\bgotham[\s-]*medium\b/i,                     'gothammedium'],
+    [/\bgotham[\s-]*bold\b/i,                       'gothambold'],
+    [/\bgoudy[\s-]*medieval\b/i,                    'goudymedieval'],
+    [/\bphyrexian\b/i,                              'phyrexian'],
+    [/\bnoto[\s-]*sans\b/i,                         'notosans'],
+];
+// Already-normalized strings (e.g. ``"101px matrixb"`` — our own aliases) flow
+// through the normalizer too. Skip the alias scan if the string already ends
+// in one of our registered family names so we don't pointlessly warn.
+const KNOWN_ALIASES = new Set([
+    'matrix', 'matrixb', 'matrixbsc', 'mplantin', 'mplantini',
+    'belerenb', 'belerenbsc', 'gothammedium', 'gothambold',
+    'goudymedieval', 'phyrexian', 'notosans',
+]);
+function normalizeFontString(s) {
+    if (typeof s !== 'string') return s;
+    // Pull the first numeric+unit (16px, 102pt, 1.5em). Default 16px if missing.
+    const sizeMatch = s.match(/(\d+(?:\.\d+)?)(px|pt|em|%)/);
+    const sizePart  = sizeMatch ? sizeMatch[0] : '16px';
+    // Fast-path: already in canonical form (e.g. "101px matrixb"). Skip.
+    const lastToken = s.trim().split(/\s+/).pop();
+    if (lastToken && KNOWN_ALIASES.has(lastToken.toLowerCase())) return s;
+    for (const [re, alias] of FONT_ALIAS_PATTERNS) {
+        if (re.test(s)) return sizePart + ' ' + alias;
+    }
+    // Unknown family — leave it alone; node-canvas's own ``couldn't load
+    // font ...`` warning will surface the genuine miss if it can't resolve it.
+    return s;
+}
+
+function patchCtxFont(ctx) {
+    // Replace the ``font`` property with one that runs the value through the
+    // alias normalizer before delegating to the real setter.
+    let proto = Object.getPrototypeOf(ctx);
+    let desc = null;
+    while (proto && !desc) {
+        desc = Object.getOwnPropertyDescriptor(proto, 'font');
+        if (!desc) proto = Object.getPrototypeOf(proto);
+    }
+    if (!desc || !desc.set || !desc.get) return;  // unfamiliar node-canvas build — leave alone
+    const origGet = desc.get, origSet = desc.set;
+    Object.defineProperty(ctx, 'font', {
+        configurable: true,
+        get() { return origGet.call(this); },
+        set(v) { origSet.call(this, normalizeFontString(v)); },
+    });
+}
+
 function wrapContext(ctx) {
     const orig = ctx.drawImage.bind(ctx);
     ctx.drawImage = function (img, ...rest) { return orig(unwrap(img), ...rest); };
+    patchCtxFont(ctx);
     return ctx;
 }
 function wrapCanvas(c) {
