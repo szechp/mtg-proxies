@@ -225,6 +225,31 @@ def test_main_cardconjourer_mtgpics_miss_falls_back_to_raw_scryfall(tmp_path: Pa
         mock_upscale.assert_not_called()
 
 
+def test_main_cardconjourer_scryfall_flag_skips_mtgpics(tmp_path: Path) -> None:
+    """`--scryfall` skips MTGPics entirely; fetch_mtgpics_art is never called."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder\n")
+    outdir = tmp_path / "out"
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", "--scryfall", str(deck), str(outdir)]),
+        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art") as mock_mtgp,
+        patch("mtg_proxies.scryfall.get_image", return_value="/tmp/scryfall.jpg") as mock_scry,
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
+        main()
+
+        prepare_each = mock_render.call_args.kwargs.get("prepare_each")
+        extras = prepare_each(1)
+        assert extras.get("art_path") == "/tmp/scryfall.jpg"
+        # MTGPics is bypassed even when the card is one MTGPics would have.
+        mock_mtgp.assert_not_called()
+        mock_scry.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # Bundled fonts (don't default to arial on a fresh checkout)
 # ---------------------------------------------------------------------------

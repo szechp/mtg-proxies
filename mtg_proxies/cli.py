@@ -973,15 +973,18 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         if card is None:
             return {}
 
-        # 1) MTGPics by set+collector. Always try first.
-        set_code = card.card.get("set") or ""
-        cn = card.card.get("collector_number") or ""
-        if set_code and cn:
-            mtgp = _mtgpics.fetch_mtgpics_art(set_code, cn, cache_root=mtgpics_cache_root)
-            if mtgp is not None:
-                mtgpics_stats["hits"] += 1
-                return {"art_path": str(mtgp)}
-        mtgpics_stats["misses"] += 1
+        # 1) MTGPics by set+collector. Tried first unless --scryfall opts out
+        # (useful when MTGPics's scan for a card has artist signatures /
+        # watermarks burned in that we don't want in the final render).
+        if not args.scryfall:
+            set_code = card.card.get("set") or ""
+            cn = card.card.get("collector_number") or ""
+            if set_code and cn:
+                mtgp = _mtgpics.fetch_mtgpics_art(set_code, cn, cache_root=mtgpics_cache_root)
+                if mtgp is not None:
+                    mtgpics_stats["hits"] += 1
+                    return {"art_path": str(mtgp)}
+            mtgpics_stats["misses"] += 1
 
         # 2) Fallback: Scryfall art_crop. Raw by default, upscaled with --upscale.
         uris = card.card.get("image_uris") or {}
@@ -1118,13 +1121,17 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         prepare_each=prepare_each_cb,
     )
     print(f"[cardconjourer] {summary['ok']}/{summary['total']} rendered, {summary['skipped']} skipped")
-    total_art = mtgpics_stats["hits"] + mtgpics_stats["misses"]
-    if total_art:
-        print(
-            f"[cardconjourer] art sources: {mtgpics_stats['hits']}/{total_art} MTGPics, "
-            f"{mtgpics_stats['misses']} Scryfall fallback"
-            + (" (upscaled)" if args.upscale else "")
-        )
+    if args.scryfall:
+        suffix = " (upscaled)" if args.upscale else ""
+        print(f"[cardconjourer] art source: Scryfall art_crop only (--scryfall){suffix}")
+    else:
+        total_art = mtgpics_stats["hits"] + mtgpics_stats["misses"]
+        if total_art:
+            print(
+                f"[cardconjourer] art sources: {mtgpics_stats['hits']}/{total_art} MTGPics, "
+                f"{mtgpics_stats['misses']} Scryfall fallback"
+                + (" (upscaled)" if args.upscale else "")
+            )
 
 
 
@@ -1435,6 +1442,14 @@ def main() -> None:
     frame_group.add_argument(
         "--retro", dest="frame_retro", action="store_true",
         help="render every card in the retro pre-modern frame style (not implemented yet)"
+    )
+    cardconjourer_parser.add_argument(
+        "--scryfall", action="store_true", default=False,
+        help=(
+            "skip MTGPics entirely and use Scryfall's art_crop directly. Useful when"
+            " MTGPics's hi-res scan for a card has an artist signature / watermark"
+            " burned in that the renderer would carry into the final card."
+        ),
     )
     cardconjourer_parser.add_argument(
         "--upscale", action="store_true", default=False,
