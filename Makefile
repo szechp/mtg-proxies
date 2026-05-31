@@ -1,46 +1,47 @@
-# mtg-proxies dev tasks. The Card Conjurer source isn't vendored — `make
-# cardconjurer` fetches a pinned commit into ~/.cache/mtg-proxies/cardconjurer/
-# the first time it's needed. `make install` runs everything for a fresh checkout.
+# mtg-proxies dev tasks.
+#
+# All real install logic lives in scripts/setup.py — this Makefile just
+# dispatches. The script is pure stdlib Python and works cross-platform
+# (macOS, Linux, Windows). Windows users without GNU make can call the
+# script directly: `python scripts/setup.py`.
+#
+# Dependency note: MTGPics (the hi-res art source for `cardconjourer`) is
+# NOT installed here. Its URL pattern is reimplemented directly in
+# mtg_proxies/cardconjourer/mtgpics.py, so there's no external tool to
+# fetch or set up.
 
-CC_CACHE     := $(HOME)/.cache/mtg-proxies/cardconjurer
-CC_REPO      := https://github.com/joshbirnholz/cardconjurer.git
-CC_SHA       := $(shell cat cardconjurer.lock)
-NODE_DIR     := mtg_proxies/cardconjourer/node
+# `python` on Windows, `python3` everywhere else. Override with `make PYTHON=...`
+# if your system uses something different.
+PYTHON ?= python3
+ifeq (, $(shell command -v $(PYTHON) 2>/dev/null))
+PYTHON := python
+endif
 
-# Sparse-checkout pattern: only the engine code + fonts + the 8th-frame /
-# manaSymbols / setSymbols assets we actually load. Keeps the cache to ~50 MB
-# instead of the full ~4 GB upstream history.
-CC_SPARSE := \
-	/js/* \
-	/fonts/* \
-	/img/frames/* \
-	/img/manaSymbols/* \
-	/img/setSymbols/* \
-	/img/*.png \
-	/data/*
+SETUP := $(PYTHON) scripts/setup.py
 
-.PHONY: install cardconjurer clean-cc node-install
+.PHONY: help install cardconjurer node-install check clean-cc
 
-install: node-install cardconjurer
-	uv sync
+help:
+	@echo "mtg-proxies make targets:"
+	@echo "  make install        full install: deps check + npm install + Card Conjurer clone + uv sync"
+	@echo "  make cardconjurer   only lazy-clone the Card Conjurer source (~50 MB)"
+	@echo "  make node-install   only run \`npm install\` in the harness dir"
+	@echo "  make check          check that node/npm/git/uv are installed; report and exit"
+	@echo "  make clean-cc       delete the cached Card Conjurer clone"
+	@echo ""
+	@echo "Don't have GNU make? Run \`python scripts/setup.py\` directly — same result."
+
+install:
+	$(SETUP)
+
+cardconjurer:
+	$(SETUP) --cardconjurer-only
 
 node-install:
-	cd $(NODE_DIR) && npm install --silent
+	$(SETUP) --node-only
 
-# Idempotent: clones once at the pinned SHA, exits 0 if already there.
-cardconjurer:
-	@if [ -d "$(CC_CACHE)/.git" ] && [ "$$(git -C $(CC_CACHE) rev-parse HEAD 2>/dev/null)" = "$(CC_SHA)" ]; then \
-		echo "[cardconjurer] cache at $(CC_CACHE) is at the pinned SHA, skipping"; \
-	else \
-		echo "[cardconjurer] fetching $(CC_REPO) @ $(CC_SHA) → $(CC_CACHE) (partial + sparse)"; \
-		mkdir -p $(CC_CACHE); \
-		git clone --filter=blob:none --no-checkout $(CC_REPO) $(CC_CACHE) 2>/dev/null || true; \
-		git -C $(CC_CACHE) sparse-checkout init --no-cone; \
-		git -C $(CC_CACHE) sparse-checkout set $(CC_SPARSE); \
-		git -C $(CC_CACHE) fetch --depth=1 origin $(CC_SHA); \
-		git -C $(CC_CACHE) checkout $(CC_SHA); \
-		echo "[cardconjurer] ready at $(CC_CACHE)"; \
-	fi
+check:
+	$(SETUP) --check
 
 clean-cc:
-	rm -rf $(CC_CACHE)
+	$(SETUP) --clean-cardconjurer

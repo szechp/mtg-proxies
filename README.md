@@ -53,11 +53,32 @@ Create a high quality printable PDF from your decklist or a list of cards you wa
 
 ## Usage
 
-1. Install `mtg-proxies` using [uv](https://docs.astral.sh/uv/#installation).
+1. Install `mtg-proxies`.
+
+Quick install (uv tool):
 
 ```bash
 uv tool install git+https://github.com/DiddiZ/mtg-proxies
 ```
+
+Or for a full dev checkout (includes the Card Conjurer source + Node harness deps):
+
+```bash
+git clone https://github.com/DiddiZ/mtg-proxies && cd mtg-proxies
+make install                          # cross-platform: macOS / Linux / Windows
+# or, without GNU make:
+python scripts/setup.py
+```
+
+The setup script checks for `git`, `node`, `npm`, and `uv` up front and tells you exactly what's missing (with install hints) before doing anything. **Windows** users without `make` should call the Python script directly — Git Bash isn't required.
+
+| target | what it does |
+|---|---|
+| `make install` (or `python scripts/setup.py`) | dep check → `npm install` in harness dir → lazy-clone Card Conjurer (~50 MB) → `uv sync` |
+| `make cardconjurer` | only the Card Conjurer clone (idempotent — skips if already at the pinned SHA) |
+| `make node-install` | only `npm install` in the harness dir |
+| `make check` | report which deps are installed; touch nothing |
+| `make clean-cc` | delete the cached Card Conjurer clone |
 
 2. (Optional) Prepare your decklist in MtG Arena format.
 
@@ -534,7 +555,7 @@ mtg-proxies cardconjourer --8th --upscale \
 Anime / illustration-trained models (anime_6B, NMKD-Siax) are the strongest
 dot-suppressors. RealESRGAN_x4plus is a gentler middle ground.
 
-The Card Conjurer source is fetched on demand into `~/.cache/mtg-proxies/cardconjurer/` (partial+sparse git clone of a pinned commit, ~50 MB) the first time you run `make cardconjurer`. Run `make install` on a fresh checkout to do that, install the node harness deps, and sync the Python venv in one go.
+The Card Conjurer source is fetched on demand into `~/.cache/mtg-proxies/cardconjurer/` (partial+sparse git clone of a pinned commit, ~50 MB) the first time you run `make cardconjurer` (or `python scripts/setup.py --cardconjurer-only`). On a fresh checkout, `make install` does the clone, runs `npm install` in the harness dir, and `uv sync`'s the Python venv in one go. MTGPics is built into the codebase (no install step) — its URL pattern is in `mtg_proxies/cardconjourer/mtgpics.py`.
 
 ### deck_value
 
