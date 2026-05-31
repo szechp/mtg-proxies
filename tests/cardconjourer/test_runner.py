@@ -349,3 +349,80 @@ def test_render_deck_redoes_when_png_deleted(tmp_path: Path) -> None:
     render_deck([(1, "Murder"), (1, "Beast Within")], outdir, frame="8th", run_harness=fake_run)
 
     assert [j["name"] for j in enqueued] == ["Murder", "Beast Within"]
+
+
+def test_render_deck_prepare_each_called_per_slot_with_merged_fields(tmp_path: Path) -> None:
+    """`prepare_each(slot) -> dict` runs just-before-send and its result merges into the job."""
+    from mtg_proxies.cardconjourer.runner import render_deck
+
+    prepare_calls: list[int] = []
+
+    def prepare_each(slot_int: int) -> dict:
+        prepare_calls.append(slot_int)
+        return {"art_path": f"/tmp/upscaled-{slot_int}.png"}
+
+    sent_jobs: list[dict] = []
+
+    def fake_run(jobs: list[dict], prepare: object | None = None) -> list[dict]:
+        # The contract: run_harness now receives the bare job list + the prepare
+        # callable; it merges prepare(slot) into each job right before sending.
+        responses = []
+        for j in jobs:
+            slot_int = int(j["slot"])
+            extras = prepare(slot_int) if prepare else {}
+            merged = {**j, **extras}
+            sent_jobs.append(merged)
+            png = tmp_path / "out" / f"{j['slot']}-{j['name'].lower().replace(' ', '_')}.png"
+            png.parent.mkdir(parents=True, exist_ok=True)
+            png.write_bytes(b"PNG")
+            responses.append({"slot": j["slot"], "status": "ok", "out": str(png), "ms": 1})
+        return responses
+
+    render_deck(
+        [(1, "Murder"), (1, "Beast Within")],
+        tmp_path / "out",
+        frame="8th",
+        run_harness=fake_run,
+        prepare_each=prepare_each,
+    )
+
+    # prepare_each was called once per slot
+    assert prepare_calls == [1, 2]
+    # Each sent job carries the override
+    assert [j["art_path"] for j in sent_jobs] == ["/tmp/upscaled-1.png", "/tmp/upscaled-2.png"]
+
+
+def test_render_deck_prepare_each_skipped_for_existing_pngs(tmp_path: Path) -> None:
+    """Pre-existing PNGs short-circuit before prepare_each fires — no wasted upscale work."""
+    from mtg_proxies.cardconjourer.runner import render_deck
+
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    (outdir / "0001-murder.png").write_bytes(b"OLD")  # slot 1 already done
+
+    prepare_calls: list[int] = []
+
+    def prepare_each(slot_int: int) -> dict:
+        prepare_calls.append(slot_int)
+        return {"art_path": f"/tmp/u{slot_int}.png"}
+
+    def fake_run(jobs: list[dict], prepare: object | None = None) -> list[dict]:
+        responses = []
+        for j in jobs:
+            if prepare:
+                prepare(int(j["slot"]))
+            png = outdir / f"{j['slot']}-{j['name'].lower().replace(' ', '_')}.png"
+            png.write_bytes(b"NEW")
+            responses.append({"slot": j["slot"], "status": "ok", "out": str(png), "ms": 0})
+        return responses
+
+    render_deck(
+        [(1, "Murder"), (1, "Beast Within")],
+        outdir,
+        frame="8th",
+        run_harness=fake_run,
+        prepare_each=prepare_each,
+    )
+
+    # Slot 1 was skipped entirely. prepare_each only fired for slot 2.
+    assert prepare_calls == [2]

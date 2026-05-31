@@ -98,12 +98,14 @@ def test_main_cardconjourer_upscale_flag_propagates(tmp_path: Path) -> None:
     assert mock_render.call_args.kwargs.get("upscale") is True
 
 
-def test_main_cardconjourer_upscale_converts_jpg_art_to_png(tmp_path: Path) -> None:
-    """`--upscale` must transcode the .jpg art_crop to .png BEFORE upscale.
+def test_main_cardconjourer_upscale_interleaves_via_prepare_each(tmp_path: Path) -> None:
+    """`--upscale` passes a `prepare_each` callable to render_deck instead of pre-batching.
 
-    Otherwise upscale_images saves an RGBA result through PIL's JPEG writer
-    and crashes with `cannot write mode RGBA as JPEG`. Pass a real JPEG so
-    PIL.Image.open succeeds in the cli helper.
+    Interleaved flow: render_deck/_run calls `prepare_each(slot)` right before each
+    card's job is sent to the harness. The callable does the JPG→PNG transcode + ESRGAN
+    upscale for that one card and returns the `art_path` override. This is what makes
+    PNGs appear in outdir as each card finishes rather than after the whole upscale
+    phase completes.
     """
     from PIL import Image
 
@@ -127,22 +129,24 @@ def test_main_cardconjourer_upscale_converts_jpg_art_to_png(tmp_path: Path) -> N
         mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
         main()
 
-    mock_upscale.assert_called_once()
-    upscale_paths = mock_upscale.call_args.args[0]
-    # Must be a .png path (transcoded), not the original .jpg.
-    assert len(upscale_paths) == 1
-    assert upscale_paths[0].endswith(".png"), f"upscaler got non-png: {upscale_paths[0]!r}"
-    # And the file must actually exist on disk so upscale_images can open it.
-    assert Path(upscale_paths[0]).is_file()
+        # render_deck got a prepare_each callable. Invoke it for slot 1 inside the
+        # patch scope so the mocked upscaler intercepts the call.
+        prepare_each = mock_render.call_args.kwargs.get("prepare_each")
+        assert callable(prepare_each), f"expected prepare_each callable, got {prepare_each!r}"
 
-    # render_deck was given a job_overrides mapping slot 1 → upscaled art_path.
-    job_overrides = mock_render.call_args.kwargs.get("job_overrides", {})
-    assert 1 in job_overrides
-    assert job_overrides[1].get("art_path") == str(upscaled)
+        extras = prepare_each(1)
+        assert extras.get("art_path") == str(upscaled)
+
+        # The upscaler was invoked exactly once (for slot 1, when prepare_each fired).
+        mock_upscale.assert_called_once()
+        upscale_paths = mock_upscale.call_args.args[0]
+        assert len(upscale_paths) == 1
+        assert upscale_paths[0].endswith(".png"), f"upscaler got non-png: {upscale_paths[0]!r}"
+        assert Path(upscale_paths[0]).is_file()
 
 
 def test_main_cardconjourer_no_upscale_skips_art_pipeline(tmp_path: Path) -> None:
-    """Without --upscale, no art download / upscale happens — job goes straight through."""
+    """Without --upscale, no prepare_each is passed and no art download / upscale happens."""
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"
@@ -160,7 +164,7 @@ def test_main_cardconjourer_no_upscale_skips_art_pipeline(tmp_path: Path) -> Non
 
     mock_get_image.assert_not_called()
     mock_upscale.assert_not_called()
-    assert mock_render.call_args.kwargs.get("job_overrides", {}) == {}
+    assert mock_render.call_args.kwargs.get("prepare_each") is None
 
 
 # ---------------------------------------------------------------------------

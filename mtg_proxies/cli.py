@@ -914,13 +914,14 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     for card in decklist.cards:
         (harness_inputs_dir / f"{cc_runner.slug(card['name'])}.json").write_text(_json.dumps(card.card))
 
-    # --upscale: download each card's art_crop, run it through ESRGAN, and tell the
-    # harness to use the upscaled local file via ``job.art_path`` (the harness's
-    # img loader treats string paths as local loads). Done once up-front so the
-    # harness streams can render immediately; the slow ESRGAN pass happens before
-    # any node subprocess fires. Per-slot overrides flow through ``render_deck``'s
-    # ``job_overrides`` map.
-    job_overrides: dict[int, dict] = {}
+    # --upscale: each card's ESRGAN pass runs just-in-time, *interleaved* with the
+    # render. Without interleave we used to upscale all 100+ art_crops first (long
+    # silent block), THEN start rendering. Now the order is: upscale card 1, render
+    # card 1, upscale card 2, render card 2, … — so PNGs appear in the outdir as
+    # they're done and a failure mid-deck doesn't waste minutes of upscale work.
+    # ``prepare_each(slot)`` is invoked by render_deck/_run right before each job
+    # is sent to the harness.
+    prepare_each_cb = None
     if args.upscale:
         from PIL import Image as _PILImage
 
@@ -929,9 +930,8 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
 
         # Scryfall art_crops are JPEGs. The upscaler always emits RGBA (it adds
         # an alpha channel for the rounded-corner blend used by the print path),
-        # and PIL refuses to save RGBA as JPEG. Transcode to PNG up front so the
-        # upscaler's derived output path is .png and saves cleanly. Cache the
-        # transcoded copy in a temp dir keyed by source filename.
+        # and PIL refuses to save RGBA as JPEG. Transcode to PNG so the upscaler's
+        # derived output path is .png and saves cleanly. Cache in a temp dir.
         transcode_dir = Path(tempfile.mkdtemp(prefix="cc-upscale-src-"))
 
         def _ensure_png(src: str) -> str:
@@ -944,29 +944,32 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                     im.convert("RGB").save(dst, format="PNG")
             return str(dst)
 
-        art_paths: list[str] = []
-        slot_indices: list[int] = []
-        for slot_idx, card in enumerate(decklist.cards, start=1):
+        upscale_kwargs: dict = {}
+        if args.upscale_model:
+            upscale_kwargs["model_path"] = args.upscale_model
+        if args.upscale_target_width:
+            upscale_kwargs["target_width"] = args.upscale_target_width
+
+        # Map 1-based slot → resolved Card object so prepare_each can look it up.
+        slot_to_card = dict(enumerate(decklist.cards, start=1))
+
+        def _prepare_each(slot_int: int) -> dict:
+            card = slot_to_card.get(slot_int)
+            if card is None:
+                return {}
             uris = card.card.get("image_uris") or {}
             art_url = uris.get("art_crop")
             if not art_url:
-                # DFC etc. — fall back to face 0 art_crop if present.
                 faces = card.card.get("card_faces") or []
                 if faces:
                     art_url = (faces[0].get("image_uris") or {}).get("art_crop")
             if not art_url:
-                continue
-            art_paths.append(_ensure_png(_scryfall.get_image(art_url)))
-            slot_indices.append(slot_idx)
-        if art_paths:
-            upscale_kwargs: dict = {}
-            if args.upscale_model:
-                upscale_kwargs["model_path"] = args.upscale_model
-            if args.upscale_target_width:
-                upscale_kwargs["target_width"] = args.upscale_target_width
-            upscaled = _upscale_mod.upscale_images(art_paths, **upscale_kwargs)
-            for slot_idx, up in zip(slot_indices, upscaled, strict=True):
-                job_overrides[slot_idx] = {"art_path": up}
+                return {}
+            local = _ensure_png(_scryfall.get_image(art_url))
+            [upscaled] = _upscale_mod.upscale_images([local], **upscale_kwargs)
+            return {"art_path": upscaled}
+
+        prepare_each_cb = _prepare_each
 
     # Default harness wrapper: locate the bundled harness.js + the cached CC
     # engine, spawn node with the right env. Tests can swap this out via the
@@ -980,7 +983,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     # it as soon as the first PNG lands — render_deck's own mkdir runs later.
     args.outdir.mkdir(parents=True, exist_ok=True)
 
-    def _run(jobs: list[dict]) -> list[dict]:
+    def _run(jobs: list[dict], prepare_each: Callable[[int], dict] | None = None) -> list[dict]:
         import shutil
         import subprocess
         import threading
@@ -992,11 +995,13 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                 f"{cc_cache}. Run `make cardconjurer` first."
             )
             raise SystemExit(2)
-        # Stream stdout line-by-line: update tqdm AND copy each finished PNG
-        # into the user's outdir as soon as it arrives. The batched approach
-        # (collect all responses, then copy) leaves the outdir empty for
-        # ~10 minutes on a commander deck — bad feedback. Stderr is drained on
-        # a daemon thread so its buffer can't fill and deadlock the harness.
+        # Interleaved streaming: per-card, (1) run prepare_each (e.g. ESRGAN upscale),
+        # (2) write the job to the harness's stdin, (3) wait for its response on stdout,
+        # (4) copy the rendered PNG into outdir, (5) loop. Engine boot amortizes because
+        # the subprocess stays alive across all cards. Without this loop, the upscale
+        # phase would block the harness from starting for ~10 minutes on a commander
+        # deck before any card renders. Stderr is drained on a daemon thread so the
+        # font-load summary surfaces and its buffer can't deadlock the subprocess.
         proc = subprocess.Popen(
             ["node", str(harness_path)],
             stdin=subprocess.PIPE,
@@ -1026,17 +1031,30 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
 
         assert proc.stdin is not None
         assert proc.stdout is not None
-        payload = "".join(_json.dumps(j) + "\n" for j in jobs)
-        proc.stdin.write(payload)
-        proc.stdin.close()
 
         responses: list[dict] = []
         ok_count = 0
         with tqdm(total=len(jobs), desc="Rendering", unit="card") as bar:
-            for line in proc.stdout:
-                parsed = cc_runner.parse_response(line)
+            for job in jobs:
+                slot_int = int(job["slot"])
+                extras = prepare_each(slot_int) if prepare_each else {}
+                merged = {**job, **extras}
+                proc.stdin.write(_json.dumps(merged) + "\n")
+                proc.stdin.flush()
+
+                # Block until the harness emits this card's response. Skip any
+                # debug-noise lines (parse_response returns None for those).
+                parsed = None
+                while parsed is None:
+                    line = proc.stdout.readline()
+                    if not line:
+                        # EOF — subprocess died. Bail out of the loop; the empty
+                        # response will be recorded as a skip by render_deck.
+                        break
+                    parsed = cc_runner.parse_response(line)
                 if parsed is None:
-                    continue  # harness debug noise — harmless, skip
+                    break
+
                 responses.append(parsed)
                 if parsed.get("status") == "ok":
                     ok_count += 1
@@ -1046,12 +1064,11 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                         try:
                             shutil.copyfile(src, dst)
                         except OSError as exc:
-                            # Don't kill the whole run for a single copy failure;
-                            # render_deck's final pass will retry it.
                             tqdm.write(f"[cardconjourer] copy failed for {src.name}: {exc}")
                 bar.update(1)
                 bar.set_postfix_str(f"ok={ok_count} skip={len(responses) - ok_count}", refresh=False)
 
+        proc.stdin.close()
         proc.wait()
         return responses
 
@@ -1061,7 +1078,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         frame=frame,
         upscale=args.upscale,
         run_harness=_run,
-        job_overrides=job_overrides,
+        prepare_each=prepare_each_cb,
     )
     print(f"[cardconjourer] {summary['ok']}/{summary['total']} rendered, {summary['skipped']} skipped")
 

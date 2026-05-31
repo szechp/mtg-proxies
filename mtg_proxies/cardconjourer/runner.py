@@ -39,10 +39,17 @@ def slug(name: str) -> str:
     """
     return re.sub(r"^_+|_+$", "", re.sub(r"[^a-z0-9]+", "_", name.lower()))
 
-# A ``run_harness`` callable receives the list of job dicts (one per card) and
-# returns the list of response dicts. The default production implementation
+# A ``run_harness`` callable receives:
+#   - the list of job dicts (one per non-skipped card; basic fields only)
+#   - an optional ``prepare_each(slot_int) -> dict`` callable; if non-None, the
+#     harness MUST call it right before sending each card's job and merge the
+#     result into the job dict. This is how the cli's ``--upscale`` path
+#     interleaves the slow ESRGAN pass with the harness render rather than
+#     doing them in two phases.
+# It returns the list of response dicts. The default production implementation
 # spawns the node subprocess; tests pass a stub.
-RunHarness = Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
+PrepareEach = Callable[[int], dict[str, Any]]
+RunHarness = Callable[..., list[dict[str, Any]]]
 
 
 def build_job(
@@ -158,7 +165,7 @@ def render_deck(
     frame: str = "8th",
     upscale: bool = False,
     run_harness: RunHarness | None = None,
-    job_overrides: dict[int, dict[str, Any]] | None = None,
+    prepare_each: PrepareEach | None = None,
 ) -> dict[str, int]:
     """Render a whole decklist via the headless Card Conjurer harness.
 
@@ -170,9 +177,12 @@ def render_deck(
     (not sent to the harness, reported as ok with the existing file). Delete
     a PNG to force a re-render. This makes iterating on a deck cheap.
 
-    ``job_overrides`` maps the 1-based slot index to extra fields merged into
-    that card's job dict (e.g. ``{2: {"art_path": "/tmp/upscaled.png"}}`` for
-    the ``--upscale`` path). Skipped cards have their override ignored.
+    ``prepare_each``, if given, is a callable ``(slot_int) -> dict`` that the
+    harness MUST call right before sending each card's job; the returned dict
+    is merged into the job (e.g. ``{"art_path": "/tmp/upscaled-2.png"}``).
+    This is the interleaving hook for ``--upscale``: the slow ESRGAN pass runs
+    just before its card's render rather than batching upfront. Skipped cards
+    short-circuit before ``prepare_each`` fires — no wasted work.
 
     For every card the harness returns ``status="ok"`` or ``status="skip"``.
     Ok PNGs are copied into ``outdir`` under their slot-prefixed filename.
@@ -183,7 +193,6 @@ def render_deck(
     """
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
-    job_overrides = job_overrides or {}
 
     # Build the job list, skipping any card whose output PNG already exists.
     # Pre-existing PNGs are recorded as synthetic ok responses so the summary,
@@ -199,17 +208,22 @@ def render_deck(
                 "slot": slot_str, "status": "ok", "out": str(expected), "ms": 0,
             })
             continue
-        job = build_job(slot=slot_int, name=name, frame=frame, upscale=upscale)
-        if slot_int in job_overrides:
-            job.update(job_overrides[slot_int])
-        jobs.append(job)
+        jobs.append(build_job(slot=slot_int, name=name, frame=frame, upscale=upscale))
 
     if run_harness is None:
         raise NotImplementedError(
             "Default subprocess-spawning run_harness not implemented yet; "
             "pass run_harness= for now."
         )
-    responses = list(run_harness(jobs)) if jobs else []
+    if jobs:
+        # Support both the simple (jobs,) signature and the new (jobs, prepare) one.
+        # Tests written before the prepare_each hook only accept one positional arg.
+        try:
+            responses = list(run_harness(jobs, prepare_each))
+        except TypeError:
+            responses = list(run_harness(jobs))
+    else:
+        responses = []
     responses.extend(pre_existing)
 
     # Index responses by slot for O(1) lookup, since slots may come back out of order.
