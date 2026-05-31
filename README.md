@@ -21,14 +21,17 @@ Create a high quality printable PDF from your decklist or a list of cards you wa
 - **Sanity checks and recommender engine**  
   `mtg-proxies` warns you if you attempt to print a low-resolution scan and offers alternatives. The `convert` tool automatically selects the best print for each card, and flags or moves remaining low-res cards to the bottom of the output file.
 
-- **Art preference and preferred sets**  
-  Choose between `standard` (conservative, avoids promos/digital) and `wild` (any art including borderless/extended) for both `print` and `convert`. `convert --basic-lands` also accepts `premium` (highest-quality full-art basics). Pin preferred sets with `--set` so the recommender stays within those sets when possible.
+- **Art preference and preferred sets (convert)**  
+  Choose between `standard` (conservative, avoids promos/digital), `wild` (any art including borderless/extended), or `premium` (full-art basics) for `convert`. Pin preferred sets with `--set` so the recommender stays within those sets when possible. `print` is render-only — it takes whatever the decklist pins and doesn't re-run the art selection brain.
+
+- **Scryfall URL input**  
+  Paste any Scryfall URL or `set/cn` shorthand on a decklist line — `1 https://scryfall.com/card/soc/128/sol-ring`, `1 card/soc/128`, or just `1 soc/128`. Lets you swap one card in an already-converted decklist and re-run `print` without re-running `convert`.
 
 - **Custom art appended to a print run**  
-  Drop full-card PNG images into a folder and append them to the PDF with `--custom-art FOLDER` (JPGs are not picked up). `--custom-art-bleed-crop PERCENT` trims each edge before rendering so art that bleeds past the card edge prints correctly.
+  Drop full-card PNG images into a folder and append them to the PDF with `--custom-art FOLDER`. `--custom-art-bleed-crop PERCENT` trims each edge before rendering so art that bleeds past the card edge prints correctly.
 
 - **AI upscaling**  
-  Upscale low-quality scans with Real-ESRGAN or any ESRGAN-compatible model via `--upscale`. Models are loaded with [spandrel](https://github.com/chaiNNer-org/spandrel) and cached locally.
+  Upscale low-quality scans with Real-ESRGAN or any ESRGAN-compatible model via `--upscale [auto|all]` (`auto` = lowres only, `all` = every card). Models are loaded with [spandrel](https://github.com/chaiNNer-org/spandrel) and cached locally.
 
 - **Duplex card-back printing**  
   Pass `--card-back PATH` to lay out the PDF for long-edge duplex printing: each sheet of fronts is followed by a sheet of backs in the mirrored position, so a flip-on-long-edge duplex print lands every card's back directly behind its front. Double-faced cards (Chalice of Life // Chalice of Death, transform cards, MDFCs) use their actual back face at the mirrored position — every other card uses the supplied card-back image. Pass `--card-back-count N` to opt into the legacy non-duplex behavior (appends N copies of the back image after the fronts).
@@ -42,8 +45,11 @@ Create a high quality printable PDF from your decklist or a list of cards you wa
 - **ManaStack and Archidekt integration**  
   Use ManaStack and Archidekt deck IDs directly as input instead of local files. Archidekt decks must be public.
 
-- **MPCFill art matching**  
-  `mtg-proxies mpcfill` picks the visually-closest community render from [MPCFill](https://mpcfill.com) for each card using LightGlue + SuperPoint keypoint correspondence matching against the Scryfall reference, then writes a flat folder of one PNG per slot — front + DFC back — plus a `match_report.csv` audit log. The flat output is designed to feed `mtg-proxies print --custom-art OUTDIR` for the final printable PDF.
+- **Headless 8th-edition / retro frame rendering**  
+  `mtg-proxies cardconjourer --8th DECKLIST OUTDIR` renders every supported card via a headless [Card Conjurer](https://cardconjurer.com) Node harness, producing 2003-frame PNGs ready to feed back into `print --custom-art OUTDIR`. Per-card opt-in via the `#cardconjourer --8th` modeline is also supported. The Card Conjurer source is lazy-cloned on demand — see `make cardconjurer`.
+
+- **MPCFill render fetch by identifier**  
+  Use `#mpcfill --identifier <drive_id> [--bleed-crop PCT]` on a decklist line to swap that slot to a specific [MPCFill](https://mpcfill.com) community render. The previous auto-matcher (LightGlue/SuperPoint), interactive picker, retro classifier, and standalone `mpcfill` subcommand were cut — the community catalog has no stable contract, so only the deterministic identifier-fetch path is exposed now.
 
 ## Usage
 
@@ -102,10 +108,10 @@ Uses **RealESRNet_x4plus** by default (downloaded on first use to `~/.cache/mtg-
 mtg-proxies print deck-ltr.txt output.pdf --upscale-model ~/models/4x-UltraSharp.pth
 ```
 
-By default `--upscale` only touches cards Scryfall marks low-res. To force every card through the model — regardless of Scryfall's `highres_image` flag — use `--upscale-all`:
+By default `--upscale` is bare (== `--upscale auto`) and only touches cards Scryfall marks low-res. To force every card through the model — regardless of Scryfall's `highres_image` flag — use `--upscale all`:
 
 ```bash
-mtg-proxies print deck-ltr.txt output.pdf --upscale-all
+mtg-proxies print deck-ltr.txt output.pdf --upscale all
 ```
 
 The 4× model output is downsampled (Lanczos) to a configurable target width before it lands in the PDF — the AI sharpening survives the resample. Default is **745 px** (matches Scryfall highres, ≈ 298 DPI on a 2.5-inch card — the sweet spot for desktop printing). Set `--upscale-target-width` for other needs:
@@ -118,18 +124,24 @@ mtg-proxies print deck.txt out.pdf --upscale --upscale-target-width 480
 mtg-proxies print deck.txt out.pdf --upscale --upscale-target-width 1500
 ```
 
-**Pipeline order** when you combine the post-processing flags: `--upscale` / `--upscale-all` → `--normalize` → `--shadow-lift` → `--black-vignette` → composite. Upscale runs first so that iteratively tuning the tone passes doesn't re-trigger the slow 4× pass; the upscaler is cached once, the tone passes operate on it cheaply. `--black-vignette` is last (before the optional `--background` composite), so its edge fraction is interpreted on the final-resolution image. The cache file names include each step's parameters, so changing any of them invalidates only what's downstream.
+**Pipeline order** when you combine the post-processing flags: `--upscale` → `--normalize` → `--shadow-lift` → `--vignette` → composite. Upscale runs first so that iteratively tuning the tone passes doesn't re-trigger the slow 4× pass; the upscaler is cached once, the tone passes operate on it cheaply. `--vignette` is last (before the optional `--background` composite), so its edge fraction is interpreted on the final-resolution image. The cache file names include each step's parameters, so changing any of them invalidates only what's downstream.
 
-**Fix gray card rims:** Scryfall scans often render the outer black border at luminance 15-30 instead of pure #000. With `--background black` and `--border_crop 0` this shows up as a visible gray halo around each card on the page. `--black-vignette` pulls those rim pixels to true black without touching the art or white-bordered cards. The default tuning (5 % edge zone, max-black 40, strength 1.0) is safe for the common case; bump `--black-vignette-max-black` if your scans render lighter, or lower `--black-vignette-strength` if you want only a partial pull.
+**Fix gray card rims:** Scryfall scans often render the outer black border at luminance 15-30 instead of pure #000. With `--background black` and `--border_crop 0` this shows up as a visible gray halo around each card on the page. `--vignette` pulls those rim pixels to true black without touching the art or white-bordered cards. Bare `--vignette` uses the safe defaults (strength=1.0, edge=0.05, max-black=40); tune with `key=value` tokens:
 
-**Choose art style:**
+```bash
+mtg-proxies print deck.txt out.pdf --vignette                          # defaults
+mtg-proxies print deck.txt out.pdf --vignette strength=0.8 edge=0.04   # gentler pull, narrower band
+mtg-proxies print deck.txt out.pdf --vignette max-black=60             # affects lighter rim pixels
+```
+
+**Choose art style (convert only):**
 
 ```bash
 # Conservative: avoids promos, borderless, and non-standard treatments (default)
-mtg-proxies print deck.txt output.pdf --art-preference standard
+mtg-proxies convert deck.txt deck-out.txt --art-preference standard
 
 # Wild: picks the most visually striking version (borderless, extended art, showcase, etc.)
-mtg-proxies print deck.txt output.pdf --art-preference wild
+mtg-proxies convert deck.txt deck-out.txt --art-preference wild
 ```
 
 **Generate random basic lands:**
@@ -237,17 +249,15 @@ usage: mtg-proxies print [-h] [--dpi DPI] [--paper WIDTHxHEIGHT]
                          [--background COLOR] [--cropmarks | --no-cropmarks]
                          [--faces {all,front,back}] [--custom-art FOLDER]
                          [--custom-art-bleed-crop PERCENT] [--split-pages N]
-                         [--art-preference {standard,wild}] [--upscale]
-                         [--upscale-model PATH] [--upscale-all]
+                         [--upscale [{auto,all}]] [--upscale-model PATH]
                          [--upscale-target-width PX] [--normalize]
-                         [--shadow-lift] [--black-vignette]
-                         [--black-vignette-strength F]
-                         [--black-vignette-edge F]
-                         [--black-vignette-max-black N]
+                         [--shadow-lift] [--vignette [KEY=VALUE ...]]
                          [--card-back PATH] [--card-back-count N]
                          [decklist] outfile
 
-Prepare a decklist for printing.
+Prepare a decklist for printing. `print` is render-only — art selection
+lives in `convert`. Use Scryfall URL / set-cn shorthand on a decklist line
+to swap an individual printing without re-running `convert`.
 
 positional arguments:
   decklist              path to a decklist in text/arena format, or
@@ -275,15 +285,13 @@ options:
                         before printing (default: 4.0)
   --split-pages N       split PDF output into a new file every N pages;
                         ignored for non-pdf output
-  --art-preference {standard,wild}
-                        art recommendation style (default: standard)
-  --upscale             upscale lowres card images with Real-ESRGAN instead of
-                        replacing them with a different print
+  --upscale [{auto,all}]
+                        upscale lowres scans with Real-ESRGAN. Bare flag ==
+                        'auto' (only cards Scryfall marks lowres). 'all'
+                        upscales every card. Off when omitted.
   --upscale-model PATH  path to a local .pth upscaling model (default:
-                        RealESRNet_x4plus); implies --upscale
-  --upscale-all         upscale every card, ignoring Scryfall's highres_image
-                        flag (without this, --upscale only upscales cards
-                        Scryfall marks low-res); implies --upscale
+                        RealESRNet_x4plus); implies --upscale auto when set
+                        without --upscale
   --upscale-target-width PX
                         downsample upscaled cards to PX wide before saving
                         (default: 745, matches Scryfall highres ≈ 298 DPI on a
@@ -291,23 +299,14 @@ options:
   --normalize           Photoshop-curves-style pass: set black point from the
                         card's printed border, then a gentle luminance-only
                         lift around the 25% mid-shadow region. Hue and
-                        saturation are preserved (single delta applied to all
-                        channels) — fixes the orange-skin warming the old per-
-                        channel stretch produced
+                        saturation are preserved.
   --shadow-lift         brighten crushed-shadow regions on each card
-  --black-vignette      pull near-black pixels near the card edges to true
-                        #000; only affects the outer rim and only pixels
-                        already close to black (art interior, white borders,
-                        and pixels above --black-vignette-max-black are
-                        untouched)
-  --black-vignette-strength F
-                        how aggressive the pull is (default: 1.0; 0.0 = no-op)
-  --black-vignette-edge F
-                        fraction of the shorter side covered by the vignette,
-                        from the rim inward (default: 0.05 = outer 5 %)
-  --black-vignette-max-black N
-                        only pixels with mean RGB at or below N are touched
-                        (default: 40)
+  --vignette [KEY=VALUE ...]
+                        pull near-black edge pixels to true #000. Bare
+                        --vignette uses defaults (strength=1.0, edge=0.05,
+                        max-black=40). Tune with key=value tokens:
+                        strength (0..1), edge (0..1), max-black (0..255).
+                        E.g. --vignette strength=0.8 edge=0.04
   --card-back PATH      path to a card back image; appends one copy per front
                         image collected (decklist, custom art, or both);
                         override count with --card-back-count
@@ -322,75 +321,51 @@ without paying the cost on the rest of the deck. Multiple verbs stack on one lin
 mirror the matching CLI options.
 
 ```
-1 Caves of Koilos (DRC) 148 #mpcfill --lightglue-threshold 0.15
+1 Caves of Koilos (DRC) 148 #mpcfill --identifier 1nUk_jZc6JtMxr-WrFlqHO5MGNkAS--XS
 1 Birds of Paradise (RVR) 133 #upscale
-4 Mountain (RVR) 271 #normalize #shadow-lift
+1 Sol Ring (SOC) 128         #cardconjourer --8th
+4 Mountain (RVR) 271         #normalize #shadow-lift
 ```
 
 Supported verbs:
 
-- `#mpcfill [--lightglue-threshold F] [--pick | --identifier ID] [--bleed-crop PERCENT] [--retro]` —
-  replace this card's Scryfall art with the visually closest MPCFill community render,
-  matched using LightGlue + SuperPoint keypoint correspondences on the art window.
-  A miss falls back to Scryfall with a warning. **Implicitly opts out of the bulk
-  upscale pass** for the swapped face(s) — MPCFill renders are already at print
-  resolution (typically 1500+ px), so re-running ESRGAN on them would be wasteful and
-  on CPU can hang. Bulk normalize and shadow-lift still apply unless explicitly
-  opted out with `#no-normalize` / `#no-shadow-lift`.
-  - `--pick` opens an interactive Tkinter popup mid-print-run showing every candidate
-    as a clickable thumbnail grid. You click the right one; the print continues with
-    your pick. **Your choice is cached globally** (keyed by card name) in
-    `~/.cache/mtg-proxies/mpcfill/picks.json`, so subsequent runs reuse the pick
-    without popping up again:
+- `#mpcfill --identifier <drive_id> [--bleed-crop PERCENT]` —
+  fetch a specific MPCFill community render by its Drive identifier (~33 chars,
+  visible in MPCFill's UI) and swap that slot to it. The previous auto-matcher,
+  picker, and retro classifier were cut — the catalog has no stable contract.
+  A fetch failure falls back to Scryfall with a warning. **Implicitly opts out
+  of the bulk upscale pass** for the swapped slot — MPCFill renders are already
+  at print resolution.
 
-    ```
-    1 Professor of Zoomancy (STX) 42 #mpcfill --pick
-    ```
+  `--bleed-crop PERCENT` trims each side of the render before placing it in the
+  PDF. Defaults to **4 %** (matches `--custom-art-bleed-crop`). Pass `0` for tight
+  renders, or higher for wide-bleed renders.
 
-    First run: popup → click → continues. Every run after that: silent reuse.
-  - `--identifier <ID>` locks in a specific MPCFill render by its backend Identifier
-    (a Google Drive file ID, ~33 chars). Bypasses the auto-matcher AND the picker
-    cache — useful when you want the decklist itself to be portable (the `<ID>` is
-    durable; the cache lives in your home directory). Find IDs in MPCFill's UI:
-
-    ```
-    1 Professor of Zoomancy (STX) 42 #mpcfill --identifier 1alfUj6vzTgyewlQRomSpXMR0p8bhBqBM
-    ```
-  - `--bleed-crop PERCENT` trims each side of the MPCFill render by this percentage
-    before placing it in the PDF. Defaults to **4 %** (same as `--custom-art-bleed-crop`)
-    because MPCFill renders carry more bleed than Scryfall scans by default. Pass `0`
-    to skip cropping when the render already has tight art:
-
-    ```
-    1 Tight-art card #mpcfill --bleed-crop 0
-    1 Wide-bleed card #mpcfill --bleed-crop 6
-    ```
-  - `--retro` biases MPCFill candidate selection toward retro / old-frame renders.
-    Two-stage filter:
-    1. **Keyword match on source name** (`retro`, `old border`, `1993`, `1997`,
-       `classic`, `vintage`, case-insensitive substring) — fast, picks up
-       contributors who advertise old-frame proxies in their source name.
-    2. **Visual classifier fallback** if no source matches — looks at each
-       candidate thumbnail and detects the retro type-bar signature directly
-       (binarize the type-bar zone, find long continuous horizontal black runs).
-       Catches retro renders whose source name doesn't say "retro".
-
-    If both stages find nothing, falls back to the full candidate set so the card
-    isn't silently dropped. Works for both faces of a DFC:
-
-    ```
-    1 Sol Ring (LEA) 270 #mpcfill --retro
-    ```
-- `#upscale [--upscale-model PATH]` — upscale this card via Real-ESRGAN. With `--upscale-model`
-  it's an **always-on override**: even with `--upscale-all` set globally, this card uses the
-  specified model instead of the global default. Use for problem cards — e.g. halftone-pattern
-  scans get cleaner results from the anime model than from Net.
-- `#normalize` — Photoshop-curves-style luminance lift on this card (see `--normalize`).
+  ```
+  1 Sol Ring (SOC) 128 #mpcfill --identifier 1nUk_jZc6JtMxr-WrFlqHO5MGNkAS--XS --bleed-crop 4
+  ```
+- `#cardconjourer --8th | --retro [--upscale]` — render this card via the headless
+  [Card Conjurer](https://cardconjurer.com) Node harness and use the resulting 2003-frame PNG
+  in place of the Scryfall scan. Mutually-exclusive frame selectors: `--8th` (modern 8th
+  edition base frame), `--retro` (legacy pre-2003 look). All flagged cards in the decklist
+  are batched into a single subprocess invocation, so the ~1-2 s engine boot amortizes
+  across the whole deck. Unsupported layouts (sagas, planeswalkers, transform DFCs,
+  modal DFCs, reversible cards) silently fall back to Scryfall. Requires
+  `make cardconjurer` (one-time lazy clone of the renderer source).
+- `#upscale [--upscale-model PATH]` — upscale this card via Real-ESRGAN. With
+  `--upscale-model` it's an **always-on override**: even with `--upscale all` set
+  globally, this card uses the specified model instead of the global default. Useful
+  for problem cards — e.g. halftone-pattern scans get cleaner results from the anime
+  model than from Net.
+- `#normalize [--lift F]` — Photoshop-curves-style luminance lift on this card.
 - `#shadow-lift [--amount F]` — lift crushed blacks on this card.
+- `#vignette [--strength F] [--edge F] [--max-black N]` — per-card override of
+  the global `--vignette` flag. Same key set as the CLI flag; not yet wired
+  into the print dispatch (reserved for an upcoming pipeline stage).
 
 **Opt-out verbs** (mirror images — exclude this card from the corresponding global pass):
 
-- `#no-upscale` — skip the bulk `--upscale` / `--upscale-all` for this card.
+- `#no-upscale` — skip the bulk `--upscale` for this card.
 - `#no-normalize` — skip the bulk `--normalize` for this card.
 - `#no-shadow-lift` — skip the bulk `--shadow-lift` for this card.
 
@@ -400,12 +375,6 @@ so the per-card directive becomes a no-op. `#upscale --upscale-model PATH` and t
 verbs are the exceptions — they always take effect. Modelines round-trip through
 `mtg-proxies convert` — the modeline tokens themselves (including whitespace between
 segments) are preserved exactly.
-
-Double-faced cards: `#mpcfill` swaps both the front and the back face independently
-(each face name is queried separately against MPCFill). The same applies in `--card-back`
-duplex layouts — the front replaces the front-of-sheet image, and the matched back
-replaces the back-of-sheet image. Single-faced cards in duplex mode never have the
-generic card-back image touched by modelines.
 
 Unknown verbs or malformed flag values surface as warnings and are dropped; the card
 itself still parses and prints normally.
@@ -470,58 +439,39 @@ options:
                         output format (default: arena)
 ```
 
-### mpcfill
+### cardconjourer
 
 ```
-usage: mtg-proxies mpcfill [-h] [--server SERVER]
-                           [--lightglue-threshold LIGHTGLUE_THRESHOLD]
-                           [--lightglue-max-keypoints LIGHTGLUE_MAX_KEYPOINTS]
-                           [--dpi-tiers DPI_TIERS]
-                           [--fallback {scryfall,skip,error}] [--size SIZE]
-                           [--sources SOURCES]
-                           [--exclude-sources EXCLUDE_SOURCES] [--cache CACHE]
-                           [--no-cache] [--workers WORKERS] [--dry-run]
-                           [--rematch-all]
-                           [decklist] outdir
+usage: mtg-proxies cardconjourer [-h] (--8th | --retro) [--upscale]
+                                 decklist outdir
 
-Match the visually-closest mpcfill community render for each card against the
-Scryfall reference and write one PNG per slot under OUTDIR (front + DFC back),
-plus a match_report.csv audit log. Designed to be piped into
-`mtg-proxies print --custom-art OUTDIR` for the final PDF.
+For each card in DECKLIST, render a fresh PNG via the headless Card Conjurer
+engine and write it to OUTDIR. Mutually-exclusive frame selectors --8th /
+--retro pick the style. Unsupported layouts (saga, transform, modal_dfc,
+reversible_card, planeswalker) are logged in fallback.txt — a valid decklist
+you can feed straight into `mtg-proxies print` to fill those slots from
+Scryfall. report.csv records the per-card outcome.
 
-Matching uses LightGlue + SuperPoint: SuperPoint detects local keypoints in
-the card art window; LightGlue finds geometrically-consistent correspondences
-between the Scryfall reference and each MPCFill candidate. Score =
-n_matched_keypoints / min(n_ref_kp, n_cand_kp). This is robust to border style,
-color grading, and crop differences.
+positional arguments:
+  decklist     decklist file (text or arena format)
+  outdir       output directory (will be created if missing)
 
 options:
-  --lightglue-threshold F   minimum inlier match ratio to accept a candidate
-                            (≥ 0.30 = strong match, 0.10–0.30 = same art with
-                            treatment differences). Default: 0.10
-  --lightglue-max-keypoints N
-                            maximum SuperPoint keypoints per image. Default: 2048
-  --dpi-tiers TIERS         comma-separated DPI floors tried in order. Default
-                            `800,0` excludes Scryfall-reupload renders (~300 DPI)
-                            from the first pass — they score near-perfectly on
-                            keypoints because they are literally the same image.
-                            Falls through to all candidates only when nothing at
-                            800+ DPI clears the threshold. Pass `0` to disable
-                            tiering (fastest, but Scryfall reuploads always win).
+  --8th        render in 8th-edition (2003) base frame
+  --retro      render in retro (pre-2003) frame
+  --upscale    pre-upscale the Scryfall art_crop via Real-ESRGAN before
+               handing it to the renderer
 ```
 
-Usage example — match against MPCFill and render a printable PDF:
+Usage example — render an 8th-edition proxy deck, then print:
 
 ```bash
-mtg-proxies mpcfill decklist.txt ./mpc-order
-mtg-proxies print --custom-art ./mpc-order --card-back card_back.png proof.pdf
+make cardconjurer                                   # one-time lazy clone of CC source
+mtg-proxies cardconjourer --8th deck.txt ./cc-out   # writes PNGs + fallback.txt + report.csv
+mtg-proxies print deck.txt out.pdf --custom-art ./cc-out
 ```
 
-The first command writes `mpc-order/match_report.csv` plus one `<NNNN>-<slug>.png` per slot. The second command renders the printable PDF from those PNGs, using `card_back.png` for the non-DFC card backs.
-
-Use `--dry-run` to compute matches and emit the CSV without downloading full-resolution renders. Use `--sources` / `--exclude-sources` (comma-separated source names) to constrain which MPCFill contributors are considered. Use `--lightglue-threshold` to tighten or loosen the acceptance bar.
-
-SuperPoint + LightGlue model weights (~100 MB) are downloaded from the CVG GitHub repository on first run and cached to `~/.cache/torch/`. Feature descriptors per candidate render are cached under `~/.cache/mtg-proxies/mpcfill/features/` so subsequent runs skip re-extraction.
+The Card Conjurer source is fetched on demand into `~/.cache/mtg-proxies/cardconjurer/` (partial+sparse git clone of a pinned commit, ~50 MB) the first time you run `make cardconjurer`. Run `make install` on a fresh checkout to do that, install the node harness deps, and sync the Python venv in one go.
 
 ### deck_value
 
@@ -548,4 +498,4 @@ options:
 - [Scryfall](https://scryfall.com/) for their [excellent API](https://scryfall.com/docs/api).
 - [spandrel](https://github.com/chaiNNer-org/spandrel) for ESRGAN model loading.
 - [openmodeldb.info](https://openmodeldb.info) for community upscaling models.
-- [LightGlue](https://github.com/cvg/LightGlue) (Lindenberger et al., ICCV 2023) for the keypoint matcher powering `mpcfill`.
+- [Card Conjurer](https://cardconjurer.com) (joshbirnholz fork) for the renderer powering `cardconjourer`.
