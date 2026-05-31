@@ -921,8 +921,27 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     # ``job_overrides`` map.
     job_overrides: dict[int, dict] = {}
     if args.upscale:
+        from PIL import Image as _PILImage
+
         from mtg_proxies import scryfall as _scryfall
         from mtg_proxies import upscale as _upscale_mod
+
+        # Scryfall art_crops are JPEGs. The upscaler always emits RGBA (it adds
+        # an alpha channel for the rounded-corner blend used by the print path),
+        # and PIL refuses to save RGBA as JPEG. Transcode to PNG up front so the
+        # upscaler's derived output path is .png and saves cleanly. Cache the
+        # transcoded copy in a temp dir keyed by source filename.
+        transcode_dir = Path(tempfile.mkdtemp(prefix="cc-upscale-src-"))
+
+        def _ensure_png(src: str) -> str:
+            src_path = Path(src)
+            if src_path.suffix.lower() == ".png":
+                return src
+            dst = transcode_dir / (src_path.stem + ".png")
+            if not dst.is_file():
+                with _PILImage.open(src_path) as im:
+                    im.convert("RGB").save(dst, format="PNG")
+            return str(dst)
 
         art_paths: list[str] = []
         slot_indices: list[int] = []
@@ -936,7 +955,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                     art_url = (faces[0].get("image_uris") or {}).get("art_crop")
             if not art_url:
                 continue
-            art_paths.append(_scryfall.get_image(art_url))
+            art_paths.append(_ensure_png(_scryfall.get_image(art_url)))
             slot_indices.append(slot_idx)
         if art_paths:
             upscaled = _upscale_mod.upscale_images(art_paths)
