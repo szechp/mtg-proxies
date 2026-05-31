@@ -34,7 +34,8 @@ def test_main_print_help_mentions_flags(capsys: pytest.CaptureFixture) -> None:
 
     captured = capsys.readouterr()
     assert "--split-pages N" in captured.out
-    assert "--art-preference {standard,wild}" in captured.out
+    # MR6: --art-preference was removed from print (it lives in convert now).
+    assert "--art-preference" not in captured.out
     assert "--custom-art FOLDER" in captured.out
     assert "--custom-art-bleed-crop PERCENT" in captured.out
 
@@ -68,27 +69,41 @@ def test_main_print_forwards_split_pages(tmp_path) -> None:
     assert print_cards_fpdf.call_args.kwargs["split_pages"] == 3
 
 
-def test_main_print_forwards_art_preference(tmp_path) -> None:
+def test_main_print_rejects_art_preference_flag(tmp_path) -> None:
+    """MR6: `print` no longer accepts --art-preference. That selection brain lives in `convert`."""
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "decklist.pdf"
-    fake_decklist = object()
-    fake_images = ["image.png"]
-
     with (
         patch(
             "sys.argv",
             ["mtg-proxies", "print", "decklist.txt", str(out_file), "--art-preference", "wild"],
         ),
+        pytest.raises(SystemExit),
+    ):
+        main()
+
+
+def test_main_print_does_not_forward_art_preference(tmp_path) -> None:
+    """MR6: parse_decklist_spec is called with a fixed, render-only `standard` posture."""
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "decklist.pdf"
+    fake_decklist = object()
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file)]),
         patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist) as parse_decklist_spec,
-        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=fake_images),
-        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["image.png"]),
+        patch("mtg_proxies.cli.print_cards_fpdf"),
     ):
         main()
 
     parse_decklist_spec.assert_called_once()
-    assert parse_decklist_spec.call_args.kwargs["art_preference"] == "wild"
-    print_cards_fpdf.assert_called_once()
+    kwargs = parse_decklist_spec.call_args.kwargs
+    # art_preference may be passed as the default constant, but never as a user-controlled flag.
+    assert kwargs.get("art_preference", "standard") == "standard"
+    assert kwargs.get("allow_low_res") is True  # render-only: take whatever the decklist says
 
 
 def test_main_print_custom_art_appends_supported_image_extensions(tmp_path) -> None:

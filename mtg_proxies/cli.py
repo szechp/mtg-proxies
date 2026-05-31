@@ -1888,12 +1888,6 @@ def main() -> None:
         metavar="N",
     )
     print_parser.add_argument(
-        "--art-preference",
-        help="art recommendation style (default: %(default)s)",
-        choices=["standard", "wild"],
-        default="standard",
-    )
-    print_parser.add_argument(
         "--upscale",
         nargs="?",
         choices=["auto", "all"],
@@ -2275,10 +2269,14 @@ def main() -> None:
             back_flags: list[bool] = []
 
             if args.decklist:
+                # ``print`` is render-only: take whatever the decklist pins, don't second-guess
+                # the art recommendation. ``art_preference`` only matters for unpinned lines,
+                # and the right home for that is ``convert``. Fixed at ``standard`` so any
+                # accidental unpinned line still resolves to something sane.
                 decklist = parse_decklist_spec(
                     args.decklist,
-                    art_preference=args.art_preference,
-                    allow_low_res=True,  # print renders what's given; convert is the optimizer
+                    art_preference="standard",
+                    allow_low_res=True,
                 )
                 if duplex_mode:
                     fronts, backs, front_flags, back_flags = fetch_scans_paired(decklist, args.card_back)
