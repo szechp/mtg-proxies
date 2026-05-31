@@ -86,6 +86,14 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     "shadow-lift": {
         "--amount": _float_in_range(0.0, 1.0),
     },
+    # ``#vignette`` — per-card override of the global ``--vignette`` flag. Flag keys mirror
+    # the CLI's ``key=value`` schema so users can copy values across. Not yet wired into
+    # the print pipeline as a per-card override; reserved for the upcoming pipeline stage.
+    "vignette": {
+        "--strength": _float_in_range(0.0, 1.0),
+        "--edge": _float_in_range(0.0, 1.0),
+        "--max-black": _float_in_range(0.0, 255.0),
+    },
     # Opt-out verbs — exclude this card from a globally-enabled pass. Mirror of
     # ``#upscale`` / ``#normalize`` / ``#shadow-lift``: those add for a single card when
     # the global flag is off; these subtract for a single card when the global flag is on.

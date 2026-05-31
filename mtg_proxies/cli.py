@@ -7,7 +7,7 @@ import tempfile
 from collections.abc import Callable, Container
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 import numpy as np
 import requests
@@ -66,6 +66,51 @@ EXCLUDED_BASIC_LAND_PRINTS = {
     ("sld", "257"),
     ("sld", "258"),
 }
+
+
+def _float_in_range(lo: float, hi: float) -> Callable[[str], float]:
+    """Build a parser that accepts a float in ``[lo, hi]``; raises ValueError otherwise.
+
+    Mirrors the same-named helper in ``decklists.modelines`` so ``parse_kv_opts``
+    can share validation semantics with the per-card modeline registry.
+    """
+
+    def _check(s: str) -> float:
+        v = float(s)
+        if not (lo <= v <= hi):
+            raise ValueError(f"value {v} not in [{lo}, {hi}]")
+        return v
+
+    return _check
+
+
+def parse_kv_opts(tokens: list[str], schema: dict[str, Callable[[str], Any]]) -> dict[str, Any]:
+    """Parse ``key=value`` CLI tokens against a schema; SystemExit on any error.
+
+    Used by flags like ``--vignette`` that take optional ``key=value`` configuration
+    bundles. Empty token list returns an empty dict (caller uses its own defaults).
+    Unknown keys, malformed tokens, and values the validator rejects all hard-exit
+    with a clear message — this is a top-level CLI arg, so fail loud rather than
+    warn-and-drop the way modelines do.
+    """
+    if not tokens:
+        return {}
+    parsed: dict[str, Any] = {}
+    allowed = ", ".join(sorted(schema))
+    for tok in tokens:
+        if "=" not in tok:
+            print(f"Error: expected key=value, got {tok!r}. Allowed keys: {allowed}.")
+            raise SystemExit(1)
+        key, raw = tok.split("=", 1)
+        if key not in schema:
+            print(f"Error: unknown key {key!r}. Allowed keys: {allowed}.")
+            raise SystemExit(1)
+        try:
+            parsed[key] = schema[key](raw)
+        except (ValueError, TypeError) as exc:
+            print(f"Error: invalid value for {key}: {exc}.")
+            raise SystemExit(1) from exc
+    return parsed
 
 
 def resolve_upscale_scope(args: argparse.Namespace) -> Literal["auto", "all"] | None:
@@ -1900,41 +1945,15 @@ def main() -> None:
         ),
     )
     print_parser.add_argument(
-        "--black-vignette",
-        action="store_true",
-        default=False,
+        "--vignette",
+        nargs="*",
+        default=None,
+        metavar="KEY=VALUE",
         help=(
-            "pull near-black pixels near the card edges to true #000. Targets the gray-ish"
-            " outer rim that scans often render at luminance 15-30 instead of pure black. Art"
-            " interior, white-bordered cards, and any pixel above ``--black-vignette-max-black``"
-            " are left untouched."
-        ),
-    )
-    print_parser.add_argument(
-        "--black-vignette-strength",
-        type=float,
-        default=1.0,
-        metavar="F",
-        help="how aggressive the pull is (0.0 = no-op, 1.0 = full pull to black). Default 1.0.",
-    )
-    print_parser.add_argument(
-        "--black-vignette-edge",
-        type=float,
-        default=0.05,
-        metavar="F",
-        help=(
-            "fraction of the shorter side that the vignette covers from the edge inward."
-            " Default 0.05 (outer 5%%). Smooth falloff over this range."
-        ),
-    )
-    print_parser.add_argument(
-        "--black-vignette-max-black",
-        type=float,
-        default=40.0,
-        metavar="N",
-        help=(
-            "pixels with mean RGB above N are not touched. Default 40 — covers gray borders"
-            " without touching mid-luminance art. Higher = affects lighter pixels too."
+            "pull near-black edge pixels to true #000. Bare --vignette uses defaults. "
+            "Tune with key=value tokens: strength (0..1, default 1.0), "
+            "edge (0..1, default 0.05), max-black (0..255, default 40). "
+            "E.g. --vignette strength=0.8 edge=0.04"
         ),
     )
     print_parser.add_argument(
@@ -2484,17 +2503,25 @@ def main() -> None:
                 shadow_lift_skip = user_supplied | modeline_skip_shadow_lift
                 images = lift_shadows_images(images, skip_paths=shadow_lift_skip)
 
-            # Black-vignette pass: pulls near-black pixels near the card rim to true #000.
+            # Vignette pass: pulls near-black pixels near the card rim to true #000.
             # Runs on the final-resolution image (edge fraction is geometrically meaningful)
             # and BEFORE composite (operates on RGBA, preserving alpha for the corner flatten).
-            if args.black_vignette:
+            if args.vignette is not None:
                 from mtg_proxies.black_vignette import darken_borders_to_black
 
+                vignette_opts = parse_kv_opts(
+                    args.vignette,
+                    {
+                        "strength": _float_in_range(0.0, 1.0),
+                        "edge": _float_in_range(0.0, 1.0),
+                        "max-black": _float_in_range(0.0, 255.0),
+                    },
+                )
                 images = darken_borders_to_black(
                     images,
-                    strength=args.black_vignette_strength,
-                    edge_fraction=args.black_vignette_edge,
-                    max_black_threshold=args.black_vignette_max_black,
+                    strength=vignette_opts.get("strength", 1.0),
+                    edge_fraction=vignette_opts.get("edge", 0.05),
+                    max_black_threshold=vignette_opts.get("max-black", 40.0),
                     skip_paths=user_supplied,
                 )
 

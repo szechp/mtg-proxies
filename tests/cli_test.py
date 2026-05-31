@@ -2055,6 +2055,130 @@ def test_main_print_upscale_bare_defaults_to_auto(tmp_path) -> None:
     mock_upscale.assert_called_once_with(fake_images, highres_flags=[False, True], model_path=None, target_width=745)
 
 
+# ---------------------------------------------------------------------------
+# parse_kv_opts + --vignette flag collapse (MR5)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_kv_opts_empty_returns_defaults() -> None:
+    from mtg_proxies.cli import parse_kv_opts
+
+    schema = {"strength": float, "edge": float}
+    assert parse_kv_opts([], schema) == {}
+
+
+def test_parse_kv_opts_valid_tokens_parsed_via_schema() -> None:
+    from mtg_proxies.cli import parse_kv_opts
+
+    schema = {"strength": float, "edge": float, "max-black": float}
+    parsed = parse_kv_opts(["strength=0.8", "edge=0.04", "max-black=30"], schema)
+    assert parsed == {"strength": 0.8, "edge": 0.04, "max-black": 30.0}
+
+
+def test_parse_kv_opts_unknown_key_exits() -> None:
+    from mtg_proxies.cli import parse_kv_opts
+
+    with pytest.raises(SystemExit):
+        parse_kv_opts(["nonsense=1"], {"strength": float})
+
+
+def test_parse_kv_opts_malformed_token_exits() -> None:
+    from mtg_proxies.cli import parse_kv_opts
+
+    with pytest.raises(SystemExit):
+        parse_kv_opts(["strength"], {"strength": float})  # no '='
+
+
+def test_parse_kv_opts_invalid_value_type_exits() -> None:
+    from mtg_proxies.cli import parse_kv_opts
+
+    with pytest.raises(SystemExit):
+        parse_kv_opts(["strength=not-a-number"], {"strength": float})
+
+
+def test_main_print_vignette_bare_uses_defaults(tmp_path) -> None:
+    """`--vignette` with no values calls darken_borders_to_black with all defaults (1.0/0.05/40)."""
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "out.pdf"
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), "--vignette"]),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=object()),
+        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["a.png"]),
+        patch("mtg_proxies.black_vignette.darken_borders_to_black", return_value=["a.png"]) as mock_v,
+        patch("mtg_proxies.cli.print_cards_fpdf"),
+    ):
+        main()
+
+    mock_v.assert_called_once()
+    kw = mock_v.call_args.kwargs
+    assert kw["strength"] == pytest.approx(1.0)
+    assert kw["edge_fraction"] == pytest.approx(0.05)
+    assert kw["max_black_threshold"] == pytest.approx(40.0)
+
+
+def test_main_print_vignette_key_value_overrides_flow_through(tmp_path) -> None:
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "out.pdf"
+
+    with (
+        patch(
+            "sys.argv",
+            [
+                "mtg-proxies", "print", "decklist.txt", str(out_file),
+                "--vignette", "strength=0.8", "edge=0.04", "max-black=30",
+            ],
+        ),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=object()),
+        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["a.png"]),
+        patch("mtg_proxies.black_vignette.darken_borders_to_black", return_value=["a.png"]) as mock_v,
+        patch("mtg_proxies.cli.print_cards_fpdf"),
+    ):
+        main()
+
+    kw = mock_v.call_args.kwargs
+    assert kw["strength"] == pytest.approx(0.8)
+    assert kw["edge_fraction"] == pytest.approx(0.04)
+    assert kw["max_black_threshold"] == pytest.approx(30.0)
+
+
+def test_main_print_vignette_absent_no_call(tmp_path) -> None:
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "out.pdf"
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file)]),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=object()),
+        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["a.png"]),
+        patch("mtg_proxies.black_vignette.darken_borders_to_black") as mock_v,
+        patch("mtg_proxies.cli.print_cards_fpdf"),
+    ):
+        main()
+
+    mock_v.assert_not_called()
+
+
+def test_main_print_vignette_unknown_key_exits(tmp_path) -> None:
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "out.pdf"
+
+    with (
+        patch(
+            "sys.argv",
+            ["mtg-proxies", "print", "decklist.txt", str(out_file), "--vignette", "nope=1"],
+        ),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=object()),
+        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["a.png"]),
+        patch("mtg_proxies.cli.print_cards_fpdf"),
+        pytest.raises(SystemExit),
+    ):
+        main()
+
+
 def test_main_print_upscale_model_alone_implies_auto(tmp_path) -> None:
     """`--upscale-model PATH` without `--upscale` enables auto-scope upscale with that model."""
     from mtg_proxies.cli import main
