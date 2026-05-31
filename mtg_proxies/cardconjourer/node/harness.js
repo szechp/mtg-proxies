@@ -76,31 +76,6 @@ function reg(file, family) {
         _fontFailed++;
     }
 }
-// Register each font under TWO aliases:
-//   - the engine's canonical CSS name (Matrix-Bold, MPlantin-Italic, …) so
-//     creator-23.js's font lookups hit directly
-//   - our internal short alias (matrixb, mplantini, …) used by the harness's
-//     own ctx.font strings
-//
-// The bundled font files have been patched (scripts/patch_cardconjourer_fonts.py)
-// so their internal family name table records ALSO match the canonical name —
-// so when the user installs them system-wide on Windows, the OS registers
-// them under the right name and node-canvas's font discovery resolves
-// without the alias. Registering the same FILE under different aliases is
-// supported by node-canvas v3; only register-same-file-same-alias is the
-// silent-break pattern to avoid.
-reg('matrix.ttf',                 'Matrix');
-reg('matrix-b.ttf',               'Matrix-Bold');
-reg('Matrix Bold Small Caps.ttf', 'Matrix Bold Small Caps');
-reg('mplantin.ttf',               'MPlantin');
-reg('mplantin-i.ttf',             'MPlantin-Italic');
-reg('beleren-b.ttf',              'Beleren-Bold');
-reg('beleren-bsc.ttf',            'Beleren-Bold-Small-Caps');
-reg('gotham-medium.ttf',          'Gotham-Medium');
-reg('gothambold.otf',             'Gotham-Bold');
-reg('goudy-medieval.ttf',         'Goudy Medieval');
-reg('phyrexian.ttf',              'Phyrexian');
-reg('NotoSans-Regular.ttf',       'NotoSans');
 reg('matrix.ttf',                 'matrix');
 reg('matrix-b.ttf',               'matrixb');
 reg('Matrix Bold Small Caps.ttf', 'matrixbsc');
