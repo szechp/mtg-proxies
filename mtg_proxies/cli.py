@@ -968,6 +968,20 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     # Map 1-based slot → resolved Card object so prepare_each can look it up.
     slot_to_card = dict(enumerate(decklist.cards, start=1))
 
+    # Check each card's modeline for ``#cardconjourer --scryfall`` so users
+    # can per-card opt out of MTGPics on watermark-affected scans without
+    # having to flip the whole-deck ``--scryfall`` flag.
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+    slot_scryfall_override: dict[int, bool] = {}
+    for slot_int, card in slot_to_card.items():
+        if not card.modeline:
+            continue
+        directives, _warnings = parse_modeline_trailer(card.modeline)
+        for d in directives:
+            if d.verb == "cardconjourer" and d.flags.get("--scryfall"):
+                slot_scryfall_override[slot_int] = True
+                break
+
     def _prepare_each(slot_int: int) -> dict:
         card = slot_to_card.get(slot_int)
         if card is None:
@@ -976,7 +990,10 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         # 1) MTGPics by set+collector. Tried first unless --scryfall opts out
         # (useful when MTGPics's scan for a card has artist signatures /
         # watermarks burned in that we don't want in the final render).
-        if not args.scryfall:
+        # Per-card ``#cardconjourer --scryfall`` overrides the default just
+        # for that card, leaving the rest of the deck on MTGPics.
+        skip_mtgpics = args.scryfall or slot_scryfall_override.get(slot_int, False)
+        if not skip_mtgpics:
             set_code = card.card.get("set") or ""
             cn = card.card.get("collector_number") or ""
             if set_code and cn:
