@@ -96,6 +96,7 @@ def upscale_images(
     highres_flags: list[bool] | None = None,
     model_path: str | Path | None = None,
     target_width: int | None = None,
+    progress: bool = True,
 ) -> list[str]:
     """Upscale lowres card images using a Real-ESRGAN model via spandrel.
 
@@ -182,7 +183,7 @@ def upscale_images(
         model = ModelLoader().load_from_file(str(resolved_model_path))
         model = model.eval().to(device)
 
-        for path in tqdm(needs_upscale, desc="Upscaling lowres images"):
+        for path in tqdm(needs_upscale, desc="Upscaling lowres images", disable=not progress):
             # Open RGBA so the rounded-corner transparency Scryfall provides survives the
             # upscale; the model only takes RGB, so we run RGB through inference and
             # re-attach the source alpha (Lanczos-resized to the output dimensions).

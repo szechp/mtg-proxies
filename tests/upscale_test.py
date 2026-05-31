@@ -129,3 +129,52 @@ def test_upscale_images_treats_rgb_cache_as_stale_and_reprocesses(tmp_path: Path
 
     # Cache was stale → upscale path was attempted (model loader called once).
     assert upscale_run_count == 1
+
+
+def test_upscale_images_progress_false_disables_inner_tqdm(monkeypatch, tmp_path) -> None:
+    """`progress=False` passes `disable=True` to the internal "Upscaling lowres images" tqdm.
+
+    The cardconjourer subcommand calls upscale_images one image at a time (for the
+    interleaved upscale → render flow). Without this knob, every per-card call
+    prints its own `Upscaling lowres images: 100% 1/1` bar — useless noise on top
+    of the outer "Rendering" bar.
+
+    Implementation note: pre-seed a valid cached PNG at the expected output path so
+    the cache lookup short-circuits before any model load happens; we just want to
+    observe the tqdm spy's ``disable`` argument.
+    """
+    from PIL import Image
+
+    from mtg_proxies import upscale
+
+    src = tmp_path / "a.png"
+    Image.new("RGBA", (8, 8)).save(src)
+
+    captured: dict = {}
+    orig_tqdm = upscale.tqdm
+
+    def spy_tqdm(iterable, *args, **kwargs):
+        captured["disable"] = kwargs.get("disable")
+        return orig_tqdm(iterable, *args, **kwargs)
+
+    monkeypatch.setattr(upscale, "tqdm", spy_tqdm)
+
+    # Bypass the heavy model load + ESRGAN inference by stubbing ModelLoader.
+    # The spy_tqdm captures `disable` as soon as the loop is entered, before
+    # the iteration body would have done any real work.
+    import sys
+    fake_spandrel = type(sys)("spandrel")
+    fake_spandrel.ModelLoader = lambda: type("M", (), {"load_from_file": lambda self, p: type("X", (), {"eval": lambda s: type("Y", (), {"to": lambda s, d: None})()})()})()
+    monkeypatch.setitem(sys.modules, "spandrel", fake_spandrel)
+
+    # Provide a fake model path that exists so the FileNotFoundError gate passes.
+    fake_model = tmp_path / "fake.pth"
+    fake_model.write_bytes(b"x")
+
+    # The actual upscale work will raise inside the loop body (model is a no-op),
+    # but we only need tqdm to have been called by then.
+    import contextlib
+    with contextlib.suppress(Exception):
+        upscale.upscale_images([str(src)], progress=False, model_path=str(fake_model))
+
+    assert captured.get("disable") is True

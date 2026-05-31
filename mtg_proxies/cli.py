@@ -966,7 +966,10 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
             if not art_url:
                 return {}
             local = _ensure_png(_scryfall.get_image(art_url))
-            [upscaled] = _upscale_mod.upscale_images([local], **upscale_kwargs)
+            # progress=False silences upscale_images' internal "Upscaling lowres
+            # images: 100% 1/1" bar; the outer "Rendering" bar is the one the
+            # user cares about and it would otherwise flicker on every card.
+            [upscaled] = _upscale_mod.upscale_images([local], progress=False, **upscale_kwargs)
             return {"art_path": upscaled}
 
         prepare_each_cb = _prepare_each
