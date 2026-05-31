@@ -247,40 +247,28 @@ function normalizeFontString(s) {
     return s;
 }
 
-// Patch the Context2d PROTOTYPE once at startup so EVERY canvas context the
-// engine creates — wrapped or not, ours or not — gets the font normalizer.
-// Per-instance patching only covered contexts that flowed through wrapCanvas;
-// the engine creates some canvases via paths that bypass our wrapper, and
-// on Windows GDI+ those slipped through and triggered "couldn't load font
-// 'MPlantin-Italic Not-Rotated 102px'" warnings.
-(function patchCtxFontPrototype() {
-    const Ctx2d = canvasPkg.Context2d
-        || (createCanvas(1, 1).getContext('2d') || {}).constructor;
-    if (!Ctx2d || !Ctx2d.prototype) {
-        console.error('[harness] could not locate Context2d.prototype — font shim disabled');
-        return;
-    }
-    // Walk up the proto chain in case ``font`` lives on a parent class.
-    let proto = Ctx2d.prototype, desc = null;
+function patchCtxFont(ctx) {
+    // Replace the ``font`` property with one that runs the value through the
+    // alias normalizer before delegating to the real setter.
+    let proto = Object.getPrototypeOf(ctx);
+    let desc = null;
     while (proto && !desc) {
         desc = Object.getOwnPropertyDescriptor(proto, 'font');
         if (!desc) proto = Object.getPrototypeOf(proto);
     }
-    if (!desc || !desc.set || !desc.get) {
-        console.error('[harness] Context2d.prototype.font has no get/set — font shim disabled');
-        return;
-    }
+    if (!desc || !desc.set || !desc.get) return;  // unfamiliar node-canvas build — leave alone
     const origGet = desc.get, origSet = desc.set;
-    Object.defineProperty(proto, 'font', {
+    Object.defineProperty(ctx, 'font', {
         configurable: true,
         get() { return origGet.call(this); },
         set(v) { origSet.call(this, normalizeFontString(v)); },
     });
-})();
+}
 
 function wrapContext(ctx) {
     const orig = ctx.drawImage.bind(ctx);
     ctx.drawImage = function (img, ...rest) { return orig(unwrap(img), ...rest); };
+    patchCtxFont(ctx);
     return ctx;
 }
 function wrapCanvas(c) {
