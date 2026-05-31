@@ -384,6 +384,11 @@ function loadEngineFile(rel) {
             '} else if (false) { /* harness: Nyx disabled on 8th frame */ }',
         );
     }
+    // (Hanging-punctuation patch was tried and reverted — see git history.
+    // CC's wrap loop doesn't cleanly support retrying for a punctuation-only
+    // overflow without leaving stale mana-symbol state from the prior pass,
+    // so cards like Magus of the Vineyard end up with garbled overlap if we
+    // touch it. The cosmetic "period on its own line" stays for now.)
     vm.runInThisContext(code, { filename: fp });
 }
 
