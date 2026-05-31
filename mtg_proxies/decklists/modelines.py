@@ -50,26 +50,13 @@ def _path_str(s: str) -> str:
 
 VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     "mpcfill": {
-        "--lightglue-threshold": _float_in_range(0.0, 1.0),
         # ``--identifier <ID>`` locks in a specific MPCFill render by its backend Identifier
-        # (a Google Drive file ID, ~33 chars). When set, the auto-matcher is bypassed
-        # entirely. Use to make a chosen pick durable across runs.
+        # (a Google Drive file ID, ~33 chars). The auto-matcher / picker / retro classifier
+        # were cut in MR8: the only way to select an MPCFill render now is by knowing its id.
         "--identifier": _path_str,
-        # ``--pick`` (no value) opens an interactive Tkinter thumbnail picker when this card
-        # is processed mid-print-run. The user clicks the right candidate; the run continues
-        # using their pick. After picking, the chosen Identifier is logged so the user can
-        # paste it into ``--identifier <ID>`` for durability across future runs.
-        "--pick": NO_VALUE,
-        # ``--bleed-crop PERCENT`` — edge bleed-crop applied to the MPCFill render before
-        # it replaces the Scryfall scan in the layout. Default 4 % (matches
-        # ``--custom-art-bleed-crop``). Pass ``0`` to disable cropping when the render
-        # already has tight art.
+        # ``--bleed-crop PERCENT`` — edge bleed-crop applied to the MPCFill render before it
+        # replaces the Scryfall scan. Default 4 % (matches ``--custom-art-bleed-crop``).
         "--bleed-crop": _float_in_range(0.0, 50.0),
-        # ``--retro`` (no value) restricts MPCFill candidate selection to sources whose
-        # display name matches retro / old-border keywords (case-insensitive substring).
-        # Useful when the user wants the legacy frame look for a card that has no real
-        # retro Scryfall print. Falls back to the full candidate set if no source matches.
-        "--retro": NO_VALUE,
     },
     "upscale": {
         # When ``--upscale-model`` is supplied, the directive is treated as an *always-on*

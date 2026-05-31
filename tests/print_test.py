@@ -208,7 +208,8 @@ def test_apply_per_card_modelines_noop_when_no_modelines(monkeypatch: pytest.Mon
     fake_resolve.assert_not_called()
 
 
-def test_apply_per_card_modelines_mpcfill_swap_single_copy(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_apply_per_card_modelines_mpcfill_identifier_swap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """`#mpcfill --identifier <id>` fetches that specific render and swaps the slot."""
     from mtg_proxies import cli
 
     swapped = tmp_path / "mpcfill_render.png"
@@ -219,7 +220,7 @@ def test_apply_per_card_modelines_mpcfill_swap_single_copy(monkeypatch: pytest.M
 
     decklist = _fake_decklist(
         _fake_card("Sol Ring"),
-        _fake_card("Caves of Koilos", modeline="#mpcfill --lightglue-threshold 0.12"),
+        _fake_card("Caves of Koilos", modeline="#mpcfill --identifier abc123 --bleed-crop 2"),
     )
     image_paths = ["sol.png", "caves_scryfall.png"]
 
@@ -229,13 +230,12 @@ def test_apply_per_card_modelines_mpcfill_swap_single_copy(monkeypatch: pytest.M
     assert result[1] == str(swapped)
     fake_resolve.assert_called_once()
     kwargs = fake_resolve.call_args.kwargs
-    assert kwargs["card_name"] == "Caves of Koilos"
-    assert kwargs["match_ratio_threshold"] == pytest.approx(0.12)
+    assert kwargs["drive_id_override"] == "abc123"
+    assert kwargs["bleed_crop_percent"] == pytest.approx(2.0)
 
 
-def test_apply_per_card_modelines_mpcfill_miss_falls_back_to_scryfall(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_apply_per_card_modelines_mpcfill_without_identifier_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bare `#mpcfill` (no --identifier) is now a no-op + warning; slot keeps its Scryfall art."""
     from mtg_proxies import cli
 
     fake_resolve = MagicMock(return_value=None)
@@ -246,11 +246,28 @@ def test_apply_per_card_modelines_mpcfill_miss_falls_back_to_scryfall(
 
     result = cli._apply_per_card_modelines(decklist, image_paths)
 
-    assert result == ["sol_scryfall.png"]  # Unchanged on miss
+    assert result == ["sol_scryfall.png"]
+    fake_resolve.assert_not_called()
+
+
+def test_apply_per_card_modelines_mpcfill_fetch_failure_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When fetch_thumbnail fails, resolver returns None and the slot keeps the Scryfall scan."""
+    from mtg_proxies import cli
+
+    fake_resolve = MagicMock(return_value=None)
+    monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", fake_resolve)
+
+    decklist = _fake_decklist(_fake_card("Sol Ring", modeline="#mpcfill --identifier xyz"))
+    image_paths = ["sol_scryfall.png"]
+
+    result = cli._apply_per_card_modelines(decklist, image_paths)
+
+    assert result == ["sol_scryfall.png"]
     fake_resolve.assert_called_once()
 
 
-def test_apply_per_card_modelines_mpcfill_swap_count_expansion(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_apply_per_card_modelines_mpcfill_count_expansion(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """count=3 → 3 identical slots, all should swap to the same identifier-fetched render."""
     from mtg_proxies import cli
 
     swapped = tmp_path / "mpcfill_render.png"
@@ -258,14 +275,12 @@ def test_apply_per_card_modelines_mpcfill_swap_count_expansion(monkeypatch: pyte
     fake_resolve = MagicMock(return_value=swapped)
     monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", fake_resolve)
 
-    # count=3 → 3 identical slots, all should swap.
-    decklist = _fake_decklist(_fake_card("Mountain", count=3, modeline="#mpcfill"))
+    decklist = _fake_decklist(_fake_card("Mountain", count=3, modeline="#mpcfill --identifier abc"))
     image_paths = ["m.png", "m.png", "m.png"]
 
     result = cli._apply_per_card_modelines(decklist, image_paths)
 
     assert result == [str(swapped), str(swapped), str(swapped)]
-    # Resolver is invoked once per card, not per copy.
     fake_resolve.assert_called_once()
 
 
@@ -333,101 +348,10 @@ def _fake_dfc_card(name: str, count: int = 1, modeline: str = "") -> object:
     )
 
 
-def test_apply_per_card_modelines_mpcfill_dfc_replaces_both_faces(
+def test_apply_per_card_modelines_mpcfill_dfc_swaps_front_only(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """`#mpcfill` on a DFC must replace BOTH faces by querying MPCFill for each face name."""
-    from mtg_proxies import cli
-
-    front_render = tmp_path / "front.png"
-    back_render = tmp_path / "back.png"
-    front_render.write_bytes(b"FRONT")
-    back_render.write_bytes(b"BACK")
-
-    # Resolver returns the front render when called with the front name, the back render
-    # when called with the back name.
-    def _resolve(*, card_name: str, **_: object) -> Path:
-        return front_render if card_name == "Disciple of Freyalise" else back_render
-
-    fake_resolve = MagicMock(side_effect=_resolve)
-    monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", fake_resolve)
-
-    decklist = _fake_decklist(_fake_dfc_card("Disciple of Freyalise // Garden of Freyalise", modeline="#mpcfill"))
-    # Use the patched fake_dfc_card: faces[0].name = the long name above, faces[1].name = …
-    # Override the helper output to make the names line up with the resolver dispatch.
-    decklist.entries[0].card["card_faces"][0]["name"] = "Disciple of Freyalise"
-    decklist.entries[0].card["card_faces"][1]["name"] = "Garden of Freyalise"
-
-    image_paths = ["front_scryfall.png", "back_scryfall.png"]
-    result = cli._apply_per_card_modelines(decklist, image_paths)
-
-    assert result == [str(front_render), str(back_render)]
-    # Resolver called twice: once per face.
-    assert fake_resolve.call_count == 2
-    called_names = {c.kwargs["card_name"] for c in fake_resolve.call_args_list}
-    assert called_names == {"Disciple of Freyalise", "Garden of Freyalise"}
-
-
-def test_apply_per_card_modelines_mpcfill_dfc_back_miss_falls_back(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """When the back face can't be matched, it falls back to Scryfall; front still swaps."""
-    from mtg_proxies import cli
-
-    front_render = tmp_path / "front.png"
-    front_render.write_bytes(b"FRONT")
-
-    def _resolve(*, card_name: str, **_: object) -> Path | None:
-        return front_render if card_name == "Disciple of Freyalise" else None
-
-    fake_resolve = MagicMock(side_effect=_resolve)
-    monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", fake_resolve)
-
-    decklist = _fake_decklist(_fake_dfc_card("Disciple // Garden", modeline="#mpcfill"))
-    decklist.entries[0].card["card_faces"][0]["name"] = "Disciple of Freyalise"
-    decklist.entries[0].card["card_faces"][1]["name"] = "Garden of Freyalise"
-
-    image_paths = ["front_scryfall.png", "back_scryfall.png"]
-    result = cli._apply_per_card_modelines(decklist, image_paths)
-
-    assert result[0] == str(front_render)
-    assert result[1] == "back_scryfall.png"  # Back falls back
-
-
-def test_apply_per_card_modelines_duplex_mpcfill_dfc_swaps_both_lists(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """In duplex mode the helper must swap front in `fronts` and back in `backs` for a DFC."""
-    from mtg_proxies import cli
-
-    front_render = tmp_path / "front.png"
-    back_render = tmp_path / "back.png"
-    front_render.write_bytes(b"FRONT")
-    back_render.write_bytes(b"BACK")
-
-    def _resolve(*, card_name: str, **_: object) -> Path:
-        return front_render if card_name == "Disciple of Freyalise" else back_render
-
-    monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", MagicMock(side_effect=_resolve))
-
-    decklist = _fake_decklist(_fake_dfc_card("Disciple // Garden", count=2, modeline="#mpcfill"))
-    decklist.entries[0].card["card_faces"][0]["name"] = "Disciple of Freyalise"
-    decklist.entries[0].card["card_faces"][1]["name"] = "Garden of Freyalise"
-
-    # fetch_scans_paired layout: count=2 DFC produces fronts=[f, f], backs=[b, b].
-    fronts = ["front_scryfall.png", "front_scryfall.png"]
-    backs = ["back_scryfall.png", "back_scryfall.png"]
-
-    cli._apply_per_card_modelines(decklist, fronts, backs=backs, duplex=True)
-
-    assert fronts == [str(front_render), str(front_render)]
-    assert backs == [str(back_render), str(back_render)]
-
-
-def test_apply_per_card_modelines_duplex_single_faced_back_untouched(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Single-faced cards in duplex mode must not have the generic card-back touched."""
+    """Post-MR8: `#mpcfill --identifier` swaps the FRONT slot only. DFC backs stay on Scryfall."""
     from mtg_proxies import cli
 
     front_render = tmp_path / "front.png"
@@ -435,7 +359,55 @@ def test_apply_per_card_modelines_duplex_single_faced_back_untouched(
     fake_resolve = MagicMock(return_value=front_render)
     monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", fake_resolve)
 
-    decklist = _fake_decklist(_fake_card("Sol Ring", modeline="#mpcfill"))
+    decklist = _fake_decklist(
+        _fake_dfc_card("Disciple // Garden", modeline="#mpcfill --identifier abc"),
+    )
+    image_paths = ["front_scryfall.png", "back_scryfall.png"]
+    result = cli._apply_per_card_modelines(decklist, image_paths)
+
+    assert result[0] == str(front_render)
+    assert result[1] == "back_scryfall.png"  # back untouched — no back-face identifier in the slim contract
+    fake_resolve.assert_called_once()
+    assert fake_resolve.call_args.kwargs["drive_id_override"] == "abc"
+
+
+def test_apply_per_card_modelines_duplex_mpcfill_swaps_front_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Duplex DFC with `#mpcfill --identifier`: only `fronts` swaps; `backs` keeps the Scryfall back."""
+    from mtg_proxies import cli
+
+    front_render = tmp_path / "front.png"
+    front_render.write_bytes(b"FRONT")
+    monkeypatch.setattr(
+        "mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill",
+        MagicMock(return_value=front_render),
+    )
+
+    decklist = _fake_decklist(
+        _fake_dfc_card("Disciple // Garden", count=2, modeline="#mpcfill --identifier abc"),
+    )
+    fronts = ["front_scryfall.png", "front_scryfall.png"]
+    backs = ["back_scryfall.png", "back_scryfall.png"]
+
+    cli._apply_per_card_modelines(decklist, fronts, backs=backs, duplex=True)
+
+    assert fronts == [str(front_render), str(front_render)]
+    assert backs == ["back_scryfall.png", "back_scryfall.png"]
+
+
+def test_apply_per_card_modelines_duplex_single_faced_back_untouched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Single-faced cards in duplex mode never touch the generic card-back."""
+    from mtg_proxies import cli
+
+    front_render = tmp_path / "front.png"
+    front_render.write_bytes(b"FRONT")
+    fake_resolve = MagicMock(return_value=front_render)
+    monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", fake_resolve)
+
+    decklist = _fake_decklist(_fake_card("Sol Ring", modeline="#mpcfill --identifier xyz"))
     fronts = ["front_scryfall.png"]
     backs = ["generic_card_back.jpg"]
 
@@ -448,10 +420,9 @@ def test_apply_per_card_modelines_duplex_single_faced_back_untouched(
     )
 
     assert fronts == [str(front_render)]
-    assert backs == ["generic_card_back.jpg"]  # Untouched
-    # Resolver called once for the front only; never for a back.
+    assert backs == ["generic_card_back.jpg"]
     assert fake_resolve.call_count == 1
-    assert fake_resolve.call_args.kwargs["card_name"] == "Sol Ring"
+    assert fake_resolve.call_args.kwargs["drive_id_override"] == "xyz"
 
 
 def test_apply_per_card_modelines_duplex_upscale_skips_user_supplied(
@@ -597,7 +568,7 @@ def test_apply_per_card_modelines_mpcfill_implies_no_upscale(monkeypatch: pytest
     swapped.write_bytes(b"PNG")
     monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", MagicMock(return_value=swapped))
 
-    decklist = _fake_decklist(_fake_card("Concordant Crossroads", modeline="#mpcfill"))
+    decklist = _fake_decklist(_fake_card("Concordant Crossroads", modeline="#mpcfill --identifier xyz"))
     image_paths = ["scry.png"]
     skip_upscale: set[str] = set()
 

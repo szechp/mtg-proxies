@@ -19,7 +19,7 @@ def test_main(capsys: pytest.CaptureFixture) -> None:
 
     # Check output
     captured = capsys.readouterr()
-    assert "{print,convert,tokens,deck_value,mpcfill,cardconjourer}" in captured.out
+    assert "{print,convert,tokens,deck_value,cardconjourer}" in captured.out
     assert "Prepare a decklist for printing" in captured.out
     assert "Convert a decklist to text or arena format" in captured.out
     assert "Append the created tokens to a decklist" in captured.out

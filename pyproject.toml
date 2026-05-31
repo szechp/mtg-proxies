@@ -12,8 +12,6 @@ dependencies = [
     "fpdf2>=2.3.0",
     "pillow>=10",
     "torch>=2.0.0",
-    "torchvision",
-    "lightglue @ git+https://github.com/cvg/LightGlue.git",
     "spandrel>=0.4.2",
 ]
 
@@ -43,10 +41,6 @@ explicit = true
 
 [tool.uv.sources]
 torch = [
-    { index = "pytorch-cu121", marker = "sys_platform == 'win32'" },
-    { index = "pytorch-cu121", marker = "sys_platform == 'linux'" },
-]
-torchvision = [
     { index = "pytorch-cu121", marker = "sys_platform == 'win32'" },
     { index = "pytorch-cu121", marker = "sys_platform == 'linux'" },
 ]

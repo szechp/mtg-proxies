@@ -1,6 +1,6 @@
-"""MPCFill art matching subpackage.
+"""MPCFill identifier-fetch helpers.
 
-Picks the visually-closest community-rendered art from mpcfill.com using a Scryfall scan
-as the reference and writes one PNG per slot (front + DFC back) into the output directory.
-Matching uses LightGlue + SuperPoint keypoint correspondences on the cropped art window.
+The auto-matcher (LightGlue/SuperPoint), backend search client, picker, and
+retro classifier were cut in MR8. The only path that remains is "fetch this
+specific render by Drive identifier" via :mod:`drive` and :mod:`per_card`.
 """

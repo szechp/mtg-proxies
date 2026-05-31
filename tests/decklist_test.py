@@ -423,11 +423,11 @@ def test_modeline_parse_single_verb_bare() -> None:
 def test_modeline_parse_single_verb_with_flags() -> None:
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#mpcfill --lightglue-threshold 0.12")
+    directives, warnings = parse_modeline_trailer("#mpcfill --identifier abc123 --bleed-crop 4")
 
     assert len(directives) == 1
     assert directives[0].verb == "mpcfill"
-    assert directives[0].flags == {"--lightglue-threshold": pytest.approx(0.12)}
+    assert directives[0].flags == {"--identifier": "abc123", "--bleed-crop": pytest.approx(4.0)}
     assert warnings == []
 
 
