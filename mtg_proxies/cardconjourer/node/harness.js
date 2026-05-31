@@ -46,16 +46,35 @@ const INCLUDE_FLAVOR = process.argv.includes('--with-flavor');
 // ---------------------------------------------------------------------------
 const BUNDLED_FONT_DIR = path.join(ROOT, 'fonts');
 const FONT_DIR         = path.join(CC_ROOT, 'fonts');
+let _fontLoaded = 0, _fontFailed = 0;
 function reg(file, family) {
     const fp = fs.existsSync(path.join(BUNDLED_FONT_DIR, file))
         ? path.join(BUNDLED_FONT_DIR, file)
         : path.join(FONT_DIR, file);
     if (!fs.existsSync(fp)) {
         console.error('[harness] font missing:', file, '— text will fall back to a system default');
+        _fontFailed++;
         return;
     }
-    try { registerFont(fp, { family }); }
-    catch (e) { console.error('[harness] registerFont failed:', file, e.message); }
+    // Sanity check: a TTF / OTF should be at least a few KB. A 0-byte or
+    // tiny file is the unmistakable signature of git on Windows mangling the
+    // binary on checkout (the `* text=auto` problem). Surface it loudly so
+    // the user knows why the cards are coming out in Arial.
+    const sz = fs.statSync(fp).size;
+    if (sz < 4096) {
+        console.error('[harness] font looks corrupted (only', sz, 'bytes):', file,
+                      '— check your git checkout (Windows + text=auto on .ttf is the usual cause)');
+        _fontFailed++;
+        return;
+    }
+    try {
+        registerFont(fp, { family });
+        _fontLoaded++;
+    }
+    catch (e) {
+        console.error('[harness] registerFont failed:', file, e.message);
+        _fontFailed++;
+    }
 }
 reg('matrix.ttf',                 'matrix');
 reg('matrix-b.ttf',               'matrixb');
@@ -69,6 +88,7 @@ reg('gothambold.otf',             'gothambold');
 reg('goudy-medieval.ttf',         'goudymedieval');
 reg('phyrexian.ttf',              'phyrexian');
 reg('NotoSans-Regular.ttf',       'notosans');
+console.error('[harness] fonts:', _fontLoaded, 'loaded,', _fontFailed, 'failed (bundled dir:', BUNDLED_FONT_DIR, ')');
 
 // ---------------------------------------------------------------------------
 // 2. Image polyfill. Engine code writes `img.src = ...` and expects `onload`

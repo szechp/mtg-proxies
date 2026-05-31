@@ -959,7 +959,12 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
             art_paths.append(_ensure_png(_scryfall.get_image(art_url)))
             slot_indices.append(slot_idx)
         if art_paths:
-            upscaled = _upscale_mod.upscale_images(art_paths)
+            upscale_kwargs: dict = {}
+            if args.upscale_model:
+                upscale_kwargs["model_path"] = args.upscale_model
+            if args.upscale_target_width:
+                upscale_kwargs["target_width"] = args.upscale_target_width
+            upscaled = _upscale_mod.upscale_images(art_paths, **upscale_kwargs)
             for slot_idx, up in zip(slot_indices, upscaled, strict=True):
                 job_overrides[slot_idx] = {"art_path": up}
 
@@ -1007,9 +1012,15 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         )
 
         def _drain_stderr() -> None:
+            # Forward stderr to our stderr so the user sees the harness's font-load
+            # summary and any "[harness] font missing/corrupted" diagnostics. Without
+            # this the harness silently falls back to Arial on a botched checkout
+            # (Windows + .gitattributes binary attrs missing). Drained in a thread
+            # so its pipe can't fill and deadlock the subprocess.
             assert proc.stderr is not None
-            for _ in proc.stderr:
-                pass  # quietly absorbed; final summary line below is enough
+            import sys as _sys
+            for line in proc.stderr:
+                _sys.stderr.write(line)
 
         threading.Thread(target=_drain_stderr, daemon=True).start()
 
@@ -1355,6 +1366,23 @@ def main() -> None:
         help=(
             "before rendering, run each card's Scryfall art_crop through Real-ESRGAN."
             " Same model and cache as `mtg-proxies print --upscale`."
+        ),
+    )
+    cardconjourer_parser.add_argument(
+        "--upscale-model", default=None, metavar="PATH",
+        help=(
+            "path to a local .pth upscaling model (default: RealESRNet_x4plus)."
+            " Useful for swapping in a GAN-trained variant (e.g."
+            " RealESRGAN_x4plus.pth) that better suppresses JPEG / halftone"
+            " artifacts than the conservative MSE-trained default."
+        ),
+    )
+    cardconjourer_parser.add_argument(
+        "--upscale-target-width", type=int, default=None, metavar="PX",
+        help=(
+            "downsample the upscaled art to PX wide before handing it to the"
+            " renderer. Default: unset, keep the model's full 4× output. Useful"
+            " when the chosen model emits oversized intermediates."
         ),
     )
 

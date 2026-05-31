@@ -1,1 +1,12 @@
 * text=auto
+
+# Binary assets: never normalize line endings (Windows checkout corrupts
+# TTF/OTF/PNG/JPG otherwise — node-canvas's registerFont silently fails on
+# a mangled .ttf and falls back to Arial, which is exactly the symptom we
+# hit when fonts were checked in without these attributes).
+*.ttf binary
+*.otf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary
