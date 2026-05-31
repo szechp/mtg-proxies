@@ -876,33 +876,47 @@ def _generate_basic_lands_decklist(
 def _run_cardconjourer(args: argparse.Namespace) -> None:
     """Orchestrate the `cardconjourer` subcommand end-to-end.
 
-    Reads the decklist, extracts ``(count, name)`` per line, spawns the node
-    harness from ``mtg_proxies/cardconjourer/node/harness.js`` with the
-    cached CC engine at ``~/.cache/mtg-proxies/cardconjurer`` (cloned via
-    ``make cardconjurer``). Writes per-card PNGs to OUTDIR plus
-    ``fallback.txt`` (decklist format for skipped cards) and ``report.csv``.
+    Uses ``parse_decklist_spec`` to resolve each line to a Scryfall card dict
+    (so pinned ``Name (SET) CN`` lines round-trip correctly), writes each
+    resolved dict to a temp inputs dir under the slug the harness's
+    ``fetchScryfall`` reads, then spawns the node harness from
+    ``mtg_proxies/cardconjourer/node/harness.js`` with the cached CC engine at
+    ``~/.cache/mtg-proxies/cardconjurer`` (cloned via ``make cardconjurer``).
+    Writes per-card PNGs to OUTDIR plus ``fallback.txt`` (decklist format for
+    skipped cards) and ``report.csv``.
     """
+    import json as _json
     import os
+    import tempfile
 
     from mtg_proxies.cardconjourer import runner as cc_runner
 
     frame = "8th" if args.frame_8th else "retro"
 
-    # Parse the decklist as plain (count, name) tuples. The standalone
-    # subcommand renders whatever the user lists; modeline-driven per-card
-    # rendering is handled inside the `print` subcommand instead.
-    cards: list[tuple[int, str]] = []
-    for raw_line in args.decklist.read_text().splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or line.startswith("//"):
-            continue
-        if " #" in line:
-            line = line.split(" #", 1)[0]
-        parts = line.split(maxsplit=1)
-        if len(parts) == 2 and parts[0].isdigit():
-            cards.append((int(parts[0]), parts[1]))
-        else:
-            cards.append((1, line))
+    # Resolve every decklist line to a full Scryfall card dict. parse_decklist_spec
+    # handles count prefix, `Name (SET) CN`, the new URL/shorthand form, foil markers,
+    # and trailing modelines — everything the standalone naive line.split() used to miss.
+    decklist = parse_decklist_spec(args.decklist, art_preference="standard", allow_low_res=True)
+    if not isinstance(decklist, Decklist):
+        print(f"[cardconjourer] could not parse decklist from {args.decklist}")
+        raise SystemExit(1)
+
+    cards: list[tuple[int, str]] = [(c.count, c["name"]) for c in decklist.cards]
+
+    # Pre-seed the harness's inputs cache with the resolved card dicts. The harness's
+    # fetchScryfall reads INPUTS/<slug>.json first and only hits the network on cache
+    # miss, so writing the resolved dicts here both preserves the user's printing
+    # pin AND skips ~83 round-trips for the typical commander deck. The slug function
+    # must match harness.js exactly: lowercase, non-alphanumeric → underscore, strip
+    # leading/trailing underscores.
+    harness_inputs_dir = Path(tempfile.mkdtemp(prefix="cc-inputs-"))
+
+    def _slug(name: str) -> str:
+        return re.sub(r"^_+|_+$", "", re.sub(r"[^a-z0-9]+", "_", name.lower()))
+
+    for card in decklist.cards:
+        slug = _slug(card["name"])
+        (harness_inputs_dir / f"{slug}.json").write_text(_json.dumps(card.card))
 
     # Default harness wrapper: locate the bundled harness.js + the cached CC
     # engine, spawn node with the right env. Tests can swap this out via the
@@ -912,26 +926,78 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     harness_path = Path(__file__).resolve().parent / "cardconjourer" / "node" / "harness.js"
     cc_cache = Path.home() / ".cache" / "mtg-proxies" / "cardconjurer"
 
+    # Ensure outdir exists up-front so the streaming copy below can write into
+    # it as soon as the first PNG lands — render_deck's own mkdir runs later.
+    args.outdir.mkdir(parents=True, exist_ok=True)
+
     def _run(jobs: list[dict]) -> list[dict]:
-        import json as _json
+        import shutil
         import subprocess
+        import threading
+
+        from tqdm import tqdm
         if not cc_cache.is_dir():
             print(
                 "[cardconjourer] Card Conjurer source not found at "
                 f"{cc_cache}. Run `make cardconjurer` first."
             )
             raise SystemExit(2)
+        # Stream stdout line-by-line: update tqdm AND copy each finished PNG
+        # into the user's outdir as soon as it arrives. The batched approach
+        # (collect all responses, then copy) leaves the outdir empty for
+        # ~10 minutes on a commander deck — bad feedback. Stderr is drained on
+        # a daemon thread so its buffer can't fill and deadlock the harness.
         proc = subprocess.Popen(
             ["node", str(harness_path)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env={**os.environ, "CC_ROOT": str(cc_cache)},
+            bufsize=1,
+            env={
+                **os.environ,
+                "CC_ROOT": str(cc_cache),
+                "CC_INPUTS": str(harness_inputs_dir),
+            },
         )
+
+        def _drain_stderr() -> None:
+            assert proc.stderr is not None
+            for _ in proc.stderr:
+                pass  # quietly absorbed; final summary line below is enough
+
+        threading.Thread(target=_drain_stderr, daemon=True).start()
+
+        assert proc.stdin is not None
+        assert proc.stdout is not None
         payload = "".join(_json.dumps(j) + "\n" for j in jobs)
-        out, _err = proc.communicate(input=payload)
-        return [r for r in (cc_runner.parse_response(line) for line in out.splitlines()) if r]
+        proc.stdin.write(payload)
+        proc.stdin.close()
+
+        responses: list[dict] = []
+        ok_count = 0
+        with tqdm(total=len(jobs), desc="Rendering", unit="card") as bar:
+            for line in proc.stdout:
+                parsed = cc_runner.parse_response(line)
+                if parsed is None:
+                    continue  # harness debug noise — harmless, skip
+                responses.append(parsed)
+                if parsed.get("status") == "ok":
+                    ok_count += 1
+                    src = Path(parsed["out"])
+                    dst = args.outdir / src.name
+                    if src.resolve() != dst.resolve():
+                        try:
+                            shutil.copyfile(src, dst)
+                        except OSError as exc:
+                            # Don't kill the whole run for a single copy failure;
+                            # render_deck's final pass will retry it.
+                            tqdm.write(f"[cardconjourer] copy failed for {src.name}: {exc}")
+                bar.update(1)
+                bar.set_postfix_str(f"ok={ok_count} skip={len(responses) - ok_count}", refresh=False)
+
+        proc.wait()
+        return responses
 
     summary = cc_runner.render_deck(
         cards,
