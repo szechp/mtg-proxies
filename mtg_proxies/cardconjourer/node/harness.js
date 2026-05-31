@@ -293,7 +293,24 @@ function normalizeFontString(s) {
         get() { return origGet.call(this); },
         set(v) { origSet.call(this, normalizeFontString(v)); },
     });
-    console.error('[harness] font shim installed on Context2d.prototype');
+
+    // Verify the override actually took effect — defineProperty on a
+    // prototype occasionally gets silently rejected in some node-canvas
+    // builds. Set a known engine string on a probe context and check that
+    // the stored value is the rewritten Mtg* form. This is a one-shot
+    // sanity check at startup; if it fails the user knows immediately
+    // (instead of finding out an hour later that every card came out in
+    // Arial) and we can fall back to per-instance patching.
+    const probeCtx = createCanvas(1, 1).getContext('2d');
+    probeCtx.font = '102px MPlantin-Italic';
+    const stored = probeCtx.font;
+    if (typeof stored === 'string' && /mtgmplantinit/i.test(stored)) {
+        console.error('[harness] font shim verified (intercepts ctx.font assignments)');
+    } else {
+        console.error('[harness] FONT SHIM NOT TAKING EFFECT — stored value was', JSON.stringify(stored),
+                      '\n  text rendering may fall back to Arial on this build of node-canvas.',
+                      '\n  Please report the node + node-canvas version (above) so we can fix.');
+    }
 })();
 
 function wrapContext(ctx) {
