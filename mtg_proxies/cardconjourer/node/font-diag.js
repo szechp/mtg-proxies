@@ -30,20 +30,21 @@ function regIfExists(file, opts) {
 }
 
 // Mirror harness.js's registrations: each patched copy under exactly one
-// engine canonical name (same-file-twice is the silent-break trap).
+// CSS-keyword-FREE safe name (Mtg* prefix). Engine's keyword-containing
+// strings are rewritten to these by harness.js's prototype font shim.
 const REGS = [
-    ['matrix-regular.ttf',               'Matrix'],
-    ['matrix-bold.ttf',                  'Matrix-Bold'],
-    ['matrix-bold-small-caps.ttf',       'Matrix Bold Small Caps'],
-    ['mplantin-regular.ttf',             'MPlantin'],
-    ['mplantin-italic.ttf',              'MPlantin-Italic'],
-    ['beleren-bold.ttf',                 'Beleren-Bold'],
-    ['beleren-bold-small-caps.ttf',      'Beleren-Bold-Small-Caps'],
-    ['gotham-medium-patched.ttf',        'Gotham-Medium'],
-    ['gotham-bold-patched.otf',          'Gotham-Bold'],
-    ['goudy-medieval-patched.ttf',       'Goudy Medieval'],
-    ['phyrexian-patched.ttf',            'Phyrexian'],
-    ['notosans-patched.ttf',             'NotoSans'],
+    ['matrix-regular.ttf',               'MtgMatrix'],
+    ['matrix-bold.ttf',                  'MtgMatrixB'],
+    ['matrix-bold-small-caps.ttf',       'MtgMatrixBsc'],
+    ['mplantin-regular.ttf',             'MtgMPlantin'],
+    ['mplantin-italic.ttf',              'MtgMPlantinIt'],
+    ['beleren-bold.ttf',                 'MtgBelerenB'],
+    ['beleren-bold-small-caps.ttf',      'MtgBelerenBsc'],
+    ['gotham-medium-patched.ttf',        'MtgGothamMd'],
+    ['gotham-bold-patched.otf',          'MtgGothamHv'],
+    ['goudy-medieval-patched.ttf',       'MtgGoudyMedieval'],
+    ['phyrexian-patched.ttf',            'MtgPhyrexian'],
+    ['notosans-patched.ttf',             'MtgNotoSans'],
 ];
 for (const [file, family] of REGS) regIfExists(file, { family });
 
@@ -65,21 +66,23 @@ const SANS_BOLD = baseCtx.measureText('Hello Mtg').width;
 console.log(`Sans baselines: regular=${SANS_REGULAR.toFixed(2)}, bold=${SANS_BOLD.toFixed(2)}`);
 console.log('');
 
-// (label, ctx.font string the engine ACTUALLY sets)
+// Test the SAFE names directly — these are what node-canvas's registerFont
+// actually knows about. No font shim is applied in this standalone diag, so
+// engine-keyword strings would naturally fall back here too; the safe names
+// prove the file registration succeeded.
 const TESTS = [
-    ['Matrix (engine)',                  '50px Matrix'],
-    ['Matrix-Bold (engine)',             '50px Matrix-Bold'],
-    ['Matrix Bold Small Caps (engine)',  '50px "Matrix Bold Small Caps"'],
-    ['MPlantin (engine)',                '50px MPlantin'],
-    ['MPlantin-Italic (engine)',         '50px MPlantin-Italic'],
-    ['Beleren-Bold (engine)',            '50px Beleren-Bold'],
-    ['Beleren Bold Smallcaps (engine)',  '50px "Beleren Bold Smallcaps"'],
-    ['Gotham-Medium (engine)',           '50px Gotham-Medium'],
-    ['Gotham Medium (engine)',           '50px "Gotham Medium"'],
-    ['Gotham-Bold (engine)',             '50px Gotham-Bold'],
-    ['Goudy Medieval (engine)',          '50px "Goudy Medieval"'],
-    ['Phyrexian (engine)',               '50px Phyrexian'],
-    ['NotoSans (engine)',                '50px NotoSans'],
+    ['MtgMatrix',                        '50px MtgMatrix'],
+    ['MtgMatrixB',                       '50px MtgMatrixB'],
+    ['MtgMatrixBsc',                     '50px MtgMatrixBsc'],
+    ['MtgMPlantin',                      '50px MtgMPlantin'],
+    ['MtgMPlantinIt',                    '50px MtgMPlantinIt'],
+    ['MtgBelerenB',                      '50px MtgBelerenB'],
+    ['MtgBelerenBsc',                    '50px MtgBelerenBsc'],
+    ['MtgGothamMd',                      '50px MtgGothamMd'],
+    ['MtgGothamHv',                      '50px MtgGothamHv'],
+    ['MtgGoudyMedieval',                 '50px MtgGoudyMedieval'],
+    ['MtgPhyrexian',                     '50px MtgPhyrexian'],
+    ['MtgNotoSans',                      '50px MtgNotoSans'],
 ];
 
 let realFonts = 0, fallbackToSans = 0;

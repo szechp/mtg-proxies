@@ -83,30 +83,31 @@ function reg(file, opts) {
         _fontFailed++;
     }
 }
-// All registrations use the PATCHED COPIES (scripts/patch_cardconjourer_fonts.py
-// — cleaned OS/2.fsSelection and head.macStyle bits, so each file presents
-// as a Regular-style font under whatever alias we give registerFont). The
-// originals are kept in the repo for reference / reproducibility but not
-// registered: their italic/bold style bits make node-canvas treat them as
-// styled variants, which breaks ctx.font lookups by the simple family name.
+// All registrations use the PATCHED COPIES with KEYWORD-FREE family names
+// (Mtg* prefix + opaque suffixes, no "Bold" / "Italic" / "Medium" tokens).
+// Windows node-canvas's CSS font parser splits on hyphens AND spaces and
+// treats those tokens as weight/style keywords — so "Matrix-Bold" or
+// "MPlantin-Italic" gets parsed as family + style and registerFont's
+// alias never matches. The safe names dodge this entirely.
 //
-// Each file is registered EXACTLY ONCE under the engine's canonical CSS
-// name. The "register same file twice" trap silently breaks node-canvas
-// family lookup, so the harness's old internal short aliases (matrix /
-// matrixb / mplantin / mplantini etc.) are gone — the two callers inside
-// harness.js were updated to use the canonical names instead.
-reg('matrix-regular.ttf',             'Matrix');
-reg('matrix-bold.ttf',                'Matrix-Bold');
-reg('matrix-bold-small-caps.ttf',     'Matrix Bold Small Caps');
-reg('mplantin-regular.ttf',           'MPlantin');
-reg('mplantin-italic.ttf',            'MPlantin-Italic');
-reg('beleren-bold.ttf',               'Beleren-Bold');
-reg('beleren-bold-small-caps.ttf',    'Beleren-Bold-Small-Caps');
-reg('gotham-medium-patched.ttf',      'Gotham-Medium');
-reg('gotham-bold-patched.otf',        'Gotham-Bold');
-reg('goudy-medieval-patched.ttf',     'Goudy Medieval');
-reg('phyrexian-patched.ttf',          'Phyrexian');
-reg('notosans-patched.ttf',           'NotoSans');
+// A Context2d.prototype.font shim (below) rewrites the engine's keyword-
+// containing strings to these safe names at the ctx.font set point, so
+// creator-23.js's font lookups still resolve.
+//
+// Each file is registered EXACTLY ONCE under its safe name — registering
+// the same file under multiple aliases is the silent-break trap.
+reg('matrix-regular.ttf',             'MtgMatrix');
+reg('matrix-bold.ttf',                'MtgMatrixB');
+reg('matrix-bold-small-caps.ttf',     'MtgMatrixBsc');
+reg('mplantin-regular.ttf',           'MtgMPlantin');
+reg('mplantin-italic.ttf',            'MtgMPlantinIt');
+reg('beleren-bold.ttf',               'MtgBelerenB');
+reg('beleren-bold-small-caps.ttf',    'MtgBelerenBsc');
+reg('gotham-medium-patched.ttf',      'MtgGothamMd');
+reg('gotham-bold-patched.otf',        'MtgGothamHv');
+reg('goudy-medieval-patched.ttf',     'MtgGoudyMedieval');
+reg('phyrexian-patched.ttf',          'MtgPhyrexian');
+reg('notosans-patched.ttf',           'MtgNotoSans');
 console.error('[harness] fonts:', _fontLoaded, 'loaded,', _fontFailed, 'failed (bundled dir:', BUNDLED_FONT_DIR, ')');
 
 // ---------------------------------------------------------------------------
@@ -217,77 +218,87 @@ async function getPatchedBlackFrame() {
     _patchedBlackFrame = cv;
     return cv;
 }
-// Engine font-name → registered alias normalizer. The engine (creator-23.js)
-// occasionally produces font strings like ``"MPlantin-Italic Not-Rotated 102px"``
-// that don't match the alias names we passed to registerFont (``mplantini``).
-// macOS/Linux Cairo's fuzzy matching forgives this; Windows GDI+ does not and
-// falls back to Sans with a clear ``couldn't load font ... expect ugly output``
-// warning. Rewrite the family portion to our alias and put the string in
-// canonical ``"<size> <family>"`` form so node-canvas's strict CSS parser is
-// happy.
+// Engine font-name → safe-alias rewriter. The engine (creator-23.js) emits
+// CSS font strings like ``"MPlantin-Italic Not-Rotated 102px"`` —
+// node-canvas on Windows splits on hyphens and spaces, sees "Italic" /
+// "Bold" / "Medium" tokens, and rebuilds the lookup as
+// family="MPlantin" + style="italic" (a variant we don't have), then
+// falls back to Sans. We pre-register each font under a CSS-keyword-FREE
+// safe name (Mtg* prefix); this rewriter maps the engine's strings to
+// those safe names before they reach node-canvas's parser.
 //
-// Order matters in this list: longer / more-specific patterns must come first
-// so e.g. ``matrix bold small caps`` doesn't shortcut to ``matrix``.
+// Order matters: longer/more-specific patterns first so
+// "matrix bold small caps" doesn't shortcut to "matrix".
 const FONT_ALIAS_PATTERNS = [
-    [/\bmatrix[\s-]*bold[\s-]*small[\s-]*caps\b/i, 'matrixbsc'],
-    [/\bmatrix[\s-]*bold\b/i,                       'matrixb'],
-    [/\bmatrix\b/i,                                 'matrix'],
-    [/\bmplantin[\s-]*italic\b/i,                   'mplantini'],
-    [/\bmplantin\b/i,                               'mplantin'],
-    [/\bbeleren[\s-]*bold[\s-]*small[\s-]*caps\b/i, 'belerenbsc'],
-    [/\bbeleren[\s-]*bold\b/i,                      'belerenb'],
-    [/\bgotham[\s-]*medium\b/i,                     'gothammedium'],
-    [/\bgotham[\s-]*bold\b/i,                       'gothambold'],
-    [/\bgoudy[\s-]*medieval\b/i,                    'goudymedieval'],
-    [/\bphyrexian\b/i,                              'phyrexian'],
-    [/\bnoto[\s-]*sans\b/i,                         'notosans'],
+    [/\bmatrix[\s-]*bold[\s-]*small[\s-]*caps\b/i, 'MtgMatrixBsc'],
+    [/\bmatrix[\s-]*bold\b/i,                       'MtgMatrixB'],
+    [/\bmatrix\b/i,                                 'MtgMatrix'],
+    [/\bmplantin[\s-]*italic\b/i,                   'MtgMPlantinIt'],
+    [/\bmplantin\b/i,                               'MtgMPlantin'],
+    [/\bbeleren[\s-]*bold[\s-]*small[\s-]*caps\b/i, 'MtgBelerenBsc'],
+    [/\bbeleren[\s-]*bold[\s-]*smallcaps\b/i,       'MtgBelerenBsc'],
+    [/\bbeleren[\s-]*bold\b/i,                      'MtgBelerenB'],
+    [/\bgotham[\s-]*medium\b/i,                     'MtgGothamMd'],
+    [/\bgotham[\s-]*bold\b/i,                       'MtgGothamHv'],
+    [/\bgoudy[\s-]*medieval\b/i,                    'MtgGoudyMedieval'],
+    [/\bphyrexian\b/i,                              'MtgPhyrexian'],
+    [/\bnoto[\s-]*sans\b/i,                         'MtgNotoSans'],
 ];
-// Already-normalized strings (e.g. ``"101px matrixb"`` — our own aliases) flow
-// through the normalizer too. Skip the alias scan if the string already ends
-// in one of our registered family names so we don't pointlessly warn.
+// Already-rewritten strings (our Mtg* names) skip the alias scan.
 const KNOWN_ALIASES = new Set([
-    'matrix', 'matrixb', 'matrixbsc', 'mplantin', 'mplantini',
-    'belerenb', 'belerenbsc', 'gothammedium', 'gothambold',
-    'goudymedieval', 'phyrexian', 'notosans',
+    'mtgmatrix', 'mtgmatrixb', 'mtgmatrixbsc',
+    'mtgmplantin', 'mtgmplantinit',
+    'mtgbelerenb', 'mtgbelerenbsc',
+    'mtggothammd', 'mtggothamhv',
+    'mtggoudymedieval', 'mtgphyrexian', 'mtgnotosans',
 ]);
 function normalizeFontString(s) {
     if (typeof s !== 'string') return s;
     // Pull the first numeric+unit (16px, 102pt, 1.5em). Default 16px if missing.
     const sizeMatch = s.match(/(\d+(?:\.\d+)?)(px|pt|em|%)/);
     const sizePart  = sizeMatch ? sizeMatch[0] : '16px';
-    // Fast-path: already in canonical form (e.g. "101px matrixb"). Skip.
+    // Fast-path: already in canonical "<size> MtgXxx" form. Skip.
     const lastToken = s.trim().split(/\s+/).pop();
     if (lastToken && KNOWN_ALIASES.has(lastToken.toLowerCase())) return s;
     for (const [re, alias] of FONT_ALIAS_PATTERNS) {
         if (re.test(s)) return sizePart + ' ' + alias;
     }
-    // Unknown family — leave it alone; node-canvas's own ``couldn't load
-    // font ...`` warning will surface the genuine miss if it can't resolve it.
     return s;
 }
 
-function patchCtxFont(ctx) {
-    // Replace the ``font`` property with one that runs the value through the
-    // alias normalizer before delegating to the real setter.
-    let proto = Object.getPrototypeOf(ctx);
-    let desc = null;
+// Patch Context2d.prototype.font ONCE at startup so EVERY canvas context —
+// whether created via document.createElement('canvas'), new OffscreenCanvas,
+// or directly via createCanvas() bypassing wrapCanvas — inherits the
+// normalizer. Per-instance patching missed the canvases the engine creates
+// outside our wrapper, which is why earlier shim attempts failed silently.
+(function patchCtxFontPrototype() {
+    const Ctx2d = canvasPkg.Context2d
+        || (createCanvas(1, 1).getContext('2d') || {}).constructor;
+    if (!Ctx2d || !Ctx2d.prototype) {
+        console.error('[harness] could not locate Context2d.prototype — font shim disabled');
+        return;
+    }
+    let proto = Ctx2d.prototype, desc = null;
     while (proto && !desc) {
         desc = Object.getOwnPropertyDescriptor(proto, 'font');
         if (!desc) proto = Object.getPrototypeOf(proto);
     }
-    if (!desc || !desc.set || !desc.get) return;  // unfamiliar node-canvas build — leave alone
+    if (!desc || !desc.set || !desc.get) {
+        console.error('[harness] Context2d.prototype.font has no get/set — font shim disabled');
+        return;
+    }
     const origGet = desc.get, origSet = desc.set;
-    Object.defineProperty(ctx, 'font', {
+    Object.defineProperty(proto, 'font', {
         configurable: true,
         get() { return origGet.call(this); },
         set(v) { origSet.call(this, normalizeFontString(v)); },
     });
-}
+    console.error('[harness] font shim installed on Context2d.prototype');
+})();
 
 function wrapContext(ctx) {
     const orig = ctx.drawImage.bind(ctx);
     ctx.drawImage = function (img, ...rest) { return orig(unwrap(img), ...rest); };
-    patchCtxFont(ctx);
     return ctx;
 }
 function wrapCanvas(c) {
@@ -615,7 +626,7 @@ function setLeanBottomInfo() {
                y:     1927 / 2100,
                width:  0.8107,
                height: 0.0248,
-               oneLine: true, font: 'Matrix-Bold', size: 0.0248, color: 'black' },
+               oneLine: true, font: 'MtgMatrixB', size: 0.0248, color: 'black' },
         // === copyright line ===
         wizards: { name: 'wizards',
                    text: cond + '™ & © 1993-{elemidinfo-year} Wizards of the Coast LLC {elemidinfo-set} {elemidinfo-number}',
@@ -623,7 +634,7 @@ function setLeanBottomInfo() {
                    y:     1989 / 2100,
                    width:  0.8107,
                    height: 0.0153,
-                   oneLine: true, font: 'MPlantin', size: 0.0153, color: 'black' },
+                   oneLine: true, font: 'MtgMPlantin', size: 0.0153, color: 'black' },
     };
 }
 
