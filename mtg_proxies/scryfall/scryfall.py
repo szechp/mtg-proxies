@@ -358,6 +358,7 @@ def recommend_print(
     preferred_sets: list[str] | None = None,
     allow_low_res: bool = False,
     prefer_retro_frame: bool = False,
+    art_before: int | None = None,
     mode: Literal["best"] = "best",
 ) -> dict: ...
 
@@ -372,6 +373,7 @@ def recommend_print(
     preferred_sets: list[str] | None = None,
     allow_low_res: bool = False,
     prefer_retro_frame: bool = False,
+    art_before: int | None = None,
     mode: Literal["all", "choices"],
 ) -> list[dict]: ...
 
@@ -389,6 +391,7 @@ def recommend_print(
     preferred_sets: list[str] | None = None,
     allow_low_res: bool = False,
     prefer_retro_frame: bool = False,
+    art_before: int | None = None,
     mode: Literal["best", "all", "choices"] = "best",
 ) -> dict | list[dict]:
     """Recommend a (better) print of a card.
@@ -410,6 +413,11 @@ def recommend_print(
             get a large scoring bonus so retro reprints (Brothers' War Retro, Mystery Booster
             old-frame, Time Spiral Remastered, etc.) win over the default 2015 picks. Falls
             back silently to the regular winner when no retro candidate exists for the card.
+        art_before: When set (e.g. ``2023``), restrict candidates to prints released before
+            ``<YEAR>-01-01`` and pick the EARLIEST released. This dodges the wave of new digital
+            art commissioned for recent reprints by preferring the original printing. Falls
+            back silently to the default recommendation when no print qualifies (cards that
+            first appeared after the cutoff still get a result).
         mode: Recommendation mode.
     """
     if current is not None and oracle_id is None:  # Use oracle id of current
@@ -436,6 +444,18 @@ def recommend_print(
         if in_preferred:
             alternatives = in_preferred
             preferred_set_restricted = True
+
+    # art_before: restrict candidates to prints released before ``<YEAR>-01-01`` and narrow to
+    # the earliest released_at — that's the original printing, which on most cards uses the
+    # painted/non-digital art the user wants. Default scoring then tiebreaks among same-date
+    # earliest prints (lang=en, highres, etc.). Silently falls through when nothing qualifies
+    # (card first appeared after the cutoff) so the user doesn't have to special-case.
+    if art_before is not None:
+        cutoff = f"{art_before}-01-01"
+        older = [a for a in alternatives if a.get("released_at", "9999") < cutoff]
+        if older:
+            min_date = min(a["released_at"] for a in older)
+            alternatives = [a for a in older if a["released_at"] == min_date]
 
     def score(card: dict) -> int:
         points = 0

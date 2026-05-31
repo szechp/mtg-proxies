@@ -14,6 +14,7 @@ def parse_decklist(
     preferred_sets: list[str] | None = None,
     allow_low_res: bool = False,
     prefer_retro_frame: bool = False,
+    art_before: int | None = None,
 ) -> tuple[Decklist, bool, list[ParseWarning]]:
     """Parse a decklist from manastack.
 
@@ -59,6 +60,7 @@ def parse_decklist(
             preferred_sets=preferred_sets,
             allow_low_res=allow_low_res,
             prefer_retro_frame=prefer_retro_frame,
+            art_before=art_before,
         )
 
         decklist.append_card(count, card)

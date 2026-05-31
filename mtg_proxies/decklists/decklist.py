@@ -183,6 +183,7 @@ def parse_decklist(
     preferred_sets: list[str] | None = None,
     allow_low_res: bool = False,
     prefer_retro_frame: bool = False,
+    art_before: int | None = None,
 ) -> tuple[Decklist, bool, list[ParseWarning]]:
     """Parse card information from a decklist in text or MtG Arena (or mixed) format.
 
@@ -207,6 +208,7 @@ def parse_decklist(
             preferred_sets=preferred_sets,
             allow_low_res=allow_low_res,
             prefer_retro_frame=prefer_retro_frame,
+            art_before=art_before,
         )
 
     # Use file name without extension as name
@@ -221,6 +223,7 @@ def parse_decklist_stream(
     preferred_sets: list[str] | None = None,
     allow_low_res: bool = False,
     prefer_retro_frame: bool = False,
+    art_before: int | None = None,
 ) -> tuple[Decklist, bool, list[ParseWarning]]:
     """Parse card information from a decklist in text or MtG Arena (or mixed) format from a stream.
 
@@ -318,6 +321,7 @@ def parse_decklist_stream(
                 preferred_sets=preferred_sets,
                 allow_low_res=allow_low_res,
                 prefer_retro_frame=prefer_retro_frame,
+                art_before=art_before,
             )
 
             decklist.append_card(count, card, modeline=modeline_trailer)

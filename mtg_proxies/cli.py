@@ -155,6 +155,7 @@ def parse_decklist_spec(
     preferred_sets: list[str] | None = None,
     allow_low_res: bool = False,
     prefer_retro_frame: bool = False,
+    art_before: int | None = None,
 ) -> Decklist:
     """Attempt to parse a decklist from different locations.
 
@@ -168,6 +169,9 @@ def parse_decklist_spec(
             instead of upgrading to highres alternatives.
         prefer_retro_frame: When True, prefer pre-2015 retro frames (1993 / 1997 / 2003); falls
             back silently when no retro print is available for a card.
+        art_before: When set (e.g. ``2023``), prefer each card's earliest printing released
+            before ``<YEAR>-01-01``. Falls back silently to the default recommendation for
+            cards that first appeared after the cutoff. Used by ``convert --art-before``.
     """
     print("Parsing decklist ...")
     # Coerce up front: argparse ``type=Path`` arrives as ``WindowsPath`` / ``PosixPath``,
@@ -181,6 +185,7 @@ def parse_decklist_spec(
             preferred_sets=preferred_sets,
             allow_low_res=allow_low_res,
             prefer_retro_frame=prefer_retro_frame,
+            art_before=art_before,
         )
     elif decklist_spec.lower().startswith("manastack:") and decklist_spec.split(":")[-1].isdigit():
         # Decklist on Manastack
@@ -191,6 +196,7 @@ def parse_decklist_spec(
             preferred_sets=preferred_sets,
             allow_low_res=allow_low_res,
             prefer_retro_frame=prefer_retro_frame,
+            art_before=art_before,
         )
     elif decklist_spec.lower().startswith("archidekt:") and decklist_spec.split(":")[-1].isdigit():
         # Decklist on Archidekt
@@ -201,6 +207,7 @@ def parse_decklist_spec(
             preferred_sets=preferred_sets,
             allow_low_res=allow_low_res,
             prefer_retro_frame=prefer_retro_frame,
+            art_before=art_before,
         )
     else:
         print(f"Cant find decklist '{decklist_spec}'")
@@ -1358,6 +1365,20 @@ def main() -> None:
             " falls back silently when no retro print is available for a card"
         ),
     )
+    convert_parser.add_argument(
+        "--art-before",
+        type=int,
+        default=None,
+        metavar="YEAR",
+        help=(
+            "for each card, prefer the earliest printing released before YEAR-01-01."
+            " Dodges the recent-reprint wave of new digital art commissions in favor of the"
+            " original painted art (e.g. --art-before 2023 picks Carl Critchlow's 2010"
+            " Exsanguinate over the 2023 Marie Magny / Scott Fischer redesigns)."
+            " Falls back silently to the default recommendation when a card has no print"
+            " before the cutoff."
+        ),
+    )
 
     # Tokens tool
     tokens_parser = subparsers.add_parser(
@@ -1838,6 +1859,7 @@ def main() -> None:
                         preferred_sets=args.set or None,
                         allow_low_res=allow_low_res,
                         prefer_retro_frame=getattr(args, "prefer_retro_frame", False),
+                        art_before=getattr(args, "art_before", None),
                     )
                     if decklist.entries and not (
                         isinstance(decklist.entries[-1], Comment) and not decklist.entries[-1].text.strip()
@@ -1879,6 +1901,7 @@ def main() -> None:
                     preferred_sets=args.set or None,
                     allow_low_res=allow_low_res,
                     prefer_retro_frame=getattr(args, "prefer_retro_frame", False),
+                    art_before=getattr(args, "art_before", None),
                 )
 
             # If preferred sets were specified, move cards not from those sets to the bottom

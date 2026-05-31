@@ -144,6 +144,23 @@ mtg-proxies convert deck.txt deck-out.txt --art-preference standard
 mtg-proxies convert deck.txt deck-out.txt --art-preference wild
 ```
 
+**Prefer the original (older) printing's art:**
+
+```bash
+# Pick each card's earliest printing released before 2023-01-01. Dodges the
+# wave of new digital art commissioned for the 2023+ reprints (Exsanguinate's
+# 2010 Critchlow oil painting wins over its 2023 digital redesign etc.).
+mtg-proxies convert deck.txt deck-out.txt --art-before 2023
+```
+
+Two natural cutoffs: **2008** (before MTG art briefs went mostly digital with
+Shards of Alara) and **2019** (before the Eldraine pivot to more stylized /
+storybook art). Cards that first appeared after the cutoff fall back silently
+to the default recommendation, so combining `--art-before` with a normal
+modern deck just produces "older art for the older cards, default for the
+rest." Stack with `--prefer-retro-frame` to also prefer 1993 / 1997 / 2003
+frames where they exist.
+
 **Generate random basic lands:**
 
 ```bash
@@ -386,7 +403,7 @@ usage: mtg-proxies convert [-h] [--format {arena,text}] [--clean]
                            [--basic-lands NAME=COUNT [NAME=COUNT ...]]
                            [--art-preference {standard,wild,premium}]
                            [--set SET [SET ...]] [--allow-low-res]
-                           [--prefer-retro-frame]
+                           [--prefer-retro-frame] [--art-before YEAR]
                            [decklist] [outfile]
 
 Convert a decklist to text or arena format.
@@ -418,6 +435,14 @@ options:
   --prefer-retro-frame  prefer pre-2015 (retro / old-school / blocky) frames
                         when they exist (1993 / 1997 / 2003); falls back
                         silently when no retro print is available
+  --art-before YEAR     for each card, prefer the earliest printing released
+                        before YEAR-01-01. Dodges the recent-reprint wave of
+                        new digital art commissions in favor of the original
+                        painted art (e.g. --art-before 2023 picks Carl
+                        Critchlow's 2010 Exsanguinate over the 2023 Marie
+                        Magny / Scott Fischer redesigns). Falls back silently
+                        to the default recommendation when a card has no
+                        print before the cutoff.
 ```
 
 Low-res cards that cannot be upgraded are sorted to the bottom of the output file, under a comment indicating why (not in set, or no highres available).

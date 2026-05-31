@@ -835,6 +835,43 @@ def test_main_convert_forwards_art_preference(tmp_path) -> None:
     fake_decklist.save.assert_called_once_with(out_file, fmt="arena")
 
 
+def test_main_convert_art_before_forwards_to_parse_decklist_spec(tmp_path) -> None:
+    """`--art-before 2023` plumbs the integer through to parse_decklist_spec."""
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "decklist.txt"
+    fake_decklist = Mock()
+    fake_decklist.entries = []
+
+    with (
+        patch(
+            "sys.argv",
+            ["mtg-proxies", "convert", "decklist.txt", str(out_file), "--art-before", "2023"],
+        ),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist) as parse_decklist_spec,
+    ):
+        main()
+
+    assert parse_decklist_spec.call_args.kwargs["art_before"] == 2023
+
+
+def test_main_convert_art_before_defaults_to_none(tmp_path) -> None:
+    """Without --art-before, parse_decklist_spec is called with art_before=None (no filter)."""
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "decklist.txt"
+    fake_decklist = Mock()
+    fake_decklist.entries = []
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "convert", "decklist.txt", str(out_file)]),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist) as parse_decklist_spec,
+    ):
+        main()
+
+    assert parse_decklist_spec.call_args.kwargs.get("art_before") is None
+
+
 def test_main_convert_basic_lands_appends_to_input_decklist(tmp_path) -> None:
     from mtg_proxies.cli import main
     from mtg_proxies.decklists.decklist import Card, Comment, Decklist

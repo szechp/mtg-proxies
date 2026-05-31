@@ -124,6 +124,7 @@ def validate_print(
     preferred_sets: list[str] | None = None,
     allow_low_res: bool = False,
     prefer_retro_frame: bool = False,
+    art_before: int | None = None,
 ) -> tuple[dict, list[ParseWarning]]:
     """Validate a print against the Scryfall database.
 
@@ -144,6 +145,7 @@ def validate_print(
             preferred_sets=preferred_sets,
             allow_low_res=allow_low_res,
             prefer_retro_frame=prefer_retro_frame,
+            art_before=art_before,
         )
         # Warn for tokens, as they are not unique by name
         if card["layout"] in ["token", "double_faced_token"]:
@@ -162,6 +164,7 @@ def validate_print(
                 preferred_sets=preferred_sets,
                 allow_low_res=allow_low_res,
                 prefer_retro_frame=prefer_retro_frame,
+                art_before=art_before,
             )
             warnings.append(
                 ParseWarning(
@@ -183,6 +186,7 @@ def validate_print(
                     preferred_sets=preferred_sets,
                     allow_low_res=allow_low_res,
                     prefer_retro_frame=prefer_retro_frame,
+                    art_before=art_before,
                 )
                 if better["id"] != card["id"]:
                     warnings.append(
@@ -204,6 +208,7 @@ def validate_print(
             preferred_sets=preferred_sets,
             allow_low_res=allow_low_res,
             prefer_retro_frame=prefer_retro_frame,
+            art_before=art_before,
         )
         if better["id"] != card["id"] and better["set"] in preferred_set_codes:
             warnings.append(
@@ -242,6 +247,7 @@ def validate_print(
             preferred_sets=preferred_sets,
             allow_low_res=allow_low_res,
             prefer_retro_frame=prefer_retro_frame,
+            art_before=art_before,
         )
 
         # Format warnings string
