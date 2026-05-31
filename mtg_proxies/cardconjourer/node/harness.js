@@ -34,11 +34,15 @@ fs.mkdirSync(OUTPUT, { recursive: true });
 const INCLUDE_FLAVOR = process.argv.includes('--with-flavor');
 
 // ---------------------------------------------------------------------------
-// 1. Font registration. node-canvas v3 requires each font FILE to be mapped
-//    to exactly ONE family name; registering the same file twice (e.g. matrix-b
-//    as both 'matrixb' and 'matrixbsc') silently breaks family lookup so
-//    fillText falls back to sans-serif even when ctx.font reports the right
-//    family. Confirmed with reproducer scripts.
+// 1. Font registration. Each font FILE can be registered under multiple alias
+//    family names; node-canvas v3 keys its cache by alias, so multiple
+//    registerFont calls against the same file under DIFFERENT family names
+//    each add a distinct cache entry. (Earlier comments warned against
+//    "registering the same file twice" — that was specifically about
+//    registering the same file under the SAME alias twice, which is the
+//    silent-break pattern. Different aliases per call is fine and is in fact
+//    what we need so the engine's font strings (MPlantin-Italic, etc.) and
+//    the harness's own short names (mplantini) both resolve.)
 //
 //    Bundled fonts dir (shipped alongside harness.js) is tried first so a
 //    fresh checkout doesn't fall back to Arial when the user hasn't yet run
@@ -76,18 +80,30 @@ function reg(file, family) {
         _fontFailed++;
     }
 }
-reg('matrix.ttf',                 'matrix');
-reg('matrix-b.ttf',               'matrixb');
-reg('Matrix Bold Small Caps.ttf', 'matrixbsc');
-reg('mplantin.ttf',               'mplantin');
-reg('mplantin-i.ttf',             'mplantini');
-reg('beleren-b.ttf',              'belerenb');
-reg('beleren-bsc.ttf',            'belerenbsc');
-reg('gotham-medium.ttf',          'gothammedium');
-reg('gothambold.otf',             'gothambold');
-reg('goudy-medieval.ttf',         'goudymedieval');
-reg('phyrexian.ttf',              'phyrexian');
-reg('NotoSans-Regular.ttf',       'notosans');
+// Each font is registered under MULTIPLE family aliases: our internal short
+// name (used by the harness's own ctx.font strings) AND the canonical engine
+// names from Card Conjurer's CSS (used by creator-23.js when it builds font
+// strings dynamically). On Linux/macOS Cairo's fuzzy matching forgave the
+// gap; on Windows node-canvas is strict and falls back to Sans without the
+// explicit alias. node-canvas v3 supports multi-alias as separate calls
+// against the same file (the per-file constraint warned about earlier only
+// applies to register-twice-different-files; this is register-twice-same-file
+// under different alias).
+function regMany(file, families) {
+    for (const f of families) reg(file, f);
+}
+regMany('matrix.ttf',                 ['matrix',        'Matrix']);
+regMany('matrix-b.ttf',               ['matrixb',       'Matrix-Bold',     'MatrixBold']);
+regMany('Matrix Bold Small Caps.ttf', ['matrixbsc',     'Matrix Bold Small Caps', 'MatrixBoldSmallCaps']);
+regMany('mplantin.ttf',               ['mplantin',      'MPlantin']);
+regMany('mplantin-i.ttf',             ['mplantini',     'MPlantin-Italic', 'MPlantinItalic']);
+regMany('beleren-b.ttf',              ['belerenb',      'Beleren-Bold',    'BelerenBold']);
+regMany('beleren-bsc.ttf',            ['belerenbsc',    'Beleren Bold Smallcaps', 'Beleren-Bold-Small-Caps']);
+regMany('gotham-medium.ttf',          ['gothammedium',  'Gotham-Medium',   'GothamMedium']);
+regMany('gothambold.otf',             ['gothambold',    'Gotham-Bold',     'GothamBold']);
+regMany('goudy-medieval.ttf',         ['goudymedieval', 'Goudy Medieval',  'GoudyMedieval']);
+regMany('phyrexian.ttf',              ['phyrexian',     'Phyrexian']);
+regMany('NotoSans-Regular.ttf',       ['notosans',      'Noto Sans',       'NotoSans']);
 console.error('[harness] fonts:', _fontLoaded, 'loaded,', _fontFailed, 'failed (bundled dir:', BUNDLED_FONT_DIR, ')');
 
 // ---------------------------------------------------------------------------
