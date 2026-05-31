@@ -264,19 +264,35 @@ def _normalize_custom_art_images(
     if output_dir is None:
         raise ValueError("output_dir must be provided when custom art bleed crop is positive")
 
+    from tqdm import tqdm
+
     from mtg_proxies.bleed import crop_bleed
 
-    normalized_images = []
-    for image_path in images:
-        # Always write PNG so a .jpg input doesn't get a lossy re-encode.
-        normalized_image_path = output_dir / f"{image_path.stem}.png"
-        try:
-            crop_bleed(image_path, normalized_image_path, bleed_crop_percent)
-        except ValueError as exc:
-            raise ValueError(f"Custom art bleed crop too large for '{image_path}': {exc}") from exc
-        normalized_images.append(str(normalized_image_path))
+    # crop_bleed is a tight PIL open → crop → save loop, embarrassingly parallel.
+    # Serially over a 100-card custom-art folder it was the silent stall after
+    # "Fetching artwork: 100%" (no tqdm, no log) that made the print command
+    # look hung. Show a progress bar and run a few in parallel so users see
+    # movement and finish faster on multi-card decks.
+    pairs = [(src, output_dir / f"{src.stem}.png") for src in images]
 
-    return normalized_images
+    def _one(src: Path, dst: Path) -> tuple[Path, str | None]:
+        try:
+            crop_bleed(src, dst, bleed_crop_percent)
+        except ValueError as exc:
+            return src, str(exc)
+        return src, None
+
+    with ThreadPoolExecutor(max_workers=4) as pool, tqdm(
+        total=len(pairs), desc="Cropping custom art bleed", unit="img"
+    ) as bar:
+        futures = [pool.submit(_one, src, dst) for src, dst in pairs]
+        for fut in as_completed(futures):
+            src, err = fut.result()
+            if err is not None:
+                raise ValueError(f"Custom art bleed crop too large for '{src}': {err}")
+            bar.update(1)
+
+    return [str(dst) for _src, dst in pairs]
 
 
 # Slot identifier: (list_name, idx_within_list). ``list_name`` keys into the ``target_lists``
