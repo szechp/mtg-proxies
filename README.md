@@ -46,7 +46,7 @@ Create a high quality printable PDF from your decklist or a list of cards you wa
   Use ManaStack and Archidekt deck IDs directly as input instead of local files. Archidekt decks must be public.
 
 - **Headless 8th-edition / retro frame rendering**  
-  `mtg-proxies cardconjourer --8th DECKLIST OUTDIR` renders every supported card via a headless [Card Conjurer](https://cardconjurer.com) Node harness, producing 2003-frame PNGs ready to feed back into `print --custom-art OUTDIR`. Per-card opt-in via the `#cardconjourer --8th` modeline is also supported. The Card Conjurer source is lazy-cloned on demand — see `make cardconjurer`.
+  `mtg-proxies cardconjourer --8th DECKLIST OUTDIR` renders every supported card via a headless [Card Conjurer](https://cardconjurer.com) Node harness, producing 2003-frame PNGs ready to feed back into `print --custom-art OUTDIR`. Re-runs skip cards whose PNG is already in OUTDIR (delete to force a redo). Optional `--upscale [--upscale-model PATH]` pre-runs the art through Real-ESRGAN — pick a GAN/anime model to suppress halftone dots in scan-derived art. Per-card opt-in via the `#cardconjourer --8th` modeline is also supported. The Card Conjurer source is lazy-cloned on demand — see `make cardconjurer`.
 
 - **MPCFill render fetch by identifier**  
   Use `#mpcfill --identifier <drive_id> [--bleed-crop PCT]` on a decklist line to swap that slot to a specific [MPCFill](https://mpcfill.com) community render. The previous auto-matcher (LightGlue/SuperPoint), interactive picker, retro classifier, and standalone `mpcfill` subcommand were cut — the community catalog has no stable contract, so only the deterministic identifier-fetch path is exposed now.
@@ -442,7 +442,9 @@ options:
 ### cardconjourer
 
 ```
-usage: mtg-proxies cardconjourer [-h] (--8th | --retro) [--upscale]
+usage: mtg-proxies cardconjourer [-h] (--8th | --retro)
+                                 [--upscale] [--upscale-model PATH]
+                                 [--upscale-target-width PX]
                                  decklist outdir
 
 For each card in DECKLIST, render a fresh PNG via the headless Card Conjurer
@@ -450,17 +452,27 @@ engine and write it to OUTDIR. Mutually-exclusive frame selectors --8th /
 --retro pick the style. Unsupported layouts (saga, transform, modal_dfc,
 reversible_card, planeswalker) are logged in fallback.txt — a valid decklist
 you can feed straight into `mtg-proxies print` to fill those slots from
-Scryfall. report.csv records the per-card outcome.
+Scryfall. report.csv records the per-card outcome. Re-runs skip any card
+whose <NNNN>-<slug>.png is already in OUTDIR — delete a PNG to force a
+re-render.
 
 positional arguments:
-  decklist     decklist file (text or arena format)
-  outdir       output directory (will be created if missing)
+  decklist                    decklist file (text or arena format)
+  outdir                      output directory (will be created if missing)
 
 options:
-  --8th        render in 8th-edition (2003) base frame
-  --retro      render in retro (pre-2003) frame
-  --upscale    pre-upscale the Scryfall art_crop via Real-ESRGAN before
-               handing it to the renderer
+  --8th                       render in 8th-edition (2003) base frame
+  --retro                     render in retro (pre-2003) frame
+  --upscale                   pre-upscale the Scryfall art_crop via
+                              Real-ESRGAN before handing it to the renderer
+  --upscale-model PATH        path to a local .pth model. Default is the
+                              conservative MSE-trained RealESRNet_x4plus.
+                              Swap in a GAN-trained model (e.g.
+                              RealESRGAN_x4plus_anime_6B.pth) to suppress
+                              halftone / JPEG artifacts in scanned source art
+  --upscale-target-width PX   downsample the upscaled art to PX wide before
+                              rendering (default: keep the model's full 4×
+                              output)
 ```
 
 Usage example — render an 8th-edition proxy deck, then print:
@@ -470,6 +482,19 @@ make cardconjurer                                   # one-time lazy clone of CC 
 mtg-proxies cardconjourer --8th deck.txt ./cc-out   # writes PNGs + fallback.txt + report.csv
 mtg-proxies print deck.txt out.pdf --custom-art ./cc-out
 ```
+
+**Cleaning up dotty scan art.** When the Scryfall art_crop is from an older
+scan with visible halftone / ink-dot screening, the default `RealESRNet`
+model preserves those dots as crisp detail. Swap to a GAN-trained variant
+that smooths dither while keeping edges:
+
+```bash
+mtg-proxies cardconjourer --8th --upscale \
+  --upscale-model ~/models/RealESRGAN_x4plus_anime_6B.pth deck.txt ./cc-out
+```
+
+Anime / illustration-trained models (anime_6B, NMKD-Siax) are the strongest
+dot-suppressors. RealESRGAN_x4plus is a gentler middle ground.
 
 The Card Conjurer source is fetched on demand into `~/.cache/mtg-proxies/cardconjurer/` (partial+sparse git clone of a pinned commit, ~50 MB) the first time you run `make cardconjurer`. Run `make install` on a fresh checkout to do that, install the node harness deps, and sync the Python venv in one go.
 
