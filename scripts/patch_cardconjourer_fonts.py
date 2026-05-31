@@ -79,7 +79,29 @@ COPIES: list[tuple[str, str, str, str]] = [
 
 
 def patch_font(path: Path, family: str, postscript: str) -> None:
-    """Rewrite the relevant name table entries on both Mac and Win platforms."""
+    """Rewrite the relevant name table entries AND clear italic/bold style bits.
+
+    The name-table rewrite is the obvious half — set Family / Subfamily /
+    Full Name / PostScript Name / Preferred Family / Preferred Subfamily so
+    the file presents as a Regular-style font under the canonical engine
+    name. But that's not enough: every font also carries its style as bit
+    flags in two places that the OS and node-canvas both read INDEPENDENTLY
+    of the name table:
+
+      * OS/2.fsSelection — bits 0=ITALIC, 5=BOLD, 6=REGULAR, plus newer
+        bit 8=WWS (Weight/Width/Style names match the name table). When
+        ITALIC or BOLD is set, node-canvas treats the file as a styled
+        variant and the registerFont(file, {family: 'X'}) alias is
+        interpreted as the italic/bold-variant of family X — so a plain
+        ctx.font = "50px X" falls back because the regular variant of X
+        doesn't exist.
+      * head.macStyle — bits 0=BOLD, 1=ITALIC. Same deal at the OS layer.
+
+    Clear those style bits and set REGULAR / WWS so the file presents as
+    a Regular variant of the canonical family. With this, registerFont's
+    alias actually binds as the "regular" variant and the engine's
+    ``ctx.font = "50px MPlantin-Italic"`` resolves to this file.
+    """
     font = TTFont(path)
     name_table = font["name"]
 
@@ -109,6 +131,36 @@ def patch_font(path: Path, family: str, postscript: str) -> None:
                 continue
         keep.append(rec)
     name_table.names = keep
+
+    # Clear OS/2.fsSelection italic/bold/oblique bits; set REGULAR.
+    # Bits: 0=ITALIC, 5=BOLD, 6=REGULAR, 8=WWS, 9=OBLIQUE.
+    # WWS (bit 8) requires OS/2 table version 4+; we set it only when the
+    # source table is already v4+ to avoid having to bump the version (which
+    # would require filling in v4 mandatory fields like ulCodePageRange1).
+    os2 = font["OS/2"]
+    fsel = os2.fsSelection
+    fsel &= ~(1 << 0)   # clear ITALIC
+    fsel &= ~(1 << 5)   # clear BOLD
+    fsel &= ~(1 << 9)   # clear OBLIQUE (no-op on v<4 — harmless)
+    fsel |= (1 << 6)    # set REGULAR
+    if os2.version >= 4:
+        fsel |= (1 << 8)    # set WWS (subfamily names match the WWS axis)
+    os2.fsSelection = fsel
+    # Normalize the weight / width classes too so node-canvas doesn't pick
+    # up "BOLD" from usWeightClass=700 or similar.
+    os2.usWeightClass = 400  # 400 = Regular
+    os2.usWidthClass = 5     # 5 = Medium (normal)
+
+    # head.macStyle bits: 0=BOLD, 1=ITALIC.
+    head = font["head"]
+    mac = head.macStyle
+    mac &= ~(1 << 0)   # clear BOLD
+    mac &= ~(1 << 1)   # clear ITALIC
+    head.macStyle = mac
+
+    # post.italicAngle is a separate hint for italic — zero it.
+    if "post" in font:
+        font["post"].italicAngle = 0.0
 
     font.save(path)
 
