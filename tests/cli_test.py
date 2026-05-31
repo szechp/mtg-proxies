@@ -1,9 +1,42 @@
 import random
+from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
+
+
+def test_parse_decklist_spec_accepts_pathlib_path(tmp_path: Path) -> None:
+    """Regression: argparse `type=Path` (Windows path object) must work without AttributeError.
+
+    On Windows, ``args.decklist`` arrives as a ``WindowsPath``; calling ``.lower()`` /
+    ``.startswith(...)`` on it crashes. The function has to coerce to ``str`` up front.
+    """
+    from mtg_proxies.cli import parse_decklist_spec
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Sol Ring\n")
+
+    # Pass a real Path object (mirrors the WindowsPath case on Windows).
+    decklist = parse_decklist_spec(deck)
+
+    assert decklist.total_count == 1
+
+
+def test_parse_decklist_spec_path_to_nonexistent_file_fails_cleanly(tmp_path: Path) -> None:
+    """Path → nonexistent file used to crash on ``Path.lower()``. Must SystemExit cleanly now.
+
+    Mirrors the actual Windows crash path: on Windows the user's command can pass a Path
+    that doesn't match the local FS, and the function falls through to the ``elif
+    decklist_spec.lower().startswith("manastack:")`` branch — which is what crashes
+    when ``decklist_spec`` is a ``WindowsPath``.
+    """
+    from mtg_proxies.cli import parse_decklist_spec
+
+    missing = tmp_path / "does-not-exist.txt"
+    with pytest.raises(SystemExit):
+        parse_decklist_spec(missing)
 
 
 def test_main(capsys: pytest.CaptureFixture) -> None:

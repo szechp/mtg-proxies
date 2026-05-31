@@ -149,7 +149,7 @@ def _build_duplex_layout[T](
 
 
 def parse_decklist_spec(
-    decklist_spec: str,
+    decklist_spec: str | Path,
     warn_levels: Container[str] = ("ERROR", "WARNING", "COSMETIC"),
     art_preference: Literal["standard", "wild"] = "standard",
     preferred_sets: list[str] | None = None,
@@ -159,7 +159,8 @@ def parse_decklist_spec(
     """Attempt to parse a decklist from different locations.
 
     Args:
-        decklist_spec: File path or ManaStack id
+        decklist_spec: File path (``str`` or ``pathlib.Path``) or ManaStack / Archidekt id
+            (``"manastack:123"`` / ``"archidekt:456"`` form).
         warn_levels: Levels of warnings to show
         art_preference: Art recommendation style passed through to the parser/recommender.
         preferred_sets: Ordered list of Scryfall set codes to prefer when recommending prints (e.g. ["ltr", "lto"])
@@ -169,6 +170,10 @@ def parse_decklist_spec(
             back silently when no retro print is available for a card.
     """
     print("Parsing decklist ...")
+    # Coerce up front: argparse ``type=Path`` arrives as ``WindowsPath`` / ``PosixPath``,
+    # which doesn't have ``.lower()`` / ``.startswith()``. Everything downstream treats
+    # this as a plain string for prefix matching and file lookup.
+    decklist_spec = str(decklist_spec)
     if Path(decklist_spec).is_file():  # Decklist is file
         decklist, ok, warnings = parse_decklist(
             decklist_spec,
@@ -199,7 +204,7 @@ def parse_decklist_spec(
         )
     else:
         print(f"Cant find decklist '{decklist_spec}'")
-        quit()
+        raise SystemExit(1)
 
     # Print warnings
     for warning in warnings:
@@ -209,7 +214,7 @@ def parse_decklist_spec(
     # Check for grave errors
     if not ok:
         print("Decklist contains invalid card names. Fix errors above before reattempting.")
-        quit()
+        raise SystemExit(1)
 
     print(f"Found {decklist.total_count} cards in total with {decklist.total_count_unique} unique cards.")
 
@@ -897,10 +902,6 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     # handles count prefix, `Name (SET) CN`, the new URL/shorthand form, foil markers,
     # and trailing modelines — everything the standalone naive line.split() used to miss.
     decklist = parse_decklist_spec(args.decklist, art_preference="standard", allow_low_res=True)
-    if not isinstance(decklist, Decklist):
-        print(f"[cardconjourer] could not parse decklist from {args.decklist}")
-        raise SystemExit(1)
-
     cards: list[tuple[int, str]] = [(c.count, c["name"]) for c in decklist.cards]
 
     # Pre-seed the harness's inputs cache with the resolved card dicts. The harness's
