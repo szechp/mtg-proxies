@@ -279,3 +279,73 @@ def test_spawn_node_harness_round_trips_jobs(tmp_path: Path) -> None:
     assert responses[0]["status"] == "ok"
     assert responses[1]["slot"] == "0002"
     assert responses[0]["ms"] == 7
+
+
+# ---------------------------------------------------------------------------
+# Slug + skip-existing (avoid wasted re-renders)
+# ---------------------------------------------------------------------------
+
+
+def test_slug_matches_harness_js() -> None:
+    """Python slug helper must exactly match the JS slugify in harness.js."""
+    from mtg_proxies.cardconjourer.runner import slug
+
+    assert slug("Ambition's Cost") == "ambition_s_cost"
+    assert slug("Murderous Rider // Swift End") == "murderous_rider_swift_end"
+    assert slug("Birds of Paradise") == "birds_of_paradise"
+    assert slug("Beast Within") == "beast_within"
+
+
+def test_render_deck_skips_card_with_existing_png(tmp_path: Path) -> None:
+    """If <outdir>/<NNNN>-<slug>.png already exists, the card is reported ok and not enqueued."""
+    from mtg_proxies.cardconjourer.runner import render_deck
+
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    # Pre-seed slot 2 as already done.
+    (outdir / "0002-already_done.png").write_bytes(b"OLD")
+
+    enqueued: list[dict] = []
+
+    def fake_run(jobs: list[dict]) -> list[dict]:
+        enqueued.extend(jobs)
+        responses = []
+        for j in jobs:
+            slot = j["slot"]
+            name = j["name"]
+            png = outdir / f"{slot}-{name.lower().replace(' ', '_')}.png"
+            png.write_bytes(b"NEW")
+            responses.append({"slot": slot, "status": "ok", "out": str(png), "ms": 5})
+        return responses
+
+    cards = [(1, "Murder"), (1, "Already Done"), (1, "Beast Within")]
+    summary = render_deck(cards, outdir, frame="8th", run_harness=fake_run)
+
+    # Slot 2 was skipped (not in the harness call), but counts as ok in the summary.
+    assert [j["name"] for j in enqueued] == ["Murder", "Beast Within"]
+    assert summary["ok"] == 3
+    assert summary["skipped"] == 0
+    # Pre-existing PNG is preserved untouched.
+    assert (outdir / "0002-already_done.png").read_bytes() == b"OLD"
+    # report.csv reflects slot 2 as ok with the existing filename.
+    report = (outdir / "report.csv").read_text()
+    assert "0002,Already Done,ok" in report
+
+
+def test_render_deck_redoes_when_png_deleted(tmp_path: Path) -> None:
+    """User deletes a PNG to trigger re-render; that slot IS sent to the harness."""
+    from mtg_proxies.cardconjourer.runner import render_deck
+
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    # No pre-existing PNG for any slot → harness sees both.
+
+    enqueued: list[dict] = []
+
+    def fake_run(jobs: list[dict]) -> list[dict]:
+        enqueued.extend(jobs)
+        return []
+
+    render_deck([(1, "Murder"), (1, "Beast Within")], outdir, frame="8th", run_harness=fake_run)
+
+    assert [j["name"] for j in enqueued] == ["Murder", "Beast Within"]

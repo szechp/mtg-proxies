@@ -21,11 +21,23 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import shutil
 import subprocess
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
+
+
+def slug(name: str) -> str:
+    """Python mirror of the JS slugifier in harness.js.
+
+    Lowercase, every non-alphanumeric run collapsed to ``_``, no leading or
+    trailing underscores. Must match the JS implementation exactly so the
+    Python side can predict the harness's per-card output filename
+    (``<NNNN>-<slug>.png``) and pre-seed its INPUTS cache.
+    """
+    return re.sub(r"^_+|_+$", "", re.sub(r"[^a-z0-9]+", "_", name.lower()))
 
 # A ``run_harness`` callable receives the list of job dicts (one per card) and
 # returns the list of response dicts. The default production implementation
@@ -146,6 +158,7 @@ def render_deck(
     frame: str = "8th",
     upscale: bool = False,
     run_harness: RunHarness | None = None,
+    job_overrides: dict[int, dict[str, Any]] | None = None,
 ) -> dict[str, int]:
     """Render a whole decklist via the headless Card Conjurer harness.
 
@@ -153,26 +166,51 @@ def render_deck(
     multiple jobs — we render each *unique* name once and rely on the print
     pipeline to repeat the image per copy, same as ``mpcfill``).
 
+    Cards whose ``<NNNN>-<slug>.png`` already exists in ``outdir`` are skipped
+    (not sent to the harness, reported as ok with the existing file). Delete
+    a PNG to force a re-render. This makes iterating on a deck cheap.
+
+    ``job_overrides`` maps the 1-based slot index to extra fields merged into
+    that card's job dict (e.g. ``{2: {"art_path": "/tmp/upscaled.png"}}`` for
+    the ``--upscale`` path). Skipped cards have their override ignored.
+
     For every card the harness returns ``status="ok"`` or ``status="skip"``.
     Ok PNGs are copied into ``outdir`` under their slot-prefixed filename.
     Skipped cards are recorded in ``outdir/fallback.txt`` (decklist format,
     so the user can pipe it into ``mtg-proxies print``) and ``outdir/report.csv``.
 
-    ``run_harness`` is injectable so tests can stub the node subprocess. The
-    default production harness lives in :func:`_spawn_node_harness` (TBD).
+    ``run_harness`` is injectable so tests can stub the node subprocess.
     """
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+    job_overrides = job_overrides or {}
 
-    jobs = [build_job(slot=i + 1, name=name, frame=frame, upscale=upscale)
-            for i, (_count, name) in enumerate(cards)]
+    # Build the job list, skipping any card whose output PNG already exists.
+    # Pre-existing PNGs are recorded as synthetic ok responses so the summary,
+    # report.csv, and fallback.txt see them.
+    jobs: list[dict[str, Any]] = []
+    pre_existing: list[dict[str, Any]] = []
+    for i, (_count, name) in enumerate(cards):
+        slot_int = i + 1
+        slot_str = f"{slot_int:04d}"
+        expected = outdir / f"{slot_str}-{slug(name)}.png"
+        if expected.is_file():
+            pre_existing.append({
+                "slot": slot_str, "status": "ok", "out": str(expected), "ms": 0,
+            })
+            continue
+        job = build_job(slot=slot_int, name=name, frame=frame, upscale=upscale)
+        if slot_int in job_overrides:
+            job.update(job_overrides[slot_int])
+        jobs.append(job)
 
     if run_harness is None:
         raise NotImplementedError(
             "Default subprocess-spawning run_harness not implemented yet; "
             "pass run_harness= for now."
         )
-    responses = run_harness(jobs)
+    responses = list(run_harness(jobs)) if jobs else []
+    responses.extend(pre_existing)
 
     # Index responses by slot for O(1) lookup, since slots may come back out of order.
     responses_by_slot = {r["slot"]: r for r in responses}

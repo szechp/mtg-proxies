@@ -84,9 +84,95 @@ def test_main_cardconjourer_upscale_flag_propagates(tmp_path: Path) -> None:
 
     with (
         patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", "--upscale", str(deck), str(outdir)]),
+        patch("mtg_proxies.scryfall.get_image", return_value="/tmp/art.jpg"),
+        patch("mtg_proxies.upscale.upscale_images", return_value=["/tmp/art_4x.png"]),
         patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
         main()
 
     assert mock_render.call_args.kwargs.get("upscale") is True
+
+
+def test_main_cardconjourer_upscale_downloads_and_upscales_art(tmp_path: Path) -> None:
+    """`--upscale` must download art_crop, run upscale_images, pass art_path on the job."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder\n")
+    outdir = tmp_path / "out"
+
+    downloaded = tmp_path / "art.jpg"
+    downloaded.write_bytes(b"JPEG-bytes")
+    upscaled = tmp_path / "art_4x.png"
+    upscaled.write_bytes(b"PNG-bytes")
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", "--upscale", str(deck), str(outdir)]),
+        patch("mtg_proxies.scryfall.get_image", return_value=str(downloaded)) as mock_get_image,
+        patch("mtg_proxies.upscale.upscale_images", return_value=[str(upscaled)]) as mock_upscale,
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
+        main()
+
+    # The art_crop URL was downloaded and the local file fed to the upscaler.
+    mock_get_image.assert_called_once()
+    mock_upscale.assert_called_once()
+    upscale_paths = mock_upscale.call_args.args[0]
+    assert upscale_paths == [str(downloaded)]
+
+    # render_deck was given a job_overrides mapping slot 1 → upscaled art_path.
+    job_overrides = mock_render.call_args.kwargs.get("job_overrides", {})
+    assert 1 in job_overrides
+    assert job_overrides[1].get("art_path") == str(upscaled)
+
+
+def test_main_cardconjourer_no_upscale_skips_art_pipeline(tmp_path: Path) -> None:
+    """Without --upscale, no art download / upscale happens — job goes straight through."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder\n")
+    outdir = tmp_path / "out"
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(outdir)]),
+        patch("mtg_proxies.scryfall.get_image") as mock_get_image,
+        patch("mtg_proxies.upscale.upscale_images") as mock_upscale,
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
+        main()
+
+    mock_get_image.assert_not_called()
+    mock_upscale.assert_not_called()
+    assert mock_render.call_args.kwargs.get("job_overrides", {}) == {}
+
+
+# ---------------------------------------------------------------------------
+# Bundled fonts (don't default to arial on a fresh checkout)
+# ---------------------------------------------------------------------------
+
+
+def test_cardconjourer_fonts_are_bundled_in_repo() -> None:
+    """The 12 fonts the harness registers must ship in the repo so a fresh checkout doesn't
+    fall back to arial when the user hasn't run ``make cardconjurer``.
+    """
+    fonts_dir = Path(__file__).resolve().parents[2] / "mtg_proxies" / "cardconjourer" / "node" / "fonts"
+    expected = [
+        "matrix.ttf",
+        "matrix-b.ttf",
+        "Matrix Bold Small Caps.ttf",
+        "mplantin.ttf",
+        "mplantin-i.ttf",
+        "beleren-b.ttf",
+        "beleren-bsc.ttf",
+        "gotham-medium.ttf",
+        "gothambold.otf",
+        "goudy-medieval.ttf",
+        "phyrexian.ttf",
+        "NotoSans-Regular.ttf",
+    ]
+    missing = [f for f in expected if not (fonts_dir / f).is_file()]
+    assert not missing, f"missing bundled fonts: {missing}"

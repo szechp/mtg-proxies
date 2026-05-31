@@ -907,16 +907,41 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     # fetchScryfall reads INPUTS/<slug>.json first and only hits the network on cache
     # miss, so writing the resolved dicts here both preserves the user's printing
     # pin AND skips ~83 round-trips for the typical commander deck. The slug function
-    # must match harness.js exactly: lowercase, non-alphanumeric → underscore, strip
-    # leading/trailing underscores.
+    # is the canonical one in runner.slug — must match harness.js exactly.
     harness_inputs_dir = Path(tempfile.mkdtemp(prefix="cc-inputs-"))
 
-    def _slug(name: str) -> str:
-        return re.sub(r"^_+|_+$", "", re.sub(r"[^a-z0-9]+", "_", name.lower()))
-
     for card in decklist.cards:
-        slug = _slug(card["name"])
-        (harness_inputs_dir / f"{slug}.json").write_text(_json.dumps(card.card))
+        (harness_inputs_dir / f"{cc_runner.slug(card['name'])}.json").write_text(_json.dumps(card.card))
+
+    # --upscale: download each card's art_crop, run it through ESRGAN, and tell the
+    # harness to use the upscaled local file via ``job.art_path`` (the harness's
+    # img loader treats string paths as local loads). Done once up-front so the
+    # harness streams can render immediately; the slow ESRGAN pass happens before
+    # any node subprocess fires. Per-slot overrides flow through ``render_deck``'s
+    # ``job_overrides`` map.
+    job_overrides: dict[int, dict] = {}
+    if args.upscale:
+        from mtg_proxies import scryfall as _scryfall
+        from mtg_proxies import upscale as _upscale_mod
+
+        art_paths: list[str] = []
+        slot_indices: list[int] = []
+        for slot_idx, card in enumerate(decklist.cards, start=1):
+            uris = card.card.get("image_uris") or {}
+            art_url = uris.get("art_crop")
+            if not art_url:
+                # DFC etc. — fall back to face 0 art_crop if present.
+                faces = card.card.get("card_faces") or []
+                if faces:
+                    art_url = (faces[0].get("image_uris") or {}).get("art_crop")
+            if not art_url:
+                continue
+            art_paths.append(_scryfall.get_image(art_url))
+            slot_indices.append(slot_idx)
+        if art_paths:
+            upscaled = _upscale_mod.upscale_images(art_paths)
+            for slot_idx, up in zip(slot_indices, upscaled, strict=True):
+                job_overrides[slot_idx] = {"art_path": up}
 
     # Default harness wrapper: locate the bundled harness.js + the cached CC
     # engine, spawn node with the right env. Tests can swap this out via the
@@ -1005,6 +1030,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         frame=frame,
         upscale=args.upscale,
         run_harness=_run,
+        job_overrides=job_overrides,
     )
     print(f"[cardconjourer] {summary['ok']}/{summary['total']} rendered, {summary['skipped']} skipped")
 

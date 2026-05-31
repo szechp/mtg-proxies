@@ -39,12 +39,23 @@ const INCLUDE_FLAVOR = process.argv.includes('--with-flavor');
 //    as both 'matrixb' and 'matrixbsc') silently breaks family lookup so
 //    fillText falls back to sans-serif even when ctx.font reports the right
 //    family. Confirmed with reproducer scripts.
+//
+//    Bundled fonts dir (shipped alongside harness.js) is tried first so a
+//    fresh checkout doesn't fall back to Arial when the user hasn't yet run
+//    `make cardconjurer`. CC_ROOT/fonts is the fallback.
 // ---------------------------------------------------------------------------
-const FONT_DIR = path.join(CC_ROOT, 'fonts');
+const BUNDLED_FONT_DIR = path.join(ROOT, 'fonts');
+const FONT_DIR         = path.join(CC_ROOT, 'fonts');
 function reg(file, family) {
-    const fp = path.join(FONT_DIR, file);
-    if (!fs.existsSync(fp)) return;
-    try { registerFont(fp, { family }); } catch (_) {}
+    const fp = fs.existsSync(path.join(BUNDLED_FONT_DIR, file))
+        ? path.join(BUNDLED_FONT_DIR, file)
+        : path.join(FONT_DIR, file);
+    if (!fs.existsSync(fp)) {
+        console.error('[harness] font missing:', file, '— text will fall back to a system default');
+        return;
+    }
+    try { registerFont(fp, { family }); }
+    catch (e) { console.error('[harness] registerFont failed:', file, e.message); }
 }
 reg('matrix.ttf',                 'matrix');
 reg('matrix-b.ttf',               'matrixb');
