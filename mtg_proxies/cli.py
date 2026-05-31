@@ -914,65 +914,92 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     for card in decklist.cards:
         (harness_inputs_dir / f"{cc_runner.slug(card['name'])}.json").write_text(_json.dumps(card.card))
 
-    # --upscale: each card's ESRGAN pass runs just-in-time, *interleaved* with the
-    # render. Without interleave we used to upscale all 100+ art_crops first (long
-    # silent block), THEN start rendering. Now the order is: upscale card 1, render
-    # card 1, upscale card 2, render card 2, … — so PNGs appear in the outdir as
-    # they're done and a failure mid-deck doesn't waste minutes of upscale work.
-    # ``prepare_each(slot)`` is invoked by render_deck/_run right before each job
-    # is sent to the harness.
-    prepare_each_cb = None
+    # Per-card art resolution. For each card we try MTGPics first (native
+    # ~1430x1058 hi-res art crops — way better than Scryfall art_crop's
+    # ~626x457 for older cards, no GPU upscale needed). On MTGPics miss
+    # (older / promo / non-mainstream sets), fall back to Scryfall art_crop
+    # — RAW by default (cardconjourer's renderer scales to fit the art
+    # window anyway), or upscaled via Real-ESRGAN if --upscale is set.
+    #
+    # ``prepare_each(slot)`` is invoked by render_deck/_run right before
+    # each job is sent to the harness — interleaved so PNGs appear in the
+    # outdir as cards finish, not after the whole deck.
+    from mtg_proxies.cardconjourer import mtgpics as _mtgpics
+
+    mtgpics_cache_root = _mtgpics.default_cache_root()
+    mtgpics_stats = {"hits": 0, "misses": 0}
+
+    transcode_dir: Path | None = None
+    upscale_kwargs: dict = {}
     if args.upscale:
         from PIL import Image as _PILImage
 
-        from mtg_proxies import scryfall as _scryfall
         from mtg_proxies import upscale as _upscale_mod
 
-        # Scryfall art_crops are JPEGs. The upscaler always emits RGBA (it adds
-        # an alpha channel for the rounded-corner blend used by the print path),
-        # and PIL refuses to save RGBA as JPEG. Transcode to PNG so the upscaler's
-        # derived output path is .png and saves cleanly. Cache in a temp dir.
+        # Scryfall art_crops are JPEGs. The upscaler always emits RGBA (it
+        # adds an alpha channel for the rounded-corner blend) and PIL refuses
+        # to save RGBA as JPEG. Transcode to PNG so the upscaler's derived
+        # output path is .png and saves cleanly. Cache in a temp dir.
         transcode_dir = Path(tempfile.mkdtemp(prefix="cc-upscale-src-"))
 
         def _ensure_png(src: str) -> str:
             src_path = Path(src)
             if src_path.suffix.lower() == ".png":
                 return src
+            assert transcode_dir is not None
             dst = transcode_dir / (src_path.stem + ".png")
             if not dst.is_file():
                 with _PILImage.open(src_path) as im:
                     im.convert("RGB").save(dst, format="PNG")
             return str(dst)
 
-        upscale_kwargs: dict = {}
         if args.upscale_model:
             upscale_kwargs["model_path"] = args.upscale_model
         if args.upscale_target_width:
             upscale_kwargs["target_width"] = args.upscale_target_width
 
-        # Map 1-based slot → resolved Card object so prepare_each can look it up.
-        slot_to_card = dict(enumerate(decklist.cards, start=1))
+    # Map 1-based slot → resolved Card object so prepare_each can look it up.
+    slot_to_card = dict(enumerate(decklist.cards, start=1))
 
-        def _prepare_each(slot_int: int) -> dict:
-            card = slot_to_card.get(slot_int)
-            if card is None:
-                return {}
-            uris = card.card.get("image_uris") or {}
-            art_url = uris.get("art_crop")
-            if not art_url:
-                faces = card.card.get("card_faces") or []
-                if faces:
-                    art_url = (faces[0].get("image_uris") or {}).get("art_crop")
-            if not art_url:
-                return {}
-            local = _ensure_png(_scryfall.get_image(art_url))
+    def _prepare_each(slot_int: int) -> dict:
+        card = slot_to_card.get(slot_int)
+        if card is None:
+            return {}
+
+        # 1) MTGPics by set+collector. Always try first.
+        set_code = card.card.get("set") or ""
+        cn = card.card.get("collector_number") or ""
+        if set_code and cn:
+            mtgp = _mtgpics.fetch_mtgpics_art(set_code, cn, cache_root=mtgpics_cache_root)
+            if mtgp is not None:
+                mtgpics_stats["hits"] += 1
+                return {"art_path": str(mtgp)}
+        mtgpics_stats["misses"] += 1
+
+        # 2) Fallback: Scryfall art_crop. Raw by default, upscaled with --upscale.
+        uris = card.card.get("image_uris") or {}
+        art_url = uris.get("art_crop")
+        if not art_url:
+            faces = card.card.get("card_faces") or []
+            if faces:
+                art_url = (faces[0].get("image_uris") or {}).get("art_crop")
+        if not art_url:
+            # Nothing to give — harness's default Scryfall fetch will run.
+            return {}
+
+        from mtg_proxies import scryfall as _scryfall
+        local = _scryfall.get_image(art_url)
+        if args.upscale:
+            local_png = _ensure_png(local)
+            from mtg_proxies import upscale as _upscale_mod
             # progress=False silences upscale_images' internal "Upscaling lowres
             # images: 100% 1/1" bar; the outer "Rendering" bar is the one the
             # user cares about and it would otherwise flicker on every card.
-            [upscaled] = _upscale_mod.upscale_images([local], progress=False, **upscale_kwargs)
+            [upscaled] = _upscale_mod.upscale_images([local_png], progress=False, **upscale_kwargs)
             return {"art_path": upscaled}
+        return {"art_path": local}
 
-        prepare_each_cb = _prepare_each
+    prepare_each_cb = _prepare_each
 
     # Default harness wrapper: locate the bundled harness.js + the cached CC
     # engine, spawn node with the right env. Tests can swap this out via the
@@ -1084,6 +1111,13 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         prepare_each=prepare_each_cb,
     )
     print(f"[cardconjourer] {summary['ok']}/{summary['total']} rendered, {summary['skipped']} skipped")
+    total_art = mtgpics_stats["hits"] + mtgpics_stats["misses"]
+    if total_art:
+        print(
+            f"[cardconjourer] art sources: {mtgpics_stats['hits']}/{total_art} MTGPics, "
+            f"{mtgpics_stats['misses']} Scryfall fallback"
+            + (" (upscaled)" if args.upscale else "")
+        )
 
 
 

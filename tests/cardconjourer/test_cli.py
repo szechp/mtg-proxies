@@ -75,7 +75,7 @@ def test_main_cardconjourer_invokes_render_deck(tmp_path: Path) -> None:
 
 
 def test_main_cardconjourer_upscale_flag_propagates(tmp_path: Path) -> None:
-    """``--upscale`` enables the ESRGAN pass for the whole deck."""
+    """``--upscale`` enables the ESRGAN pass for cards where MTGPics misses."""
     from PIL import Image
 
     from mtg_proxies.cli import main
@@ -88,6 +88,8 @@ def test_main_cardconjourer_upscale_flag_propagates(tmp_path: Path) -> None:
 
     with (
         patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", "--upscale", str(deck), str(outdir)]),
+        # MTGPics miss → Scryfall fallback path → upscale runs.
+        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=None),
         patch("mtg_proxies.scryfall.get_image", return_value=str(art_jpg)),
         patch("mtg_proxies.upscale.upscale_images", return_value=[str(tmp_path / "art_4x.png")]),
         patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
@@ -122,6 +124,8 @@ def test_main_cardconjourer_upscale_interleaves_via_prepare_each(tmp_path: Path)
 
     with (
         patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", "--upscale", str(deck), str(outdir)]),
+        # MTGPics miss → Scryfall fallback path → upscale runs on the Scryfall art.
+        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=None),
         patch("mtg_proxies.scryfall.get_image", return_value=str(downloaded)),
         patch("mtg_proxies.upscale.upscale_images", return_value=[str(upscaled)]) as mock_upscale,
         patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
@@ -145,8 +149,13 @@ def test_main_cardconjourer_upscale_interleaves_via_prepare_each(tmp_path: Path)
         assert Path(upscale_paths[0]).is_file()
 
 
-def test_main_cardconjourer_no_upscale_skips_art_pipeline(tmp_path: Path) -> None:
-    """Without --upscale, no prepare_each is passed and no art download / upscale happens."""
+def test_main_cardconjourer_no_upscale_still_passes_prepare_each(tmp_path: Path) -> None:
+    """Even without --upscale, prepare_each is now ALWAYS passed (MTGPics is the new default).
+
+    Without the upscale flag: MTGPics is still tried; on a hit ``art_path`` is the
+    high-res MTGPics file, on a miss it's the raw Scryfall art_crop (no ESRGAN).
+    Upscale_images is never invoked.
+    """
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"
@@ -155,16 +164,65 @@ def test_main_cardconjourer_no_upscale_skips_art_pipeline(tmp_path: Path) -> Non
 
     with (
         patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(outdir)]),
-        patch("mtg_proxies.scryfall.get_image") as mock_get_image,
         patch("mtg_proxies.upscale.upscale_images") as mock_upscale,
         patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
         main()
 
-    mock_get_image.assert_not_called()
+    # prepare_each is always supplied; upscale_images must never run without --upscale.
+    assert callable(mock_render.call_args.kwargs.get("prepare_each"))
     mock_upscale.assert_not_called()
-    assert mock_render.call_args.kwargs.get("prepare_each") is None
+
+
+def test_main_cardconjourer_mtgpics_hit_returns_native_art_path(tmp_path: Path) -> None:
+    """MTGPics hit on prepare_each(1) returns the local hi-res file path as art_path."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder\n")
+    outdir = tmp_path / "out"
+    mtgpics_path = tmp_path / "mtgp" / "soc" / "128.jpg"
+    mtgpics_path.parent.mkdir(parents=True)
+    mtgpics_path.write_bytes(b"x" * 10000)
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(outdir)]),
+        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=mtgpics_path) as mock_mtgp,
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
+        main()
+
+        prepare_each = mock_render.call_args.kwargs.get("prepare_each")
+        extras = prepare_each(1)
+        assert extras.get("art_path") == str(mtgpics_path)
+        mock_mtgp.assert_called_once()
+
+
+def test_main_cardconjourer_mtgpics_miss_falls_back_to_raw_scryfall(tmp_path: Path) -> None:
+    """MTGPics miss + no --upscale → fall back to Scryfall art_crop, raw (no upscale)."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder\n")
+    outdir = tmp_path / "out"
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(outdir)]),
+        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=None),
+        patch("mtg_proxies.scryfall.get_image", return_value="/tmp/scryfall.jpg") as mock_scry,
+        patch("mtg_proxies.upscale.upscale_images") as mock_upscale,
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
+        main()
+
+        prepare_each = mock_render.call_args.kwargs.get("prepare_each")
+        extras = prepare_each(1)
+        assert extras.get("art_path") == "/tmp/scryfall.jpg"
+        mock_scry.assert_called_once()
+        mock_upscale.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

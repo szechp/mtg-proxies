@@ -46,7 +46,7 @@ Create a high quality printable PDF from your decklist or a list of cards you wa
   Use ManaStack and Archidekt deck IDs directly as input instead of local files. Archidekt decks must be public.
 
 - **Headless 8th-edition / retro frame rendering**  
-  `mtg-proxies cardconjourer --8th DECKLIST OUTDIR` renders every supported card via a headless [Card Conjurer](https://cardconjurer.com) Node harness, producing 2003-frame PNGs ready to feed back into `print --custom-art OUTDIR`. Re-runs skip cards whose PNG is already in OUTDIR (delete to force a redo). Optional `--upscale [--upscale-model PATH]` pre-runs the art through Real-ESRGAN — pick a GAN/anime model to suppress halftone dots in scan-derived art. Per-card opt-in via the `#cardconjourer --8th` modeline is also supported. The Card Conjurer source is lazy-cloned on demand — see `make cardconjurer`.
+  `mtg-proxies cardconjourer --8th DECKLIST OUTDIR` renders every supported card via a headless [Card Conjurer](https://cardconjurer.com) Node harness, producing 2003-frame PNGs ready to feed back into `print --custom-art OUTDIR`. Re-runs skip cards whose PNG is already in OUTDIR (delete to force a redo). **Hi-res art is fetched from [MTGPics](https://www.mtgpics.com) by default** (~1430×1058 native crops, no GPU upscale needed); cards missing from MTGPics fall back to Scryfall's `art_crop` raw. Optional `--upscale [--upscale-model PATH]` runs the Scryfall fallback through Real-ESRGAN when MTGPics doesn't have a card. Per-card opt-in via `#cardconjourer --8th` modeline is also supported. The Card Conjurer source is lazy-cloned on demand — see `make cardconjurer`.
 
 - **MPCFill render fetch by identifier**  
   Use `#mpcfill --identifier <drive_id> [--bleed-crop PCT]` on a decklist line to swap that slot to a specific [MPCFill](https://mpcfill.com) community render. The previous auto-matcher (LightGlue/SuperPoint), interactive picker, retro classifier, and standalone `mpcfill` subcommand were cut — the community catalog has no stable contract, so only the deterministic identifier-fetch path is exposed now.
@@ -456,6 +456,10 @@ Scryfall. report.csv records the per-card outcome. Re-runs skip any card
 whose <NNNN>-<slug>.png is already in OUTDIR — delete a PNG to force a
 re-render.
 
+Art source: MTGPics (~1430×1058 native crops) by default; cards missing
+from MTGPics fall back to Scryfall's `art_crop` raw. `--upscale` only
+kicks in for the Scryfall-fallback path.
+
 positional arguments:
   decklist                    decklist file (text or arena format)
   outdir                      output directory (will be created if missing)
@@ -463,10 +467,12 @@ positional arguments:
 options:
   --8th                       render in 8th-edition (2003) base frame
   --retro                     render in retro (pre-2003) frame
-  --upscale                   pre-upscale the Scryfall art_crop via
-                              Real-ESRGAN before handing it to the renderer
-  --upscale-model PATH        path to a local .pth model. Default is the
-                              conservative MSE-trained RealESRNet_x4plus.
+  --upscale                   when MTGPics doesn't have a card, run the
+                              Scryfall art_crop fallback through Real-ESRGAN
+                              before handing it to the renderer (instead of
+                              using it raw). MTGPics-hit cards are unaffected.
+  --upscale-model PATH        path to a local .pth model used for the Scryfall
+                              fallback. Default is RealESRNet_x4plus.
                               Swap in a GAN-trained model (e.g.
                               RealESRGAN_x4plus_anime_6B.pth) to suppress
                               halftone / JPEG artifacts in scanned source art
@@ -483,10 +489,17 @@ mtg-proxies cardconjourer --8th deck.txt ./cc-out   # writes PNGs + fallback.txt
 mtg-proxies print deck.txt out.pdf --custom-art ./cc-out
 ```
 
-**Cleaning up dotty scan art.** When the Scryfall art_crop is from an older
-scan with visible halftone / ink-dot screening, the default `RealESRNet`
-model preserves those dots as crisp detail. Swap to a GAN-trained variant
-that smooths dither while keeping edges:
+The summary line shows the MTGPics hit rate (e.g. `art sources: 87/105
+MTGPics, 18 Scryfall fallback`) so you know how many cards used native
+hi-res vs Scryfall's smaller `art_crop`. MTGPics responses are cached at
+`~/.cache/mtg-proxies/mtgpics/<set>/<collector>.jpg` indefinitely (delete
+the dir to refresh).
+
+**Cleaning up dotty scan art.** When MTGPics doesn't have a card AND the
+Scryfall art_crop is from an older scan with visible halftone / ink-dot
+screening, the default `RealESRNet` model preserves those dots as crisp
+detail. Swap to a GAN-trained variant that smooths dither while keeping
+edges:
 
 ```bash
 mtg-proxies cardconjourer --8th --upscale \
