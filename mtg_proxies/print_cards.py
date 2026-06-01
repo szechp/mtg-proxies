@@ -339,9 +339,11 @@ def print_cards_fpdf(
             place_size = size / content_fraction
             place_offset = (place_size - size) / 2.0
             place_pos = lower - place_offset
-            pdf.image(cropped_image, x=place_pos[0], y=place_pos[1], w=place_size[0], h=place_size[1])
+            # Only pass width to let FPDF preserve image aspect ratio
+            pdf.image(cropped_image, x=place_pos[0], y=place_pos[1], w=place_size[0])
         else:
-            pdf.image(cropped_image, x=lower[0], y=lower[1], w=size[0], h=size[1])
+            # Only pass width to let FPDF preserve image aspect ratio
+            pdf.image(cropped_image, x=lower[0], y=lower[1], w=size[0])
 
         if cropmarks and ((i + 1) % cards_per_sheet == 0 or i + 1 == len(images)):
             # If this was the last card on a page, add crop marks
