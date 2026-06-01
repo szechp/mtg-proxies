@@ -136,7 +136,10 @@ def print_cards_matplotlib(
                         # Negative border_crop means gap between cards — no pixels to crop.
                         left = max(border_crop, 0) if x > 0 else 0
                         top = max(border_crop, 0) if y > 0 else 0
-                        img = img[top:, left:]
+                        actual_h, actual_w = img.shape[:2]
+                        crop_left = int(round(left * actual_w / image_size[0]))
+                        crop_top = int(round(top * actual_h / image_size[1]))
+                        img = img[crop_top:, crop_left:]
 
                         # Compute extent
                         slot_lower = offset + _occupied_space(cardsize, np.array([x, y]), border_crop)
@@ -279,7 +282,11 @@ def print_cards_fpdf(
             cropped_image = str(path.parent / (path.stem + f"_{left}_{top}" + path.suffix))
             if not Path(cropped_image).is_file():
                 # Crop image
-                plt.imsave(cropped_image, plt.imread(image)[top:, left:])
+                img_arr = plt.imread(image)
+                actual_h, actual_w = img_arr.shape[:2]
+                crop_left = int(round(left * actual_w / image_size[0]))
+                crop_top = int(round(top * actual_h / image_size[1]))
+                plt.imsave(cropped_image, img_arr[crop_top:, crop_left:])
 
         # Compute extent
         lower = offset + _occupied_space(cardsize, np.array([x, y]), border_crop)
