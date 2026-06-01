@@ -14,7 +14,9 @@ def test_occupied_space_positive_border_crop_uniform_size(border_crop: int) -> N
     from mtg_proxies.print_cards import _occupied_space, image_size
 
     cardsize = np.array([2.5, 3.5])
-    cropped_width = cardsize[0] * (image_size[0] - 2 * border_crop) / image_size[0]
+    # The new logic removes EXACTLY border_crop pixels total from the width/height
+    # (half from each side) to match the original "sliding" scale intent.
+    cropped_width = cardsize[0] * (image_size[0] - border_crop) / image_size[0]
 
     # Card 0 start should be 0
     assert np.allclose(_occupied_space(cardsize, np.array([0, 0]), border_crop), 0)

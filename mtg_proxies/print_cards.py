@@ -38,9 +38,10 @@ def _warped_content_fraction(image_path: str | Path) -> float | None:
 
 def _occupied_space(cardsize: np.ndarray, pos: np.ndarray, border_crop: int, closed: bool = False) -> np.ndarray:
     if border_crop >= 0:
-        # Symmetrical uniform crop from both sides of every card.
-        # Card i starts at i * (image_size - 2*border_crop) and ends at (i+1) * (image_size - 2*border_crop).
-        return cardsize * pos * (image_size - 2 * border_crop) / image_size
+        # Symmetrical uniform squeeze: every card occupies (image_size - border_crop) pixels.
+        # This keeps the content scale identical to the original "sliding" logic but
+        # avoids the asymmetrical overlap by cropping both sides of the junction.
+        return cardsize * pos * (image_size - border_crop) / image_size
     else:
         # Negative border_crop means gap between cards — cards are full size, gaps in between.
         return cardsize * (pos * image_size - np.clip(2 * pos - 1 - closed, 0, None) * border_crop) / image_size
@@ -145,12 +146,15 @@ def print_cards_matplotlib(
 
                         # Determine crop and slot size
                         if border_crop >= 0:
-                            # Symmetrical uniform crop all 4 sides
+                            # Symmetrical uniform crop: remove half of border_crop from each side.
+                            # Total reduction per card is exactly border_crop pixels.
                             actual_h, actual_w = img.shape[:2]
-                            c_left = c_right = int(round(border_crop * actual_w / image_size[0]))
-                            c_top = c_bottom = int(round(border_crop * actual_h / image_size[1]))
+                            c_left = int(round(border_crop / 2 * actual_w / image_size[0]))
+                            c_right = int(round(border_crop * actual_w / image_size[0])) - c_left
+                            c_top = int(round(border_crop / 2 * actual_h / image_size[1]))
+                            c_bottom = int(round(border_crop * actual_h / image_size[1])) - c_top
                             img = img[c_top : actual_h - c_bottom, c_left : actual_w - c_right]
-                            base_slot_size = cardsize * (image_size - 2 * border_crop) / image_size
+                            base_slot_size = cardsize * (image_size - border_crop) / image_size
                         else:
                             # Legacy gap logic: no image crop, slot shift handled by _occupied_space
                             base_slot_size = cardsize
@@ -288,15 +292,18 @@ def print_cards_fpdf(
 
         # Determine crop and slot size
         if border_crop > 0:
-            # Symmetrical uniform crop all 4 sides
+            # Symmetrical uniform crop: remove half of border_crop from each side.
+            # Total reduction per card is exactly border_crop pixels.
             cropped_image = str(Path(image).parent / (Path(image).stem + f"_crop{border_crop}" + Path(image).suffix))
             if not Path(cropped_image).is_file():
                 img_arr = plt.imread(image)
                 actual_h, actual_w = img_arr.shape[:2]
-                c_left = c_right = int(round(border_crop * actual_w / image_size[0]))
-                c_top = c_bottom = int(round(border_crop * actual_h / image_size[1]))
+                c_left = int(round(border_crop / 2 * actual_w / image_size[0]))
+                c_right = int(round(border_crop * actual_w / image_size[0])) - c_left
+                c_top = int(round(border_crop / 2 * actual_h / image_size[1]))
+                c_bottom = int(round(border_crop * actual_h / image_size[1])) - c_top
                 plt.imsave(cropped_image, img_arr[c_top : actual_h - c_bottom, c_left : actual_w - c_right])
-            base_slot_size = cardsize * (image_size - 2 * border_crop) / image_size
+            base_slot_size = cardsize * (image_size - border_crop) / image_size
         else:
             # Legacy gap logic or no crop
             cropped_image = image
