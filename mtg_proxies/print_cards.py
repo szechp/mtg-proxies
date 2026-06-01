@@ -37,7 +37,13 @@ def _warped_content_fraction(image_path: str | Path) -> float | None:
 
 
 def _occupied_space(cardsize: np.ndarray, pos: np.ndarray, border_crop: int, closed: bool = False) -> np.ndarray:
-    return cardsize * (pos * image_size - np.clip(2 * pos - 1 - closed, 0, None) * border_crop) / image_size
+    if border_crop >= 0:
+        # Symmetrical uniform crop from both sides of every card.
+        # Card i starts at i * (image_size - 2*border_crop) and ends at (i+1) * (image_size - 2*border_crop).
+        return cardsize * pos * (image_size - 2 * border_crop) / image_size
+    else:
+        # Negative border_crop means gap between cards — cards are full size, gaps in between.
+        return cardsize * (pos * image_size - np.clip(2 * pos - 1 - closed, 0, None) * border_crop) / image_size
 
 
 def print_cards_matplotlib(
@@ -76,8 +82,13 @@ def print_cards_matplotlib(
     grid_size = _occupied_space(cardsize, N, border_crop, closed=True)
     offset = (papersize - grid_size) / 2
 
-    def background_rects(n_on_sheet: int) -> list[tuple[float, float, float, float]]:
-        """Rectangles covering the slots that hold actual cards on this sheet (L-shape if partial)."""
+    def background_rects(n_on_sheet: int, padding: float = 1.0) -> list[tuple[float, float, float, float]]:
+        """Rectangles covering the slots that hold actual cards on this sheet (L-shape if partial).
+        
+        Args:
+            n_on_sheet: Number of cards on the sheet.
+            padding: Safety margin in mm/inches to extend the background beyond the card edges.
+        """
         if n_on_sheet <= 0:
             return []
         full_rows = n_on_sheet // N[0]
@@ -85,14 +96,14 @@ def print_cards_matplotlib(
         rects: list[tuple[float, float, float, float]] = []
         if full_rows > 0:
             size = _occupied_space(cardsize, np.array([N[0], full_rows]), border_crop, closed=True)
-            rects.append((float(offset[0]), float(offset[1]), float(size[0]), float(size[1])))
+            rects.append((float(offset[0] - padding), float(offset[1] - padding), float(size[0] + 2 * padding), float(size[1] + 2 * padding)))
         if partial_row_cards > 0:
             # closed=True on the `top` calc so the partial row's top edge meets the full-rows
             # rect's bottom edge flush. Mismatched closed flags left a thin seam of white.
             top = offset[1] + _occupied_space(cardsize, np.array([0, full_rows]), border_crop, closed=True)[1]
             bottom = offset[1] + _occupied_space(cardsize, np.array([0, full_rows + 1]), border_crop, closed=True)[1]
             right = offset[0] + _occupied_space(cardsize, np.array([partial_row_cards, 1]), border_crop, closed=True)[0]
-            rects.append((float(offset[0]), float(top), float(right - offset[0]), float(bottom - top)))
+            rects.append((float(offset[0] - padding), float(top - padding), float(right - offset[0] + 2 * padding), float(bottom - top + 2 * padding)))
         return rects
 
     # Ensure directory exists
@@ -132,29 +143,29 @@ def print_cards_matplotlib(
                         img = plt.imread(images[idx])
                         idx += 1
 
-                        # Crop left and top if not on border of sheet.
-                        # Negative border_crop means gap between cards — no pixels to crop.
-                        left = max(border_crop, 0) if x > 0 else 0
-                        top = max(border_crop, 0) if y > 0 else 0
-                        actual_h, actual_w = img.shape[:2]
-                        crop_left = int(round(left * actual_w / image_size[0]))
-                        crop_top = int(round(top * actual_h / image_size[1]))
-                        img = img[crop_top:, crop_left:]
+                        # Determine crop and slot size
+                        if border_crop >= 0:
+                            # Symmetrical uniform crop all 4 sides
+                            actual_h, actual_w = img.shape[:2]
+                            c_left = c_right = int(round(border_crop * actual_w / image_size[0]))
+                            c_top = c_bottom = int(round(border_crop * actual_h / image_size[1]))
+                            img = img[c_top : actual_h - c_bottom, c_left : actual_w - c_right]
+                            base_slot_size = cardsize * (image_size - 2 * border_crop) / image_size
+                        else:
+                            # Legacy gap logic: no image crop, slot shift handled by _occupied_space
+                            base_slot_size = cardsize
 
                         # Compute extent
                         slot_lower = offset + _occupied_space(cardsize, np.array([x, y]), border_crop)
-                        slot_size = cardsize * (image_size - [left, top]) / image_size
+                        slot_size = base_slot_size
+
                         # MPCFill ``_warped<NN>`` renders carry a bleed margin (``NN``/100
                         # is the card-content fill fraction); scale up so card content fills
-                        # the slot (matches the fpdf renderer's behavior). If the encoded
-                        # fraction is 1.0 (borderless/scale-down branches), no rescale —
-                        # placing them at slot size is already correct.
+                        # the slot (matches the fpdf renderer's behavior).
                         content_fraction = _warped_content_fraction(images[idx - 1])
                         if content_fraction is not None and content_fraction < 1.0:
                             slot_size = slot_size / content_fraction
-                            slot_lower = (
-                                slot_lower - (slot_size - cardsize * (image_size - [left, top]) / image_size) / 2.0
-                            )
+                            slot_lower = slot_lower - (slot_size - base_slot_size) / 2.0
                         lower = slot_lower / papersize
                         upper = (slot_lower + slot_size) / papersize
                         extent = (lower[0], upper[0], 1 - upper[1], 1 - lower[1])  # flip y-axis
@@ -218,8 +229,13 @@ def print_cards_fpdf(
     grid_size = _occupied_space(cardsize, N, border_crop, closed=True)
     offset = (papersize - grid_size) / 2
 
-    def background_rects(n_on_sheet: int) -> list[tuple[float, float, float, float]]:
-        """Rectangles covering the slots that hold actual cards on this sheet (L-shape if partial)."""
+    def background_rects(n_on_sheet: int, padding: float = 1.0) -> list[tuple[float, float, float, float]]:
+        """Rectangles covering the slots that hold actual cards on this sheet (L-shape if partial).
+        
+        Args:
+            n_on_sheet: Number of cards on the sheet.
+            padding: Safety margin in mm/inches to extend the background beyond the card edges.
+        """
         if n_on_sheet <= 0:
             return []
         full_rows = n_on_sheet // N[0]
@@ -227,14 +243,14 @@ def print_cards_fpdf(
         rects: list[tuple[float, float, float, float]] = []
         if full_rows > 0:
             size = _occupied_space(cardsize, np.array([N[0], full_rows]), border_crop, closed=True)
-            rects.append((float(offset[0]), float(offset[1]), float(size[0]), float(size[1])))
+            rects.append((float(offset[0] - padding), float(offset[1] - padding), float(size[0] + 2 * padding), float(size[1] + 2 * padding)))
         if partial_row_cards > 0:
             # closed=True on the `top` calc so the partial row's top edge meets the full-rows
             # rect's bottom edge flush. Mismatched closed flags left a thin seam of white.
             top = offset[1] + _occupied_space(cardsize, np.array([0, full_rows]), border_crop, closed=True)[1]
             bottom = offset[1] + _occupied_space(cardsize, np.array([0, full_rows + 1]), border_crop, closed=True)[1]
             right = offset[0] + _occupied_space(cardsize, np.array([partial_row_cards, 1]), border_crop, closed=True)[0]
-            rects.append((float(offset[0]), float(top), float(right - offset[0]), float(bottom - top)))
+            rects.append((float(offset[0] - padding), float(top - padding), float(right - offset[0] + 2 * padding), float(bottom - top + 2 * padding)))
         return rects
 
     # Ensure directory exists
@@ -270,37 +286,28 @@ def print_cards_fpdf(
         x = (i % cards_per_sheet) % N[0]
         y = (i % cards_per_sheet) // N[0]
 
-        # Crop left and top if not on border of sheet.
-        # Negative border_crop means gap between cards — no pixels to crop.
-        left = max(border_crop, 0) if x > 0 else 0
-        top = max(border_crop, 0) if y > 0 else 0
-
-        if left == 0 and top == 0:
-            cropped_image = image
-        else:
-            path = Path(image)
-            cropped_image = str(path.parent / (path.stem + f"_{left}_{top}" + path.suffix))
+        # Determine crop and slot size
+        if border_crop > 0:
+            # Symmetrical uniform crop all 4 sides
+            cropped_image = str(Path(image).parent / (Path(image).stem + f"_crop{border_crop}" + Path(image).suffix))
             if not Path(cropped_image).is_file():
-                # Crop image
                 img_arr = plt.imread(image)
                 actual_h, actual_w = img_arr.shape[:2]
-                crop_left = int(round(left * actual_w / image_size[0]))
-                crop_top = int(round(top * actual_h / image_size[1]))
-                plt.imsave(cropped_image, img_arr[crop_top:, crop_left:])
+                c_left = c_right = int(round(border_crop * actual_w / image_size[0]))
+                c_top = c_bottom = int(round(border_crop * actual_h / image_size[1]))
+                plt.imsave(cropped_image, img_arr[c_top : actual_h - c_bottom, c_left : actual_w - c_right])
+            base_slot_size = cardsize * (image_size - 2 * border_crop) / image_size
+        else:
+            # Legacy gap logic or no crop
+            cropped_image = image
+            base_slot_size = cardsize
 
         # Compute extent
         lower = offset + _occupied_space(cardsize, np.array([x, y]), border_crop)
-        size = cardsize * (image_size - [left, top]) / image_size
+        size = base_slot_size
 
         # MPCFill ``_warped<NN>`` renders carry a bleed margin baked in by
         # ``warp_to_reference`` — card content fills only ``NN`` % of the image's width.
-        # Placing them at ``cardsize`` would make the card visually smaller than its
-        # neighbours. Scale up by ``1/content_fraction`` so card content fills the slot;
-        # the bleed extends past the slot edge and gets clipped by the printer (or covered
-        # by the adjacent card's image). When the encoded fraction is 1.0 — borderless,
-        # scale-to-fill, or within-tolerance branches where there's no measurable bleed —
-        # we DON'T rescale; the image fills the slot exactly. Doing otherwise over-zooms
-        # the card content by 8 % and spills it onto neighbouring slots.
         content_fraction = _warped_content_fraction(image)
         if content_fraction is not None and content_fraction < 1.0:
             place_size = size / content_fraction

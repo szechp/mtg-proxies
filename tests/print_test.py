@@ -9,14 +9,25 @@ import pytest
 
 
 @pytest.mark.parametrize("border_crop", [0, 14])
-def test_occupied_space_positive_border_crop_creates_overlap(border_crop: int) -> None:
-    """With border_crop >= 0, card 1 starts at or before where card 0 ends (no gap)."""
-    from mtg_proxies.print_cards import _occupied_space
+def test_occupied_space_positive_border_crop_uniform_size(border_crop: int) -> None:
+    """With border_crop >= 0, cards are uniformly cropped and placed."""
+    from mtg_proxies.print_cards import _occupied_space, image_size
 
     cardsize = np.array([2.5, 3.5])
-    card1_start = _occupied_space(cardsize, np.array([1, 0]), border_crop=border_crop)
+    cropped_width = cardsize[0] * (image_size[0] - 2 * border_crop) / image_size[0]
 
-    assert float(card1_start[0]) <= float(cardsize[0]) + 1e-9
+    # Card 0 start should be 0
+    assert np.allclose(_occupied_space(cardsize, np.array([0, 0]), border_crop), 0)
+    # Card 0 start should be 0 even if closed=True (which is used for grid size)
+    assert np.allclose(_occupied_space(cardsize, np.array([0, 0]), border_crop, closed=True), 0)
+
+    # Card 1 start should be exactly 1 cropped width
+    start1 = _occupied_space(cardsize, np.array([1, 0]), border_crop)
+    assert np.allclose(start1[0], cropped_width)
+
+    # Grid size for 3 cards should be 3 cropped widths
+    grid_size = _occupied_space(cardsize, np.array([3, 1]), border_crop, closed=True)
+    assert np.allclose(grid_size[0], 3 * cropped_width)
 
 
 @pytest.mark.parametrize("border_crop", [-1, -5, -14])
