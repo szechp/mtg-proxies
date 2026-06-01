@@ -328,11 +328,9 @@ def print_cards_fpdf(
             # If this was the last card on a page, add crop marks
             pdf.set_line_width(0.2)
             pdf.set_draw_color(255, 255, 255)
-            a = cardsize * (image_size - 2 * border_crop) / image_size
-            b = papersize - N * a
             for x in range(N[0] + 1):
                 for y in range(N[1] + 1):
-                    mark = b / 2 + a * [x, y]
+                    mark = offset + _occupied_space(cardsize, np.array([x, y]), border_crop, closed=True)
                     pdf.line(mark[0] - 0.8, mark[1], mark[0] + 0.8, mark[1])
                     pdf.line(mark[0], mark[1] - 0.8, mark[0], mark[1] + 0.8)
 
