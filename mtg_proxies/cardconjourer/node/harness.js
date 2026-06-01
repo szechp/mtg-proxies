@@ -549,7 +549,7 @@ function setLeanBottomInfo() {
         wizards: { name: 'wizards',
                    text: cond + '™ & © 1993-{elemidinfo-year} Wizards of the Coast LLC {elemidinfo-set} {elemidinfo-number}',
                    x:      155 / 2010,
-                   y:     1989 / 2100,
+                   y:     1979 / 2100,
                    width:  0.8107,
                    height: 0.0153,
                    oneLine: true, font: 'mplantin', size: 0.0153, color: 'black' },
