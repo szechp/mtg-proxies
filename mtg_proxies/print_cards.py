@@ -161,7 +161,11 @@ def print_cards_matplotlib(
 
                             img = img[c_top : actual_h - c_bottom, c_left : actual_w - c_right]
                             factor = (image_size[0] - bc_x) / image_size[0]
-                            base_slot_size = cardsize * factor
+                            # Calculate slot size based on actual cropped image ratio
+                            # rather than assuming fixed cardsize ratio.
+                            slot_w = cardsize[0] * factor
+                            slot_h = slot_w * img.shape[0] / img.shape[1]
+                            base_slot_size = np.array([slot_w, slot_h])
                         else:
                             # Legacy gap logic: no image crop, slot shift handled by _occupied_space
                             base_slot_size = cardsize
@@ -184,7 +188,7 @@ def print_cards_matplotlib(
                         plt.imshow(
                             img,
                             extent=extent,
-                            aspect=papersize[1] / papersize[0],
+                            aspect="auto",
                             interpolation=interpolation,
                         )
                         pbar.update(1)
@@ -301,18 +305,24 @@ def print_cards_fpdf(
         if border_crop > 0:
             # Symmetrical uniform crop: preserve aspect ratio by scaling y-crop
             cropped_image = str(Path(image).parent / (Path(image).stem + f"_crop{border_crop}" + Path(image).suffix))
+            img_arr = plt.imread(image)
+            actual_h, actual_w = img_arr.shape[:2]
+            bc_x = border_crop
+            bc_y = border_crop * image_size[1] / image_size[0]
+            c_left = int(round(bc_x / 2 * actual_w / image_size[0]))
+            c_right = int(round(bc_x * actual_w / image_size[0])) - c_left
+            c_top = int(round(bc_y / 2 * actual_h / image_size[1]))
+            c_bottom = int(round(bc_y * actual_h / image_size[1])) - c_top
+
             if not Path(cropped_image).is_file():
-                img_arr = plt.imread(image)
-                actual_h, actual_w = img_arr.shape[:2]
-                bc_x = border_crop
-                bc_y = border_crop * image_size[1] / image_size[0]
-                c_left = int(round(bc_x / 2 * actual_w / image_size[0]))
-                c_right = int(round(bc_x * actual_w / image_size[0])) - c_left
-                c_top = int(round(bc_y / 2 * actual_h / image_size[1]))
-                c_bottom = int(round(bc_y * actual_h / image_size[1])) - c_top
                 plt.imsave(cropped_image, img_arr[c_top : actual_h - c_bottom, c_left : actual_w - c_right])
+            
+            # Calculate slot size based on actual cropped image ratio
+            # rather than assuming fixed cardsize ratio.
             factor = (image_size[0] - border_crop) / image_size[0]
-            base_slot_size = cardsize * factor
+            slot_w = cardsize[0] * factor
+            slot_h = slot_w * (actual_h - (c_top + c_bottom)) / (actual_w - (c_left + c_right))
+            base_slot_size = np.array([slot_w, slot_h])
         else:
             # Legacy gap logic or no crop
             cropped_image = image
