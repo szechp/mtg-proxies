@@ -242,7 +242,7 @@ def papersize(string: str) -> np.ndarray:
     raise argparse.ArgumentTypeError()
 
 
-_PIPELINE_CACHE_SUFFIX_RE = re.compile(r"(_norm(_cp[\d.eE+-]+)?|_shadow(_a[\d.eE+-]+)?|_bg\d{9})$")
+_PIPELINE_CACHE_SUFFIX_RE = re.compile(r"(_norm(_cp[\d.eE+-]+)?|_shadow(_a[\d.eE+-]+)?|_bg\d{9}|_crop\d+|_bleed[\d.]+)$")
 
 
 def _normalize_custom_art_images(

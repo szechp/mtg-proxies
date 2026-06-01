@@ -301,7 +301,12 @@ def print_cards_fpdf(
         if border_crop > 0:
             # Symmetrical uniform pixel crop: remove exactly half of border_crop from each side.
             # This keeps the black borders perfectly uniform in appearance.
-            cropped_image = str(Path(image).parent / (Path(image).stem + f"_crop{border_crop}" + Path(image).suffix))
+            import hashlib
+            h = hashlib.sha256(str(Path(image).absolute()).encode()).hexdigest()[:12]
+            cache_dir = Path.home() / ".cache" / "mtg-proxies" / "layout-crops"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cropped_image = str(cache_dir / (Path(image).stem + f"_{h}_crop{border_crop}" + Path(image).suffix))
+            
             img_arr = plt.imread(image)
             actual_h, actual_w = img_arr.shape[:2]
             bc = border_crop
