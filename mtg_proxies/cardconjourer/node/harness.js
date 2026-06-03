@@ -732,11 +732,11 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         global.card.setSymbolBounds = {
             // x: 0.9213 is flush right (Standard).
             // x: 0.765 is shifted left to sit next to the P/T box (0.778 left edge).
-            x: hasPT ? 0.765 : 0.9213,  
+            x: hasPT ? 0.792 : 0.9213,  
             
             // y: 0.263 is the calculated vertical center of the type box 
             // (top 0.2353 + half-height 0.027).
-            y: 0.263,                 
+            y: 0.260,                 
             
             width: 0.11,               // Standard M15 width
             height: 0.037,             // Standard M15 height
@@ -869,8 +869,8 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             const bottomIdx = (global.availableFrames || []).findIndex(f => f && f.name === bottomFrameName);
             if (bottomIdx >= 0) {
                 global.selectedFrameIndex = bottomIdx;
-                // packFlip.js provides Bottom PT which uses bottomHalfSharp.svg, but we need to apply it to the frame
-                await global.addFrame([{name: 'Bottom Half', src: '/img/frames/bottomHalfSharp.svg'}]);
+                // Use the smooth gradient mask for the frame background to create a seamless transition
+                await global.addFrame([{name: 'Bottom Half', src: '/img/frames/maskBottomHalf.png'}]);
             }
         }
         
@@ -883,7 +883,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
              const ptIdx = (global.availableFrames || []).findIndex(f => f && f.name === ptFrameName);
              if (ptIdx >= 0) {
                  global.selectedFrameIndex = ptIdx;
-                 // Top P/T mask
+                 // Top P/T mask (keep sharp so the box doesn't fade)
                  await global.addFrame([{name: 'Top PT', src: '/img/frames/topHalfSharp.svg'}]);
              }
         }
@@ -892,7 +892,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
              const ptIdx = (global.availableFrames || []).findIndex(f => f && f.name === ptFrameName);
              if (ptIdx >= 0) {
                  global.selectedFrameIndex = ptIdx;
-                 // Bottom P/T mask
+                 // Bottom P/T mask (keep sharp so the box doesn't fade)
                  await global.addFrame([{name: 'Bottom PT', src: '/img/frames/bottomHalfSharp.svg'}]);
              }
         }
