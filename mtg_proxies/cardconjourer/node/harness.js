@@ -979,40 +979,49 @@ async function runOneJob(job) {
             // Force the layout to flip so the engine splits the faces top/bottom
             scry.layout = 'flip';
             
-            // Composite the art: 50% left front, 50% right back (rotated 180).
+            // Composite the art: middle 60% of front and back, with a 20% fade transition.
             const { createCanvas, loadImage } = require('canvas');
             const frontUrl = job.art_path || (scry.card_faces[0].image_uris && scry.card_faces[0].image_uris.art_crop) || (scry.image_uris && scry.image_uris.art_crop);
             const backUrl = (scry.card_faces[1].image_uris && scry.card_faces[1].image_uris.art_crop);
             
             if (frontUrl && backUrl) {
-                // Determine source for frontUrl (could be a local file path if job.art_path)
                 const frontImg = await loadImage(frontUrl);
                 const backImg = await loadImage(backUrl);
                 
-                // Typical art crop size
                 const w = Math.max(frontImg.width, backImg.width);
                 const h = Math.max(frontImg.height, backImg.height);
                 
                 const canvas = createCanvas(w, h);
                 const ctx = canvas.getContext('2d');
                 
-                // Draw left half of front
-                ctx.drawImage(frontImg, 0, 0, w/2, h, 0, 0, w/2, h);
+                const overlap = 0.2; // 20% overlap in the middle
+                const partW = 0.5 + overlap / 2; // 60% width for each half
                 
-                // Draw right half of back, rotated 180 degrees
-                ctx.save();
-                ctx.translate(w, h);
-                ctx.rotate(Math.PI);
-                // We want the original right half of the back image to appear on the right half of the canvas.
-                // Because we rotated the canvas 180 around (w,h), the canvas's (0,0) is now at the bottom right.
-                // The canvas's left half (0 to w/2) maps to the physical right half.
-                // We draw the left half of the back image onto the canvas's left half,
-                // which means the back image's left half will appear rotated on the right side of the card.
-                // Actually, to keep the focal points, taking the left half of the back image (which becomes right half) is fine.
-                ctx.drawImage(backImg, 0, 0, w/2, h, 0, 0, w/2, h);
-                ctx.restore();
+                // Draw middle 60% of front onto the left side
+                ctx.drawImage(frontImg, w * (0.5 - partW/2), 0, w * partW, h, 0, 0, w * partW, h);
                 
-                // Save composite to a temp file or data URI
+                // Prepare back image on a temporary canvas
+                const tempCanvas = createCanvas(w * partW, h);
+                const tempCtx = tempCanvas.getContext('2d');
+                
+                // Rotate 180 degrees and draw middle 60% of back
+                tempCtx.translate(w * partW, h);
+                tempCtx.rotate(Math.PI);
+                tempCtx.drawImage(backImg, w * (0.5 - partW/2), 0, w * partW, h, 0, 0, w * partW, h);
+                tempCtx.setTransform(1, 0, 0, 1, 0, 0); // reset transform
+                
+                // Apply gradient mask to the left edge of the temp canvas (which maps to the center overlap)
+                const grad = tempCtx.createLinearGradient(0, 0, w * overlap, 0);
+                grad.addColorStop(0, 'rgba(0,0,0,0)');
+                grad.addColorStop(1, 'rgba(0,0,0,1)');
+                tempCtx.globalCompositeOperation = 'destination-in';
+                tempCtx.fillStyle = grad;
+                tempCtx.fillRect(0, 0, w * partW, h);
+                
+                // Draw the blended temp canvas onto the right side of the main canvas
+                ctx.drawImage(tempCanvas, w * (1 - partW), 0);
+                
+                // Save composite to a data URI
                 const dataUri = canvas.toDataURL('image/png');
                 
                 scry.image_uris = scry.image_uris || {};
