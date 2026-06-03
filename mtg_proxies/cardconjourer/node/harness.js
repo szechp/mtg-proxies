@@ -697,6 +697,25 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         }
     }
 
+    // Modern (M15) layout fixes. packM15Regular-1.js ships:
+    //   type: x=0.0854, width=0.8292   → spans up to x=0.9146.
+    //   rules: y=0.6303, height=0.2875 → extends down to y=0.9178.
+    //   set-symbol bounds at x=0.9213 right-anchored, width=0.12 → claims x≥0.8013.
+    //   pt: y=0.902 vertically-centered, height=0.0372 → pill top at y=0.8834.
+    // → long type lines slide under the set symbol; long rules text draws over
+    // the P/T pill. Trim both so the engine's auto-shrink fits the text into
+    // the visible region instead of overflowing.
+    if (frame === 'modern' && global.card.text) {
+        if (global.card.text.type) {
+            // Stop short of the set symbol (x≥0.8013). 0.7159 = 0.8013 - 0.0854.
+            global.card.text.type.width = 0.71;
+        }
+        if (global.card.text.rules) {
+            // End above the P/T pill top (y=0.8834). 0.2531 = 0.8834 - 0.6303.
+            global.card.text.rules.height = 0.253;
+        }
+    }
+
     // Pick the art URL for THIS face. processScryfallCard propagates the
     // top-level image_uris into faces that don't have their own (older split
     // cards) — but DFC faces almost always have their own face.image_uris.
