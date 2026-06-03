@@ -795,7 +795,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     if (typeof global.uploadSetSymbol === 'function') {
         if (setSymbolPath) {
             global.uploadSetSymbol(setSymbolPath, 'resetSetSymbol');
-        } else if (frame === '8th') {
+        } else if (frame === '8th' && !isFlip) {
             const rChar = ((scry.rarity || 'c')[0] || 'c').toLowerCase();
             const rFile = ['c', 'u', 'r', 'm', 's'].includes(rChar) ? rChar : 'c';
             global.uploadSetSymbol(`/img/setSymbols/official/8ed-${rFile}.svg`, 'resetSetSymbol');
