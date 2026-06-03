@@ -767,7 +767,10 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     if (global.autoFrameTimer) clearTimeout(global.autoFrameTimer);
 
     const faceColors = (face && Array.isArray(face.colors) && face.colors.length) ? face.colors : null;
-    const frameTypeLiteral = (frame === 'modern') ? 'M15Regular-1' : '8th';
+    let frameTypeLiteral = '8th';
+    if (scry.layout === 'flip') frameTypeLiteral = 'Flip';
+    else if (frame === 'modern') frameTypeLiteral = 'M15Regular-1';
+    
     if (faceColors) {
         await global.autoFrameUnified(frameTypeLiteral,
             faceColors,
@@ -803,7 +806,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     }
 
     await global.drawText();
-    if (frame === 'modern') {
+    if (frame === 'modern' || scry.layout === 'flip') {
         // Use the engine's canonical M15 bottomInfo (creator-23.js:243). It builds
         // a lean variant when #enableNewCollectorStyle is unchecked (the default
         // in SELECTOR_OVERRIDES above) — gothammedium font, set/language/artist,
