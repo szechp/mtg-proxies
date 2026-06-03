@@ -780,7 +780,15 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // Strip diacritics/accents from artist names since CC fonts (especially
     // Beleren Small Caps) often lack extended Latin/Vietnamese glyphs.
     if (artist) {
-        artist = artist.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D');
+        // 1. Normalize NFD decomposes combined chars (é -> e + ´). The regex strips the floating accents.
+        // 2. We manually replace characters that DO NOT decompose (like ø, æ, ß) with safe ASCII equivalents.
+        artist = artist.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .replace(/đ/g, 'd').replace(/Đ/g, 'D')
+            .replace(/ø/g, 'o').replace(/Ø/g, 'O')
+            .replace(/æ/g, 'ae').replace(/Æ/g, 'AE')
+            .replace(/œ/g, 'oe').replace(/Œ/g, 'OE')
+            .replace(/ß/g, 'ss')
+            .replace(/ł/g, 'l').replace(/Ł/g, 'L');
         if (typeof global.artistEdited === 'function') global.artistEdited(artist);
     }
 
