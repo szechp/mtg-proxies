@@ -42,12 +42,11 @@ def _occupied_space(cardsize: np.ndarray, pos: np.ndarray, border_crop: int, clo
         # This keeps the black borders uniform in appearance.
         factors = (image_size - border_crop) / image_size
         return cardsize * pos * factors
-    else:
-        # Negative border_crop means gap between cards — cards are full size, gaps in between.
-        # n cards and (n-1) gaps. pos is the index (0, 1, 2...).
-        # For grid size (closed=True), pos is the count.
-        n_gaps = np.clip(pos - closed, 0, None)
-        return cardsize * (pos * image_size - n_gaps * border_crop) / image_size
+    # Negative border_crop means gap between cards — cards are full size, gaps in between.
+    # n cards and (n-1) gaps. pos is the index (0, 1, 2...).
+    # For grid size (closed=True), pos is the count.
+    n_gaps = np.clip(pos - closed, 0, None)
+    return cardsize * (pos * image_size - n_gaps * border_crop) / image_size
 
 
 def print_cards_matplotlib(
@@ -340,15 +339,48 @@ def print_cards_fpdf(
         else:
             pdf.image(cropped_image, x=lower[0], y=lower[1], w=size[0], h=size[1])
 
-        if cropmarks and ((i + 1) % cards_per_sheet == 0 or i + 1 == len(images)):
+        if (i + 1) % cards_per_sheet == 0 or i + 1 == len(images):
             # If this was the last card on a page, add crop marks
-            pdf.set_line_width(0.2)
-            pdf.set_draw_color(255, 255, 255)
-            for x in range(N[0] + 1):
-                for y in range(N[1] + 1):
-                    mark = offset + _occupied_space(cardsize, np.array([x, y]), border_crop, closed=True)
-                    pdf.line(mark[0] - 0.8, mark[1], mark[0] + 0.8, mark[1])
-                    pdf.line(mark[0], mark[1] - 0.8, mark[0], mark[1] + 0.8)
+            if cropmarks:
+                pdf.set_line_width(0.2)
+                pdf.set_draw_color(255, 255, 255)
+                for x in range(N[0] + 1):
+                    for y in range(N[1] + 1):
+                        mark = offset + _occupied_space(cardsize, np.array([x, y]), border_crop, closed=True)
+                        pdf.line(mark[0] - 0.8, mark[1], mark[0] + 0.8, mark[1])
+                        pdf.line(mark[0], mark[1] - 0.8, mark[0], mark[1] + 0.8)
+            else:
+                # Black cutting ticks that extend outward into the page margin only — invisible
+                # against black card borders, visible on the white paper. For full-bleed prints
+                # where the white crosses above would bleed onto card faces. The outward endpoint
+                # is clamped to PRINTER_SAFE_MARGIN_MM from the page edge so most non-borderless
+                # printers can render them; a side with no margin to spare is skipped.
+                PRINTER_SAFE_MARGIN_MM = 5.0
+                TICK_LEN_MM = 2.0
+                pdf.set_line_width(0.2)
+                pdf.set_draw_color(0, 0, 0)
+                grid_left = offset[0]
+                grid_top = offset[1]
+                grid_right = offset[0] + grid_size[0]
+                grid_bottom = offset[1] + grid_size[1]
+                top_outer = max(grid_top - TICK_LEN_MM, PRINTER_SAFE_MARGIN_MM)
+                bottom_outer = min(grid_bottom + TICK_LEN_MM, papersize[1] - PRINTER_SAFE_MARGIN_MM)
+                left_outer = max(grid_left - TICK_LEN_MM, PRINTER_SAFE_MARGIN_MM)
+                right_outer = min(grid_right + TICK_LEN_MM, papersize[0] - PRINTER_SAFE_MARGIN_MM)
+                if top_outer < grid_top or bottom_outer > grid_bottom:
+                    for gx in range(N[0] + 1):
+                        cx = offset[0] + _occupied_space(cardsize, np.array([gx, 0]), border_crop, closed=True)[0]
+                        if top_outer < grid_top:
+                            pdf.line(cx, top_outer, cx, grid_top)
+                        if bottom_outer > grid_bottom:
+                            pdf.line(cx, grid_bottom, cx, bottom_outer)
+                if left_outer < grid_left or right_outer > grid_right:
+                    for gy in range(N[1] + 1):
+                        cy = offset[1] + _occupied_space(cardsize, np.array([0, gy]), border_crop, closed=True)[1]
+                        if left_outer < grid_left:
+                            pdf.line(left_outer, cy, grid_left, cy)
+                        if right_outer > grid_right:
+                            pdf.line(grid_right, cy, right_outer, cy)
 
     current_path = filepath
     if cards_per_file is not None and len(images) > 0:
