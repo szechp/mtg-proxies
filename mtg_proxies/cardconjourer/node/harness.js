@@ -725,10 +725,18 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     querySelector('#import-index').value = String(faceIdx);
     global.importCard(processed);
     
-    // For flip layouts, move the set symbol to the top type line (y: 0.2353)
-    if (isFlip && global.card.setSymbolBounds) {
-        global.card.setSymbolBounds.y = 0.2353;
-        global.card.setSymbolBounds.x = 0.9079; // Match standard right-anchor
+    // For flip layouts, move the set symbol to the top type line (y: 0.2353).
+    // We only set this once (on the front face) to ensure it stays pinned
+    // and doesn't shift randomly if the back face has different metadata.
+    if (isFlip && faceIdx === 0) {
+        global.card.setSymbolBounds = {
+            x: 0.9079,         // Standard 8th edition right-anchor
+            y: 0.2353,         // Align with top type line
+            width: 0.125,      // Slightly larger for visibility
+            height: 0.045,     // Match aspect ratio
+            vertical: 'center',
+            horizontal: 'right',
+        };
     }
 
     // 8th-only cosmetic shrinks. Bypass if we're rendering a flip layout.
