@@ -771,12 +771,46 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     if (scry.layout === 'flip') frameTypeLiteral = 'Flip';
     else if (frame === 'modern') frameTypeLiteral = 'M15Regular-1';
     
-    if (faceColors) {
+    if (faceColors && scry.layout !== 'flip') {
         await global.autoFrameUnified(frameTypeLiteral,
             faceColors,
             (face.mana_cost || global.card.text.mana?.text || ''),
             (face.type_line || global.card.text.type?.text || ''),
             (face.power || global.card.text.pt?.text || ''));
+    } else if (scry.layout === 'flip') {
+        // autoFrame.js does not support 'Flip' layout natively.
+        // We must manually pick the correct frame from packFlip.js's availableFrames based on color.
+        let frameName = 'Colorless Frame';
+        const colors = faceColors || [];
+        if (colors.length > 1) frameName = 'Multicolored Frame';
+        else if (colors.includes('W')) frameName = 'White Frame';
+        else if (colors.includes('U')) frameName = 'Blue Frame';
+        else if (colors.includes('B')) frameName = 'Black Frame';
+        else if (colors.includes('R')) frameName = 'Red Frame';
+        else if (colors.includes('G')) frameName = 'Green Frame';
+        else {
+            const types = (face.type_line || global.card.text.type?.text || '').toLowerCase();
+            if (types.includes('artifact')) frameName = 'Artifact Frame';
+            else if (types.includes('land')) frameName = 'Land Frame';
+        }
+        
+        const pt = face.power || global.card.text.pt?.text || '';
+        const pt2 = scry.card_faces?.[1]?.power || ''; 
+        
+        const idx = (global.availableFrames || []).findIndex(f => f && f.name === frameName);
+        if (idx >= 0) {
+            global.selectedFrameIndex = idx;
+            await global.addFrame([]);
+        }
+        
+        if (pt || pt2) {
+             const ptFrameName = frameName.replace(' Frame', ' Power/Toughness');
+             const ptIdx = (global.availableFrames || []).findIndex(f => f && f.name === ptFrameName);
+             if (ptIdx >= 0) {
+                 global.selectedFrameIndex = ptIdx;
+                 await global.addFrame([]);
+             }
+        }
     } else {
         // Fallback path: autoFrame() reads #autoFrame.value, which we already
         // set per-render in the prologue above — so this honors the requested
@@ -954,6 +988,14 @@ async function runOneJob(job) {
                 
                 scry.image_uris = scry.image_uris || {};
                 scry.image_uris.art_crop = dataUri;
+                if (scry.card_faces && scry.card_faces[0]) {
+                    scry.card_faces[0].image_uris = scry.card_faces[0].image_uris || {};
+                    scry.card_faces[0].image_uris.art_crop = dataUri;
+                }
+                if (scry.card_faces && scry.card_faces[1]) {
+                    scry.card_faces[1].image_uris = scry.card_faces[1].image_uris || {};
+                    scry.card_faces[1].image_uris.art_crop = dataUri;
+                }
             }
         } else if (job.art_path) {
             // Normal art override
