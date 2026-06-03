@@ -809,35 +809,63 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     } else if (scry.layout === 'flip') {
         // autoFrame.js does not support 'Flip' layout natively.
         // We must manually pick the correct frame from packFlip.js's availableFrames based on color.
-        let frameName = 'Colorless Frame';
-        const colors = faceColors || [];
-        if (colors.length > 1) frameName = 'Multicolored Frame';
-        else if (colors.includes('W')) frameName = 'White Frame';
-        else if (colors.includes('U')) frameName = 'Blue Frame';
-        else if (colors.includes('B')) frameName = 'Black Frame';
-        else if (colors.includes('R')) frameName = 'Red Frame';
-        else if (colors.includes('G')) frameName = 'Green Frame';
-        else {
-            const types = (face.type_line || global.card.text.type?.text || '').toLowerCase();
-            if (types.includes('artifact')) frameName = 'Artifact Frame';
-            else if (types.includes('land')) frameName = 'Land Frame';
+        
+        function getFrameNameForFace(f) {
+            if (!f) return 'Colorless Frame';
+            const colors = (Array.isArray(f.colors) && f.colors.length) ? f.colors : [];
+            if (colors.length > 1) return 'Multicolored Frame';
+            if (colors.includes('W')) return 'White Frame';
+            if (colors.includes('U')) return 'Blue Frame';
+            if (colors.includes('B')) return 'Black Frame';
+            if (colors.includes('R')) return 'Red Frame';
+            if (colors.includes('G')) return 'Green Frame';
+            
+            const types = (f.type_line || '').toLowerCase();
+            if (types.includes('artifact')) return 'Artifact Frame';
+            if (types.includes('land')) return 'Land Frame';
+            return 'Colorless Frame';
         }
         
-        const pt = face.power || global.card.text.pt?.text || '';
-        const pt2 = scry.card_faces?.[1]?.power || ''; 
+        const topFrameName = getFrameNameForFace(scry.card_faces?.[0]);
+        const bottomFrameName = getFrameNameForFace(scry.card_faces?.[1]);
         
-        const idx = (global.availableFrames || []).findIndex(f => f && f.name === frameName);
-        if (idx >= 0) {
-            global.selectedFrameIndex = idx;
+        // Add the top frame (full card background)
+        const topIdx = (global.availableFrames || []).findIndex(f => f && f.name === topFrameName);
+        if (topIdx >= 0) {
+            global.selectedFrameIndex = topIdx;
             await global.addFrame([]);
         }
         
-        if (pt || pt2) {
-             const ptFrameName = frameName.replace(' Frame', ' Power/Toughness');
+        // Add the bottom frame masked to the bottom half
+        if (bottomFrameName !== topFrameName) {
+            const bottomIdx = (global.availableFrames || []).findIndex(f => f && f.name === bottomFrameName);
+            if (bottomIdx >= 0) {
+                global.selectedFrameIndex = bottomIdx;
+                // packFlip.js provides Bottom PT which uses bottomHalfSharp.svg, but we need to apply it to the frame
+                await global.addFrame([{name: 'Bottom Half', src: '/img/frames/bottomHalfSharp.svg'}]);
+            }
+        }
+        
+        // Add P/T boxes if needed
+        const pt1 = scry.card_faces?.[0]?.power || '';
+        const pt2 = scry.card_faces?.[1]?.power || ''; 
+        
+        if (pt1) {
+             const ptFrameName = topFrameName.replace(' Frame', ' Power/Toughness');
              const ptIdx = (global.availableFrames || []).findIndex(f => f && f.name === ptFrameName);
              if (ptIdx >= 0) {
                  global.selectedFrameIndex = ptIdx;
-                 await global.addFrame([]);
+                 // Top P/T mask
+                 await global.addFrame([{name: 'Top PT', src: '/img/frames/topHalfSharp.svg'}]);
+             }
+        }
+        if (pt2) {
+             const ptFrameName = bottomFrameName.replace(' Frame', ' Power/Toughness');
+             const ptIdx = (global.availableFrames || []).findIndex(f => f && f.name === ptFrameName);
+             if (ptIdx >= 0) {
+                 global.selectedFrameIndex = ptIdx;
+                 // Bottom P/T mask
+                 await global.addFrame([{name: 'Bottom PT', src: '/img/frames/bottomHalfSharp.svg'}]);
              }
         }
     } else {
