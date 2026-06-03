@@ -726,14 +726,16 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     global.importCard(processed);
     
     // For flip layouts, move the set symbol to the top type line (y: 0.2353).
-    // We only set this once (on the front face) to ensure it stays pinned
-    // and doesn't shift randomly if the back face has different metadata.
+    // We use Modern (M15) standard coordinates and dimensions.
     if (isFlip && faceIdx === 0) {
+        // Dynamic shift: if the top face has power/toughness, move the symbol
+        // left to avoid overlapping the P/T box that sits on the type line.
+        const hasPT = !!(scry.card_faces?.[0]?.power || processed.power);
         global.card.setSymbolBounds = {
-            x: 0.9079,         // Standard 8th edition right-anchor
-            y: 0.2353,         // Align with top type line
-            width: 0.125,      // Slightly larger for visibility
-            height: 0.045,     // Match aspect ratio
+            x: hasPT ? 0.78 : 0.9213,  // Modern x (0.9213) or shifted left
+            y: 0.2353,                 // Top type line center
+            width: 0.12,               // Modern standard width
+            height: 0.0372,            // Modern standard height
             vertical: 'center',
             horizontal: 'right',
         };
