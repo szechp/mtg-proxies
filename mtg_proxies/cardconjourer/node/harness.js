@@ -394,6 +394,35 @@ function loadEngineFile(rel) {
             '} else if (false) { /* harness: Nyx disabled on 8th frame */ }',
         );
     }
+    // Mana-symbol overflow wrap. writeText's word-level wrap check (creator-23.js
+    // ~2200, ``measureText(wordToWrite).width + currentX >= textWidth``) only fires
+    // on TEXT tokens — inline mana symbols (e.g. Belbe's "{C}{C}") get placed at
+    // ``currentX + manaSymbolSpacing`` with no overflow check, so they slip past
+    // the rules box right edge into the frame on cards with long oracle text.
+    //
+    // Inject a pre-placement check: if the symbol would push past textWidth,
+    // commit the current line first (mirroring the line-commit block ~2209) so
+    // the symbol lands on the next line at startingCurrentX. Applies to every
+    // frame since the patch is in shared writeText logic.
+    if (rel.endsWith('creator-23.js')) {
+        code = code.replace(
+            /(var manaSymbolHeight = manaSymbol\.height \* textSize \* 0\.78;\s*)(var manaSymbolX = currentX)/,
+            "$1\n\t\t\t\t\t// HARNESS-INJECTED: wrap line if mana symbol would overflow.\n" +
+            "\t\t\t\t\tif (!textOneLine && currentX + manaSymbolWidth + manaSymbolSpacing * 2 > textWidth) {\n" +
+            "\t\t\t\t\t\tvar harnessAdjust = 0;\n" +
+            "\t\t\t\t\t\tif (textAlign == 'center')      harnessAdjust = (textWidth - currentX) / 2;\n" +
+            "\t\t\t\t\t\telse if (textAlign == 'right') harnessAdjust = textWidth - currentX;\n" +
+            "\t\t\t\t\t\tif (currentX > widestLineWidth) widestLineWidth = currentX;\n" +
+            "\t\t\t\t\t\tif (manaSymbolsToRender.length > 0) renderManaSymbols();\n" +
+            "\t\t\t\t\t\tparagraphContext.drawImage(lineCanvas, harnessAdjust, currentY);\n" +
+            "\t\t\t\t\t\tlineY = 0;\n" +
+            "\t\t\t\t\t\tlineContext.clearRect(0, 0, lineCanvas.width, lineCanvas.height);\n" +
+            "\t\t\t\t\t\tcurrentX = startingCurrentX;\n" +
+            "\t\t\t\t\t\tcurrentY += textSize + newLineSpacing;\n" +
+            "\t\t\t\t\t\tnewLineSpacing = (textObject.lineSpacing || 0) * textSize;\n" +
+            "\t\t\t\t\t}\n\t\t\t\t\t$2"
+        );
+    }
     // (Hanging-punctuation patch was tried and reverted — see git history.
     // CC's wrap loop doesn't cleanly support retrying for a punctuation-only
     // overflow without leaving stale mana-symbol state from the prior pass,
