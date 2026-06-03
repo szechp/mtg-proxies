@@ -706,27 +706,29 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     //                          seeds the per-card set code and fetchSetSymbol fires
     //                          with the right URL (otherwise empty code → 'cmd'
     //                          fallback, i.e. the Commander 2011 icon for every card).
-    // For flip layouts, we explicitly disable the set symbol to keep the custom card clean.
+    // Lock the URL whenever we own the upload: 8th (8ed glyph) or any frame
+    // with a setSymbolPath override (LTC / custom file). Without the lock, the
+    // engine's fetchSetSymbol races our upload and the per-set icon wins.
+    // Modern with no override → unlock both, let changeCardIndex seed the code
+    // and fire fetchSetSymbol for the per-set icon.
     const isFlip = scry.layout === 'flip';
-    const harnessOwnsSetSymbol = (!isFlip && frame === '8th') || (!!setSymbolPath && !isFlip);
+    const harnessOwnsSetSymbol = (frame === '8th' && !isFlip) || !!setSymbolPath;
     
     let autoFrameTarget = '8th';
     if (isFlip) autoFrameTarget = 'Flip';
     else if (frame === 'modern') autoFrameTarget = 'M15Regular-1';
     
     querySelector('#autoFrame').value = autoFrameTarget;
-    // For flip cards, we lock the URL and Code but DON'T provide an override, 
-    // which effectively hides the symbol since there is no default for 'Flip'.
-    querySelector('#lockSetSymbolURL').checked  = harnessOwnsSetSymbol || isFlip;
-    querySelector('#lockSetSymbolCode').checked = harnessOwnsSetSymbol || isFlip;
+    querySelector('#lockSetSymbolURL').checked  = harnessOwnsSetSymbol;
+    querySelector('#lockSetSymbolCode').checked = harnessOwnsSetSymbol;
 
     querySelector('#import-index').value = String(faceIdx);
     global.importCard(processed);
     
-    // Clear any residual set symbol if we are in flip mode
-    if (isFlip) {
-        global.card.setSymbol = null;
-        if (global.cardCanvas.setSymbol) global.cardCanvas.setSymbol = null;
+    // For flip layouts, move the set symbol to the top type line (y: 0.2353)
+    if (isFlip && global.card.setSymbolBounds) {
+        global.card.setSymbolBounds.y = 0.2353;
+        global.card.setSymbolBounds.x = 0.9079; // Match standard right-anchor
     }
 
     // 8th-only cosmetic shrinks. Bypass if we're rendering a flip layout.
