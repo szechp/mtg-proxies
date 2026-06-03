@@ -250,6 +250,38 @@ def test_main_cardconjourer_scryfall_flag_skips_mtgpics(tmp_path: Path) -> None:
         mock_scry.assert_called_once()
 
 
+def test_main_cardconjourer_skip_cc_modeline_routes_to_fallback(tmp_path: Path) -> None:
+    """``#cardconjourer --skip-cc`` modeline → card never reaches the harness, synthesized as skip."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder #cardconjourer --skip-cc\n")
+    outdir = tmp_path / "out"
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(outdir)]),
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 0, "skipped": 1, "total": 1}
+        main()
+
+        # Pull the run_harness wrapper that cli passes to render_deck and call it with
+        # the job render_deck would have built for slot 1. The wrapper must synthesize
+        # a single skip response and MUST NOT spawn node — verified by patching
+        # subprocess.Popen and asserting it never fires.
+        run_harness = mock_render.call_args.kwargs.get("run_harness")
+        assert callable(run_harness)
+
+        jobs = [{"slot": "0001", "name": "Murder", "frame": "8th"}]
+        with patch("subprocess.Popen") as mock_popen:
+            responses = run_harness(jobs, None)
+
+        assert len(responses) == 1
+        assert responses[0]["status"] == "skip"
+        assert "skip-cc" in responses[0]["reason"]
+        mock_popen.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Bundled fonts (don't default to arial on a fresh checkout)
 # ---------------------------------------------------------------------------

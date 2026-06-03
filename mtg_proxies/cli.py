@@ -984,19 +984,24 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     # Map 1-based slot → resolved Card object so prepare_each can look it up.
     slot_to_card = dict(enumerate(decklist.cards, start=1))
 
-    # Check each card's modeline for ``#cardconjourer --scryfall`` so users
-    # can per-card opt out of MTGPics on watermark-affected scans without
-    # having to flip the whole-deck ``--scryfall`` flag.
+    # Check each card's modeline for ``#cardconjourer --scryfall`` (per-card
+    # opt-out of MTGPics on watermark-affected scans without flipping the
+    # whole-deck ``--scryfall`` flag) and ``#cardconjourer --skip-cc`` (per-card
+    # opt-out of CC rendering entirely — the card lands in fallback.txt and is
+    # rendered via the normal Scryfall scan).
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
     slot_scryfall_override: dict[int, bool] = {}
+    slot_skip_cc: set[int] = set()
     for slot_int, card in slot_to_card.items():
         if not card.modeline:
             continue
         directives, _warnings = parse_modeline_trailer(card.modeline)
         for d in directives:
-            if d.verb == "cardconjourer" and d.flags.get("--scryfall"):
-                slot_scryfall_override[slot_int] = True
-                break
+            if d.verb == "cardconjourer":
+                if d.flags.get("--scryfall"):
+                    slot_scryfall_override[slot_int] = True
+                if d.flags.get("--skip-cc"):
+                    slot_skip_cc.add(slot_int)
 
     def _prepare_each(slot_int: int) -> dict:
         card = slot_to_card.get(slot_int)
@@ -1062,12 +1067,34 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         import threading
 
         from tqdm import tqdm
+
+        # Pre-skip cards whose modeline carries ``#cardconjourer --skip-cc``.
+        # These never reach the harness — synthesize a skip response so
+        # render_deck routes them into fallback.txt for the normal Scryfall
+        # scan pipeline.
+        skip_cc_responses: list[dict] = []
+        harness_jobs: list[dict] = []
+        for job in jobs:
+            if int(job["slot"]) in slot_skip_cc:
+                skip_cc_responses.append({
+                    "slot": job["slot"],
+                    "status": "skip",
+                    "reason": "modeline #cardconjourer --skip-cc",
+                })
+            else:
+                harness_jobs.append(job)
+
+        # If every remaining job is skipped, don't spawn node at all.
+        if not harness_jobs:
+            return skip_cc_responses
+
         if not cc_cache.is_dir():
             print(
                 "[cardconjourer] Card Conjurer source not found at "
                 f"{cc_cache}. Run `make cardconjurer` first."
             )
             raise SystemExit(2)
+        jobs = harness_jobs
         # Interleaved streaming: per-card, (1) run prepare_each (e.g. ESRGAN upscale),
         # (2) write the job to the harness's stdin, (3) wait for its response on stdout,
         # (4) copy the rendered PNG into outdir, (5) loop. Engine boot amortizes because
@@ -1143,7 +1170,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
 
         proc.stdin.close()
         proc.wait()
-        return responses
+        return responses + skip_cc_responses
 
     summary = cc_runner.render_deck(
         cards,

@@ -162,10 +162,10 @@ def upscale_images(
             return True
         return mode != "RGBA"
 
+    lowres_paths = [path for path, is_highres in zip(image_paths, highres_flags) if not is_highres]
     needs_upscale: list[str] = [
-        path
-        for path, is_highres in zip(image_paths, highres_flags)
-        if not is_highres and _cache_is_stale(_upscaled_path(path, target_width, model_id))
+        path for path in lowres_paths
+        if _cache_is_stale(_upscaled_path(path, target_width, model_id))
     ]
 
     if needs_upscale:
@@ -209,8 +209,17 @@ def upscale_images(
             del tensor, output, result, upscaled_rgb, upscaled_rgba, rgba
             if device.type == "cuda":
                 torch.cuda.empty_cache()
+    elif lowres_paths:
+        print(f"All {len(lowres_paths)} lowres images already upscaled (cached).")
     else:
-        print("All lowres images already upscaled (cached).")
+        # Every image was already flagged highres → the upscale was a no-op. Distinguishing
+        # this from the "cached" case matters: a user who sees "cached" assumes a previous
+        # run did the work, when in fact nothing was eligible. Hint at ``--upscale all`` so
+        # they know how to force the model to run on every card.
+        print(
+            f"Skipping upscale: all {len(image_paths)} images are flagged highres (no lowres "
+            "candidates). Use `--upscale all` to run the model on every card regardless."
+        )
 
     # Only substitute the upscaled cache for images that were flagged as needing upscaling.
     # A stale _4x file from a previous run must not be returned for an image that is now highres.

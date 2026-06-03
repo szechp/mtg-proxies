@@ -92,12 +92,14 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     # selectors ``--8th`` / ``--retro`` pick the style; ``--upscale`` pre-runs the art
     # through Real-ESRGAN. ``--scryfall`` skips MTGPics for this card (use Scryfall art_crop
     # directly) — useful per-card override when MTGPics's scan has a burned-in artist
-    # signature / watermark.
+    # signature / watermark. ``--skip-cc`` opts the card out of CC rendering entirely
+    # (routed straight into ``fallback.txt`` so the normal Scryfall scan is used).
     "cardconjourer": {
         "--8th":      NO_VALUE,
         "--retro":    NO_VALUE,
         "--upscale":  NO_VALUE,
         "--scryfall": NO_VALUE,
+        "--skip-cc":  NO_VALUE,
     },
 }
 

@@ -477,15 +477,38 @@ async function fetchScryfall(name) {
 }
 
 // Layouts we punt on — the harness throws and the caller can fall back to
-// the Scryfall card image. Sagas need a custom template; transform /
-// modal_dfc DFCs are close-but-imperfect (color, indicator, type-clip have
-// open quirks); planeswalkers need versionPlaneswalker.js which has heavy
-// DOM dependencies our headless context doesn't satisfy.
-const SKIP_LAYOUTS = new Set(['saga', 'transform', 'modal_dfc', 'reversible_card']);
+// the Scryfall card image. Each of these breaks the single-frame 8th/retro
+// pack because the template has no region for the layout's special bits:
+//   saga                       — chapter strip on the left
+//   split                      — split cards (Fire // Ice) and Duskmourn Rooms
+//   flip                       — Kamigawa flip cards, bottom half rotated 180
+//   transform / modal_dfc      — DFC quirks (color, indicator, type-clip)
+//   reversible_card            — two full-art faces
+//   meld                       — back is a half-card (Brisela halves)
+//   leveler                    — level-up boxes (Joraga Treespeaker)
+//   class                      — DnD Class three-level stack
+//   case                       — Karlov Manor Cases three-section enchantment
+//   adventure                  — adventure half doesn't fit a single frame
+//   battle                     — sideways layout (March of the Machine)
+//   planar / scheme / vanguard — oversized non-card shapes
+// Planeswalkers also punt (versionPlaneswalker.js has heavy DOM deps the
+// headless context doesn't satisfy) but Scryfall keeps them on layout
+// 'normal', so they're gated on type_line below.
+const SKIP_LAYOUTS = new Set([
+    'saga', 'split', 'flip', 'transform', 'modal_dfc', 'reversible_card',
+    'meld', 'leveler', 'class', 'case', 'adventure', 'battle',
+    'planar', 'scheme', 'vanguard',
+]);
+// Keyword-based skips for layouts Scryfall still marks 'normal'. Mutate and
+// Prototype each need an extra cost/text region the 8th frame doesn't have.
+const SKIP_KEYWORDS = new Set(['Mutate', 'Prototype']);
 function shouldSkip(scry) {
     if (SKIP_LAYOUTS.has(scry.layout)) return `layout '${scry.layout}'`;
     // Planeswalker isn't a Scryfall layout (Ashiok's layout is 'normal') — gate on type_line.
     if ((scry.type_line || '').toLowerCase().includes('planeswalker')) return 'planeswalker';
+    for (const kw of (scry.keywords || [])) {
+        if (SKIP_KEYWORDS.has(kw)) return `keyword '${kw}'`;
+    }
     return null;
 }
 
@@ -541,7 +564,7 @@ function setLeanBottomInfo() {
         top: { name: 'top',
                text: cond + '{brush}{elemidinfo-artist}',
                x:      150 / 2010,
-               y:     1927 / 2100,
+               y:     1917 / 2100,
                width:  0.8107,
                height: 0.0248,
                oneLine: true, font: 'matrixb', size: 0.0248, color: 'black' },
