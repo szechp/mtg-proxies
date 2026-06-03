@@ -941,6 +941,73 @@ def _generate_basic_lands_decklist(
     return decklist
 
 
+def _composite_dfc_art(front_path: Path, back_path: Path) -> Path:
+    """Composite front and back art crops into a single Kamigawa flip art image.
+
+    Uses PIL to center-crop both images to the target flip art box aspect ratio
+    (0.8494 / 0.3315 ≈ 2.5623) and blend them with a gradient transition in
+    the middle.
+    """
+    import tempfile
+
+    from PIL import Image, ImageDraw
+
+    front = Image.open(front_path).convert("RGBA")
+    back = Image.open(back_path).convert("RGBA")
+
+    # Target aspect ratio of the Kamigawa flip art box is 0.8494 / 0.3315 ≈ 2.5623
+    target_ratio = 0.8494 / 0.3315
+    w = max(front.width, back.width) * 2
+    h = int(w / target_ratio)
+
+    canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+
+    overlap = 0.2  # 20% overlap in the middle
+    part_w = int(w * (0.5 + overlap / 2))
+
+    def _draw_cover(img: Image.Image, size: tuple[int, int]) -> Image.Image:
+        img_ratio = img.width / img.height
+        tgt_ratio = size[0] / size[1]
+        if img_ratio > tgt_ratio:
+            sh = img.height
+            sw = int(sh * tgt_ratio)
+            sx = (img.width - sw) // 2
+            sy = 0
+        else:
+            sw = img.width
+            sh = int(sw / tgt_ratio)
+            sx = 0
+            sy = (img.height - sh) // 2
+        return img.crop((sx, sy, sx + sw, sy + sh)).resize(size, Image.Resampling.LANCZOS)
+
+    front_part = _draw_cover(front, (part_w, h))
+    back_part = _draw_cover(back, (part_w, h)).rotate(180)
+
+    # Gradient mask for the overlapping edge of the back part
+    mask = Image.new("L", (part_w, h), 255)
+    draw = ImageDraw.Draw(mask)
+    grad_w = int(w * overlap)
+    for x in range(grad_w):
+        alpha = int(255 * (x / grad_w))
+        draw.line([(x, 0), (x, h)], fill=alpha)
+
+    # Paste front, then paste back with gradient mask
+    canvas.paste(front_part, (0, 0))
+    canvas.paste(back_part, (w - part_w, 0), mask)
+
+    # Save to a temporary file in the system temp dir
+    # Use a hashed filename to allow caching across multiple deck render steps
+    import hashlib
+
+    h_key = hashlib.sha256(f"{front_path}:{back_path}".encode()).hexdigest()[:12]
+    tmp_dir = Path(tempfile.gettempdir()) / "mtg-proxies-dfc-composites"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    dst = tmp_dir / f"composite-{h_key}.png"
+    if not dst.is_file():
+        canvas.save(dst)
+    return dst
+
+
 def _run_cardconjourer(args: argparse.Namespace) -> None:
     """Orchestrate the `cardconjourer` subcommand end-to-end.
 
@@ -1082,11 +1149,33 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         sym_override = resolved_set_symbol_by_slot.get(slot_int)
         extras: dict = {"set_symbol_path": sym_override} if sym_override else {}
 
-        # 1) MTGPics by set+collector. Tried first unless --scryfall opts out
-        # (useful when MTGPics's scan for a card has artist signatures /
-        # watermarks burned in that we don't want in the final render).
-        # Per-card ``#cardconjourer --scryfall`` overrides the default just
-        # for that card, leaving the rest of the deck on MTGPics.
+        # Per-card art resolution.
+        #
+        # DFC composite: if the card is a transform / modal_dfc, we stitch both
+        # arts into a single Kamigawa flip art image.
+        is_dfc = card.card.get("layout") in ["transform", "modal_dfc", "reversible_card"]
+        if is_dfc:
+            faces = card.card.get("card_faces") or []
+            if len(faces) >= 2:
+                # Resolve URLs for both faces.
+                f_url = faces[0].get("image_uris", {}).get("art_crop")
+                b_url = faces[1].get("image_uris", {}).get("art_crop")
+                
+                if f_url and b_url:
+                    from mtg_proxies import scryfall as _scryfall
+                    f_local = _scryfall.get_image(f_url)
+                    b_local = _scryfall.get_image(b_url)
+                    
+                    if args.upscale:
+                        from mtg_proxies import upscale as _upscale_mod
+                        [f_up, b_up] = _upscale_mod.upscale_images([_ensure_png(f_local), _ensure_png(b_local)], progress=False, **upscale_kwargs)
+                        composite = _composite_dfc_art(Path(f_up), Path(b_up))
+                    else:
+                        composite = _composite_dfc_art(Path(f_local), Path(b_local))
+                    
+                    return {**extras, "art_path": str(composite)}
+
+        # 1) MTGPics by set+collector (Normal cards / fallback for DFCs with missing faces).
         skip_mtgpics = args.scryfall or slot_scryfall_override.get(slot_int, False)
         if not skip_mtgpics:
             set_code = card.card.get("set") or ""

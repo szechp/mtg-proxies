@@ -109,15 +109,22 @@ function resolveSrc(src) {
 }
 // Patch any SVG whose root <svg> uses width="100%"/height="100%" (librsvg
 // can't render those — needs explicit pixel dimensions). Also upscale tiny
-// intrinsic dimensions so glyphs raster crisp before drawImage scales them.
+// intrinsic dimensions (like set symbols) so glyphs raster crisp before
+// drawImage scales them. Skip upscaling for full-page masks.
 const SVG_UPSCALE = 12;
+const MAX_SVG_UNPATCHED = 500;
 function patchSvgIfNeeded(filePath) {
     if (!filePath.endsWith('.svg') || !fs.existsSync(filePath)) return null;
     const raw = fs.readFileSync(filePath, 'utf8');
     const vb  = raw.match(/viewBox="\s*[-\d.]+\s+[-\d.]+\s+([\d.]+)\s+([\d.]+)\s*"/);
     if (!vb) return null;
-    const w = Math.max(1, Math.round(parseFloat(vb[1]) * SVG_UPSCALE));
-    const h = Math.max(1, Math.round(parseFloat(vb[2]) * SVG_UPSCALE));
+    
+    const intrinsicW = parseFloat(vb[1]);
+    const intrinsicH = parseFloat(vb[2]);
+    const factor = (intrinsicW <= MAX_SVG_UNPATCHED && intrinsicH <= MAX_SVG_UNPATCHED) ? SVG_UPSCALE : 1;
+    
+    const w = Math.max(1, Math.round(intrinsicW * factor));
+    const h = Math.max(1, Math.round(intrinsicH * factor));
     let p = raw.replace(/width="[^"]*"/, `width="${w}"`)
                .replace(/height="[^"]*"/, `height="${h}"`);
     if (!/width="/.test(p))  p = p.replace(/<svg\b/, `<svg width="${w}"`);
@@ -1000,95 +1007,29 @@ async function runOneJob(job) {
     try {
         const { scry } = await fetchScryfall(job.name);
         
-        // Intercept DFCs and composite them into a Kamigawa flip card.
-        // We do this at the boundary so the engine's core layout/frame logic is untouched.
+        // art_path override: ESRGAN-upscaled local file OR Python-composited DFC art.
+        // Threaded into scry.image_uris.art_crop and face uris so the engine
+        // picks it up unconditionally.
+        if (job.art_path) {
+            const path = job.art_path;
+            scry.image_uris = scry.image_uris || {};
+            scry.image_uris.art_crop = path;
+            if (scry.card_faces && scry.card_faces[0]) {
+                scry.card_faces[0].image_uris = scry.card_faces[0].image_uris || {};
+                scry.card_faces[0].image_uris.art_crop = path;
+            }
+            if (scry.card_faces && scry.card_faces[1]) {
+                scry.card_faces[1].image_uris = scry.card_faces[1].image_uris || {};
+                scry.card_faces[1].image_uris.art_crop = path;
+            }
+        }
+
+        // Intercept DFCs and route them to a Kamigawa flip card.
+        // We do this at the boundary so the engine's core frame logic is untouched.
         const isDfc = ['transform', 'modal_dfc', 'reversible_card'].includes(scry.layout);
-        if (isDfc && scry.card_faces && scry.card_faces.length >= 2) {
+        if (isDfc) {
             // Force the layout to flip so the engine splits the faces top/bottom
             scry.layout = 'flip';
-            
-            // Composite the art: match the exact Kamigawa flip art box aspect ratio.
-            const { createCanvas, loadImage } = require('canvas');
-            const frontUrl = job.art_path || (scry.card_faces[0].image_uris && scry.card_faces[0].image_uris.art_crop) || (scry.image_uris && scry.image_uris.art_crop);
-            const backUrl = (scry.card_faces[1].image_uris && scry.card_faces[1].image_uris.art_crop);
-            
-            if (frontUrl && backUrl) {
-                const frontImg = await loadImage(frontUrl);
-                const backImg = await loadImage(backUrl);
-                
-                // Target aspect ratio of the Kamigawa flip art box is 0.8494 / 0.3315 ≈ 2.5623
-                const targetRatio = 0.8494 / 0.3315;
-                const canvasW = Math.max(frontImg.width, backImg.width) * 2;
-                const canvasH = Math.floor(canvasW / targetRatio);
-                
-                const canvas = createCanvas(canvasW, canvasH);
-                const ctx = canvas.getContext('2d');
-                
-                const overlap = 0.2; // 20% overlap in the middle
-                const partW = 0.5 + overlap / 2; // 60% width for each half
-                const pixelPartW = Math.floor(canvasW * partW);
-                
-                // Helper to draw an image centered and covering the target area
-                function drawCover(img, targetCtx, dx, dy, dw, dh) {
-                    const imgRatio = img.width / img.height;
-                    const tgtRatio = dw / dh;
-                    let sx, sy, sw, sh;
-                    if (imgRatio > tgtRatio) {
-                        sh = img.height;
-                        sw = sh * tgtRatio;
-                        sx = (img.width - sw) / 2;
-                        sy = 0;
-                    } else {
-                        sw = img.width;
-                        sh = sw / tgtRatio;
-                        sx = 0;
-                        sy = (img.height - sh) / 2;
-                    }
-                    targetCtx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
-                }
-                
-                // Draw left part
-                drawCover(frontImg, ctx, 0, 0, pixelPartW, canvasH);
-                
-                // Prepare back image on a temporary canvas
-                const tempCanvas = createCanvas(pixelPartW, canvasH);
-                const tempCtx = tempCanvas.getContext('2d');
-                
-                // Rotate 180 degrees and draw back
-                tempCtx.translate(pixelPartW, canvasH);
-                tempCtx.rotate(Math.PI);
-                drawCover(backImg, tempCtx, 0, 0, pixelPartW, canvasH);
-                tempCtx.setTransform(1, 0, 0, 1, 0, 0); // reset transform
-                
-                // Apply gradient mask to the left edge of the temp canvas
-                const grad = tempCtx.createLinearGradient(0, 0, canvasW * overlap, 0);
-                grad.addColorStop(0, 'rgba(0,0,0,0)');
-                grad.addColorStop(1, 'rgba(0,0,0,1)');
-                tempCtx.globalCompositeOperation = 'destination-in';
-                tempCtx.fillStyle = grad;
-                tempCtx.fillRect(0, 0, pixelPartW, canvasH);
-                
-                // Draw the blended temp canvas onto the right side of the main canvas
-                ctx.drawImage(tempCanvas, canvasW - pixelPartW, 0);
-                
-                // Save composite to a data URI
-                const dataUri = canvas.toDataURL('image/png');
-                
-                scry.image_uris = scry.image_uris || {};
-                scry.image_uris.art_crop = dataUri;
-                if (scry.card_faces && scry.card_faces[0]) {
-                    scry.card_faces[0].image_uris = scry.card_faces[0].image_uris || {};
-                    scry.card_faces[0].image_uris.art_crop = dataUri;
-                }
-                if (scry.card_faces && scry.card_faces[1]) {
-                    scry.card_faces[1].image_uris = scry.card_faces[1].image_uris || {};
-                    scry.card_faces[1].image_uris.art_crop = dataUri;
-                }
-            }
-        } else if (job.art_path) {
-            // Normal art override
-            scry.image_uris = scry.image_uris || {};
-            scry.image_uris.art_crop = job.art_path;
         }
 
         const frame = job.frame || '8th';
