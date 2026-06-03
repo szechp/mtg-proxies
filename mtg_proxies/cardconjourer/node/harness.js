@@ -529,6 +529,7 @@ function shouldSkip(scry) {
 //   { single: 'packX.js' }                — single-face card
 //   { front:  'packXFront.js', back: 'packXBack.js' } — DFC
 function packForLayout(layout, frame) {
+    if (layout === 'flip') return { single: 'packFlip.js' };
     const isDfc = (layout === 'transform' || layout === 'modal_dfc' || layout === 'reversible_card');
     if (frame === 'modern') {
         return isDfc
