@@ -120,6 +120,31 @@ def test_build_job_with_frame_retro() -> None:
     assert build_job(slot=1, name="Murder", frame="retro")["frame"] == "retro"
 
 
+def test_build_job_with_frame_modern() -> None:
+    """``frame="modern"`` rides through the same channel as 8th / retro."""
+    from mtg_proxies.cardconjourer.runner import build_job
+
+    assert build_job(slot=1, name="Murder", frame="modern")["frame"] == "modern"
+
+
+def test_build_job_with_set_symbol_path() -> None:
+    """``set_symbol_path`` is emitted into the job dict for the harness to upload."""
+    from mtg_proxies.cardconjourer.runner import build_job
+
+    job = build_job(slot=1, name="Murder", frame="8th", set_symbol_path="/abs/ltc-r.svg")
+
+    assert job["set_symbol_path"] == "/abs/ltc-r.svg"
+
+
+def test_build_job_set_symbol_path_omitted_when_none() -> None:
+    """No ``set_symbol_path`` key when caller passes None — keeps job dicts lean."""
+    from mtg_proxies.cardconjourer.runner import build_job
+
+    job = build_job(slot=1, name="Murder", frame="8th")
+
+    assert "set_symbol_path" not in job
+
+
 # Response parser
 def test_parse_response_ok() -> None:
     """``status=ok`` rows carry the absolute PNG path the harness wrote."""

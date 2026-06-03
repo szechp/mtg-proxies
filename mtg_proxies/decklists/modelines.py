@@ -89,17 +89,22 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     "no-shadow-lift": {},
     # ``#cardconjourer`` — render this single card via the headless Card Conjurer engine
     # (the ``cardconjourer`` subcommand also does the whole deck). Mutually-exclusive frame
-    # selectors ``--8th`` / ``--retro`` pick the style; ``--upscale`` pre-runs the art
-    # through Real-ESRGAN. ``--scryfall`` skips MTGPics for this card (use Scryfall art_crop
-    # directly) — useful per-card override when MTGPics's scan has a burned-in artist
-    # signature / watermark. ``--skip-cc`` opts the card out of CC rendering entirely
+    # selectors ``--8th`` / ``--retro`` / ``--modern`` pick the style; ``--upscale`` pre-runs
+    # the art through Real-ESRGAN. ``--scryfall`` skips MTGPics for this card (use Scryfall
+    # art_crop directly) — useful per-card override when MTGPics's scan has a burned-in
+    # artist signature / watermark. ``--skip-cc`` opts the card out of CC rendering entirely
     # (routed straight into ``fallback.txt`` so the normal Scryfall scan is used).
+    # ``--set-symbol VALUE`` overrides the rendered set symbol — accepts a file path
+    # (``./logo.png``) OR a CC set code shorthand (``LTC``); the form is auto-detected and
+    # resolved against the cached CC engine. Per-card value overrides any deck-wide flag.
     "cardconjourer": {
-        "--8th":      NO_VALUE,
-        "--retro":    NO_VALUE,
-        "--upscale":  NO_VALUE,
-        "--scryfall": NO_VALUE,
-        "--skip-cc":  NO_VALUE,
+        "--8th":        NO_VALUE,
+        "--retro":      NO_VALUE,
+        "--modern":     NO_VALUE,
+        "--upscale":    NO_VALUE,
+        "--scryfall":   NO_VALUE,
+        "--skip-cc":    NO_VALUE,
+        "--set-symbol": _path_str,
     },
 }
 

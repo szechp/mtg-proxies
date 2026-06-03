@@ -58,6 +58,7 @@ def build_job(
     frame: str,
     art_path: str | None = None,
     upscale: bool = False,
+    set_symbol_path: str | None = None,
 ) -> dict[str, Any]:
     """Build one ND-JSON job dict for the node harness.
 
@@ -65,8 +66,8 @@ def build_job(
     zero-padded string so the harness's output filename (``<NNNN>-<slug>.png``)
     sorts correctly in shells and matches the ``mpcfill`` convention.
 
-    ``frame`` is the frame-flag string ("8th" or later "retro"); the harness
-    dispatches its frame-pack selection on this.
+    ``frame`` is the frame-flag string (``"8th"``, ``"retro"``, or ``"modern"``);
+    the harness dispatches its frame-pack selection on this.
 
     ``art_path`` (optional) is an absolute local path. When set, the harness
     skips its built-in Scryfall ``art_crop`` fetch and reads the file directly.
@@ -75,6 +76,12 @@ def build_job(
 
     ``upscale`` is currently a passthrough hint for the report; the actual
     upscaling happens in Python before this is called.
+
+    ``set_symbol_path`` (optional) is an absolute local file path that the
+    harness uploads as the rendered card's set symbol, overriding both the
+    8th-only ``8ed-<rarity>.svg`` hardcode and the engine's per-set fetch.
+    Resolved on the Python side via ``resolve_set_symbol`` so the harness only
+    ever sees a path string.
     """
     job: dict[str, Any] = {
         "slot": f"{slot:04d}",
@@ -85,6 +92,8 @@ def build_job(
         job["art_path"] = art_path
     if upscale:
         job["upscale"] = True
+    if set_symbol_path is not None:
+        job["set_symbol_path"] = set_symbol_path
     return job
 
 

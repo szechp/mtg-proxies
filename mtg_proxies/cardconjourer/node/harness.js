@@ -176,6 +176,11 @@ function unwrap(arg) { return (arg && arg._inner) ? arg._inner : arg; }
 // 8th color ends at y=2707. Patch the asset in memory: take a vertical slice
 // of the frame body and stretch it to fill the missing 15px so black-
 // bordered cards have the same bottom strip as the others.
+//
+// Frame-scope note: BLACK_FRAME_PATH points at 8th's asset specifically. M15
+// renders load ``img/frames/m15/regular/m15FrameB.png``, a different file —
+// HarnessImage's path-equality check at the load site never matches for modern,
+// so this patch is naturally 8th-only with no extra gate.
 const BLACK_FRAME_PATH = path.join(CC_ROOT, 'img/frames/8th/b.png');
 let _patchedBlackFrame = null;
 async function getPatchedBlackFrame() {
@@ -378,6 +383,11 @@ function loadEngineFile(rel) {
     // Artifact" / (with the always-nyx checkbox) any Enchantment — that's the
     // sparkly upper frame the user doesn't want. Force-disable by neutering the
     // 8th branch of the style selector.
+    //
+    // The regex is anchored on ``frameType === '8th'``, so modern (frameType =
+    // 'M15Regular-1') hits the standard ``isNyxEnchantment → style = 'Nyx'`` arm
+    // and gets the canonical Nyx starfield organically. This patch is therefore
+    // frame-scoped by construction — no extra gate needed.
     if (rel.endsWith('autoFrame.js')) {
         code = code.replace(
             /\}\s*else if\s*\(\s*frameType\s*===\s*['"]8th['"]\s*&&\s*isNyxEnchantment\s*\)\s*\{[\s\S]*?style\s*=\s*['"]Nyx['"]\s*;\s*\}/,
@@ -512,15 +522,23 @@ function shouldSkip(scry) {
     return null;
 }
 
-// Pack routing per Scryfall layout. The transform / modal_dfc packs
-// (pack8thTransformFront) set card.version='8thTransformFront' which makes
-// changeCardIndex's multi-faced branch fire correctly, so parseMultiFacedCards
-// fills in front-face data and the back-face indicator gets a reminder slot.
-function packForLayout(layout) {
-    if (layout === 'transform' || layout === 'modal_dfc' || layout === 'reversible_card') {
-        return 'pack8thTransformFront.js';
+// Pack routing per Scryfall layout AND requested frame. The transform / modal_dfc
+// packs (pack8thTransformFront / packM15TransformFront) set card.version which
+// makes changeCardIndex's multi-faced branch fire correctly, so parseMultiFacedCards
+// fills in front-face data and the back-face indicator gets a reminder slot. Returns
+// a discriminated shape:
+//   { single: 'packX.js' }                — single-face card
+//   { front:  'packXFront.js', back: 'packXBack.js' } — DFC
+function packForLayout(layout, frame) {
+    const isDfc = (layout === 'transform' || layout === 'modal_dfc' || layout === 'reversible_card');
+    if (frame === 'modern') {
+        return isDfc
+            ? { front: 'packM15TransformFront.js', back: 'packM15TransformBack.js' }
+            : { single: 'packM15Regular-1.js' };
     }
-    return 'pack8th.js';
+    return isDfc
+        ? { front: 'pack8thTransformFront.js', back: 'pack8thTransformBack.js' }
+        : { single: 'pack8th.js' };
 }
 
 // Load the given pack file and trigger its loadFrameVersion onclick. The pack
@@ -632,29 +650,36 @@ function resetCanvases() {
 
 // Render a single face: load the pack, import + select the indicated face,
 // upload the matching art, autoframe, drain images, draw, save.
-async function renderFace({ packFile, processed, faceIdx, scry, outName }) {
+async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath }) {
     resetCanvases();
     await ensurePackLoaded(packFile);
+
+    // Per-render selector reset. These default to 8th at load time
+    // (SELECTOR_OVERRIDES + the force-reset after engine init), but per-card frame
+    // switching needs to flip them before importCard / autoFrame fires:
+    //   #autoFrame.value  — drives the DFC back-face fallback at autoFrame() below.
+    //   #lockSetSymbolURL — when true, the engine skips its per-set icon fetch
+    //                       (so 8th can hold the 8ed glyph). False otherwise so
+    //                       (a) modern uses the engine's per-card icon, and (b)
+    //                       our setSymbolPath upload isn't immediately overwritten.
+    querySelector('#autoFrame').value = (frame === 'modern') ? 'M15Regular-1' : '8th';
+    querySelector('#lockSetSymbolURL').checked = (frame === '8th' && !setSymbolPath);
 
     querySelector('#import-index').value = String(faceIdx);
     global.importCard(processed);
 
-    // Trim the `type` text width: pack8th* templates set the type box to
-    // x=0.102..0.899 (width 0.797), but the set symbol sits at x=0.9079
-    // (right-anchored, width 0.12), so long type lines on transform cards
-    // ("Legendary Creature — Human Advisor") get clipped by the set symbol.
-    // Shrink the right edge to give the symbol room.
-    if (global.card.text && global.card.text.type) {
-        global.card.text.type.width = 0.74;
-    }
-
-    // Shrink the set symbol bounds ~2% from pack8th's default (height 0.0391)
-    // to better match the real 8th-edition reference card. resetSetSymbol
-    // sizes the icon to fit these bounds, so multiplying the height scales
-    // both axes proportionally.
-    if (global.card.setSymbolBounds) {
-        global.card.setSymbolBounds.height = 0.0391 * 0.94;
-        global.card.setSymbolBounds.width  = 0.12   * 0.94;
+    // 8th-only cosmetic shrinks. pack8th* templates set the type box wider than
+    // the real 8th printing, and the set-symbol bounds default needs a ~2% trim
+    // to match the reference card. M15 packs have their own tuned values and
+    // these adjustments would mis-fit them.
+    if (frame === '8th') {
+        if (global.card.text && global.card.text.type) {
+            global.card.text.type.width = 0.74;
+        }
+        if (global.card.setSymbolBounds) {
+            global.card.setSymbolBounds.height = 0.0391 * 0.94;
+            global.card.setSymbolBounds.width  = 0.12   * 0.94;
+        }
     }
 
     // Pick the art URL for THIS face. processScryfallCard propagates the
@@ -672,13 +697,22 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName }) {
 
     if (scry.released_at) querySelector('#info-year').value = scry.released_at.slice(0, 4);
 
-    // Force the 8th Edition set icon for ALL cards — it matches the 8th frame
-    // aesthetically and avoids the per-set aspect-ratio inconsistencies users
-    // were seeing. Preserve rarity by picking 8ed-{c,u,r,m,s}.svg.
-    const rChar = ((scry.rarity || 'c')[0] || 'c').toLowerCase();
-    const rFile = ['c', 'u', 'r', 'm', 's'].includes(rChar) ? rChar : 'c';
+    // Set-symbol upload precedence:
+    //   1. setSymbolPath (any frame)  — Python pre-resolved this; could be a CC
+    //      bundled asset (LTC) or a custom user file. Wins unconditionally.
+    //   2. 8th frame, no override     — force the 8ed glyph by rarity, preserving
+    //      the pre-existing 8th look.
+    //   3. modern frame, no override  — skip the upload entirely. lockSetSymbolURL
+    //      was set false above, so the engine fetches the card's actual per-set
+    //      icon via its normal autoSet logic.
     if (typeof global.uploadSetSymbol === 'function') {
-        global.uploadSetSymbol(`/img/setSymbols/official/8ed-${rFile}.svg`, 'resetSetSymbol');
+        if (setSymbolPath) {
+            global.uploadSetSymbol(setSymbolPath, 'resetSetSymbol');
+        } else if (frame === '8th') {
+            const rChar = ((scry.rarity || 'c')[0] || 'c').toLowerCase();
+            const rFile = ['c', 'u', 'r', 'm', 's'].includes(rChar) ? rChar : 'c';
+            global.uploadSetSymbol(`/img/setSymbols/official/8ed-${rFile}.svg`, 'resetSetSymbol');
+        }
     }
 
     if (!INCLUDE_FLAVOR) {
@@ -703,13 +737,17 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName }) {
     if (global.autoFrameTimer) clearTimeout(global.autoFrameTimer);
 
     const faceColors = (face && Array.isArray(face.colors) && face.colors.length) ? face.colors : null;
+    const frameTypeLiteral = (frame === 'modern') ? 'M15Regular-1' : '8th';
     if (faceColors) {
-        await global.autoFrameUnified('8th',
+        await global.autoFrameUnified(frameTypeLiteral,
             faceColors,
             (face.mana_cost || global.card.text.mana?.text || ''),
             (face.type_line || global.card.text.type?.text || ''),
             (face.power || global.card.text.pt?.text || ''));
     } else {
+        // Fallback path: autoFrame() reads #autoFrame.value, which we already
+        // set per-render in the prologue above — so this honors the requested
+        // frame even when face.colors is empty (DFC back faces).
         await global.autoFrame();
     }
 
@@ -744,10 +782,10 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName }) {
     return outPath;
 }
 
-async function renderCard(scry, slug) {
+async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null } = {}) {
     const skipReason = shouldSkip(scry);
     if (skipReason) {
-        throw new Error(`${skipReason} not supported on 8th frame — fall back to Scryfall image`);
+        throw new Error(`${skipReason} not supported on ${frame} frame — fall back to Scryfall image`);
     }
 
     // Pre-process the Scryfall card the same way the GUI does. For DFC /
@@ -758,12 +796,13 @@ async function renderCard(scry, slug) {
     const isDfc = ['transform', 'modal_dfc', 'reversible_card'].includes(scry.layout) &&
                   processed.length >= 2;
 
+    const packs = packForLayout(scry.layout, frame);
     if (isDfc) {
-        await renderFace({ packFile: 'pack8thTransformFront.js', processed, faceIdx: 0, scry, outName: slug + '_front' });
-        await renderFace({ packFile: 'pack8thTransformBack.js',  processed, faceIdx: 1, scry, outName: slug + '_back'  });
+        await renderFace({ packFile: packs.front, processed, faceIdx: 0, scry, outName: slug + '_front', frame, setSymbolPath });
+        await renderFace({ packFile: packs.back,  processed, faceIdx: 1, scry, outName: slug + '_back',  frame, setSymbolPath });
         return path.join(OUTPUT, slug + '_front.png') + ', ' + slug + '_back.png';
     }
-    return await renderFace({ packFile: 'pack8th.js', processed, faceIdx: 0, scry, outName: slug });
+    return await renderFace({ packFile: packs.single, processed, faceIdx: 0, scry, outName: slug, frame, setSymbolPath });
 }
 
 
@@ -831,10 +870,17 @@ async function runOneJob(job) {
             scry.image_uris = scry.image_uris || {};
             scry.image_uris.art_crop = job.art_path;
         }
+        // Frame and set-symbol override: both default safely when absent (8th
+        // frame, no override) so older clients keep working. job.set_symbol_path
+        // is always an absolute file path — Python resolves CC set codes like
+        // "LTC" into <cc_root>/img/setSymbols/official/ltc-<rarity>.svg before
+        // shipping the job, so the harness only ever sees a path.
+        const frame = job.frame || '8th';
+        const setSymbolPath = job.set_symbol_path || null;
         // Slot-prefixed slug so the harness's local OUTPUT/<file>.png already
         // carries the slot that the Python runner expects for OUTDIR copying.
         const slug = job.slot + '-' + slugify(job.name);
-        const outPath = await renderCard(scry, slug);
+        const outPath = await renderCard(scry, slug, { frame, setSymbolPath });
         writeResponse({
             slot:   job.slot,
             status: 'ok',

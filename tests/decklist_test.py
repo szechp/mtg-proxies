@@ -533,6 +533,50 @@ def test_modeline_parse_cardconjourer_unknown_flag_warns() -> None:
     assert "--bogus" in warnings[0].message
 
 
+def test_modeline_parse_cardconjourer_modern() -> None:
+    """`#cardconjourer --modern` registers as a no-value-flag directive."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjourer --modern")
+
+    assert len(directives) == 1
+    assert directives[0].flags == {"--modern": True}
+    assert warnings == []
+
+
+def test_modeline_parse_cardconjourer_set_symbol_code() -> None:
+    """`--set-symbol VALUE` captures the raw string (resolution happens later)."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjourer --set-symbol LTC")
+
+    assert len(directives) == 1
+    assert directives[0].flags == {"--set-symbol": "LTC"}
+    assert warnings == []
+
+
+def test_modeline_parse_cardconjourer_set_symbol_path() -> None:
+    """`--set-symbol VALUE` accepts a path verbatim — no validation at parse time."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjourer --set-symbol ./sym.png")
+
+    assert len(directives) == 1
+    assert directives[0].flags == {"--set-symbol": "./sym.png"}
+    assert warnings == []
+
+
+def test_modeline_parse_cardconjourer_modern_with_set_symbol() -> None:
+    """Combined `--modern --set-symbol LTC` parses both flags."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjourer --modern --set-symbol LTC")
+
+    assert len(directives) == 1
+    assert directives[0].flags == {"--modern": True, "--set-symbol": "LTC"}
+    assert warnings == []
+
+
 def test_decklist_card_no_modeline_has_empty_field(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_card_lookup(monkeypatch)
     from mtg_proxies.decklists import Card, parse_decklist_stream
@@ -861,7 +905,7 @@ def test_parse_decklist_url_line_miss_warns_and_comments(monkeypatch: pytest.Mon
     """Unknown set/collector emits ERROR and the line becomes a comment."""
     from mtg_proxies.decklists import parse_decklist_stream
 
-    monkeypatch.setattr("mtg_proxies.scryfall.scryfall.card_by_set_collector", lambda: {})
+    monkeypatch.setattr("mtg_proxies.scryfall.scryfall.card_by_set_collector", dict)
     monkeypatch.setattr(
         "mtg_proxies.scryfall.scryfall.fetch_printing_live",
         lambda set_code, cn: None,

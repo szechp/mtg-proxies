@@ -20,7 +20,7 @@ def test_main_help_lists_cardconjourer_subcommand(capsys: pytest.CaptureFixture)
 
 
 def test_main_cardconjourer_help_mentions_frame_flags(capsys: pytest.CaptureFixture) -> None:
-    """`mtg-proxies cardconjourer --help` documents --8th, --retro, --upscale."""
+    """`mtg-proxies cardconjourer --help` documents --8th, --retro, --modern, --upscale, --set-symbol."""
     from mtg_proxies.cli import main
 
     with patch("sys.argv", ["mtg-proxies", "cardconjourer", "--help"]), pytest.raises(SystemExit):
@@ -29,7 +29,9 @@ def test_main_cardconjourer_help_mentions_frame_flags(capsys: pytest.CaptureFixt
     out = capsys.readouterr().out
     assert "--8th" in out
     assert "--retro" in out
+    assert "--modern" in out
     assert "--upscale" in out
+    assert "--set-symbol" in out
 
 
 def test_main_cardconjourer_requires_a_frame_flag(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
@@ -280,6 +282,175 @@ def test_main_cardconjourer_skip_cc_modeline_routes_to_fallback(tmp_path: Path) 
         assert responses[0]["status"] == "skip"
         assert "skip-cc" in responses[0]["reason"]
         mock_popen.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# --modern frame + --set-symbol (M15 frame routing + per-card symbol override)
+# ---------------------------------------------------------------------------
+
+
+def test_main_cardconjourer_modern_propagates_frame(tmp_path: Path) -> None:
+    """`cardconjourer --modern deck.txt OUTDIR` reaches render_deck with frame='modern'."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder\n")
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--modern", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
+        main()
+
+    assert mock_render.call_args.kwargs.get("frame") == "modern"
+
+
+def test_main_cardconjourer_modern_and_8th_mutex(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
+    """`--modern` and `--8th` are mutually exclusive."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder\n")
+    argv = ["mtg-proxies", "cardconjourer", "--modern", "--8th", str(deck), str(tmp_path / "out")]
+
+    with patch("sys.argv", argv), pytest.raises(SystemExit):
+        main()
+
+    err = capsys.readouterr().err
+    assert "not allowed" in err or "argument" in err
+
+
+def _make_cc_root_with_ltc(tmp_path: Path) -> Path:
+    """Build a CC cache root with the LTC set-symbol assets across all rarities.
+
+    Seeded for c/u/r/m so the test doesn't have to know which rarity Scryfall
+    returns for the Murder fixture card.
+    """
+    cc_root = tmp_path / "cc-cache"
+    official = cc_root / "img" / "setSymbols" / "official"
+    official.mkdir(parents=True)
+    for char in ("c", "u", "r", "m"):
+        (official / f"ltc-{char}.svg").write_text("<svg/>")
+    return cc_root
+
+
+def test_main_cardconjourer_set_symbol_path_reaches_prepare_each(tmp_path: Path) -> None:
+    """`--set-symbol PATH` (existing file) lands in the job's extras via prepare_each."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder\n")
+    sym = tmp_path / "logo.png"
+    sym.write_bytes(b"png")
+
+    with (
+        patch(
+            "sys.argv",
+            ["mtg-proxies", "cardconjourer", "--8th", "--set-symbol", str(sym), str(deck), str(tmp_path / "out")],
+        ),
+        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=None),
+        patch("mtg_proxies.scryfall.get_image", return_value="/tmp/scryfall.jpg"),
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
+        main()
+
+        prepare_each = mock_render.call_args.kwargs.get("prepare_each")
+        extras = prepare_each(1)
+        assert extras.get("set_symbol_path") == str(sym.resolve())
+
+
+def test_main_cardconjourer_set_symbol_works_on_modern(tmp_path: Path) -> None:
+    """`--modern --set-symbol PATH` propagates the same way as `--8th --set-symbol`."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder\n")
+    sym = tmp_path / "logo.png"
+    sym.write_bytes(b"png")
+
+    with (
+        patch(
+            "sys.argv",
+            ["mtg-proxies", "cardconjourer", "--modern", "--set-symbol", str(sym), str(deck), str(tmp_path / "out")],
+        ),
+        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=None),
+        patch("mtg_proxies.scryfall.get_image", return_value="/tmp/scryfall.jpg"),
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
+        main()
+
+        prepare_each = mock_render.call_args.kwargs.get("prepare_each")
+        extras = prepare_each(1)
+        assert extras.get("set_symbol_path") == str(sym.resolve())
+        assert mock_render.call_args.kwargs.get("frame") == "modern"
+
+
+def test_main_cardconjourer_set_symbol_code_resolves_via_cc_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--set-symbol LTC` resolves to ltc-r.svg against the cached CC engine for a rare card.
+
+    The Murder Scryfall card we mock here is parametrized as `rarity="rare"`, so the
+    resolver expects `ltc-r.svg`.
+    """
+    from mtg_proxies.cli import main
+
+    cc_root = _make_cc_root_with_ltc(tmp_path)
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    # Make the resolver's `~/.cache/mtg-proxies/cardconjurer` point at our fixture.
+    (tmp_path / ".cache" / "mtg-proxies").mkdir(parents=True)
+    (tmp_path / ".cache" / "mtg-proxies" / "cardconjurer").symlink_to(cc_root)
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder\n")
+
+    argv = [
+        "mtg-proxies", "cardconjourer", "--modern", "--set-symbol", "LTC",
+        str(deck), str(tmp_path / "out"),
+    ]
+    with (
+        patch("sys.argv", argv),
+        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=None),
+        patch("mtg_proxies.scryfall.get_image", return_value="/tmp/scryfall.jpg"),
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
+        main()
+
+        prepare_each = mock_render.call_args.kwargs.get("prepare_each")
+        extras = prepare_each(1)
+        # Resolved path goes through the symlinked cache root → ends in
+        # ltc-<rarity>.svg for whichever rarity Scryfall returns for Murder.
+        sym = extras.get("set_symbol_path", "")
+        assert any(sym.endswith(f"ltc-{c}.svg") for c in "curm"), sym
+
+
+def test_main_cardconjourer_set_symbol_missing_file_exits(
+    capsys: pytest.CaptureFixture, tmp_path: Path
+) -> None:
+    """`--set-symbol /missing.png` errors out cleanly before any subprocess spawn."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder\n")
+
+    argv = [
+        "mtg-proxies", "cardconjourer", "--8th", "--set-symbol", "/nope/missing.png",
+        str(deck), str(tmp_path / "out"),
+    ]
+    with (
+        patch("sys.argv", argv),
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 0, "skipped": 0, "total": 0}
+        with pytest.raises(SystemExit):
+            main()
+
+    captured = capsys.readouterr()
+    assert "--set-symbol" in (captured.out + captured.err)
 
 
 # ---------------------------------------------------------------------------

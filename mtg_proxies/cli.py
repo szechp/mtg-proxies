@@ -1,5 +1,4 @@
 import argparse
-import csv
 import logging
 import random
 import re
@@ -16,7 +15,6 @@ import mtg_proxies.scryfall as scryfall
 from mtg_proxies import fetch_scans_scryfall, print_cards_fpdf, print_cards_matplotlib
 from mtg_proxies.deck_value import show_deck_value
 from mtg_proxies.decklists import archidekt, manastack, parse_decklist
-from mtg_proxies.decklists.cleaning import merge_duplicates
 from mtg_proxies.decklists.decklist import Card, Comment, Decklist
 from mtg_proxies.mpcfill.cache import default_cache_root
 from mtg_proxies.scans import fetch_scans_paired, fetch_scans_scryfall_flagged
@@ -99,6 +97,21 @@ def resolve_upscale_scope(args: argparse.Namespace) -> Literal["auto", "all"] | 
     if getattr(args, "upscale_model", None):
         return "auto"
     return None
+
+
+def _resolve_cc_frame(flags: dict) -> str:
+    """Map a ``#cardconjourer`` directive's flags to the harness's frame string.
+
+    Mirrors the CLI's ``--modern`` / ``--retro`` / ``--8th`` precedence. Bare
+    ``#cardconjourer`` (no frame flag) defaults to ``"8th"`` so the per-card
+    modeline path is consistent with the standalone subcommand's
+    required-frame contract.
+    """
+    if flags.get("--modern"):
+        return "modern"
+    if flags.get("--retro"):
+        return "retro"
+    return "8th"
 
 
 def _cards_per_sheet_dims(paper_inches: np.ndarray, scale: float) -> tuple[int, int]:
@@ -470,12 +483,20 @@ def _apply_per_card_modelines(
 
     # Pass 1b: #cardconjourer swaps. All flagged cards go through the headless CC
     # harness in a single batched subprocess (~1-2s engine boot amortizes across
-    # the whole deck). Per-card frame is `--retro` if set, else `--8th` (the bare
-    # `#cardconjourer` modeline also defaults to 8th to stay consistent with the
-    # standalone subcommand's flag requirement). Misses fall back to Scryfall art.
+    # the whole deck). Per-card frame is `--modern` / `--retro` / `--8th` (bare
+    # `#cardconjourer` defaults to 8th, matching the standalone subcommand's
+    # required-flag contract). ``--set-symbol VALUE`` is resolved per-card via
+    # ``resolve_set_symbol`` against the cached CC engine. Misses fall back to
+    # the Scryfall scan.
     if any(any(d.verb == "cardconjourer" for d in dl) for dl in parsed):
-        from mtg_proxies.cardconjourer.per_card import CardConjourerRequest, render_per_card_batch
+        from mtg_proxies.cardconjourer.per_card import (
+            CardConjourerRequest,
+            _default_cache_root,
+            render_per_card_batch,
+        )
+        from mtg_proxies.cardconjourer.set_symbol import resolve_set_symbol
 
+        cc_cache_root = _default_cache_root()
         cc_requests: list[CardConjourerRequest] = []
         cc_slots_by_id: dict[str, list[SlotKey]] = {}
         for card_idx, (card, directives) in enumerate(zip(decklist.cards, parsed, strict=True)):
@@ -490,11 +511,30 @@ def _apply_per_card_modelines(
                         faces,
                     )
                     continue
-                frame = "retro" if directive.flags.get("--retro") else "8th"
+                frame = _resolve_cc_frame(directive.flags)
                 upscale = bool(directive.flags.get("--upscale"))
+                sym_value = directive.flags.get("--set-symbol")
+                resolved_sym: str | None = None
+                if sym_value:
+                    try:
+                        resolved_sym = resolve_set_symbol(
+                            sym_value, card.card.get("rarity", "c") or "c", cc_cache_root
+                        )
+                    except FileNotFoundError as exc:
+                        _mpcfill_log.warning(
+                            "#cardconjourer --set-symbol on %r: %s; falling back to frame default.",
+                            card["name"],
+                            exc,
+                        )
                 slot_id = f"{card_idx + 1:04d}"
                 cc_requests.append(
-                    CardConjourerRequest(slot_id=slot_id, name=card["name"], frame=frame, upscale=upscale)
+                    CardConjourerRequest(
+                        slot_id=slot_id,
+                        name=card["name"],
+                        frame=frame,
+                        upscale=upscale,
+                        set_symbol_path=resolved_sym,
+                    )
                 )
                 cc_slots_by_id[slot_id] = list(front_slots)
                 break  # one directive per card is enough; ignore stacked duplicates
@@ -919,7 +959,12 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
 
     from mtg_proxies.cardconjourer import runner as cc_runner
 
-    frame = "8th" if args.frame_8th else "retro"
+    if args.frame_modern:
+        frame = "modern"
+    elif args.frame_retro:
+        frame = "retro"
+    else:
+        frame = "8th"
 
     # Resolve every decklist line to a full Scryfall card dict. parse_decklist_spec
     # handles count prefix, `Name (SET) CN`, the new URL/shorthand form, foil markers,
@@ -957,7 +1002,6 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     if args.upscale:
         from PIL import Image as _PILImage
 
-        from mtg_proxies import upscale as _upscale_mod
 
         # Scryfall art_crops are JPEGs. The upscaler always emits RGBA (it
         # adds an alpha channel for the rounded-corner blend) and PIL refuses
@@ -986,12 +1030,15 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
 
     # Check each card's modeline for ``#cardconjourer --scryfall`` (per-card
     # opt-out of MTGPics on watermark-affected scans without flipping the
-    # whole-deck ``--scryfall`` flag) and ``#cardconjourer --skip-cc`` (per-card
+    # whole-deck ``--scryfall`` flag), ``#cardconjourer --skip-cc`` (per-card
     # opt-out of CC rendering entirely — the card lands in fallback.txt and is
-    # rendered via the normal Scryfall scan).
+    # rendered via the normal Scryfall scan), and ``#cardconjourer --set-symbol
+    # VALUE`` (per-card set-symbol override beating the deck-wide ``--set-symbol``
+    # flag for that slot only).
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
     slot_scryfall_override: dict[int, bool] = {}
     slot_skip_cc: set[int] = set()
+    slot_set_symbol: dict[int, str] = {}
     for slot_int, card in slot_to_card.items():
         if not card.modeline:
             continue
@@ -1002,11 +1049,38 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                     slot_scryfall_override[slot_int] = True
                 if d.flags.get("--skip-cc"):
                     slot_skip_cc.add(slot_int)
+                sym_val = d.flags.get("--set-symbol")
+                if sym_val:
+                    slot_set_symbol[slot_int] = sym_val
+
+    # Resolve the deck-wide / per-card ``--set-symbol`` value to an absolute
+    # path per slot. Resolution happens here (not inside _prepare_each) so a
+    # missing file / unknown set code errors before any subprocess work begins.
+    cc_cache = Path.home() / ".cache" / "mtg-proxies" / "cardconjurer"
+    from mtg_proxies.cardconjourer.set_symbol import resolve_set_symbol
+    resolved_set_symbol_by_slot: dict[int, str] = {}
+    for slot_int, card in slot_to_card.items():
+        override = slot_set_symbol.get(slot_int) or args.set_symbol
+        if not override:
+            continue
+        rarity = card.card.get("rarity", "c") or "c"
+        try:
+            resolved = resolve_set_symbol(override, rarity, cc_cache)
+        except FileNotFoundError as exc:
+            print(f"[cardconjourer] --set-symbol error on slot {slot_int}: {exc}")
+            raise SystemExit(2) from exc
+        if resolved is not None:
+            resolved_set_symbol_by_slot[slot_int] = resolved
 
     def _prepare_each(slot_int: int) -> dict:
         card = slot_to_card.get(slot_int)
         if card is None:
             return {}
+
+        # Per-slot set-symbol override (resolved up-front) — merged into every
+        # return branch below so it survives whichever art-source path fires.
+        sym_override = resolved_set_symbol_by_slot.get(slot_int)
+        extras: dict = {"set_symbol_path": sym_override} if sym_override else {}
 
         # 1) MTGPics by set+collector. Tried first unless --scryfall opts out
         # (useful when MTGPics's scan for a card has artist signatures /
@@ -1021,7 +1095,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                 mtgp = _mtgpics.fetch_mtgpics_art(set_code, cn, cache_root=mtgpics_cache_root)
                 if mtgp is not None:
                     mtgpics_stats["hits"] += 1
-                    return {"art_path": str(mtgp)}
+                    return {**extras, "art_path": str(mtgp)}
             mtgpics_stats["misses"] += 1
 
         # 2) Fallback: Scryfall art_crop. Raw by default, upscaled with --upscale.
@@ -1033,7 +1107,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                 art_url = (faces[0].get("image_uris") or {}).get("art_crop")
         if not art_url:
             # Nothing to give — harness's default Scryfall fetch will run.
-            return {}
+            return extras
 
         from mtg_proxies import scryfall as _scryfall
         local = _scryfall.get_image(art_url)
@@ -1044,8 +1118,8 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
             # images: 100% 1/1" bar; the outer "Rendering" bar is the one the
             # user cares about and it would otherwise flicker on every card.
             [upscaled] = _upscale_mod.upscale_images([local_png], progress=False, **upscale_kwargs)
-            return {"art_path": upscaled}
-        return {"art_path": local}
+            return {**extras, "art_path": upscaled}
+        return {**extras, "art_path": local}
 
     prepare_each_cb = _prepare_each
 
@@ -1055,7 +1129,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     # inside the closure so it fires only when the real harness runs (tests
     # mocking ``render_deck`` never reach it).
     harness_path = Path(__file__).resolve().parent / "cardconjourer" / "node" / "harness.js"
-    cc_cache = Path.home() / ".cache" / "mtg-proxies" / "cardconjurer"
+    # (cc_cache is defined earlier alongside the set-symbol resolver.)
 
     # Ensure outdir exists up-front so the streaming copy below can write into
     # it as soon as the first PNG lands — render_deck's own mkdir runs later.
@@ -1477,13 +1551,15 @@ def main() -> None:
 
     cardconjourer_parser = subparsers.add_parser(
         "cardconjourer",
-        help="Render an 8th-edition (later: retro) frame for each card via headless Card Conjurer",
+        help="Render an 8th-edition / modern / retro frame for each card via headless Card Conjurer",
         description=(
             "For each card in DECKLIST, render a fresh PNG via the headless Card Conjurer engine"
-            " in the chosen frame style and write it to OUTDIR as <NNNN>-<slug>.png. Cards the"
-            " engine can't render (saga / transform / planeswalker / 404) are listed in"
-            " OUTDIR/fallback.txt (decklist format) so you can pipe them into a normal"
-            " `mtg-proxies print` run, while `--custom-art OUTDIR/` appends the rendered PNGs."
+            " in the chosen frame style (--8th / --modern / --retro) and write it to OUTDIR as"
+            " <NNNN>-<slug>.png. Cards the engine can't render (saga / transform / planeswalker /"
+            " 404) are listed in OUTDIR/fallback.txt (decklist format) so you can pipe them into"
+            " a normal `mtg-proxies print` run, while `--custom-art OUTDIR/` appends the rendered"
+            " PNGs. ``--set-symbol VALUE`` overrides the rendered set symbol on any frame —"
+            " accepts a file path or a CC set code shorthand."
         ),
     )
     cardconjourer_parser.add_argument(
@@ -1498,8 +1574,22 @@ def main() -> None:
         help="render every card in the 8th-edition (2003) frame style"
     )
     frame_group.add_argument(
+        "--modern", dest="frame_modern", action="store_true",
+        help="render every card in the modern (M15, 2014) frame style — Nyx enchantments and per-set icons preserved"
+    )
+    frame_group.add_argument(
         "--retro", dest="frame_retro", action="store_true",
         help="render every card in the retro pre-modern frame style (not implemented yet)"
+    )
+    cardconjourer_parser.add_argument(
+        "--set-symbol", dest="set_symbol", default=None, metavar="VALUE",
+        help=(
+            "override the rendered set symbol. Accepts either a file path"
+            " (./logo.png, absolute, or ~-prefixed) or a CC set code shorthand"
+            " (LTC, MKM, proxy). Works with any frame. Without this flag: 8th"
+            " keeps its hardcoded 8ed-<rarity>.svg default; modern uses the"
+            " engine's per-card set icon."
+        ),
     )
     cardconjourer_parser.add_argument(
         "--scryfall", action="store_true", default=False,
@@ -1697,7 +1787,7 @@ def main() -> None:
                 # Build a flag list aligned with the final ``images``: decklist slots use the
                 # Scryfall flags collected earlier (if any), custom art and the appended
                 # card-back copies are user-supplied → highres=True so upscale skips them.
-                if args.decklist and upscale_scope is not None:  # noqa: SIM108  (ternary runs past line limit)
+                if args.decklist and upscale_scope is not None:
                     image_flags = list(highres_flags)
                 else:
                     image_flags = [True] * len(images)
