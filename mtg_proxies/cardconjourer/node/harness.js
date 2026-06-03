@@ -505,8 +505,7 @@ async function fetchScryfall(name) {
 // headless context doesn't satisfy) but Scryfall keeps them on layout
 // 'normal', so they're gated on type_line below.
 const SKIP_LAYOUTS = new Set([
-    'saga', 'split', 'flip', 'transform', 'modal_dfc', 'reversible_card',
-    'meld', 'leveler', 'class', 'case', 'adventure', 'battle',
+    'saga', 'split', 'meld', 'leveler', 'class', 'case', 'adventure', 'battle',
     'planar', 'scheme', 'vanguard',
 ]);
 // Keyword-based skips for layouts Scryfall still marks 'normal'. Mutate and
@@ -699,19 +698,24 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
 
     // Modern (M15) layout fixes. packM15Regular-1.js ships:
     //   type: x=0.0854, width=0.8292   → spans up to x=0.9146.
-    //   rules: y=0.6303, height=0.2875 → extends down to y=0.9178.
+    //   rules: x=0.086, y=0.6303, width=0.828, height=0.2875 → spans to x=0.914, y=0.9178.
     //   set-symbol bounds at x=0.9213 right-anchored, width=0.12 → claims x≥0.8013.
     //   pt: y=0.902 vertically-centered, height=0.0372 → pill top at y=0.8834.
     // → long type lines slide under the set symbol; long rules text draws over
-    // the P/T pill. Trim both so the engine's auto-shrink fits the text into
-    // the visible region instead of overflowing.
+    //   the P/T pill; inline mana symbols (e.g. Belbe's "{C}{C}") slip past the
+    //   rules right edge into the frame because the engine's auto-shrink only
+    //   triggers on vertical overflow, not horizontal — and pack8th uses a
+    //   narrower rules.width (0.794) that doesn't hit this.
+    // Trim type/rules so the visible region matches the M15 frame template.
     if (frame === 'modern' && global.card.text) {
         if (global.card.text.type) {
             // Stop short of the set symbol (x≥0.8013). 0.7159 = 0.8013 - 0.0854.
             global.card.text.type.width = 0.71;
         }
         if (global.card.text.rules) {
-            // End above the P/T pill top (y=0.8834). 0.2531 = 0.8834 - 0.6303.
+            // Match pack8th's narrower rules width so inline mana symbols stay
+            // off the frame edge, AND end above the P/T pill top (y=0.8834).
+            global.card.text.rules.width  = 0.794;
             global.card.text.rules.height = 0.253;
         }
     }
@@ -912,23 +916,61 @@ async function runOneJob(job) {
     const start = Date.now();
     try {
         const { scry } = await fetchScryfall(job.name);
-        // art_path override: ESRGAN-upscaled local file from the Python runner.
-        // Threaded into scry.image_uris.art_crop so renderFace's existing art
-        // resolution picks it up — our HarnessImage polyfill treats absolute
-        // file paths as local loads, no HTTP fetch.
-        if (job.art_path) {
+        
+        // Intercept DFCs and composite them into a Kamigawa flip card.
+        // We do this at the boundary so the engine's core layout/frame logic is untouched.
+        const isDfc = ['transform', 'modal_dfc', 'reversible_card'].includes(scry.layout);
+        if (isDfc && scry.card_faces && scry.card_faces.length >= 2) {
+            // Force the layout to flip so the engine splits the faces top/bottom
+            scry.layout = 'flip';
+            
+            // Composite the art: 50% left front, 50% right back (rotated 180).
+            const { createCanvas, loadImage } = require('canvas');
+            const frontUrl = job.art_path || (scry.card_faces[0].image_uris && scry.card_faces[0].image_uris.art_crop) || (scry.image_uris && scry.image_uris.art_crop);
+            const backUrl = (scry.card_faces[1].image_uris && scry.card_faces[1].image_uris.art_crop);
+            
+            if (frontUrl && backUrl) {
+                // Determine source for frontUrl (could be a local file path if job.art_path)
+                const frontImg = await loadImage(frontUrl);
+                const backImg = await loadImage(backUrl);
+                
+                // Typical art crop size
+                const w = Math.max(frontImg.width, backImg.width);
+                const h = Math.max(frontImg.height, backImg.height);
+                
+                const canvas = createCanvas(w, h);
+                const ctx = canvas.getContext('2d');
+                
+                // Draw left half of front
+                ctx.drawImage(frontImg, 0, 0, w/2, h, 0, 0, w/2, h);
+                
+                // Draw right half of back, rotated 180 degrees
+                ctx.save();
+                ctx.translate(w, h);
+                ctx.rotate(Math.PI);
+                // We want the original right half of the back image to appear on the right half of the canvas.
+                // Because we rotated the canvas 180 around (w,h), the canvas's (0,0) is now at the bottom right.
+                // The canvas's left half (0 to w/2) maps to the physical right half.
+                // We draw the left half of the back image onto the canvas's left half,
+                // which means the back image's left half will appear rotated on the right side of the card.
+                // Actually, to keep the focal points, taking the left half of the back image (which becomes right half) is fine.
+                ctx.drawImage(backImg, 0, 0, w/2, h, 0, 0, w/2, h);
+                ctx.restore();
+                
+                // Save composite to a temp file or data URI
+                const dataUri = canvas.toDataURL('image/png');
+                
+                scry.image_uris = scry.image_uris || {};
+                scry.image_uris.art_crop = dataUri;
+            }
+        } else if (job.art_path) {
+            // Normal art override
             scry.image_uris = scry.image_uris || {};
             scry.image_uris.art_crop = job.art_path;
         }
-        // Frame and set-symbol override: both default safely when absent (8th
-        // frame, no override) so older clients keep working. job.set_symbol_path
-        // is always an absolute file path — Python resolves CC set codes like
-        // "LTC" into <cc_root>/img/setSymbols/official/ltc-<rarity>.svg before
-        // shipping the job, so the harness only ever sees a path.
+
         const frame = job.frame || '8th';
         const setSymbolPath = job.set_symbol_path || null;
-        // Slot-prefixed slug so the harness's local OUTPUT/<file>.png already
-        // carries the slot that the Python runner expects for OUTDIR copying.
         const slug = job.slot + '-' + slugify(job.name);
         const outPath = await renderCard(scry, slug, { frame, setSymbolPath });
         writeResponse({
