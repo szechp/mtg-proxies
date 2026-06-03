@@ -725,17 +725,21 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     querySelector('#import-index').value = String(faceIdx);
     global.importCard(processed);
     
-    // For flip layouts, move the set symbol to the top type line (y: 0.2353).
-    // We use Modern (M15) standard coordinates and dimensions.
+    // For flip layouts, move the set symbol to the top type line.
+    // We anchor it relative to the type-line center and P/T box left edge.
     if (isFlip && faceIdx === 0) {
-        // Dynamic shift: if the top face has power/toughness, move the symbol
-        // left to avoid overlapping the P/T box that sits on the type line.
         const hasPT = !!(scry.card_faces?.[0]?.power || processed.power);
         global.card.setSymbolBounds = {
-            x: hasPT ? 0.78 : 0.9213,  // Modern x (0.9213) or shifted left
-            y: 0.2353,                 // Top type line center
-            width: 0.12,               // Modern standard width
-            height: 0.0372,            // Modern standard height
+            // x: 0.9213 is flush right (Standard).
+            // x: 0.765 is shifted left to sit next to the P/T box (0.778 left edge).
+            x: hasPT ? 0.765 : 0.9213,  
+            
+            // y: 0.263 is the calculated vertical center of the type box 
+            // (top 0.2353 + half-height 0.027).
+            y: 0.263,                 
+            
+            width: 0.11,               // Standard M15 width
+            height: 0.037,             // Standard M15 height
             vertical: 'center',
             horizontal: 'right',
         };
