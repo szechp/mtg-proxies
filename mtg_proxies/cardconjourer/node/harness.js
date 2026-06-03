@@ -979,7 +979,7 @@ async function runOneJob(job) {
             // Force the layout to flip so the engine splits the faces top/bottom
             scry.layout = 'flip';
             
-            // Composite the art: middle 60% of front and back, with a 20% fade transition.
+            // Composite the art: match the exact Kamigawa flip art box aspect ratio.
             const { createCanvas, loadImage } = require('canvas');
             const frontUrl = job.art_path || (scry.card_faces[0].image_uris && scry.card_faces[0].image_uris.art_crop) || (scry.image_uris && scry.image_uris.art_crop);
             const backUrl = (scry.card_faces[1].image_uris && scry.card_faces[1].image_uris.art_crop);
@@ -988,38 +988,60 @@ async function runOneJob(job) {
                 const frontImg = await loadImage(frontUrl);
                 const backImg = await loadImage(backUrl);
                 
-                const w = Math.max(frontImg.width, backImg.width);
-                const h = Math.max(frontImg.height, backImg.height);
+                // Target aspect ratio of the Kamigawa flip art box is 0.8494 / 0.3315 ≈ 2.5623
+                const targetRatio = 0.8494 / 0.3315;
+                const canvasW = Math.max(frontImg.width, backImg.width) * 2;
+                const canvasH = Math.floor(canvasW / targetRatio);
                 
-                const canvas = createCanvas(w, h);
+                const canvas = createCanvas(canvasW, canvasH);
                 const ctx = canvas.getContext('2d');
                 
                 const overlap = 0.2; // 20% overlap in the middle
                 const partW = 0.5 + overlap / 2; // 60% width for each half
+                const pixelPartW = Math.floor(canvasW * partW);
                 
-                // Draw middle 60% of front onto the left side
-                ctx.drawImage(frontImg, w * (0.5 - partW/2), 0, w * partW, h, 0, 0, w * partW, h);
+                // Helper to draw an image centered and covering the target area
+                function drawCover(img, targetCtx, dx, dy, dw, dh) {
+                    const imgRatio = img.width / img.height;
+                    const tgtRatio = dw / dh;
+                    let sx, sy, sw, sh;
+                    if (imgRatio > tgtRatio) {
+                        sh = img.height;
+                        sw = sh * tgtRatio;
+                        sx = (img.width - sw) / 2;
+                        sy = 0;
+                    } else {
+                        sw = img.width;
+                        sh = sw / tgtRatio;
+                        sx = 0;
+                        sy = (img.height - sh) / 2;
+                    }
+                    targetCtx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
+                }
+                
+                // Draw left part
+                drawCover(frontImg, ctx, 0, 0, pixelPartW, canvasH);
                 
                 // Prepare back image on a temporary canvas
-                const tempCanvas = createCanvas(w * partW, h);
+                const tempCanvas = createCanvas(pixelPartW, canvasH);
                 const tempCtx = tempCanvas.getContext('2d');
                 
-                // Rotate 180 degrees and draw middle 60% of back
-                tempCtx.translate(w * partW, h);
+                // Rotate 180 degrees and draw back
+                tempCtx.translate(pixelPartW, canvasH);
                 tempCtx.rotate(Math.PI);
-                tempCtx.drawImage(backImg, w * (0.5 - partW/2), 0, w * partW, h, 0, 0, w * partW, h);
+                drawCover(backImg, tempCtx, 0, 0, pixelPartW, canvasH);
                 tempCtx.setTransform(1, 0, 0, 1, 0, 0); // reset transform
                 
-                // Apply gradient mask to the left edge of the temp canvas (which maps to the center overlap)
-                const grad = tempCtx.createLinearGradient(0, 0, w * overlap, 0);
+                // Apply gradient mask to the left edge of the temp canvas
+                const grad = tempCtx.createLinearGradient(0, 0, canvasW * overlap, 0);
                 grad.addColorStop(0, 'rgba(0,0,0,0)');
                 grad.addColorStop(1, 'rgba(0,0,0,1)');
                 tempCtx.globalCompositeOperation = 'destination-in';
                 tempCtx.fillStyle = grad;
-                tempCtx.fillRect(0, 0, w * partW, h);
+                tempCtx.fillRect(0, 0, pixelPartW, canvasH);
                 
                 // Draw the blended temp canvas onto the right side of the main canvas
-                ctx.drawImage(tempCanvas, w * (1 - partW), 0);
+                ctx.drawImage(tempCanvas, canvasW - pixelPartW, 0);
                 
                 // Save composite to a data URI
                 const dataUri = canvas.toDataURL('image/png');
