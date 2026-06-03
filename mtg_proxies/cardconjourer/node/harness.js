@@ -675,19 +675,21 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // engine's fetchSetSymbol races our upload and the per-set icon wins.
     // Modern with no override → unlock both, let changeCardIndex seed the code
     // and fire fetchSetSymbol for the per-set icon.
-    const harnessOwnsSetSymbol = (frame === '8th') || !!setSymbolPath;
-    querySelector('#autoFrame').value = (frame === 'modern') ? 'M15Regular-1' : '8th';
+    // For flip layouts, we let the engine handle the set symbol to avoid clashes.
+    const harnessOwnsSetSymbol = (frame === '8th' && scry.layout !== 'flip') || !!setSymbolPath;
+    let autoFrameTarget = '8th';
+    if (scry.layout === 'flip') autoFrameTarget = 'Flip'; // packFlip uses 'Flip'
+    else if (frame === 'modern') autoFrameTarget = 'M15Regular-1';
+    
+    querySelector('#autoFrame').value = autoFrameTarget;
     querySelector('#lockSetSymbolURL').checked  = harnessOwnsSetSymbol;
     querySelector('#lockSetSymbolCode').checked = harnessOwnsSetSymbol;
 
     querySelector('#import-index').value = String(faceIdx);
     global.importCard(processed);
 
-    // 8th-only cosmetic shrinks. pack8th* templates set the type box wider than
-    // the real 8th printing, and the set-symbol bounds default needs a ~2% trim
-    // to match the reference card. M15 packs have their own tuned values and
-    // these adjustments would mis-fit them.
-    if (frame === '8th') {
+    // 8th-only cosmetic shrinks. Bypass if we're rendering a flip layout.
+    if (frame === '8th' && scry.layout !== 'flip') {
         if (global.card.text && global.card.text.type) {
             global.card.text.type.width = 0.74;
         }
@@ -697,26 +699,12 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         }
     }
 
-    // Modern (M15) layout fixes. packM15Regular-1.js ships:
-    //   type: x=0.0854, width=0.8292   → spans up to x=0.9146.
-    //   rules: x=0.086, y=0.6303, width=0.828, height=0.2875 → spans to x=0.914, y=0.9178.
-    //   set-symbol bounds at x=0.9213 right-anchored, width=0.12 → claims x≥0.8013.
-    //   pt: y=0.902 vertically-centered, height=0.0372 → pill top at y=0.8834.
-    // → long type lines slide under the set symbol; long rules text draws over
-    //   the P/T pill; inline mana symbols (e.g. Belbe's "{C}{C}") slip past the
-    //   rules right edge into the frame because the engine's auto-shrink only
-    //   triggers on vertical overflow, not horizontal — and pack8th uses a
-    //   narrower rules.width (0.794) that doesn't hit this.
-    // Trim type/rules so the visible region matches the M15 frame template.
-    if (frame === 'modern' && global.card.text) {
+    // Modern (M15) layout fixes. Bypass for flip layouts.
+    if (frame === 'modern' && scry.layout !== 'flip' && global.card.text) {
         if (global.card.text.type) {
-            // Stop short of the set symbol (x≥0.8013). 0.7159 = 0.8013 - 0.0854.
             global.card.text.type.width = 0.71;
         }
         if (global.card.text.rules) {
-            // Match pack8th's narrower rules width so inline mana symbols stay
-            // off the frame edge, AND end above the P/T pill top (y=0.8834).
-            global.card.text.rules.width  = 0.794;
             global.card.text.rules.height = 0.253;
         }
     }
