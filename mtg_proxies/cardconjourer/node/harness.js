@@ -670,9 +670,15 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     //                          seeds the per-card set code and fetchSetSymbol fires
     //                          with the right URL (otherwise empty code → 'cmd'
     //                          fallback, i.e. the Commander 2011 icon for every card).
+    // Lock the URL whenever we own the upload: 8th (8ed glyph) or any frame
+    // with a setSymbolPath override (LTC / custom file). Without the lock, the
+    // engine's fetchSetSymbol races our upload and the per-set icon wins.
+    // Modern with no override → unlock both, let changeCardIndex seed the code
+    // and fire fetchSetSymbol for the per-set icon.
+    const harnessOwnsSetSymbol = (frame === '8th') || !!setSymbolPath;
     querySelector('#autoFrame').value = (frame === 'modern') ? 'M15Regular-1' : '8th';
-    querySelector('#lockSetSymbolURL').checked  = (frame === '8th' && !setSymbolPath);
-    querySelector('#lockSetSymbolCode').checked = (frame === '8th');
+    querySelector('#lockSetSymbolURL').checked  = harnessOwnsSetSymbol;
+    querySelector('#lockSetSymbolCode').checked = harnessOwnsSetSymbol;
 
     querySelector('#import-index').value = String(faceIdx);
     global.importCard(processed);
