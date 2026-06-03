@@ -382,14 +382,18 @@ Supported verbs:
   ```
   1 Sol Ring (SOC) 128 #mpcfill --identifier 1nUk_jZc6JtMxr-WrFlqHO5MGNkAS--XS --bleed-crop 4
   ```
-- `#cardconjourer --8th | --retro [--upscale]` — render this card via the headless
-  [Card Conjurer](https://cardconjurer.com) Node harness and use the resulting 2003-frame PNG
-  in place of the Scryfall scan. Mutually-exclusive frame selectors: `--8th` (modern 8th
-  edition base frame), `--retro` (legacy pre-2003 look). All flagged cards in the decklist
+- `#cardconjourer --8th | --modern | --retro [--upscale] [--skip-cc] [--scryfall] [--set-symbol VALUE]` — render this card via the headless
+  [Card Conjurer](https://cardconjurer.com) Node harness and use the resulting PNG
+  in place of the Scryfall scan. Frame selectors: `--8th` (modern 8th
+  edition base frame), `--modern` (M15 frame), `--retro` (legacy pre-2003 look). All flagged cards in the decklist
   are batched into a single subprocess invocation, so the ~1-2 s engine boot amortizes
-  across the whole deck. Unsupported layouts (sagas, planeswalkers, transform DFCs,
-  modal DFCs, reversible cards) silently fall back to Scryfall. Requires
+  across the whole deck. Unsupported layouts (sagas, planeswalkers) silently fall back to Scryfall. Requires
   `make cardconjurer` (one-time lazy clone of the renderer source).
+
+  Extra modifiers for this directive:
+  - `--skip-cc`: Exclude this specific card from the bulk Card Conjurer render. The card will land in `fallback.txt` and be rendered using its normal Scryfall scan.
+  - `--scryfall`: Opt-out of MTGPics for this specific card, falling back to Scryfall's `art_crop` (useful if the MTGPics scan has a watermark).
+  - `--set-symbol VALUE`: Override the rendered set symbol just for this card.
 - `#upscale [--upscale-model PATH]` — upscale this card via Real-ESRGAN. With
   `--upscale-model` it's an **always-on override**: even with `--upscale all` set
   globally, this card uses the specified model instead of the global default. Useful
