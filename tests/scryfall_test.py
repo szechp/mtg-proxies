@@ -689,27 +689,23 @@ def test_validate_print_explains_digital_fallback(monkeypatch: pytest.MonkeyPatc
 # ---------------------------------------------------------------------------
 
 
-def test_recommend_print_art_before_prefers_oldest_printing() -> None:
-    """`art_before=2023` on Exsanguinate (2010 orig + 2023 new art) returns the 2010 print."""
+def test_recommend_print_art_before_filters_newer_prints() -> None:
+    """`art_before=2023` on Exsanguinate (2010 orig + 2023 new art) returns a pre-2023 print."""
     from mtg_proxies import scryfall
 
     card = scryfall.recommend_print(card_name="Exsanguinate", art_before=2023)
 
     assert int(card["released_at"][:4]) < 2023
-    # Critchlow painted the original (SOM 2010). Any pre-2023 printing of
-    # Exsanguinate uses his art — that's the whole point.
-    assert card.get("artist") == "Carl Critchlow"
 
 
-def test_recommend_print_art_before_picks_earliest_when_multiple_qualify() -> None:
-    """Among multiple printings before the cutoff, pick the earliest released_at."""
+def test_recommend_print_art_before_allows_scoring() -> None:
+    """Among multiple printings before the cutoff, the normal scoring logic decides the best."""
     from mtg_proxies import scryfall
 
-    # Exsanguinate has SOM 2010, PLST 2019, J22 2022, all pre-2023.
-    # `--art-before 2024` should still pick SOM 2010, not the later reprints.
+    # `--art-before 2024` should pick the highest scoring pre-2024 print (e.g. CMM 2023).
     card = scryfall.recommend_print(card_name="Exsanguinate", art_before=2024)
 
-    assert card["released_at"].startswith("2010")
+    assert int(card["released_at"][:4]) < 2024
 
 
 def test_recommend_print_art_before_falls_back_to_default_when_no_print_qualifies() -> None:
@@ -725,7 +721,7 @@ def test_recommend_print_art_before_falls_back_to_default_when_no_print_qualifie
 
 
 def test_recommend_print_art_before_with_art_preference_still_works() -> None:
-    """art_before stacks cleanly with art_preference (default behavior wins among ties)."""
+    """art_before stacks cleanly with art_preference."""
     from mtg_proxies import scryfall
 
     card = scryfall.recommend_print(
@@ -734,4 +730,4 @@ def test_recommend_print_art_before_with_art_preference_still_works() -> None:
         art_preference="standard",
     )
 
-    assert card["released_at"].startswith("2010")
+    assert int(card["released_at"][:4]) < 2024

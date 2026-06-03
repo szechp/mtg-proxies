@@ -445,17 +445,16 @@ def recommend_print(
             alternatives = in_preferred
             preferred_set_restricted = True
 
-    # art_before: restrict candidates to prints released before ``<YEAR>-01-01`` and narrow to
-    # the earliest released_at — that's the original printing, which on most cards uses the
-    # painted/non-digital art the user wants. Default scoring then tiebreaks among same-date
-    # earliest prints (lang=en, highres, etc.). Silently falls through when nothing qualifies
-    # (card first appeared after the cutoff) so the user doesn't have to special-case.
+    # art_before: restrict candidates to prints released before ``<YEAR>-01-01``.
+    # This filters out modern digital reprints but lets the normal scoring logic pick
+    # the highest-quality (high-res, black border, etc.) printing from the allowed era.
+    # Silently falls through when nothing qualifies (card first appeared after the cutoff)
+    # so the user doesn't have to special-case.
     if art_before is not None:
         cutoff = f"{art_before}-01-01"
         older = [a for a in alternatives if a.get("released_at", "9999") < cutoff]
         if older:
-            min_date = min(a["released_at"] for a in older)
-            alternatives = [a for a in older if a["released_at"] == min_date]
+            alternatives = older
 
     def score(card: dict) -> int:
         points = 0

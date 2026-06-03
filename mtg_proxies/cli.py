@@ -1411,12 +1411,10 @@ def main() -> None:
         default=None,
         metavar="YEAR",
         help=(
-            "for each card, prefer the earliest printing released before YEAR-01-01."
-            " Dodges the recent-reprint wave of new digital art commissions in favor of the"
-            " original painted art (e.g. --art-before 2023 picks Carl Critchlow's 2010"
-            " Exsanguinate over the 2023 Marie Magny / Scott Fischer redesigns)."
-            " Falls back silently to the default recommendation when a card has no print"
-            " before the cutoff."
+            "for each card, restrict candidates to printings released before YEAR-01-01."
+            " Lets the normal scoring logic (e.g. high-res, black border) pick the best"
+            " quality print from the allowed era. Falls back silently to the default"
+            " recommendation when a card has no print before the cutoff."
         ),
     )
 
