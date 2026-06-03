@@ -776,8 +776,13 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
                     scry.card_faces[faceIdx].image_uris.art_crop);
     if (artUrl) global.uploadArt(artUrl, 'autoFit');
     // Artist can differ between faces — face.artist is what we want.
-    const artist = face.artist || scry.artist || '';
-    if (artist && typeof global.artistEdited === 'function') global.artistEdited(artist);
+    let artist = face.artist || scry.artist || '';
+    // Strip diacritics/accents from artist names since CC fonts (especially
+    // Beleren Small Caps) often lack extended Latin/Vietnamese glyphs.
+    if (artist) {
+        artist = artist.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D');
+        if (typeof global.artistEdited === 'function') global.artistEdited(artist);
+    }
 
     if (scry.released_at) querySelector('#info-year').value = scry.released_at.slice(0, 4);
 
