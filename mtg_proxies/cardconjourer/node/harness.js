@@ -597,6 +597,7 @@ function setLeanBottomInfo() {
     };
 }
 
+
 async function renderBottomInfo() {
     // Mirror the first half of bottomInfoEdited (creator-23.js:2867) so the
     // engine's writeText path resolves the tokens against fresh values.
@@ -702,9 +703,12 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     //      bundled asset (LTC) or a custom user file. Wins unconditionally.
     //   2. 8th frame, no override     — force the 8ed glyph by rarity, preserving
     //      the pre-existing 8th look.
-    //   3. modern frame, no override  — skip the upload entirely. lockSetSymbolURL
-    //      was set false above, so the engine fetches the card's actual per-set
-    //      icon via its normal autoSet logic.
+    //   3. modern frame, no override  — do nothing here. importCard above already
+    //      called changeCardIndex (creator-23.js:3342 → 4451-4457), which seeded
+    //      #set-symbol-code from scry.set + rarity and fired fetchSetSymbol()
+    //      because we keep #lockSetSymbolURL false for the modern path. Adding
+    //      a second fetchSetSymbol here would race with the engine's call and
+    //      mis-position the icon.
     if (typeof global.uploadSetSymbol === 'function') {
         if (setSymbolPath) {
             global.uploadSetSymbol(setSymbolPath, 'resetSetSymbol');
@@ -773,7 +777,20 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     }
 
     await global.drawText();
-    setLeanBottomInfo();
+    if (frame === 'modern') {
+        // Use the engine's canonical M15 bottomInfo (creator-23.js:243). It builds
+        // a lean variant when #enableNewCollectorStyle is unchecked (the default
+        // in SELECTOR_OVERRIDES above) — gothammedium font, set/language/artist,
+        // copyright line, all with the right M15 frame-name conditionalcolor.
+        // Strip the two boilerplate keys the engine inlines into every M15 card:
+        // the "NOT FOR SALE" stamp (bottomLeft) and the "CardConjurer.com" tag
+        // (bottomRight). Other keys (artist/set/copyright) survive untouched.
+        await global.setBottomInfoStyle();
+        delete global.card.bottomInfo.bottomLeft;
+        delete global.card.bottomInfo.bottomRight;
+    } else {
+        setLeanBottomInfo();
+    }
     await renderBottomInfo();
     global.drawFrames();
 
