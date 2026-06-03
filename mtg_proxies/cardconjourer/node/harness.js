@@ -658,13 +658,21 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // Per-render selector reset. These default to 8th at load time
     // (SELECTOR_OVERRIDES + the force-reset after engine init), but per-card frame
     // switching needs to flip them before importCard / autoFrame fires:
-    //   #autoFrame.value  — drives the DFC back-face fallback at autoFrame() below.
-    //   #lockSetSymbolURL — when true, the engine skips its per-set icon fetch
-    //                       (so 8th can hold the 8ed glyph). False otherwise so
-    //                       (a) modern uses the engine's per-card icon, and (b)
-    //                       our setSymbolPath upload isn't immediately overwritten.
+    //   #autoFrame.value     — drives the DFC back-face fallback at autoFrame() below.
+    //   #lockSetSymbolURL    — when true, the engine skips its per-set icon fetch
+    //                          (so 8th can hold the 8ed glyph). False otherwise so
+    //                          (a) modern uses the engine's per-card icon, and (b)
+    //                          our setSymbolPath upload isn't immediately overwritten.
+    //   #lockSetSymbolCode   — when true, changeCardIndex skips ``#set-symbol-code =
+    //                          cardToImport.set`` (creator-23.js:4452). The harness
+    //                          init force-sets this to true so the 8ed override
+    //                          isn't disturbed; modern needs it FALSE so the engine
+    //                          seeds the per-card set code and fetchSetSymbol fires
+    //                          with the right URL (otherwise empty code → 'cmd'
+    //                          fallback, i.e. the Commander 2011 icon for every card).
     querySelector('#autoFrame').value = (frame === 'modern') ? 'M15Regular-1' : '8th';
-    querySelector('#lockSetSymbolURL').checked = (frame === '8th' && !setSymbolPath);
+    querySelector('#lockSetSymbolURL').checked  = (frame === '8th' && !setSymbolPath);
+    querySelector('#lockSetSymbolCode').checked = (frame === '8th');
 
     querySelector('#import-index').value = String(faceIdx);
     global.importCard(processed);
