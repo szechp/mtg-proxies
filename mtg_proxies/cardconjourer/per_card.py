@@ -11,8 +11,6 @@ One subprocess per ``print`` invocation, regardless of how many cards carry
 
 from __future__ import annotations
 
-import os
-import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,9 +23,11 @@ from . import runner as cc_runner
 class CardConjourerRequest:
     """One per-card render request.
 
-    ``slot_id`` is an opaque identifier the caller uses to match each response
-    back to its decklist slot. The harness echoes the slot string we put in
-    the job, so we use the same value here.
+    ``slot_id`` is the caller's match key for the returned PNG. It must be
+    parseable as an int (typically the zero-padded decklist slot, e.g.
+    ``"0007"``) because ``render_per_card_batch`` casts it via :func:`int`
+    when building the job for the harness; the harness echoes the original
+    formatted string back so the dict-key lookup still works.
     """
 
     slot_id: str
@@ -50,47 +50,22 @@ def _default_cache_root() -> Path:
 
 
 def _default_run_harness(cache_root: Path, harness_path: Path) -> RunHarness:
-    """Build the production node-subprocess wrapper, baked with the env it needs.
+    """Bind ``cache_root`` + ``harness_path`` into the unified spawner.
 
-    Tests inject their own ``run_harness``; production code calls this so the
-    closure carries the CC_ROOT env override into the spawn.
-
-    Timeout policy: budget-based — ``max(60, len(jobs) * 30)`` seconds. A 10-card
-    batch gets 5 minutes; a 200-card batch gets 100 minutes. Generous enough that
-    slow networks just work; only a genuinely deadlocked harness gets killed.
+    Tests inject their own ``run_harness``; production code calls this to get
+    a closure suitable for :func:`render_per_card_batch`. The actual subprocess
+    work lives in :func:`mtg_proxies.cardconjourer.runner.spawn_node_harness` —
+    this is just the binding layer that asserts ``cache_root`` exists before
+    we try to spawn against it.
     """
-    import json as _json
-
     def _run(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not cache_root.is_dir():
             raise RuntimeError(
                 f"Card Conjurer source not found at {cache_root}. Run `make cardconjurer` first."
             )
-        proc = subprocess.Popen(
-            ["node", str(harness_path)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env={**os.environ, "CC_ROOT": str(cache_root)},
+        return cc_runner.spawn_node_harness(
+            jobs, harness_path=harness_path, cache_root=cache_root,
         )
-        payload = "".join(_json.dumps(j) + "\n" for j in jobs)
-        timeout = max(60, len(jobs) * 30)
-        try:
-            out, err = proc.communicate(input=payload, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            out, err = proc.communicate()
-            raise RuntimeError(
-                f"Card Conjurer harness timed out after {timeout}s (jobs={len(jobs)}). "
-                f"stderr tail:\n{(err or '')[-1000:]}"
-            ) from None
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"Card Conjurer harness exited {proc.returncode}.\n"
-                f"stderr tail:\n{(err or '')[-1000:]}"
-            )
-        return [r for r in (cc_runner.parse_response(line) for line in out.splitlines()) if r]
 
     return _run
 

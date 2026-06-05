@@ -219,9 +219,12 @@ def test_render_deck_writes_pngs_fallback_and_report(tmp_path: Path) -> None:
     fallback = (outdir / "fallback.txt").read_text()
     assert fallback == "1 Urza's Saga\n"
 
-    # report.csv has one row per slot
+    # report.csv has exactly one row per slot — header + 3 data rows = 4 lines.
+    # Pin the count too so a future bug that emits a spurious extra row would
+    # surface here instead of silently passing the substring checks.
     report = (outdir / "report.csv").read_text()
     assert report.startswith("slot,name,status,reason,png,ms\n")
+    assert report.count("\n") == 4
     assert "0001,Murder,ok" in report
     assert "0002,Urza's Saga,skip,layout 'saga'" in report
     assert "0003,Anje Falkenrath,ok" in report
@@ -299,6 +302,31 @@ def test_spawn_node_harness_round_trips_jobs(tmp_path: Path) -> None:
     assert responses[0]["ms"] == 7
 
 
+def test_spawn_node_harness_surfaces_stderr_on_failure(tmp_path: Path) -> None:
+    """Non-zero exit from the harness must raise with the stderr tail in the message."""
+    import shutil as _shutil
+
+    import pytest as _pytest
+
+    from mtg_proxies.cardconjourer.runner import spawn_node_harness
+
+    if not _shutil.which("node"):
+        _pytest.skip("node not on PATH")
+
+    # Stub: print a diagnostic line to stderr then exit non-zero. Mimics what a
+    # real harness would do on a missing-asset / missing-dep boot failure.
+    stub = tmp_path / "stub.js"
+    stub.write_text(
+        "process.stderr.write('FAKE: engine failed to load font matrix.ttf\\n');\n"
+        "process.exit(2);\n"
+    )
+
+    with _pytest.raises(RuntimeError) as excinfo:
+        spawn_node_harness([{"slot": "0001", "name": "x", "frame": "8th"}], harness_path=stub)
+    assert "exited 2" in str(excinfo.value)
+    assert "matrix.ttf" in str(excinfo.value)
+
+
 # ---------------------------------------------------------------------------
 # Slug + skip-existing (avoid wasted re-renders)
 # ---------------------------------------------------------------------------
@@ -312,6 +340,12 @@ def test_slug_matches_harness_js() -> None:
     assert slug("Murderous Rider // Swift End") == "murderous_rider_swift_end"
     assert slug("Birds of Paradise") == "birds_of_paradise"
     assert slug("Beast Within") == "beast_within"
+    # Accented characters: a real Scryfall card name. Python's str.lower() and
+    # JS's toLowerCase() both lowercase the é to é (a no-op), and both regexes
+    # treat é as non-[a-z0-9] so it collapses to '_'. If either runtime ever
+    # drifts here, the slug will desync and the runner won't find the harness's
+    # output filename.
+    assert slug("Pélakka Wurm") == "p_lakka_wurm"
 
 
 def test_render_deck_skips_card_with_existing_png(tmp_path: Path) -> None:
@@ -356,7 +390,9 @@ def test_render_deck_redoes_when_png_deleted(tmp_path: Path) -> None:
 
     outdir = tmp_path / "out"
     outdir.mkdir()
-    # No pre-existing PNG for any slot → harness sees both.
+    # Seed both PNGs as already done so the first pass is a no-op...
+    (outdir / "0001-murder.png").write_bytes(b"OLD")
+    (outdir / "0002-beast_within.png").write_bytes(b"OLD")
 
     enqueued: list[dict] = []
 
@@ -364,9 +400,15 @@ def test_render_deck_redoes_when_png_deleted(tmp_path: Path) -> None:
         enqueued.extend(jobs)
         return []
 
+    # ...first call sends nothing (both files exist).
     render_deck([(1, "Murder"), (1, "Beast Within")], outdir, frame="8th", run_harness=fake_run)
+    assert enqueued == []
 
-    assert [j["name"] for j in enqueued] == ["Murder", "Beast Within"]
+    # Now delete one PNG and re-run — only the deleted slot should be sent.
+    (outdir / "0001-murder.png").unlink()
+    render_deck([(1, "Murder"), (1, "Beast Within")], outdir, frame="8th", run_harness=fake_run)
+    assert [j["name"] for j in enqueued] == ["Murder"]
+    assert [j["slot"] for j in enqueued] == ["0001"]
 
 
 def test_render_deck_prepare_each_called_per_slot_with_merged_fields(tmp_path: Path) -> None:

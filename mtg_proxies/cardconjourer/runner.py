@@ -21,12 +21,35 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
+import os
 import re
 import shutil
 import subprocess
 from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
+
+_log = logging.getLogger(__name__)
+
+
+class FallbackRow(TypedDict):
+    """Row shape consumed by :func:`format_fallback_txt`."""
+
+    count: int
+    name: str
+    reason: str
+
+
+class ReportRow(TypedDict):
+    """Row shape consumed by :func:`format_report_csv`."""
+
+    slot: str
+    name: str
+    status: str
+    reason: str
+    png: str
+    ms: int
 
 
 def slug(name: str) -> str:
@@ -113,7 +136,7 @@ def parse_response(line: str) -> dict[str, Any] | None:
         return None
 
 
-def format_fallback_txt(rows: Iterable[dict[str, Any]]) -> str:
+def format_fallback_txt(rows: Iterable[FallbackRow]) -> str:
     """Render a list of skipped-card dicts as a decklist for ``print`` to consume.
 
     Each row is ``{"count": int, "name": str, "reason": str}``. ``reason`` is
@@ -131,7 +154,9 @@ def format_fallback_txt(rows: Iterable[dict[str, Any]]) -> str:
 
 def spawn_node_harness(
     jobs: list[dict[str, Any]],
+    *,
     harness_path: str | Path,
+    cache_root: str | Path | None = None,
     node_bin: str = "node",
     timeout: float | None = None,
 ) -> list[dict[str, Any]]:
@@ -143,6 +168,10 @@ def spawn_node_harness(
     debug prints occasionally land on stdout and we don't want them killing
     the run).
 
+    ``cache_root`` (optional) is injected as the ``CC_ROOT`` env var so the
+    harness can locate the cardconjurer engine assets. Omit it when running
+    against a stub harness that doesn't read CC_ROOT (e.g. unit tests).
+
     Timeout policy: if not supplied, defaults to ``max(60, len(jobs) * 30)``
     seconds — generous enough that slow networks just work; only a genuinely
     deadlocked harness gets killed. On timeout or non-zero exit, surfaces the
@@ -150,12 +179,16 @@ def spawn_node_harness(
     """
     if timeout is None:
         timeout = max(60.0, len(jobs) * 30.0)
+    env = None
+    if cache_root is not None:
+        env = {**os.environ, "CC_ROOT": str(cache_root)}
     proc = subprocess.Popen(
         [node_bin, str(harness_path)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=env,
     )
 
     # ``communicate`` handles stdin write + close + stdout/stderr drain in one
@@ -230,7 +263,11 @@ def render_deck(
         slot_int = i + 1
         slot_str = f"{slot_int:04d}"
         expected = outdir / f"{slot_str}-{slug(name)}.png"
-        if expected.is_file():
+        # ``is_file() and st_size > 0`` — guard against 0-byte / truncated PNGs
+        # left behind by a previous run that crashed mid-write. Without this a
+        # corrupt cache file silently passes as "ok" and the user has to delete
+        # it by hand to force a re-render.
+        if expected.is_file() and expected.stat().st_size > 0:
             pre_existing.append({
                 "slot": slot_str, "status": "ok", "out": str(expected), "ms": 0,
             })
@@ -249,7 +286,20 @@ def render_deck(
     responses.extend(pre_existing)
 
     # Index responses by slot for O(1) lookup, since slots may come back out of order.
-    responses_by_slot = {r["slot"]: r for r in responses}
+    # Warn on collisions: a duplicate slot means either the harness double-emitted
+    # (shouldn't happen) or a refactor broke the pre-existing-vs-job invariant.
+    # The later response wins, the earlier is dropped — surface this so the bug
+    # isn't silent.
+    responses_by_slot: dict[str, dict[str, Any]] = {}
+    for r in responses:
+        slot = r["slot"]
+        if slot in responses_by_slot:
+            _log.warning(
+                "duplicate response for slot %s — keeping later, dropping earlier (status=%s reason=%s)",
+                slot, responses_by_slot[slot].get("status"),
+                responses_by_slot[slot].get("reason", ""),
+            )
+        responses_by_slot[slot] = r
 
     fallback_rows: list[dict[str, Any]] = []
     report_rows: list[dict[str, Any]] = []
@@ -285,7 +335,7 @@ def render_deck(
     return {"ok": ok, "skipped": skipped, "total": len(cards)}
 
 
-def format_report_csv(rows: Iterable[dict[str, Any]]) -> str:
+def format_report_csv(rows: Iterable[ReportRow]) -> str:
     """Render a list of per-card result dicts as CSV.
 
     Columns: slot, name, status (ok/skip), reason, png (filename or empty),

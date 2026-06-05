@@ -69,8 +69,9 @@ def test_main_cardconjourer_invokes_render_deck(tmp_path: Path) -> None:
     # First positional arg: cards list of (count, name) tuples
     cards = args[0] if args else kwargs.get("cards")
     assert cards == [(1, "Murder"), (2, "Spin Out")]
-    # Frame is 8th
-    assert kwargs.get("frame") == "8th" or (len(args) >= 3 and args[2] == "8th")
+    # Frame is 8th — `render_deck`'s signature pins `frame` as a kwarg-only
+    # argument so it always lands here, never positionally.
+    assert kwargs["frame"] == "8th"
     # Upscale defaults off
     assert kwargs.get("upscale", False) is False
 
@@ -323,13 +324,14 @@ def test_main_cardconjourer_modern_and_8th_mutex(capsys: pytest.CaptureFixture, 
 def _make_cc_root_with_ltc(tmp_path: Path) -> Path:
     """Build a CC cache root with the LTC set-symbol assets across all rarities.
 
-    Seeded for c/u/r/m so the test doesn't have to know which rarity Scryfall
-    returns for the Murder fixture card.
+    Seeded for c/u/r/m/s so the test doesn't have to know which rarity Scryfall
+    returns for the Murder fixture card. ``s`` covers the "special" / timeshifted
+    rarity that ``resolve_set_symbol`` accepts (see ``_VALID_RARITY_CHARS``).
     """
     cc_root = tmp_path / "cc-cache"
     official = cc_root / "img" / "setSymbols" / "official"
     official.mkdir(parents=True)
-    for char in ("c", "u", "r", "m"):
+    for char in ("c", "u", "r", "m", "s"):
         (official / f"ltc-{char}.svg").write_text("<svg/>")
     return cc_root
 

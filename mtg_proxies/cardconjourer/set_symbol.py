@@ -22,9 +22,26 @@ to thread through Python than into the Node harness.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 _VALID_RARITY_CHARS = frozenset({"c", "u", "r", "m", "s"})
+
+# Extensions that mark a value as a filesystem path. Restricted to known image
+# formats so dotted set codes (e.g. hypothetical ``set.code``) aren't
+# misclassified as paths and routed to FileNotFoundError.
+_PATH_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif"})
+
+
+def _looks_like_path(value: str) -> bool:
+    """Heuristic: contains a separator or a known image extension."""
+    if "/" in value:
+        return True
+    # Only treat '\\' as a separator on Windows — on POSIX it's just a character
+    # (a set code with a stray backslash should resolve as a code, not a path).
+    if os.name == "nt" and "\\" in value:
+        return True
+    return Path(value).suffix.lower() in _PATH_EXTENSIONS
 
 
 def resolve_set_symbol(value: str | None, rarity: str, cc_root: Path) -> str | None:
@@ -45,13 +62,17 @@ def resolve_set_symbol(value: str | None, rarity: str, cc_root: Path) -> str | N
 
     Raises:
         FileNotFoundError: When a path doesn't point at an existing file, or
-            when a set code resolves to a missing CC asset. Both messages echo
-            the resolved location so the user can fix it.
+            when a set code resolves to a missing CC asset, or when path
+            resolution itself fails (symlink loop, permission denied). All
+            messages echo the resolved location so the user can fix it.
     """
     if not value:
         return None
-    if "/" in value or "\\" in value or Path(value).suffix:
-        p = Path(value).expanduser().resolve()
+    if _looks_like_path(value):
+        try:
+            p = Path(value).expanduser().resolve()
+        except OSError as exc:
+            raise FileNotFoundError(f"--set-symbol path could not be resolved: {value!r}: {exc}") from exc
         if not p.is_file():
             raise FileNotFoundError(f"--set-symbol path not found: {p}")
         return str(p)

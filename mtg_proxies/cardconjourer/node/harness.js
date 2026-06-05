@@ -299,7 +299,7 @@ async function getRotatedWatermark(relSrc) {
         ctx.translate(img.width / 2, img.height / 2);
         ctx.rotate(Math.PI);
         ctx.drawImage(img, -img.width / 2, -img.height / 2);
-        fs.writeFileSync(dstAbs, cv.toBuffer('image/png'));
+        writeFileAtomic(dstAbs, cv.toBuffer('image/png'));
     }
     _watermarkRotCache.set(relSrc, dstAbs);
     return dstAbs;
@@ -485,10 +485,18 @@ function loadEngineFile(rel) {
     // and gets the canonical Nyx starfield organically. This patch is therefore
     // frame-scoped by construction — no extra gate needed.
     if (rel.endsWith('autoFrame.js')) {
+        const before = code;
         code = code.replace(
             /\}\s*else if\s*\(\s*frameType\s*===\s*['"]8th['"]\s*&&\s*isNyxEnchantment\s*\)\s*\{[\s\S]*?style\s*=\s*['"]Nyx['"]\s*;\s*\}/,
             '} else if (false) { /* harness: Nyx disabled on 8th frame */ }',
         );
+        if (code === before) {
+            throw new Error(
+                "Nyx-disable patch did not match in autoFrame.js — has CC upstream " +
+                "changed the 8th/isNyxEnchantment branch? Update the regex or the " +
+                "starfield overlay will return on enchantments under --8th."
+            );
+        }
     }
     // Mana-symbol overflow wrap. writeText's word-level wrap check (creator-23.js
     // ~2200, ``measureText(wordToWrite).width + currentX >= textWidth``) only fires
@@ -501,6 +509,7 @@ function loadEngineFile(rel) {
     // the symbol lands on the next line at startingCurrentX. Applies to every
     // frame since the patch is in shared writeText logic.
     if (rel.endsWith('creator-23.js')) {
+        const before = code;
         code = code.replace(
             /(var manaSymbolHeight = manaSymbol\.height \* textSize \* 0\.78;\s*)(var manaSymbolX = currentX)/,
             "$1\n\t\t\t\t\t// HARNESS-INJECTED: wrap line if mana symbol would overflow.\n" +
@@ -518,6 +527,14 @@ function loadEngineFile(rel) {
             "\t\t\t\t\t\tnewLineSpacing = (textObject.lineSpacing || 0) * textSize;\n" +
             "\t\t\t\t\t}\n\t\t\t\t\t$2"
         );
+        if (code === before) {
+            throw new Error(
+                "Mana-symbol wrap patch did not match in creator-23.js — has CC " +
+                "upstream changed writeText's symbol-placement block? Update the " +
+                "regex or inline mana symbols on long oracle text will overflow " +
+                "the rules box (e.g. Belbe's {C}{C}, Vorinclex)."
+            );
+        }
     }
     // (Hanging-punctuation patch was tried and reverted — see git history.
     // CC's wrap loop doesn't cleanly support retrying for a punctuation-only
@@ -1255,16 +1272,19 @@ async function runOneJob(job) {
         // Threaded into scry.image_uris.art_crop and face uris so the engine
         // picks it up unconditionally.
         if (job.art_path) {
-            const path = job.art_path;
+            // Rename local copy `art` to avoid shadowing the top-level `path`
+            // module import — a future maintainer adding `path.join(...)` inside
+            // this block would otherwise get a confusing TypeError.
+            const art = job.art_path;
             scry.image_uris = scry.image_uris || {};
-            scry.image_uris.art_crop = path;
+            scry.image_uris.art_crop = art;
             if (scry.card_faces && scry.card_faces[0]) {
                 scry.card_faces[0].image_uris = scry.card_faces[0].image_uris || {};
-                scry.card_faces[0].image_uris.art_crop = path;
+                scry.card_faces[0].image_uris.art_crop = art;
             }
             if (scry.card_faces && scry.card_faces[1]) {
                 scry.card_faces[1].image_uris = scry.card_faces[1].image_uris || {};
-                scry.card_faces[1].image_uris.art_crop = path;
+                scry.card_faces[1].image_uris.art_crop = art;
             }
         }
 
@@ -1334,15 +1354,32 @@ async function runNdjson() {
 // Pending image onloads can fire after main() returns and chain into
 // engine code that mutates DOM state that no longer makes sense (e.g.
 // addFrame's tail-call to bottomInfoEdited touches #info-* values that
-// we don't repopulate per-card). Swallow late async noise — the PNGs are
-// already written to disk by then.
-process.on('uncaughtException', () => {});
-process.on('unhandledRejection', () => {});
+// we don't repopulate per-card). Tolerate late async noise — the PNGs
+// are already written to disk by then — but log to stderr so a real
+// engine bug (font load fail mid-render, etc.) doesn't go unnoticed.
+process.on('uncaughtException', (err) => {
+    console.error('[harness] uncaughtException (tolerated):', err && err.stack || err);
+});
+process.on('unhandledRejection', (reason) => {
+    console.error('[harness] unhandledRejection (tolerated):', reason && reason.stack || reason);
+});
 
 // Pick mode by stdin: a TTY means "interactive / decklist file" (legacy spike
 // usage); a pipe means "ND-JSON from the Python runner."
+//
+// Exit hygiene: process.exit() is synchronous and does NOT drain stdout — if
+// the final writeResponse for the last card is still in the buffer, the
+// Python runner never sees it. Wait for drain (or confirm already-drained)
+// before exiting.
+function exitWhenFlushed(code) {
+    if (process.stdout.writableLength === 0) {
+        process.exit(code);
+    } else {
+        process.stdout.once('drain', () => process.exit(code));
+    }
+}
 const entry = process.stdin.isTTY ? main() : runNdjson();
-entry.then(() => process.exit(0), err => {
+entry.then(() => exitWhenFlushed(0), err => {
     console.error('[fatal]', err.stack || err);
-    process.exit(1);
+    exitWhenFlushed(1);
 });
