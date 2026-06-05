@@ -97,6 +97,10 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     # ``--set-symbol VALUE`` overrides the rendered set symbol — accepts a file path
     # (``./logo.png``) OR a CC set code shorthand (``LTC``); the form is auto-detected and
     # resolved against the cached CC engine. Per-card value overrides any deck-wide flag.
+    # ``--custom-art PATH`` overrides the card's art with a local image file
+    # (PNG / JPG / JPEG / WEBP). Resolved against CWD; ``~`` is expanded. The path
+    # is threaded into the harness's ``job.art_path``, which short-circuits the
+    # built-in Scryfall ``art_crop`` fetch.
     "cardconjourer": {
         "--8th":        NO_VALUE,
         "--retro":      NO_VALUE,
@@ -105,6 +109,7 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         "--scryfall":   NO_VALUE,
         "--skip-cc":    NO_VALUE,
         "--set-symbol": _path_str,
+        "--custom-art": _path_str,
     },
 }
 

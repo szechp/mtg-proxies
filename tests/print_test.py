@@ -778,6 +778,60 @@ def test_apply_per_card_modelines_cardconjourer_set_symbol_path(
     assert captured["set_symbol_path"] == str(sym.resolve())
 
 
+def test_apply_per_card_modelines_cardconjourer_custom_art(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`#cardconjourer --custom-art PATH` resolves to abs path and threads into the request."""
+    from mtg_proxies import cli
+
+    art = tmp_path / "my_art.jpg"
+    art.write_bytes(b"jpg")
+    rendered = tmp_path / "0001-sol_ring.png"
+    rendered.write_bytes(b"PNG")
+    captured: dict[str, object] = {}
+
+    def fake_batch(requests: list[object], **_: object) -> dict[str, Path]:
+        captured["art_path"] = requests[0].art_path
+        return {requests[0].slot_id: rendered}
+
+    monkeypatch.setattr("mtg_proxies.cardconjourer.per_card.render_per_card_batch", fake_batch)
+
+    decklist = _fake_decklist(
+        _fake_card("Sol Ring", modeline=f"#cardconjourer --modern --custom-art {art}")
+    )
+    image_paths = ["sol.png"]
+
+    cli._apply_per_card_modelines(decklist, image_paths)
+
+    assert captured["art_path"] == str(art.resolve())
+
+
+def test_apply_per_card_modelines_cardconjourer_custom_art_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`--custom-art` with a missing file logs a warning and leaves art_path=None."""
+    from mtg_proxies import cli
+
+    rendered = tmp_path / "0001-sol_ring.png"
+    rendered.write_bytes(b"PNG")
+    captured: dict[str, object] = {}
+
+    def fake_batch(requests: list[object], **_: object) -> dict[str, Path]:
+        captured["art_path"] = requests[0].art_path
+        return {requests[0].slot_id: rendered}
+
+    monkeypatch.setattr("mtg_proxies.cardconjourer.per_card.render_per_card_batch", fake_batch)
+
+    decklist = _fake_decklist(
+        _fake_card("Sol Ring", modeline=f"#cardconjourer --modern --custom-art {tmp_path}/nope.png")
+    )
+    image_paths = ["sol.png"]
+
+    cli._apply_per_card_modelines(decklist, image_paths)
+
+    assert captured["art_path"] is None
+
+
 def test_apply_per_card_modelines_cardconjourer_set_symbol_code(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

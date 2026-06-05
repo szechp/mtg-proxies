@@ -526,6 +526,24 @@ def _apply_per_card_modelines(
                             card["name"],
                             exc,
                         )
+                art_value = directive.flags.get("--custom-art")
+                resolved_art: str | None = None
+                if art_value:
+                    art_path = Path(art_value).expanduser().resolve()
+                    if not art_path.is_file():
+                        _mpcfill_log.warning(
+                            "#cardconjourer --custom-art on %r: file not found at %s; falling back to Scryfall art.",
+                            card["name"],
+                            art_path,
+                        )
+                    elif art_path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+                        _mpcfill_log.warning(
+                            "#cardconjourer --custom-art on %r: unsupported extension %s; falling back to Scryfall art.",
+                            card["name"],
+                            art_path.suffix,
+                        )
+                    else:
+                        resolved_art = str(art_path)
                 slot_id = f"{card_idx + 1:04d}"
                 cc_requests.append(
                     CardConjourerRequest(
@@ -534,6 +552,7 @@ def _apply_per_card_modelines(
                         frame=frame,
                         upscale=upscale,
                         set_symbol_path=resolved_sym,
+                        art_path=resolved_art,
                     )
                 )
                 cc_slots_by_id[slot_id] = list(front_slots)

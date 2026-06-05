@@ -577,6 +577,17 @@ def test_modeline_parse_cardconjourer_modern_with_set_symbol() -> None:
     assert warnings == []
 
 
+def test_modeline_parse_cardconjourer_custom_art() -> None:
+    """`--custom-art PATH` captures the raw path string (validation happens later)."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjourer --custom-art ./my_art.jpg")
+
+    assert len(directives) == 1
+    assert directives[0].flags == {"--custom-art": "./my_art.jpg"}
+    assert warnings == []
+
+
 def test_decklist_card_no_modeline_has_empty_field(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_card_lookup(monkeypatch)
     from mtg_proxies.decklists import Card, parse_decklist_stream

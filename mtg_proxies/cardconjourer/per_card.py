@@ -35,6 +35,7 @@ class CardConjourerRequest:
     frame: str  # "8th" | "retro" | "modern"
     upscale: bool = False
     set_symbol_path: str | None = None
+    art_path: str | None = None
 
 
 RunHarness = Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
@@ -106,6 +107,7 @@ def render_per_card_batch(
             frame=req.frame,
             upscale=req.upscale,
             set_symbol_path=req.set_symbol_path,
+            art_path=req.art_path,
         )
         for req in requests
     ]
