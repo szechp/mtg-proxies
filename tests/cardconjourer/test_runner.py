@@ -113,15 +113,8 @@ def test_build_job_with_local_art_path() -> None:
     assert job["art_path"] == "/tmp/upscaled.png"
 
 
-def test_build_job_with_frame_retro() -> None:
-    """The frame flag selector is passed through verbatim (so the harness can dispatch)."""
-    from mtg_proxies.cardconjourer.runner import build_job
-
-    assert build_job(slot=1, name="Murder", frame="retro")["frame"] == "retro"
-
-
 def test_build_job_with_frame_modern() -> None:
-    """``frame="modern"`` rides through the same channel as 8th / retro."""
+    """``frame="modern"`` rides through the same channel as 8th."""
     from mtg_proxies.cardconjourer.runner import build_job
 
     assert build_job(slot=1, name="Murder", frame="modern")["frame"] == "modern"

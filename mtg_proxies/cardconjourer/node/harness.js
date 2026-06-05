@@ -17,6 +17,7 @@ const fs        = require('node:fs');
 const os        = require('node:os');
 const path      = require('node:path');
 const vm        = require('node:vm');
+const crypto    = require('node:crypto');
 const canvasPkg = require('canvas');
 const { createCanvas, loadImage, registerFont } = canvasPkg;
 
@@ -164,13 +165,10 @@ class HarnessImage {
         }
         if (typeof resolved === 'string' &&
             (resolved.startsWith('http://') || resolved.startsWith('https://'))) {
-            if (process.env.TRACE) console.log('[img-http] fetch', resolved);
-            promise = fetch(resolved, { headers: { 'User-Agent': 'mtg-proxies/spike-min' } })
-                .then(async r => { if (!r.ok) throw new Error('HTTP ' + r.status);
-                                   return Buffer.from(await r.arrayBuffer()); })
-                .then(buf => { if (process.env.TRACE) console.log('[img-http] decoded', resolved.slice(-40), buf.length, 'bytes'); return loadImage(buf); })
-                .then(img => { if (process.env.TRACE) console.log('[img-http] image', img.width, 'x', img.height); return img; })
-                .then(fire, (err) => { console.warn('[img-http] FAIL', resolved, err.message); fail(err); });
+            promise = fetchImageCached(resolved).then(fire, (err) => {
+                console.warn('[img-http] FAIL', resolved, err.message);
+                fail(err);
+            });
         } else {
             const patched = (typeof resolved === 'string') ? patchSvgIfNeeded(resolved) : null;
             promise = loadImage(patched || resolved).then(fire, fail);
@@ -215,6 +213,46 @@ function wrapContext(ctx) {
     const orig = ctx.drawImage.bind(ctx);
     ctx.drawImage = function (img, ...rest) { return orig(unwrap(img), ...rest); };
     return ctx;
+}
+
+// Atomic file write: tmp + rename. Survives crashes mid-write — a half-written
+// .tmp file is left behind (and overwritten next time) instead of being read as
+// a valid cache hit.
+function writeFileAtomic(dst, buf) {
+    const tmp = dst + '.tmp.' + process.pid + '.' + Date.now();
+    fs.writeFileSync(tmp, buf);
+    fs.renameSync(tmp, dst);
+}
+
+// On-disk cache for HTTP image fetches. Scryfall art_crop URLs embed the
+// printing's UUID (and timestamp on re-uploads), so the URL itself is a stable
+// cache key — different set = different printing_id = different URL = fresh
+// fetch automatically. Cache lives in ~/.cache/mtg-proxies/cardconjurer-art/
+// indexed by sha256(url). A corrupt cache entry (loadImage throws) is deleted
+// and re-fetched.
+const ART_CACHE_DIR = path.join(os.homedir(), '.cache', 'mtg-proxies', 'cardconjurer-art');
+fs.mkdirSync(ART_CACHE_DIR, { recursive: true });
+function artCachePath(url) {
+    const hash = crypto.createHash('sha256').update(url).digest('hex');
+    let ext = '';
+    try { ext = path.extname(new URL(url).pathname); } catch (_) {}
+    return path.join(ART_CACHE_DIR, hash + (ext || '.bin'));
+}
+async function fetchImageCached(url) {
+    const cachePath = artCachePath(url);
+    if (fs.existsSync(cachePath)) {
+        try {
+            return await loadImage(cachePath);
+        } catch (e) {
+            // Corrupt cache — wipe and re-fetch.
+            try { fs.unlinkSync(cachePath); } catch (_) {}
+        }
+    }
+    const r = await fetch(url, { headers: { 'User-Agent': 'mtg-proxies/spike-min' } });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const buf = Buffer.from(await r.arrayBuffer());
+    writeFileAtomic(cachePath, buf);
+    return await loadImage(cachePath);
 }
 
 // Sample the dominant color from a basic-land watermark PNG. Averages RGB
@@ -561,16 +599,41 @@ function slugify(name) {
 async function fetchScryfall(name) {
     const slug = slugify(name);
     const jsonPath = path.join(INPUTS, slug + '.json');
-    if (!fs.existsSync(jsonPath)) {
-        const url = 'https://api.scryfall.com/cards/named?exact=' + encodeURIComponent(name);
+    if (fs.existsSync(jsonPath)) {
+        try {
+            return { scry: JSON.parse(fs.readFileSync(jsonPath, 'utf8')), slug };
+        } catch (e) {
+            // Cache entry is HTML / truncated / not valid JSON — wipe and refetch.
+            try { fs.unlinkSync(jsonPath); } catch (_) {}
+        }
+    }
+    const url = 'https://api.scryfall.com/cards/named?exact=' + encodeURIComponent(name);
+    // 429 backoff: Scryfall asks for 50-100ms between calls. We sleep 120ms after
+    // every successful fetch, but a burst from another process can still trigger
+    // 429. Back off exponentially up to ~30s; give up after 4 retries.
+    let body = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
         const r = await fetch(url, {
             headers: { 'User-Agent': 'mtg-proxies/spike-min', 'Accept': 'application/json' },
         });
+        if (r.status === 429) {
+            const wait = Math.min(30000, 500 * 2 ** attempt);
+            await new Promise(res => setTimeout(res, wait));
+            continue;
+        }
         if (!r.ok) throw new Error(`Scryfall ${r.status} for ${name}`);
-        fs.writeFileSync(jsonPath, await r.text());
-        await new Promise(res => setTimeout(res, 120)); // be polite (100 ms rate-limit)
+        body = await r.text();
+        break;
     }
-    return { scry: JSON.parse(fs.readFileSync(jsonPath, 'utf8')), slug };
+    if (body === null) throw new Error(`Scryfall 429 (max retries) for ${name}`);
+    // Validate JSON BEFORE writing — otherwise a Cloudflare HTML interstitial
+    // would poison the cache permanently.
+    let scry;
+    try { scry = JSON.parse(body); }
+    catch (e) { throw new Error(`Scryfall returned non-JSON for ${name}: ${e.message}`); }
+    writeFileAtomic(jsonPath, body);
+    await new Promise(res => setTimeout(res, 120)); // be polite (100 ms rate-limit)
+    return { scry, slug };
 }
 
 // Layouts we punt on — the harness throws and the caller can fall back to
@@ -608,24 +671,21 @@ function shouldSkip(scry) {
     return null;
 }
 
-// Pack routing per Scryfall layout AND requested frame. The transform / modal_dfc
-// packs (pack8thTransformFront / packM15TransformFront) set card.version which
-// makes changeCardIndex's multi-faced branch fire correctly, so parseMultiFacedCards
-// fills in front-face data and the back-face indicator gets a reminder slot. Returns
-// a discriminated shape:
-//   { single: 'packX.js' }                — single-face card
-//   { front:  'packXFront.js', back: 'packXBack.js' } — DFC
+// Pack routing per Scryfall layout AND requested frame. ND-JSON's runOneJob
+// rewrites every DFC layout to 'flip' before this fires, so the only multi-
+// face layout that reaches here is 'flip' (Kamigawa + DFC-as-flip), which
+// renders as a single PNG via packFlip. All other layouts route to a single
+// 8th- or M15-modern pack.
+//
+// FUTURE: retro frame support — a third branch here pointing at one of CC's
+// retro packs (packClassicshiftedLands.js, packM15Borders.js, etc.) would
+// give users a pre-2003 frame option. Would also need: new CLI flag in
+// cli.py's cardconjourer subparser, modelines.py registry entry, and frame
+// branching downstream in renderFace (autoFrameTarget, bottom-info layout).
 function packForLayout(layout, frame) {
     if (layout === 'flip') return { single: 'packFlip.js' };
-    const isDfc = (layout === 'transform' || layout === 'modal_dfc' || layout === 'reversible_card');
-    if (frame === 'modern') {
-        return isDfc
-            ? { front: 'packM15TransformFront.js', back: 'packM15TransformBack.js' }
-            : { single: 'packM15Regular-1.js' };
-    }
-    return isDfc
-        ? { front: 'pack8thTransformFront.js', back: 'pack8thTransformBack.js' }
-        : { single: 'pack8th.js' };
+    if (frame === 'modern') return { single: 'packM15Regular-1.js' };
+    return { single: 'pack8th.js' };
 }
 
 // Load the given pack file and trigger its loadFrameVersion onclick. The pack
@@ -1122,20 +1182,14 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null } = 
         throw new Error(`${skipReason} not supported on ${frame} frame — fall back to Scryfall image`);
     }
 
-    // Pre-process the Scryfall card the same way the GUI does. For DFC /
-    // adventure / split layouts, processScryfallCard splits card_faces into
-    // separate face objects (front + back).
+    // Pre-process the Scryfall card the same way the GUI does. processScryfallCard
+    // splits card_faces into separate face objects (front + back); flip layouts
+    // (including DFCs that runOneJob has rewritten to 'flip') render both halves
+    // into a single PNG via packFlip.
     const processed = [];
     global.processScryfallCard(scry, processed);
-    const isDfc = ['transform', 'modal_dfc', 'reversible_card'].includes(scry.layout) &&
-                  processed.length >= 2;
 
     const packs = packForLayout(scry.layout, frame);
-    if (isDfc) {
-        await renderFace({ packFile: packs.front, processed, faceIdx: 0, scry, outName: slug + '_front', frame, setSymbolPath });
-        await renderFace({ packFile: packs.back,  processed, faceIdx: 1, scry, outName: slug + '_back',  frame, setSymbolPath });
-        return path.join(OUTPUT, slug + '_front.png') + ', ' + slug + '_back.png';
-    }
     return await renderFace({ packFile: packs.single, processed, faceIdx: 0, scry, outName: slug, frame, setSymbolPath });
 }
 

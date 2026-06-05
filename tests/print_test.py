@@ -702,30 +702,6 @@ def test_apply_per_card_modelines_cardconjourer_default_frame_is_8th(
     assert captured["frame"] == "8th"
 
 
-def test_apply_per_card_modelines_cardconjourer_retro_frame(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """`#cardconjourer --retro` selects the retro frame."""
-    from mtg_proxies import cli
-
-    rendered = tmp_path / "0001-sol_ring.png"
-    rendered.write_bytes(b"PNG")
-    captured: dict[str, object] = {}
-
-    def fake_batch(requests: list[object], **_: object) -> dict[str, Path]:
-        captured["frame"] = requests[0].frame
-        return {requests[0].slot_id: rendered}
-
-    monkeypatch.setattr("mtg_proxies.cardconjourer.per_card.render_per_card_batch", fake_batch)
-
-    decklist = _fake_decklist(_fake_card("Sol Ring", modeline="#cardconjourer --retro"))
-    image_paths = ["sol.png"]
-
-    cli._apply_per_card_modelines(decklist, image_paths)
-
-    assert captured["frame"] == "retro"
-
-
 def test_apply_per_card_modelines_cardconjourer_modern_frame(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

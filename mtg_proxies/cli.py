@@ -102,15 +102,12 @@ def resolve_upscale_scope(args: argparse.Namespace) -> Literal["auto", "all"] | 
 def _resolve_cc_frame(flags: dict) -> str:
     """Map a ``#cardconjourer`` directive's flags to the harness's frame string.
 
-    Mirrors the CLI's ``--modern`` / ``--retro`` / ``--8th`` precedence. Bare
-    ``#cardconjourer`` (no frame flag) defaults to ``"8th"`` so the per-card
-    modeline path is consistent with the standalone subcommand's
-    required-frame contract.
+    Mirrors the CLI's ``--modern`` / ``--8th`` precedence. Bare ``#cardconjourer``
+    (no frame flag) defaults to ``"8th"`` so the per-card modeline path is
+    consistent with the standalone subcommand's required-frame contract.
     """
     if flags.get("--modern"):
         return "modern"
-    if flags.get("--retro"):
-        return "retro"
     return "8th"
 
 
@@ -483,7 +480,7 @@ def _apply_per_card_modelines(
 
     # Pass 1b: #cardconjourer swaps. All flagged cards go through the headless CC
     # harness in a single batched subprocess (~1-2s engine boot amortizes across
-    # the whole deck). Per-card frame is `--modern` / `--retro` / `--8th` (bare
+    # the whole deck). Per-card frame is `--modern` / `--8th` (bare
     # `#cardconjourer` defaults to 8th, matching the standalone subcommand's
     # required-flag contract). ``--set-symbol VALUE`` is resolved per-card via
     # ``resolve_set_symbol`` against the cached CC engine. Misses fall back to
@@ -1045,12 +1042,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
 
     from mtg_proxies.cardconjourer import runner as cc_runner
 
-    if args.frame_modern:
-        frame = "modern"
-    elif args.frame_retro:
-        frame = "retro"
-    else:
-        frame = "8th"
+    frame = "modern" if args.frame_modern else "8th"
 
     # Resolve every decklist line to a full Scryfall card dict. parse_decklist_spec
     # handles count prefix, `Name (SET) CN`, the new URL/shorthand form, foil markers,
@@ -1352,6 +1344,14 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
 
         proc.stdin.close()
         proc.wait()
+        if proc.returncode != 0:
+            # stderr was already forwarded by _drain_stderr; the user has seen it.
+            # Re-flag here so the run doesn't silently end with half the deck missing.
+            print(
+                f"[cardconjourer] harness exited {proc.returncode} — partial render "
+                f"({len(responses)}/{len(jobs)} cards processed before the crash)",
+                file=__import__("sys").stderr,
+            )
         return responses + skip_cc_responses
 
     summary = cc_runner.render_deck(
@@ -1659,10 +1659,10 @@ def main() -> None:
 
     cardconjourer_parser = subparsers.add_parser(
         "cardconjourer",
-        help="Render an 8th-edition / modern / retro frame for each card via headless Card Conjurer",
+        help="Render an 8th-edition or modern frame for each card via headless Card Conjurer",
         description=(
             "For each card in DECKLIST, render a fresh PNG via the headless Card Conjurer engine"
-            " in the chosen frame style (--8th / --modern / --retro) and write it to OUTDIR as"
+            " in the chosen frame style (--8th / --modern) and write it to OUTDIR as"
             " <NNNN>-<slug>.png. Cards the engine can't render (saga / transform / planeswalker /"
             " 404) are listed in OUTDIR/fallback.txt (decklist format) so you can pipe them into"
             " a normal `mtg-proxies print` run, while `--custom-art OUTDIR/` appends the rendered"
@@ -1684,10 +1684,6 @@ def main() -> None:
     frame_group.add_argument(
         "--modern", dest="frame_modern", action="store_true",
         help="render every card in the modern (M15, 2014) frame style — Nyx enchantments and per-set icons preserved"
-    )
-    frame_group.add_argument(
-        "--retro", dest="frame_retro", action="store_true",
-        help="render every card in the retro pre-modern frame style (not implemented yet)"
     )
     cardconjourer_parser.add_argument(
         "--set-symbol", dest="set_symbol", default=None, metavar="VALUE",

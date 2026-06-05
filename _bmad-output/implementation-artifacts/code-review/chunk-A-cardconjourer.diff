@@ -1,0 +1,3114 @@
+diff --git a/mtg_proxies/cardconjourer/__init__.py b/mtg_proxies/cardconjourer/__init__.py
+new file mode 100644
+index 0000000..57c7c67
+--- /dev/null
++++ b/mtg_proxies/cardconjourer/__init__.py
+@@ -0,0 +1 @@
++"""Card Conjurer headless rendering (8th-edition frame, later retro)."""
+diff --git a/mtg_proxies/cardconjourer/mtgpics.py b/mtg_proxies/cardconjourer/mtgpics.py
+new file mode 100644
+index 0000000..6acc484
+--- /dev/null
++++ b/mtg_proxies/cardconjourer/mtgpics.py
+@@ -0,0 +1,88 @@
++"""Fetch native hi-res card art from mtgpics.com.
++
++Scryfall's ``art_crop`` tops out at ~626x457 px for older cards and ~1500x1050
++for newer hi-res printings. MTGPics hosts community-uploaded scans cropped to
++the art window at ~1430x1058 for most cards — significantly better than what
++Scryfall offers, and on par with what the cardconjourer ``--upscale`` path
++produces via Real-ESRGAN, but without the GPU dependency or the dot-amplification
++artifacts the upscaler introduces on scanned source art.
++
++URL pattern (reverse-engineered, see mtg-art-downloader for the inspiration):
++
++    https://www.mtgpics.com/pics/art/<set_lower>/<collector_number>.jpg
++
++Returns a Path to the local cached file, or ``None`` when MTGPics doesn't have
++the card (404, or a tiny placeholder body). Cache layout:
++
++    <cache_root>/<set_lower>/<collector_number>.jpg
++
++The caller (cardconjourer's per-card prepare_each) uses None as the signal to
++fall back to Scryfall's ``art_crop`` instead.
++"""
++
++from __future__ import annotations
++
++import logging
++from pathlib import Path
++
++import requests
++
++_log = logging.getLogger(__name__)
++
++# Anything smaller than this is almost certainly a placeholder / missing-card
++# response (the real MTGPics art crops are 100-500 KB).
++_MIN_PLAUSIBLE_BYTES = 4096
++
++_DEFAULT_CACHE = Path.home() / ".cache" / "mtg-proxies" / "mtgpics"
++
++
++def default_cache_root() -> Path:
++    """Return the default MTGPics cache root (does not create it)."""
++    return _DEFAULT_CACHE
++
++
++def _art_url(set_code: str, collector_number: str) -> str:
++    """Return the canonical MTGPics art URL for a printing."""
++    return f"https://www.mtgpics.com/pics/art/{set_code.lower()}/{collector_number}.jpg"
++
++
++def fetch_mtgpics_art(
++    set_code: str,
++    collector_number: str,
++    *,
++    cache_root: Path | None = None,
++    timeout: float = 10.0,
++) -> Path | None:
++    """Fetch ``<set>/<collector>.jpg`` hi-res art from MTGPics.
++
++    Returns a Path to the local cached file (``<cache>/<set>/<collector>.jpg``)
++    or ``None`` if MTGPics didn't have this card or the fetch failed for any
++    reason — the caller is expected to fall back to Scryfall's ``art_crop``.
++    Returns the cached file path directly when an entry already exists, no
++    network roundtrip.
++    """
++    cache_root = cache_root or _DEFAULT_CACHE
++    cached = cache_root / set_code.lower() / f"{collector_number}.jpg"
++    if cached.is_file() and cached.stat().st_size >= _MIN_PLAUSIBLE_BYTES:
++        return cached
++
++    url = _art_url(set_code, collector_number)
++    try:
++        resp = requests.get(url, timeout=timeout, headers={"User-Agent": "mtg-proxies"})
++    except Exception as exc:  # noqa: BLE001 — network errors are a soft miss
++        _log.debug("mtgpics fetch failed for %s/%s: %s", set_code, collector_number, exc)
++        return None
++    if resp.status_code != 200:
++        _log.debug("mtgpics %s for %s/%s", resp.status_code, set_code, collector_number)
++        return None
++    if len(resp.content) < _MIN_PLAUSIBLE_BYTES:
++        # 200 with a tiny body = MTGPics's "we don't have this" placeholder.
++        _log.debug(
++            "mtgpics returned suspiciously small body (%d B) for %s/%s — treating as miss",
++            len(resp.content), set_code, collector_number,
++        )
++        return None
++
++    cached.parent.mkdir(parents=True, exist_ok=True)
++    cached.write_bytes(resp.content)
++    return cached
+diff --git a/mtg_proxies/cardconjourer/node/harness.js b/mtg_proxies/cardconjourer/node/harness.js
+new file mode 100644
+index 0000000..eff5761
+--- /dev/null
++++ b/mtg_proxies/cardconjourer/node/harness.js
+@@ -0,0 +1,1294 @@
++// Minimal headless Card Conjurer renderer.
++//
++// Input:  a decklist (one card per line, optional "<count> " prefix —
++//         matches what `mtg-proxies convert` emits).
++// Output: output/<slug>.png — one 8th-edition card per name.
++//
++// Flow per card: importCard([scryfallObject]) → changeCardIndex() →
++// autoFrame() → drawText() → drawFrames(). That's the GUI's "Import from
++// Scryfall" button, run headless. Everything custom (face picking,
++// crown overlays, set-icon fetching, manual field setting) is gone — the
++// engine handles all layouts the same way it does in a browser.
++//
++// Run:   node harness.js [decklist.txt]    (defaults to ../koni-lifegain.txt)
++
++'use strict';
++const fs        = require('node:fs');
++const os        = require('node:os');
++const path      = require('node:path');
++const vm        = require('node:vm');
++const canvasPkg = require('canvas');
++const { createCanvas, loadImage, registerFont } = canvasPkg;
++
++const ROOT    = __dirname;
++// In production CC lives in ~/.cache/mtg-proxies/cardconjurer (cloned by the
++// Makefile) — the Python runner sets CC_ROOT in the subprocess env. Fall back
++// to ./cardconjurer for the legacy spike workflow.
++const CC_ROOT = process.env.CC_ROOT || path.join(ROOT, 'cardconjurer');
++const INPUTS  = process.env.CC_INPUTS || path.join(ROOT, 'inputs');
++const OUTPUT  = process.env.CC_OUTPUT || path.join(ROOT, 'output');
++fs.mkdirSync(INPUTS, { recursive: true });
++fs.mkdirSync(OUTPUT, { recursive: true });
++
++// Flavor text (italic lore quotes) is stripped by default. Pass --with-flavor
++// to keep it the way the GUI renders it.
++const INCLUDE_FLAVOR = process.argv.includes('--with-flavor');
++
++// ---------------------------------------------------------------------------
++// 1. Font registration. node-canvas v3 requires each font FILE to be mapped
++//    to exactly ONE family name; registering the same file twice (e.g. matrix-b
++//    as both 'matrixb' and 'matrixbsc') silently breaks family lookup so
++//    fillText falls back to sans-serif even when ctx.font reports the right
++//    family. Confirmed with reproducer scripts.
++//
++//    Bundled fonts dir (shipped alongside harness.js) is tried first so a
++//    fresh checkout doesn't fall back to Arial when the user hasn't yet run
++//    `make cardconjurer`. CC_ROOT/fonts is the fallback.
++// ---------------------------------------------------------------------------
++const BUNDLED_FONT_DIR = path.join(ROOT, 'fonts');
++const FONT_DIR         = path.join(CC_ROOT, 'fonts');
++let _fontLoaded = 0, _fontFailed = 0;
++function reg(file, family) {
++    const fp = fs.existsSync(path.join(BUNDLED_FONT_DIR, file))
++        ? path.join(BUNDLED_FONT_DIR, file)
++        : path.join(FONT_DIR, file);
++    if (!fs.existsSync(fp)) {
++        console.error('[harness] font missing:', file, '— text will fall back to a system default');
++        _fontFailed++;
++        return;
++    }
++    // Sanity check: a TTF / OTF should be at least a few KB. A 0-byte or
++    // tiny file is the unmistakable signature of git on Windows mangling the
++    // binary on checkout (the `* text=auto` problem). Surface it loudly so
++    // the user knows why the cards are coming out in Arial.
++    const sz = fs.statSync(fp).size;
++    if (sz < 4096) {
++        console.error('[harness] font looks corrupted (only', sz, 'bytes):', file,
++                      '— check your git checkout (Windows + text=auto on .ttf is the usual cause)');
++        _fontFailed++;
++        return;
++    }
++    try {
++        registerFont(fp, { family });
++        _fontLoaded++;
++    }
++    catch (e) {
++        console.error('[harness] registerFont failed:', file, e.message);
++        _fontFailed++;
++    }
++}
++reg('matrix.ttf',                 'matrix');
++reg('matrix-b.ttf',               'matrixb');
++reg('Matrix Bold Small Caps.ttf', 'matrixbsc');
++reg('mplantin.ttf',               'mplantin');
++reg('mplantin-i.ttf',             'mplantini');
++reg('beleren-b.ttf',              'belerenb');
++reg('beleren-bsc.ttf',            'belerenbsc');
++reg('gotham-medium.ttf',          'gothammedium');
++reg('gothambold.otf',             'gothambold');
++reg('goudy-medieval.ttf',         'goudymedieval');
++reg('phyrexian.ttf',              'phyrexian');
++reg('NotoSans-Regular.ttf',       'notosans');
++console.error('[harness] fonts:', _fontLoaded, 'loaded,', _fontFailed, 'failed (bundled dir:', BUNDLED_FONT_DIR, ')');
++
++// ---------------------------------------------------------------------------
++// 2. Image polyfill. Engine code writes `img.src = ...` and expects `onload`
++//    to fire. node-canvas's loadImage decodes asynchronously; wrap it as a
++//    setter so the engine code is unmodified.
++//    Handles: data URIs, http(s) URLs (via fetch), file paths, and CC's
++//    web-root paths like '/img/frames/8th/b.png'.
++// ---------------------------------------------------------------------------
++const pendingImages = [];
++function resolveSrc(src) {
++    if (!src) return null;
++    if (src.startsWith('data:'))                    return src;
++    if (src.startsWith('http://') || src.startsWith('https://')) return src;
++    if (src.startsWith('file://'))                  return src.slice(7);
++    if (src.startsWith('/') && fs.existsSync(src))  return src;
++    if (src.startsWith('/'))                        return path.join(CC_ROOT, src.slice(1));
++    return src;
++}
++// Patch any SVG whose root <svg> uses width="100%"/height="100%" (librsvg
++// can't render those — needs explicit pixel dimensions). Also upscale tiny
++// intrinsic dimensions (like set symbols) so glyphs raster crisp before
++// drawImage scales them. Skip upscaling for full-page masks.
++const SVG_UPSCALE = 12;
++const MAX_SVG_UNPATCHED = 500;
++function patchSvgIfNeeded(filePath) {
++    if (!filePath.endsWith('.svg') || !fs.existsSync(filePath)) return null;
++    const raw = fs.readFileSync(filePath, 'utf8');
++    const vb  = raw.match(/viewBox="\s*[-\d.]+\s+[-\d.]+\s+([\d.]+)\s+([\d.]+)\s*"/);
++    if (!vb) return null;
++    
++    const intrinsicW = parseFloat(vb[1]);
++    const intrinsicH = parseFloat(vb[2]);
++    const factor = (intrinsicW <= MAX_SVG_UNPATCHED && intrinsicH <= MAX_SVG_UNPATCHED) ? SVG_UPSCALE : 1;
++    
++    const w = Math.max(1, Math.round(intrinsicW * factor));
++    const h = Math.max(1, Math.round(intrinsicH * factor));
++    let p = raw.replace(/width="[^"]*"/, `width="${w}"`)
++               .replace(/height="[^"]*"/, `height="${h}"`);
++    if (!/width="/.test(p))  p = p.replace(/<svg\b/, `<svg width="${w}"`);
++    if (!/height="/.test(p)) p = p.replace(/<svg\b/, `<svg height="${h}"`);
++    return Buffer.from(p, 'utf8');
++}
++class HarnessImage {
++    constructor() {
++        this._src = null; this._inner = null;
++        this.onload = null; this.onerror = null;
++        this.crossOrigin = null;
++        this.width = 0; this.height = 0;
++    }
++    get src() { return this._src; }
++    set src(v) {
++        this._src = v;
++        const resolved = resolveSrc(v);
++        if (!resolved) return;
++        const fire = (img) => {
++            this._inner = img; this.width = img.width; this.height = img.height;
++            if (typeof this.onload === 'function') {
++                try { this.onload.call(this); } catch (_) {}
++            }
++        };
++        const fail = (err) => {
++            if (typeof this.onerror === 'function') {
++                try { this.onerror.call(this, err); } catch (_) {}
++            }
++        };
++        let promise;
++        // Special-case the 8th Black Frame asset — see getPatchedBlackFrame.
++        if (resolved === BLACK_FRAME_PATH) {
++            promise = getPatchedBlackFrame().then(fire, fail);
++            pendingImages.push(promise);
++            return;
++        }
++        if (typeof resolved === 'string' &&
++            (resolved.startsWith('http://') || resolved.startsWith('https://'))) {
++            if (process.env.TRACE) console.log('[img-http] fetch', resolved);
++            promise = fetch(resolved, { headers: { 'User-Agent': 'mtg-proxies/spike-min' } })
++                .then(async r => { if (!r.ok) throw new Error('HTTP ' + r.status);
++                                   return Buffer.from(await r.arrayBuffer()); })
++                .then(buf => { if (process.env.TRACE) console.log('[img-http] decoded', resolved.slice(-40), buf.length, 'bytes'); return loadImage(buf); })
++                .then(img => { if (process.env.TRACE) console.log('[img-http] image', img.width, 'x', img.height); return img; })
++                .then(fire, (err) => { console.warn('[img-http] FAIL', resolved, err.message); fail(err); });
++        } else {
++            const patched = (typeof resolved === 'string') ? patchSvgIfNeeded(resolved) : null;
++            promise = loadImage(patched || resolved).then(fire, fail);
++        }
++        pendingImages.push(promise);
++    }
++}
++function unwrap(arg) { return (arg && arg._inner) ? arg._inner : arg; }
++
++// CC's img/frames/8th/b.png ends its colored body at y=2692; every other
++// 8th color ends at y=2707. Patch the asset in memory: take a vertical slice
++// of the frame body and stretch it to fill the missing 15px so black-
++// bordered cards have the same bottom strip as the others.
++//
++// Frame-scope note: BLACK_FRAME_PATH points at 8th's asset specifically. M15
++// renders load ``img/frames/m15/regular/m15FrameB.png``, a different file —
++// HarnessImage's path-equality check at the load site never matches for modern,
++// so this patch is naturally 8th-only with no extra gate.
++const BLACK_FRAME_PATH = path.join(CC_ROOT, 'img/frames/8th/b.png');
++let _patchedBlackFrame = null;
++async function getPatchedBlackFrame() {
++    if (_patchedBlackFrame) return _patchedBlackFrame;
++    const orig = await loadImage(BLACK_FRAME_PATH);
++    const cv = createCanvas(orig.width, orig.height);
++    const ctx = cv.getContext('2d');
++    // Top portion (untouched): source 0..2600 → dest 0..2600
++    ctx.drawImage(orig, 0, 0, orig.width, 2600,   0, 0, orig.width, 2600);
++    // Stretch the bottom-body slice: source y=2600..2700 (100px) →
++    // dest y=2600..2707 (107px). Factor 1.07 — small enough that columns
++    // whose non-black bottom in b.png reaches y=2700 land at exactly 2707,
++    // matching the other 8th color frames.
++    ctx.drawImage(orig, 0, 2600, orig.width, 100, 0, 2600, orig.width, 107);
++    // Border tail (mostly solid black anyway): source 2700..2814 →
++    // dest 2707..2821. Slight overflow at the bottom is clipped by the
++    // rounded-corner cutout in drawCard, so it doesn't matter visually.
++    const tailH = orig.height - 2700;
++    ctx.drawImage(orig, 0, 2700, orig.width, tailH, 0, 2707, orig.width, tailH);
++    _patchedBlackFrame = cv;
++    return cv;
++}
++function wrapContext(ctx) {
++    const orig = ctx.drawImage.bind(ctx);
++    ctx.drawImage = function (img, ...rest) { return orig(unwrap(img), ...rest); };
++    return ctx;
++}
++
++// Sample the dominant color from a basic-land watermark PNG. Averages RGB
++// across mostly-opaque pixels — gives CC's canonical "Plains/Island/Swamp/
++// Mountain/Forest" tint without us hard-coding hex values.
++const _basicLandRGBCache = new Map();
++async function getBasicLandRGB(relSrc) {
++    if (_basicLandRGBCache.has(relSrc)) return _basicLandRGBCache.get(relSrc);
++    const srcAbs = path.join(CC_ROOT, relSrc.replace(/^\//, ''));
++    const img = await loadImage(srcAbs);
++    const cv = createCanvas(img.width, img.height);
++    const ctx = cv.getContext('2d');
++    ctx.drawImage(img, 0, 0);
++    const data = ctx.getImageData(0, 0, img.width, img.height).data;
++    let r = 0, g = 0, b = 0, count = 0;
++    for (let i = 0; i < data.length; i += 4) {
++        if (data[i + 3] > 128) {
++            r += data[i]; g += data[i + 1]; b += data[i + 2]; count++;
++        }
++    }
++    const rgb = count > 0
++        ? [Math.round(r / count), Math.round(g / count), Math.round(b / count)]
++        : [128, 128, 128];
++    const hex = '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('');
++    _basicLandRGBCache.set(relSrc, hex);
++    return hex;
++}
++
++// Basic-land watermark, pre-rotated 180° on disk. Flip-pair lands need a
++// watermark on each rules box so the two halves read as different basics; the
++// engine doesn't rotate frame-entry images the way it rotates rules2 text, so
++// we bake the rotation into a temp file once per color.
++const _watermarkRotCache = new Map();
++async function getRotatedWatermark(relSrc) {
++    if (_watermarkRotCache.has(relSrc)) return _watermarkRotCache.get(relSrc);
++    const srcAbs = path.join(CC_ROOT, relSrc.replace(/^\//, ''));
++    const cacheDir = path.join(os.tmpdir(), 'cc-watermark-rot');
++    fs.mkdirSync(cacheDir, { recursive: true });
++    const dstAbs = path.join(cacheDir, path.basename(srcAbs, '.png') + '-rot180.png');
++    if (!fs.existsSync(dstAbs)) {
++        const img = await loadImage(srcAbs);
++        const cv = createCanvas(img.width, img.height);
++        const ctx = cv.getContext('2d');
++        ctx.translate(img.width / 2, img.height / 2);
++        ctx.rotate(Math.PI);
++        ctx.drawImage(img, -img.width / 2, -img.height / 2);
++        fs.writeFileSync(dstAbs, cv.toBuffer('image/png'));
++    }
++    _watermarkRotCache.set(relSrc, dstAbs);
++    return dstAbs;
++}
++function wrapCanvas(c) {
++    const origCtx = c.getContext.bind(c);
++    c.getContext = function (kind) {
++        const ctx = origCtx(kind);
++        if (kind === '2d' && !ctx.__wrapped) { wrapContext(ctx); ctx.__wrapped = true; }
++        return ctx;
++    };
++    return c;
++}
++
++// ---------------------------------------------------------------------------
++// 3. DOM stub. querySelector returns Proxy elements with sensible defaults.
++//    Per-selector overrides set the few values the engine reads at runtime.
++// ---------------------------------------------------------------------------
++function makeFakeChildren(id) {
++    return new Proxy([], {
++        get(t, p) {
++            if (p in t) return t[p];
++            if (typeof p === 'string' && /^\d+$/.test(p)) return makeFakeElement(id + '>child[' + p + ']');
++            if (p === 'length') return 0;
++            return undefined;
++        },
++    });
++}
++function makeFakeElement(id = '?') {
++    const state = { _id: id, checked: false, value: '', innerHTML: '', textContent: '',
++                    disabled: false, selectedIndex: 0,
++                    classList: { add(){}, remove(){}, contains(){return false;}, toggle(){} },
++                    style: {} };
++    return new Proxy(state, {
++        deleteProperty(t, p) { delete t[p]; return true; },
++        get(target, prop) {
++            if (prop in target) return target[prop];
++            if (prop === 'children')        return makeFakeChildren(id);
++            if (prop === 'firstChild' || prop === 'lastChild') return makeFakeElement(id + '>' + prop);
++            if (prop === 'appendChild' || prop === 'prepend' || prop === 'remove'
++                || prop === 'insertBefore' || prop === 'replaceChild' || prop === 'append') return (c) => c;
++            if (prop === 'addEventListener' || prop === 'removeEventListener') return () => {};
++            if (prop === 'querySelector')    return () => makeFakeElement(id + '>?');
++            if (prop === 'querySelectorAll') return () => makeFakeChildren(id + '>all');
++            if (prop === 'getBoundingClientRect') return () => ({ top:0,bottom:0,left:0,right:0,width:0,height:0 });
++            if (prop === 'parentElement' || prop === 'parentNode') return makeFakeElement(id + '>parent');
++            if (prop === 'closest')   return () => makeFakeElement(id + '>closest');
++            if (prop === 'cloneNode') return () => makeFakeElement(id + '#clone');
++            if (prop === 'getAttribute') return () => null;
++            if (prop === 'setAttribute') return () => {};
++            if (prop === 'click') return () => {};
++            if (prop === 'focus' || prop === 'blur') return () => {};
++            if (typeof prop === 'string' && prop.startsWith('on')) return null;
++            return undefined;
++        },
++        set(target, prop, value) { target[prop] = value; return true; },
++    });
++}
++// Engine-read defaults. enableCollectorInfo=true so the engine's
++// bottomInfoEdited filters out the WotC/NFS/CardConjurer.com entries and
++// renders only the brush+artist line (matches what the GUI shows after
++// "Import from Scryfall").
++const SELECTOR_OVERRIDES = {
++    '#autoFrame':                 { value: '8th' },
++    // Engine's bottomInfoEdited filters out NFS/WotC/CC.com when this is
++    // true. We do our own bottom-info rendering (see setLeanBottomInfo +
++    // renderBottomInfo below), so we keep this off to stop the engine from
++    // also drawing its filtered version on top.
++    '#enableCollectorInfo':       { checked: false },
++    '#autoframe-always-nyx':      { checked: false },
++    '#grayscale-art':             { checked: false },
++    '#show-guidelines':           { checked: false },
++    '#hide-reminder-text':        { checked: false },
++    '#italicize-reminder-text':   { checked: false },
++    '#enableNewCollectorStyle':   { checked: false },
++    '#info-language':             { value: 'EN' },
++    '#info-year':                 { value: String(new Date().getFullYear()) },
++    '#set-symbol-source':         { value: 'official' },
++    '#lockSetSymbolCode':         { checked: false },
++    // Block changeCardIndex's fetchSetSymbol() call so it doesn't queue the
++    // per-set icon (we force the 8th-edition glyph in renderFace instead).
++    // Otherwise the per-set icon load races with our 8ed load and the engine's
++    // setSymbolEdited fires with stale zoom values, drawing the icon tiny.
++    '#lockSetSymbolURL':          { checked: true },
++};
++const fakeElements = new Map();
++function querySelector(sel) {
++    if (fakeElements.has(sel)) return fakeElements.get(sel);
++    // Canvas-backed selectors need real node-canvas instances.
++    if (sel === '#previewCanvas') {
++        const c = wrapCanvas(createCanvas(1, 1));
++        fakeElements.set(sel, c);
++        return c;
++    }
++    const el = makeFakeElement(sel);
++    if (SELECTOR_OVERRIDES[sel]) Object.assign(el, SELECTOR_OVERRIDES[sel]);
++    fakeElements.set(sel, el);
++    return el;
++}
++const fakeDocument = {
++    querySelector,
++    querySelectorAll(sel) { return sel === 'head' ? [querySelector('head')] : []; },
++    createElement(tag) {
++        if (tag === 'canvas') return wrapCanvas(createCanvas(1, 1));
++        return makeFakeElement(`<${tag}>`);
++    },
++    body: makeFakeElement('body'),
++    head: makeFakeElement('head'),
++    fonts: { load() { return Promise.resolve([]); }, check() { return true; }, ready: Promise.resolve() },
++    addEventListener() {}, removeEventListener() {}, dispatchEvent() { return true; },
++};
++const fakeLocalStorage = {
++    // Seeded so the engine populates #info-number from cardToImport.collector_number
++    // (creator-23.js:4395 is gated on enableImportCollectorInfo === 'true'),
++    // and so we don't hit the fallback at creator-23.js:4953 that writes the
++    // current year into #info-number when defaultCollectorInfo is absent.
++    _s: {
++        enableImportCollectorInfo: 'true',
++        defaultCollectorInfo: JSON.stringify({ number: '', rarity: '', setCode: '', lang: 'EN' }),
++        // Engine's bottom-of-file init does `#lockSetSymbolCode.checked = '' != localStorage.getItem(...)`,
++        // which is `true` whenever the key isn't an empty string — including null.
++        // Set it to '' explicitly so the engine doesn't auto-fetch a default set
++        // icon on startup that would race with our 8ed override.
++        lockSetSymbolCode: '',
++        lockSetSymbolURL: '',
++    },
++    getItem(k) { return Object.prototype.hasOwnProperty.call(this._s, k) ? this._s[k] : null; },
++    setItem(k, v) { this._s[k] = String(v); },
++    removeItem(k) { delete this._s[k]; },
++    clear() { this._s = {}; },
++};
++
++// ---------------------------------------------------------------------------
++// 4. Sandbox. window === globalThis so engine assignments like
++//    `window.cardCanvas = ...` land where later reads find them.
++// ---------------------------------------------------------------------------
++Object.assign(global, { location: { search: '', href: 'file:///' }, open: () => null,
++                        addEventListener: () => {}, removeEventListener: () => {} });
++global.window           = global;
++global.document         = fakeDocument;
++global.localStorage     = fakeLocalStorage;
++global.URLSearchParams  = URLSearchParams;
++global.Image            = HarnessImage;
++global.HTMLCanvasElement = function () {};
++// node-canvas's Context2d is what the engine extends with fillTextArc et al.
++global.CanvasRenderingContext2D = canvasPkg.Context2d || createCanvas(1, 1).getContext('2d').constructor;
++global.notify  = () => {};
++global.alert   = () => {};
++global.XMLHttpRequest = class { open(){} send(){} setRequestHeader(){} overrideMimeType(){} };
++global.FileReader     = class { readAsDataURL(){} };
++global.params         = new URLSearchParams('');
++
++// loadScript: the engine uses this to pull in additional packs (e.g.
++// versionSaga.js, frame group files). We do it synchronously off disk so
++// the side effects land in our global scope.
++const loadedScripts = new Set();
++global.loadScript = function (scriptPath) {
++    const rel = scriptPath.startsWith('/') ? scriptPath.slice(1) : scriptPath;
++    const fp = path.join(CC_ROOT, rel);
++    if (loadedScripts.has(fp)) return Promise.resolve();
++    if (!fs.existsSync(fp))    { console.warn('[loadScript] missing:', fp); return Promise.resolve(); }
++    loadedScripts.add(fp);
++    let code = fs.readFileSync(fp, 'utf8');
++    code = code.replace(/^(const|let) (mana|debugging|cardConjurer|setSymbolAliases|baseWidth|baseHeight|highResScale)\b/gm, 'var $2');
++    try { vm.runInThisContext(code, { filename: fp }); console.log('[loadScript] ok:', rel); }
++    catch (e) { console.warn('[loadScript]', fp, e.message); }
++    return Promise.resolve();
++};
++function loadEngineFile(rel) {
++    const fp = path.join(CC_ROOT, rel);
++    let code = fs.readFileSync(fp, 'utf8');
++    // vm.runInThisContext block-scopes top-level const/let; rewrite to var
++    // for the few names other engine files and our harness need to read.
++    code = code.replace(/^(const|let) (mana|debugging|cardConjurer|setSymbolAliases|baseWidth|baseHeight|highResScale)\b/gm, 'var $2');
++    // Disable the Nyx (starfield-sparkle) overlay on enchantments for the 8th
++    // frame. The engine auto-applies Nyx to "Enchantment Creature" / "Enchantment
++    // Artifact" / (with the always-nyx checkbox) any Enchantment — that's the
++    // sparkly upper frame the user doesn't want. Force-disable by neutering the
++    // 8th branch of the style selector.
++    //
++    // The regex is anchored on ``frameType === '8th'``, so modern (frameType =
++    // 'M15Regular-1') hits the standard ``isNyxEnchantment → style = 'Nyx'`` arm
++    // and gets the canonical Nyx starfield organically. This patch is therefore
++    // frame-scoped by construction — no extra gate needed.
++    if (rel.endsWith('autoFrame.js')) {
++        code = code.replace(
++            /\}\s*else if\s*\(\s*frameType\s*===\s*['"]8th['"]\s*&&\s*isNyxEnchantment\s*\)\s*\{[\s\S]*?style\s*=\s*['"]Nyx['"]\s*;\s*\}/,
++            '} else if (false) { /* harness: Nyx disabled on 8th frame */ }',
++        );
++    }
++    // Mana-symbol overflow wrap. writeText's word-level wrap check (creator-23.js
++    // ~2200, ``measureText(wordToWrite).width + currentX >= textWidth``) only fires
++    // on TEXT tokens — inline mana symbols (e.g. Belbe's "{C}{C}") get placed at
++    // ``currentX + manaSymbolSpacing`` with no overflow check, so they slip past
++    // the rules box right edge into the frame on cards with long oracle text.
++    //
++    // Inject a pre-placement check: if the symbol would push past textWidth,
++    // commit the current line first (mirroring the line-commit block ~2209) so
++    // the symbol lands on the next line at startingCurrentX. Applies to every
++    // frame since the patch is in shared writeText logic.
++    if (rel.endsWith('creator-23.js')) {
++        code = code.replace(
++            /(var manaSymbolHeight = manaSymbol\.height \* textSize \* 0\.78;\s*)(var manaSymbolX = currentX)/,
++            "$1\n\t\t\t\t\t// HARNESS-INJECTED: wrap line if mana symbol would overflow.\n" +
++            "\t\t\t\t\tif (!textOneLine && currentX + manaSymbolWidth + manaSymbolSpacing * 2 > textWidth) {\n" +
++            "\t\t\t\t\t\tvar harnessAdjust = 0;\n" +
++            "\t\t\t\t\t\tif (textAlign == 'center')      harnessAdjust = (textWidth - currentX) / 2;\n" +
++            "\t\t\t\t\t\telse if (textAlign == 'right') harnessAdjust = textWidth - currentX;\n" +
++            "\t\t\t\t\t\tif (currentX > widestLineWidth) widestLineWidth = currentX;\n" +
++            "\t\t\t\t\t\tif (manaSymbolsToRender.length > 0) renderManaSymbols();\n" +
++            "\t\t\t\t\t\tparagraphContext.drawImage(lineCanvas, harnessAdjust, currentY);\n" +
++            "\t\t\t\t\t\tlineY = 0;\n" +
++            "\t\t\t\t\t\tlineContext.clearRect(0, 0, lineCanvas.width, lineCanvas.height);\n" +
++            "\t\t\t\t\t\tcurrentX = startingCurrentX;\n" +
++            "\t\t\t\t\t\tcurrentY += textSize + newLineSpacing;\n" +
++            "\t\t\t\t\t\tnewLineSpacing = (textObject.lineSpacing || 0) * textSize;\n" +
++            "\t\t\t\t\t}\n\t\t\t\t\t$2"
++        );
++    }
++    // (Hanging-punctuation patch was tried and reverted — see git history.
++    // CC's wrap loop doesn't cleanly support retrying for a punctuation-only
++    // overflow without leaving stale mana-symbol state from the prior pass,
++    // so cards like Magus of the Vineyard end up with garbled overlap if we
++    // touch it. The cosmetic "period on its own line" stays for now.)
++    vm.runInThisContext(code, { filename: fp });
++}
++
++// Suppress the UI side effects every pack file ends with.
++global.loadFramePack  = function () {};
++global.loadFramePacks = function () {};
++
++// ---------------------------------------------------------------------------
++// 5. Load the engine.
++// ---------------------------------------------------------------------------
++loadEngineFile('js/main-1.js');
++loadEngineFile('js/creator-23.js');
++// creator-23.js defines its own loadScript (line 4736) that depends on the
++// DOM to inject a <script> tag — useless headless. Swap ours back in.
++const fsLoadScript = (function () {
++    const fp_known = new Set();
++    return function (scriptPath) {
++        const rel = scriptPath.startsWith('/') ? scriptPath.slice(1) : scriptPath;
++        const fp  = path.join(CC_ROOT, rel);
++        if (fp_known.has(fp)) return Promise.resolve();
++        if (!fs.existsSync(fp)) { console.warn('[loadScript] missing:', fp); return Promise.resolve(); }
++        fp_known.add(fp);
++        let code = fs.readFileSync(fp, 'utf8');
++        code = code.replace(/^(const|let) (mana|debugging|cardConjurer|setSymbolAliases|baseWidth|baseHeight|highResScale)\b/gm, 'var $2');
++        try { vm.runInThisContext(code, { filename: fp }); }
++        catch (e) { console.warn('[loadScript]', fp, e.message); }
++        return Promise.resolve();
++    };
++})();
++global.loadScript = fsLoadScript;
++loadEngineFile('js/autoFrame.js');
++loadEngineFile('js/frames/pack8th.js');
++
++// Engine init (creator-23.js:5002) overwrites #lockSetSymbolURL.checked
++// based on localStorage, undoing our SELECTOR_OVERRIDES default. Force it
++// back to true so changeCardIndex's fetchSetSymbol() at line 4457 is skipped
++// — we provide our own 8ed set icon per render.
++querySelector('#lockSetSymbolURL').checked = true;
++querySelector('#lockSetSymbolCode').checked = true;
++
++// pack8th.js does not redefine loadScript, but be defensive and reassign.
++global.loadScript = fsLoadScript;
++
++// Brush mana symbol is registered with size [2.85, 2.85] but its viewBox is
++// 32x12; both axes scale by 2.85, squaring it. Fix by recomputing height
++// from the SVG aspect.
++for (const key of ['brush', 'whitebrush']) {
++    const sym = global.mana && global.mana.get && global.mana.get(key);
++    if (!sym) continue;
++    const sp = path.join(CC_ROOT, 'img', 'manaSymbols', sym.path + '.svg');
++    if (!fs.existsSync(sp)) continue;
++    const vb = fs.readFileSync(sp, 'utf8').match(/viewBox="\s*[-\d.]+\s+[-\d.]+\s+([\d.]+)\s+([\d.]+)\s*"/);
++    if (vb) sym.height = sym.width * (parseFloat(vb[2]) / parseFloat(vb[1]));
++}
++
++// Trigger pack8th's loadFrameVersion onclick ONCE at startup. This is the
++// engine's own "Load Frame Version" workflow: it calls resetCardIrregularities,
++// sets card.version='8th', card.artBounds, card.setSymbolBounds, card.
++// watermarkBounds, and runs loadTextOptions + loadBottomInfo with the pack8th
++// template (with WotC/NFS/CC.com entries that bottomInfoEdited will filter
++// out because we have enableCollectorInfo=true).
++async function loadFrameVersion8thOnce() {
++    const handler = querySelector('#loadFrameVersion').onclick;
++    if (typeof handler === 'function') await handler();
++}
++
++// ---------------------------------------------------------------------------
++// 6. Per-card render.
++// ---------------------------------------------------------------------------
++function slugify(name) {
++    return name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
++}
++async function fetchScryfall(name) {
++    const slug = slugify(name);
++    const jsonPath = path.join(INPUTS, slug + '.json');
++    if (!fs.existsSync(jsonPath)) {
++        const url = 'https://api.scryfall.com/cards/named?exact=' + encodeURIComponent(name);
++        const r = await fetch(url, {
++            headers: { 'User-Agent': 'mtg-proxies/spike-min', 'Accept': 'application/json' },
++        });
++        if (!r.ok) throw new Error(`Scryfall ${r.status} for ${name}`);
++        fs.writeFileSync(jsonPath, await r.text());
++        await new Promise(res => setTimeout(res, 120)); // be polite (100 ms rate-limit)
++    }
++    return { scry: JSON.parse(fs.readFileSync(jsonPath, 'utf8')), slug };
++}
++
++// Layouts we punt on — the harness throws and the caller can fall back to
++// the Scryfall card image. Each of these breaks the single-frame 8th/retro
++// pack because the template has no region for the layout's special bits:
++//   saga                       — chapter strip on the left
++//   split                      — split cards (Fire // Ice) and Duskmourn Rooms
++//   flip                       — Kamigawa flip cards, bottom half rotated 180
++//   transform / modal_dfc      — DFC quirks (color, indicator, type-clip)
++//   reversible_card            — two full-art faces
++//   meld                       — back is a half-card (Brisela halves)
++//   leveler                    — level-up boxes (Joraga Treespeaker)
++//   class                      — DnD Class three-level stack
++//   case                       — Karlov Manor Cases three-section enchantment
++//   adventure                  — adventure half doesn't fit a single frame
++//   battle                     — sideways layout (March of the Machine)
++//   planar / scheme / vanguard — oversized non-card shapes
++// Planeswalkers also punt (versionPlaneswalker.js has heavy DOM deps the
++// headless context doesn't satisfy) but Scryfall keeps them on layout
++// 'normal', so they're gated on type_line below.
++const SKIP_LAYOUTS = new Set([
++    'saga', 'split', 'meld', 'leveler', 'class', 'case', 'adventure', 'battle',
++    'planar', 'scheme', 'vanguard',
++]);
++// Keyword-based skips for layouts Scryfall still marks 'normal'. Mutate and
++// Prototype each need an extra cost/text region the 8th frame doesn't have.
++const SKIP_KEYWORDS = new Set(['Mutate', 'Prototype']);
++function shouldSkip(scry) {
++    if (SKIP_LAYOUTS.has(scry.layout)) return `layout '${scry.layout}'`;
++    // Planeswalker isn't a Scryfall layout (Ashiok's layout is 'normal') — gate on type_line.
++    if ((scry.type_line || '').toLowerCase().includes('planeswalker')) return 'planeswalker';
++    for (const kw of (scry.keywords || [])) {
++        if (SKIP_KEYWORDS.has(kw)) return `keyword '${kw}'`;
++    }
++    return null;
++}
++
++// Pack routing per Scryfall layout AND requested frame. The transform / modal_dfc
++// packs (pack8thTransformFront / packM15TransformFront) set card.version which
++// makes changeCardIndex's multi-faced branch fire correctly, so parseMultiFacedCards
++// fills in front-face data and the back-face indicator gets a reminder slot. Returns
++// a discriminated shape:
++//   { single: 'packX.js' }                — single-face card
++//   { front:  'packXFront.js', back: 'packXBack.js' } — DFC
++function packForLayout(layout, frame) {
++    if (layout === 'flip') return { single: 'packFlip.js' };
++    const isDfc = (layout === 'transform' || layout === 'modal_dfc' || layout === 'reversible_card');
++    if (frame === 'modern') {
++        return isDfc
++            ? { front: 'packM15TransformFront.js', back: 'packM15TransformBack.js' }
++            : { single: 'packM15Regular-1.js' };
++    }
++    return isDfc
++        ? { front: 'pack8thTransformFront.js', back: 'pack8thTransformBack.js' }
++        : { single: 'pack8th.js' };
++}
++
++// Load the given pack file and trigger its loadFrameVersion onclick. The pack
++// replaces availableFrames + sets card.version + populates card.text via
++// loadTextOptions. Called per-card so we can switch packs (e.g. transform
++// front → vanilla 8th) across the deck without restarting the engine.
++let _lastPack = null;
++async function ensurePackLoaded(packFile) {
++    if (_lastPack !== packFile) {
++        const fp = path.join(CC_ROOT, 'js/frames/', packFile);
++        if (!fs.existsSync(fp)) throw new Error('pack not found: ' + packFile);
++        let code = fs.readFileSync(fp, 'utf8');
++        code = code.replace(/^(const|let) (mana|debugging|cardConjurer|setSymbolAliases|baseWidth|baseHeight|highResScale)\b/gm, 'var $2');
++        vm.runInThisContext(code, { filename: fp });
++        _lastPack = packFile;
++    }
++    // Re-trigger the pack's loadFrameVersion onclick each render so card.text
++    // / card.frames are reset to the pack template before importCard overwrites
++    // them — otherwise residual fields from the previous card leak through.
++    const handler = querySelector('#loadFrameVersion').onclick;
++    if (typeof handler === 'function') await handler();
++}
++
++// ---------------------------------------------------------------------------
++// 5b. Bottom info template + render.
++//
++//     CALIBRATE HERE:   edit y / size / font / x / width in the two entries
++//     below. Re-render with:   node harness.js /tmp/m.txt
++//     (where /tmp/m.txt is just one line:   Murder).
++//
++//     - cond switches text to white on dark-bordered frames (black/colorless/
++//       land/black-nyx) and keeps it black on light frames (gold, etc.).
++//     - {elemidinfo-artist}, {elemidinfo-year}, {elemidinfo-set},
++//       {elemidinfo-number} are token placeholders the engine resolves at
++//       writeText time from the matching #info-* form values.
++// ---------------------------------------------------------------------------
++function setLeanBottomInfo() {
++    const cond = '{conditionalcolor:Black_Frame*Frame*!Right_Half,Land_Frame*Frame*!Right_Half,Black_Nyx_Frame*Frame*!Right_Half,Colorless_Frame:white}';
++    global.card.bottomInfo = {
++        // === artist line (brush + artist) ===
++        top: { name: 'top',
++               text: cond + '{brush}{elemidinfo-artist}',
++               x:      150 / 2010,
++               y:     1917 / 2100,
++               width:  0.8107,
++               height: 0.0248,
++               oneLine: true, font: 'matrixb', size: 0.0248, color: 'black' },
++        // === copyright line ===
++        wizards: { name: 'wizards',
++                   text: cond + '™ & © 1993-{elemidinfo-year} Wizards of the Coast LLC {elemidinfo-set} {elemidinfo-number}',
++                   x:      155 / 2010,
++                   y:     1979 / 2100,
++                   width:  0.8107,
++                   height: 0.0153,
++                   oneLine: true, font: 'mplantin', size: 0.0153, color: 'black' },
++    };
++}
++
++
++async function renderBottomInfo() {
++    // Mirror the first half of bottomInfoEdited (creator-23.js:2867) so the
++    // engine's writeText path resolves the tokens against fresh values.
++    global.card.infoNumber   = querySelector('#info-number').value;
++    global.card.infoRarity   = querySelector('#info-rarity').value;
++    global.card.infoSet      = querySelector('#info-set').value;
++    global.card.infoLanguage = querySelector('#info-language').value;
++    global.card.infoArtist   = querySelector('#info-artist').value;
++    global.card.infoYear     = querySelector('#info-year').value;
++    global.card.infoNote     = querySelector('#info-note').value;
++
++    // Drain mana-symbol loads (the {brush} glyph) before writeText.
++    if (pendingImages.length) await Promise.allSettled(pendingImages.splice(0));
++
++    // The engine's writeText tries to read card.bottomInfo.midLeft.text when
++    // it sees {elemidinfo-set}. We don't have midLeft, so substitute the
++    // value in by hand first.
++    const setValue = querySelector('#info-set').value;
++    for (const k of Object.keys(global.card.bottomInfo)) {
++        global.card.bottomInfo[k].text = global.card.bottomInfo[k].text.replace('{elemidinfo-set}', setValue);
++    }
++
++    if (process.env.TRACE) {
++        console.log('  bottomInfo wizards.text:', JSON.stringify(global.card.bottomInfo.wizards.text));
++        console.log('  #info-number value:', JSON.stringify(querySelector('#info-number').value),
++                    'type:', typeof querySelector('#info-number').value);
++    }
++    global.bottomInfoContext.clearRect(0, 0, global.bottomInfoCanvas.width, global.bottomInfoCanvas.height);
++    for (const k of Object.keys(global.card.bottomInfo)) {
++        try { await global.writeText(global.card.bottomInfo[k], global.bottomInfoContext); }
++        catch (e) { if (process.env.TRACE) console.warn('[bottom-info]', k, e.stack); else console.warn('[bottom-info]', k, e.message); }
++    }
++}
++
++// Wipe every shared canvas back to a clean state so the next render doesn't
++// inherit pixels from the previous card.
++function resetCanvases() {
++    global.card.frames = [];
++    for (const name of ['card', 'frame', 'frameMasking', 'frameCompositing',
++                        'text', 'paragraph', 'line', 'watermark',
++                        'bottomInfo', 'guidelines', 'prePT', 'preview']) {
++        const c = global[name + 'Canvas'];
++        if (!c) continue;
++        const ctx = global[name + 'Context'] || c.getContext('2d');
++        ctx.clearRect(0, 0, c.width, c.height);
++        ctx.globalCompositeOperation = 'source-over';
++        ctx.globalAlpha = 1;
++    }
++    pendingImages.splice(0);
++}
++
++// Render a single face: load the pack, import + select the indicated face,
++// upload the matching art, autoframe, drain images, draw, save.
++async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath }) {
++    resetCanvases();
++    await ensurePackLoaded(packFile);
++
++    // Per-render selector reset. These default to 8th at load time
++    // (SELECTOR_OVERRIDES + the force-reset after engine init), but per-card frame
++    // switching needs to flip them before importCard / autoFrame fires:
++    //   #autoFrame.value     — drives the DFC back-face fallback at autoFrame() below.
++    //   #lockSetSymbolURL    — when true, the engine skips its per-set icon fetch
++    //                          (so 8th can hold the 8ed glyph). False otherwise so
++    //                          (a) modern uses the engine's per-card icon, and (b)
++    //                          our setSymbolPath upload isn't immediately overwritten.
++    //   #lockSetSymbolCode   — when true, changeCardIndex skips ``#set-symbol-code =
++    //                          cardToImport.set`` (creator-23.js:4452). The harness
++    //                          init force-sets this to true so the 8ed override
++    //                          isn't disturbed; modern needs it FALSE so the engine
++    //                          seeds the per-card set code and fetchSetSymbol fires
++    //                          with the right URL (otherwise empty code → 'cmd'
++    //                          fallback, i.e. the Commander 2011 icon for every card).
++    // Lock the URL whenever we own the upload: 8th (8ed glyph) or any frame
++    // with a setSymbolPath override (LTC / custom file). Without the lock, the
++    // engine's fetchSetSymbol races our upload and the per-set icon wins.
++    // Modern with no override → unlock both, let changeCardIndex seed the code
++    // and fire fetchSetSymbol for the per-set icon.
++    const isFlip = scry.layout === 'flip';
++    const harnessOwnsSetSymbol = (frame === '8th' && !isFlip) || !!setSymbolPath;
++    
++    let autoFrameTarget = '8th';
++    if (isFlip) autoFrameTarget = 'Flip';
++    else if (frame === 'modern') autoFrameTarget = 'M15Regular-1';
++    
++    querySelector('#autoFrame').value = autoFrameTarget;
++    querySelector('#lockSetSymbolURL').checked  = harnessOwnsSetSymbol;
++    querySelector('#lockSetSymbolCode').checked = harnessOwnsSetSymbol;
++
++    querySelector('#import-index').value = String(faceIdx);
++    global.importCard(processed);
++    
++    // For flip layouts, move the set symbol to the top type line.
++    // We anchor it relative to the type-line center and P/T box left edge.
++    if (isFlip && faceIdx === 0) {
++        const hasPT = !!(scry.card_faces?.[0]?.power || processed.power);
++        global.card.setSymbolBounds = {
++            // x: 0.9213 is flush right (Standard).
++            // x: 0.765 is shifted left to sit next to the P/T box (0.778 left edge).
++            x: hasPT ? 0.792 : 0.9213,  
++            
++            // y: 0.263 is the calculated vertical center of the type box 
++            // (top 0.2353 + half-height 0.027).
++            y: 0.260,                 
++            
++            width: 0.11,               // Standard M15 width
++            height: 0.037,             // Standard M15 height
++            vertical: 'center',
++            horizontal: 'right',
++        };
++    }
++
++    // 8th-only cosmetic shrinks. Bypass if we're rendering a flip layout.
++    if (frame === '8th' && scry.layout !== 'flip') {
++        if (global.card.text && global.card.text.type) {
++            global.card.text.type.width = 0.74;
++        }
++        if (global.card.setSymbolBounds) {
++            global.card.setSymbolBounds.height = 0.0391 * 0.94;
++            global.card.setSymbolBounds.width  = 0.12   * 0.94;
++        }
++    }
++
++    // Modern (M15) layout fixes. Bypass for flip layouts.
++    if (frame === 'modern' && scry.layout !== 'flip' && global.card.text) {
++        if (global.card.text.type) {
++            global.card.text.type.width = 0.71;
++        }
++        if (global.card.text.rules) {
++            global.card.text.rules.height = 0.253;
++        }
++    }
++
++    // Pick the art URL for THIS face. processScryfallCard propagates the
++    // top-level image_uris into faces that don't have their own (older split
++    // cards) — but DFC faces almost always have their own face.image_uris.
++    const face = processed[faceIdx] || {};
++    const artUrl = (face.image_uris && face.image_uris.art_crop) ||
++                   (scry.image_uris && scry.image_uris.art_crop) ||
++                   (scry.card_faces && scry.card_faces[faceIdx] && scry.card_faces[faceIdx].image_uris &&
++                    scry.card_faces[faceIdx].image_uris.art_crop);
++    if (artUrl) global.uploadArt(artUrl, 'autoFit');
++    // Artist can differ between faces — face.artist is what we want.
++    let artist = face.artist || scry.artist || '';
++    // Strip diacritics/accents from artist names since CC fonts (especially
++    // Beleren Small Caps) often lack extended Latin/Vietnamese glyphs.
++    if (artist) {
++        // 1. Normalize NFD decomposes combined chars (é -> e + ´). The regex strips the floating accents.
++        // 2. We manually replace characters that DO NOT decompose (like ø, æ, ß) with safe ASCII equivalents.
++        artist = artist.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
++            .replace(/đ/g, 'd').replace(/Đ/g, 'D')
++            .replace(/ø/g, 'o').replace(/Ø/g, 'O')
++            .replace(/æ/g, 'ae').replace(/Æ/g, 'AE')
++            .replace(/œ/g, 'oe').replace(/Œ/g, 'OE')
++            .replace(/ß/g, 'ss')
++            .replace(/ł/g, 'l').replace(/Ł/g, 'L');
++        if (typeof global.artistEdited === 'function') global.artistEdited(artist);
++    }
++
++    if (scry.released_at) querySelector('#info-year').value = scry.released_at.slice(0, 4);
++
++    // Set-symbol upload precedence:
++    //   1. setSymbolPath (any frame)  — Python pre-resolved this; could be a CC
++    //      bundled asset (LTC) or a custom user file. Wins unconditionally.
++    //   2. 8th frame, no override     — force the 8ed glyph by rarity, preserving
++    //      the pre-existing 8th look.
++    //   3. modern frame, no override  — do nothing here. importCard above already
++    //      called changeCardIndex (creator-23.js:3342 → 4451-4457), which seeded
++    //      #set-symbol-code from scry.set + rarity and fired fetchSetSymbol()
++    //      because we keep #lockSetSymbolURL false for the modern path. Adding
++    //      a second fetchSetSymbol here would race with the engine's call and
++    //      mis-position the icon.
++    if (typeof global.uploadSetSymbol === 'function') {
++        if (setSymbolPath) {
++            global.uploadSetSymbol(setSymbolPath, 'resetSetSymbol');
++        } else if (frame === '8th' && !isFlip) {
++            const rChar = ((scry.rarity || 'c')[0] || 'c').toLowerCase();
++            const rFile = ['c', 'u', 'r', 'm', 's'].includes(rChar) ? rChar : 'c';
++            global.uploadSetSymbol(`/img/setSymbols/official/8ed-${rFile}.svg`, 'resetSetSymbol');
++        }
++    }
++
++    if (!INCLUDE_FLAVOR) {
++        const stripFlavor = (s) => (typeof s === 'string') ? s.replace(/\{flavor\}[\s\S]*$/, '') : s;
++        for (const k of ['rules', 'rules2', 'rules3',
++                         'ability0', 'ability1', 'ability2', 'ability3']) {
++            const t = global.card.text && global.card.text[k];
++            if (t && typeof t.text === 'string') t.text = stripFlavor(t.text);
++        }
++    }
++
++    // autoFrame() reads card.text.mana.text to detect non-land colors. DFC
++    // back faces have no mana cost, so autoFrame would build a colorless
++    // frame even when the back face is e.g. Blue. Bypass autoFrame and
++    // drive autoFrameUnified directly with the face's Scryfall .colors when
++    // the face provides them.
++    // changeCardIndex → textEdited → autoFrameBuffer schedules autoFrame()
++    // on a 500ms timeout. autoFrame() reads card.text.mana.text to detect
++    // colors, but DFC back faces have empty mana_cost → colors=[] → frame
++    // defaults to Artifact + Land. Cancel the pending timer so our explicit
++    // autoFrameUnified call (with face.colors) is the final word.
++    if (global.autoFrameTimer) clearTimeout(global.autoFrameTimer);
++
++    const faceColors = (face && Array.isArray(face.colors) && face.colors.length) ? face.colors : null;
++    let frameTypeLiteral = '8th';
++    if (scry.layout === 'flip') frameTypeLiteral = 'Flip';
++    else if (frame === 'modern') frameTypeLiteral = 'M15Regular-1';
++    
++    if (faceColors && scry.layout !== 'flip') {
++        await global.autoFrameUnified(frameTypeLiteral,
++            faceColors,
++            (face.mana_cost || global.card.text.mana?.text || ''),
++            (face.type_line || global.card.text.type?.text || ''),
++            (face.power || global.card.text.pt?.text || ''));
++    } else if (scry.layout === 'flip') {
++        // autoFrame.js does not support 'Flip' layout natively.
++        // We must manually pick the correct frame from packFlip.js's availableFrames based on color.
++        
++        function getFrameNameForFace(f) {
++            if (!f) return 'Colorless Frame';
++            const colors = (Array.isArray(f.colors) && f.colors.length) ? f.colors : [];
++            if (colors.length > 1) return 'Multicolored Frame';
++            if (colors.includes('W')) return 'White Frame';
++            if (colors.includes('U')) return 'Blue Frame';
++            if (colors.includes('B')) return 'Black Frame';
++            if (colors.includes('R')) return 'Red Frame';
++            if (colors.includes('G')) return 'Green Frame';
++
++            const types = (f.type_line || '').toLowerCase();
++            if (types.includes('artifact')) return 'Artifact Frame';
++            if (types.includes('land')) return 'Land Frame';
++            return 'Colorless Frame';
++        }
++        
++        const topFrameName = getFrameNameForFace(scry.card_faces?.[0]);
++        const bottomFrameName = getFrameNameForFace(scry.card_faces?.[1]);
++        
++        // Add the top frame (full card background)
++        const topIdx = (global.availableFrames || []).findIndex(f => f && f.name === topFrameName);
++        if (topIdx >= 0) {
++            global.selectedFrameIndex = topIdx;
++            await global.addFrame([]);
++        }
++        
++        // Add the bottom frame masked to the bottom half
++        if (bottomFrameName !== topFrameName) {
++            const bottomIdx = (global.availableFrames || []).findIndex(f => f && f.name === bottomFrameName);
++            if (bottomIdx >= 0) {
++                global.selectedFrameIndex = bottomIdx;
++                // Use the smooth gradient mask for the frame background to create a seamless transition
++                await global.addFrame([{name: 'Bottom Half', src: '/img/frames/maskBottomHalf.png'}]);
++            }
++        }
++        
++        // Add P/T boxes if needed
++        const pt1 = scry.card_faces?.[0]?.power || '';
++        const pt2 = scry.card_faces?.[1]?.power || ''; 
++        
++        if (pt1) {
++             const ptFrameName = topFrameName.replace(' Frame', ' Power/Toughness');
++             const ptIdx = (global.availableFrames || []).findIndex(f => f && f.name === ptFrameName);
++             if (ptIdx >= 0) {
++                 global.selectedFrameIndex = ptIdx;
++                 // Top P/T mask (keep sharp so the box doesn't fade)
++                 await global.addFrame([{name: 'Top PT', src: '/img/frames/topHalfSharp.svg'}]);
++             }
++        }
++        if (pt2) {
++             const ptFrameName = bottomFrameName.replace(' Frame', ' Power/Toughness');
++             const ptIdx = (global.availableFrames || []).findIndex(f => f && f.name === ptFrameName);
++             if (ptIdx >= 0) {
++                 global.selectedFrameIndex = ptIdx;
++                 // Bottom P/T mask (keep sharp so the box doesn't fade)
++                 await global.addFrame([{name: 'Bottom PT', src: '/img/frames/bottomHalfSharp.svg'}]);
++             }
++        }
++
++        // Basic-land tint for flip-pair lands. Both halves still wear the parchment
++        // Land Frame; this paints the basic-land watermark (same asset CC uses for
++        // basic Plains/Island/Swamp/Mountain/Forest) over each face's rules box so
++        // the two halves are visually distinct at a glance. The mana letter is
++        // detected from each face's "Add {X}" oracle text.
++        //
++        // Sizing: the source PNGs are 521×524 (≈1:1). We keep that aspect by
++        // centring a square box on each face's rules centre — stretching to fit
++        // the wide rules region would distort the symbol grotesquely.
++        // Bounds centre derived from packFlip rules-text centres:
++        //   top rules centre ≈ (0.5, 0.162)   (rules at y:0.102, height:0.12)
++        //   bottom rules centre ≈ (0.5, 0.761) (rules2 anchored at y:0.821 rotation:180)
++        // The bottom asset is pre-rotated 180° so its symbol orientation matches the
++        // bottom face's text direction (the engine rotates rules2 text but not frame
++        // entries).
++        // opacity: 40 — matches CC's default `card.watermarkOpacity = 0.4`. The
++        // frame system reads `item.opacity / 100` at draw time (creator-23.js:500).
++        const _basicWatermark = { W: '/img/frames/m15/basics/w.png',
++                                  U: '/img/frames/m15/basics/u.png',
++                                  B: '/img/frames/m15/basics/b.png',
++                                  R: '/img/frames/m15/basics/r.png',
++                                  G: '/img/frames/m15/basics/g.png' };
++        const detectLandColor = (face) => {
++            if (!face || !(face.type_line || '').toLowerCase().includes('land')) return null;
++            const m = (face.oracle_text || '').match(/Add\b[^.]*?\{([WUBRG])\}/);
++            return m ? m[1] : null;
++        };
++        const topColor = detectLandColor(scry.card_faces?.[0]);
++        const botColor = detectLandColor(scry.card_faces?.[1]);
++        // height matches the rules-text region (0.12); width derived from the 1:1
++        // source aspect and the 1500×2100 card → 0.12 × 2100/1500 = 0.168.
++        const WM_H = 0.13;
++        const WM_W = WM_H * 2100 / 1500;            // ≈ 0.182
++        const WM_X = 0.5 - WM_W / 2;                // ≈ 0.409
++        const TOP_WM_Y = 0.162 - WM_H / 2;          // top rules centre 0.162
++        const BOT_WM_Y = 0.761 - WM_H / 2;          // bottom rules centre 0.761
++        if (topColor && _basicWatermark[topColor]) {
++            global.availableFrames.push({
++                name: '_flip_land_watermark_top',
++                src: _basicWatermark[topColor],
++                bounds: { x: WM_X, y: TOP_WM_Y, width: WM_W, height: WM_H },
++                opacity: 40,
++            });
++            global.selectedFrameIndex = global.availableFrames.length - 1;
++            await global.addFrame([]);
++        }
++        if (botColor && _basicWatermark[botColor]) {
++            const rotatedSrc = await getRotatedWatermark(_basicWatermark[botColor]);
++            global.availableFrames.push({
++                name: '_flip_land_watermark_bottom',
++                src: rotatedSrc,
++                bounds: { x: WM_X, y: BOT_WM_Y, width: WM_W, height: WM_H },
++                opacity: 40,
++            });
++            global.selectedFrameIndex = global.availableFrames.length - 1;
++            await global.addFrame([]);
++        }
++
++        // Soft tint on each rules-box background, so the half reads as a basic
++        // land of the right color even without the watermark in view. Sourced from
++        // the same /img/frames/m15/basics/*.png the watermarks use — averaged
++        // RGB → solid hex applied via the engine's `colorOverlay` field
++        // (creator-23.js:538). The masks AND together so the tint hits only the
++        // top (or bottom) half AND only the rules region — pinline and twins are
++        // untouched.
++        // opacity: 30 — subtle enough that text stays clearly readable.
++        const addRulesTint = async (color, halfMaskSrc, name) => {
++            if (!color || !_basicWatermark[color]) return;
++            const hex = await getBasicLandRGB(_basicWatermark[color]);
++            global.availableFrames.push({
++                name,
++                src: '/img/frames/m15/flip/l.png',
++                bounds: { x: 0, y: 0, width: 1, height: 1 },
++                colorOverlayCheck: true,
++                colorOverlay: hex,
++                opacity: 30,
++            });
++            global.selectedFrameIndex = global.availableFrames.length - 1;
++            await global.addFrame([
++                { name: 'Half', src: halfMaskSrc },
++                { name: 'Rules', src: '/img/frames/m15/flip/rules.svg' },
++            ]);
++        };
++        await addRulesTint(topColor, '/img/frames/topHalfSharp.svg', '_flip_land_tint_top');
++        await addRulesTint(botColor, '/img/frames/bottomHalfSharp.svg', '_flip_land_tint_bottom');
++
++        // Colored pinline. packFlip already ships colored frames with the
++        // pinline baked in (w/u/b/r/g.png), and a 'Pinline' mask. Apply the
++        // colored frame with [Half, Pinline] masks → the pinline of that half
++        // picks up the right color.
++        const _colorFrameName = { W: 'White Frame', U: 'Blue Frame', B: 'Black Frame',
++                                  R: 'Red Frame',  G: 'Green Frame' };
++        const addPinline = async (color, halfMaskSrc) => {
++            if (!color || !_colorFrameName[color]) return;
++            const idx = (global.availableFrames || []).findIndex(f => f && f.name === _colorFrameName[color]);
++            if (idx < 0) return;
++            global.selectedFrameIndex = idx;
++            await global.addFrame([
++                { name: 'Half', src: halfMaskSrc },
++                { name: 'Pinline', src: '/img/frames/m15/flip/pinline.svg' },
++            ]);
++        };
++        await addPinline(topColor, '/img/frames/maskTopHalf.png');
++        await addPinline(botColor, '/img/frames/maskBottomHalf.png');
++    } else {
++        // Fallback path: autoFrame() reads #autoFrame.value, which we already
++        // set per-render in the prologue above — so this honors the requested
++        // frame even when face.colors is empty (DFC back faces).
++        await global.autoFrame();
++    }
++
++    // DFC indicator (small icon at top-left next to title) — pack8thTransform
++    // packs include this as a separate availableFrames entry ('Up Arrow', etc.)
++    // but autoFrame doesn't add it automatically. We add it for transform /
++    // modal_dfc layouts so the rendered card shows the flip indicator like
++    // the real printed card.
++    if (['transform', 'modal_dfc', 'reversible_card'].includes(scry.layout)) {
++        const idx = (global.availableFrames || []).findIndex(f => f && f.name === 'Up Arrow');
++        if (idx >= 0) {
++            const prevIdx = global.selectedFrameIndex;
++            global.selectedFrameIndex = idx;
++            try { await global.addFrame(); }
++            catch (e) { console.warn('[dfc-icon]', e.message); }
++            global.selectedFrameIndex = prevIdx;
++        }
++    }
++
++    await Promise.allSettled(pendingImages.splice(0));
++    for (let round = 0; round < 5 && pendingImages.length; round++) {
++        await Promise.allSettled(pendingImages.splice(0));
++    }
++
++    await global.drawText();
++    if (frame === 'modern' || scry.layout === 'flip') {
++        // Use the engine's canonical M15 bottomInfo (creator-23.js:243). It builds
++        // a lean variant when #enableNewCollectorStyle is unchecked (the default
++        // in SELECTOR_OVERRIDES above) — gothammedium font, set/language/artist,
++        // copyright line, all with the right M15 frame-name conditionalcolor.
++        // Strip the two boilerplate keys the engine inlines into every M15 card:
++        // the "NOT FOR SALE" stamp (bottomLeft) and the "CardConjurer.com" tag
++        // (bottomRight). Other keys (artist/set/copyright) survive untouched.
++        await global.setBottomInfoStyle();
++        delete global.card.bottomInfo.bottomLeft;
++        delete global.card.bottomInfo.bottomRight;
++    } else {
++        setLeanBottomInfo();
++    }
++    await renderBottomInfo();
++    global.drawFrames();
++
++    const outPath = path.join(OUTPUT, outName + '.png');
++    fs.writeFileSync(outPath, global.cardCanvas.toBuffer('image/png'));
++    return outPath;
++}
++
++async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null } = {}) {
++    const skipReason = shouldSkip(scry);
++    if (skipReason) {
++        throw new Error(`${skipReason} not supported on ${frame} frame — fall back to Scryfall image`);
++    }
++
++    // Pre-process the Scryfall card the same way the GUI does. For DFC /
++    // adventure / split layouts, processScryfallCard splits card_faces into
++    // separate face objects (front + back).
++    const processed = [];
++    global.processScryfallCard(scry, processed);
++    const isDfc = ['transform', 'modal_dfc', 'reversible_card'].includes(scry.layout) &&
++                  processed.length >= 2;
++
++    const packs = packForLayout(scry.layout, frame);
++    if (isDfc) {
++        await renderFace({ packFile: packs.front, processed, faceIdx: 0, scry, outName: slug + '_front', frame, setSymbolPath });
++        await renderFace({ packFile: packs.back,  processed, faceIdx: 1, scry, outName: slug + '_back',  frame, setSymbolPath });
++        return path.join(OUTPUT, slug + '_front.png') + ', ' + slug + '_back.png';
++    }
++    return await renderFace({ packFile: packs.single, processed, faceIdx: 0, scry, outName: slug, frame, setSymbolPath });
++}
++
++
++// ---------------------------------------------------------------------------
++// 7. Driver.
++// ---------------------------------------------------------------------------
++function parseDecklist(filePath) {
++    return fs.readFileSync(filePath, 'utf8').split(/\r?\n/)
++        .map(l => l.trim())
++        .filter(l => l && !l.startsWith('#') && !l.startsWith('//'))
++        // strip optional "<count> " prefix from `mtg-proxies convert` output
++        .map(l => l.replace(/^\d+\s+/, ''));
++}
++
++async function main() {
++    const args = process.argv.slice(2).filter(a => !a.startsWith('--'));
++    const deckPath = args[0] || path.resolve(ROOT, '..', 'koni-lifegain.txt');
++    const names = parseDecklist(deckPath);
++    console.log(`[deck] ${deckPath} — ${names.length} cards`);
++
++    // ensurePackLoaded() in renderCard handles the per-card pack selection.
++    let ok = 0; const skipped = [];
++    for (const name of names) {
++        try {
++            const { scry, slug } = await fetchScryfall(name);
++            const out = await renderCard(scry, slug);
++            console.log(`[ok]   ${name} → ${path.basename(out)}`);
++            ok++;
++        } catch (e) {
++            console.warn(`[skip] ${name}: ${e.message}`);
++            if (process.env.TRACE) console.warn(e.stack);
++            skipped.push({ name, reason: e.message });
++        }
++    }
++    console.log(`\n[summary] rendered ${ok}/${names.length}`);
++    for (const s of skipped) console.log(`  skipped: ${s.name} — ${s.reason}`);
++}
++
++// ---------------------------------------------------------------------------
++// ND-JSON mode (production, driven by mtg_proxies.cardconjourer.runner).
++//
++// Reads one job per line on stdin:
++//   {"slot": "0001", "name": "Murder", "frame": "8th", "art_path": "/abs/.png"?}
++// Writes one response per line on stdout:
++//   {"slot": "0001", "status": "ok",   "out": "/abs/0001-murder.png", "ms": 1240}
++//   {"slot": "0003", "status": "skip", "reason": "layout 'saga' …"}
++//
++// One process for the whole deck — engine boot (~1-2 s) amortises across all
++// cards. Engine debug / [notify] etc. go to stderr so they don't poison the
++// stdout ND-JSON stream.
++// ---------------------------------------------------------------------------
++function writeResponse(obj) {
++    process.stdout.write(JSON.stringify(obj) + "\n");
++}
++
++async function runOneJob(job) {
++    const start = Date.now();
++    try {
++        const { scry } = await fetchScryfall(job.name);
++        
++        // art_path override: ESRGAN-upscaled local file OR Python-composited DFC art.
++        // Threaded into scry.image_uris.art_crop and face uris so the engine
++        // picks it up unconditionally.
++        if (job.art_path) {
++            const path = job.art_path;
++            scry.image_uris = scry.image_uris || {};
++            scry.image_uris.art_crop = path;
++            if (scry.card_faces && scry.card_faces[0]) {
++                scry.card_faces[0].image_uris = scry.card_faces[0].image_uris || {};
++                scry.card_faces[0].image_uris.art_crop = path;
++            }
++            if (scry.card_faces && scry.card_faces[1]) {
++                scry.card_faces[1].image_uris = scry.card_faces[1].image_uris || {};
++                scry.card_faces[1].image_uris.art_crop = path;
++            }
++        }
++
++        // Intercept DFCs and route them to a Kamigawa flip card.
++        // We do this at the boundary so the engine's core frame logic is untouched.
++        const isDfc = ['transform', 'modal_dfc', 'reversible_card'].includes(scry.layout);
++        if (isDfc) {
++            // Force the layout to flip so the engine splits the faces top/bottom
++            scry.layout = 'flip';
++        }
++
++        const frame = job.frame || '8th';
++        const setSymbolPath = job.set_symbol_path || null;
++        const slug = job.slot + '-' + slugify(job.name);
++        const outPath = await renderCard(scry, slug, { frame, setSymbolPath });
++        writeResponse({
++            slot:   job.slot,
++            status: 'ok',
++            out:    outPath,
++            ms:     Date.now() - start,
++        });
++    } catch (e) {
++        writeResponse({
++            slot:   job.slot,
++            status: 'skip',
++            reason: e.message || String(e),
++        });
++    }
++}
++
++async function runNdjson() {
++    // Streaming line-by-line: process each job as it arrives on stdin and emit
++    // its response on stdout before reading the next line. This is the contract
++    // the Python runner's interleaved --upscale mode depends on (it writes one
++    // line, flushes, blocks on the response, repeats). The previous
++    // ``for await chunk; buf += chunk`` form buffered until EOF and deadlocked
++    // the interleaved path: Python waiting on stdout, harness waiting on stdin
++    // to close. node's ``readline`` module is the standard line-streamer; we
++    // pause/resume around each job so JSON lines can't pile up unprocessed.
++    const readline = require('readline');
++    const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
++    const queue = [];
++    let resolveNext = null;
++    let done = false;
++    rl.on('line', (line) => {
++        if (resolveNext) { const r = resolveNext; resolveNext = null; r(line); }
++        else queue.push(line);
++    });
++    rl.on('close', () => { done = true; if (resolveNext) { const r = resolveNext; resolveNext = null; r(null); } });
++    function nextLine() {
++        if (queue.length) return Promise.resolve(queue.shift());
++        if (done) return Promise.resolve(null);
++        return new Promise((res) => { resolveNext = res; });
++    }
++    while (true) {
++        const line = await nextLine();
++        if (line === null) return;
++        const trimmed = line.trim();
++        if (!trimmed) continue;
++        let job;
++        try { job = JSON.parse(trimmed); }
++        catch (e) { writeResponse({ slot: '?', status: 'skip', reason: 'bad json: ' + e.message }); continue; }
++        await runOneJob(job);
++    }
++}
++
++// Pending image onloads can fire after main() returns and chain into
++// engine code that mutates DOM state that no longer makes sense (e.g.
++// addFrame's tail-call to bottomInfoEdited touches #info-* values that
++// we don't repopulate per-card). Swallow late async noise — the PNGs are
++// already written to disk by then.
++process.on('uncaughtException', () => {});
++process.on('unhandledRejection', () => {});
++
++// Pick mode by stdin: a TTY means "interactive / decklist file" (legacy spike
++// usage); a pipe means "ND-JSON from the Python runner."
++const entry = process.stdin.isTTY ? main() : runNdjson();
++entry.then(() => process.exit(0), err => {
++    console.error('[fatal]', err.stack || err);
++    process.exit(1);
++});
+diff --git a/mtg_proxies/cardconjourer/node/package.json b/mtg_proxies/cardconjourer/node/package.json
+new file mode 100644
+index 0000000..ead9568
+--- /dev/null
++++ b/mtg_proxies/cardconjourer/node/package.json
+@@ -0,0 +1,16 @@
++{
++  "name": "spike",
++  "version": "1.0.0",
++  "description": "",
++  "main": "index.js",
++  "scripts": {
++    "test": "echo \"Error: no test specified\" && exit 1"
++  },
++  "keywords": [],
++  "author": "",
++  "license": "ISC",
++  "type": "commonjs",
++  "dependencies": {
++    "canvas": "^3.2.3"
++  }
++}
+diff --git a/mtg_proxies/cardconjourer/per_card.py b/mtg_proxies/cardconjourer/per_card.py
+new file mode 100644
+index 0000000..6f235d0
+--- /dev/null
++++ b/mtg_proxies/cardconjourer/per_card.py
+@@ -0,0 +1,125 @@
++"""Batched per-card Card Conjurer rendering for the ``print`` modeline pass.
++
++The standalone ``cardconjourer`` subcommand renders a whole decklist at once.
++This module is the equivalent for ``print``-time ``#cardconjourer`` modelines:
++collect every flagged card across the decklist, spawn the node harness once,
++and return a slot-id → PNG-path mapping the caller uses to swap slots.
++
++One subprocess per ``print`` invocation, regardless of how many cards carry
++``#cardconjourer`` — keeps the ~1-2 s engine-boot cost amortized.
++"""
++
++from __future__ import annotations
++
++import os
++import subprocess
++from collections.abc import Callable
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any
++
++from . import runner as cc_runner
++
++
++@dataclass(slots=True)
++class CardConjourerRequest:
++    """One per-card render request.
++
++    ``slot_id`` is an opaque identifier the caller uses to match each response
++    back to its decklist slot. The harness echoes the slot string we put in
++    the job, so we use the same value here.
++    """
++
++    slot_id: str
++    name: str
++    frame: str  # "8th" | "retro" | "modern"
++    upscale: bool = False
++    set_symbol_path: str | None = None
++    art_path: str | None = None
++
++
++RunHarness = Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
++
++
++def _default_harness_path() -> Path:
++    return Path(__file__).resolve().parent / "node" / "harness.js"
++
++
++def _default_cache_root() -> Path:
++    return Path.home() / ".cache" / "mtg-proxies" / "cardconjurer"
++
++
++def _default_run_harness(cache_root: Path, harness_path: Path) -> RunHarness:
++    """Build the production node-subprocess wrapper, baked with the env it needs.
++
++    Tests inject their own ``run_harness``; production code calls this so the
++    closure carries the CC_ROOT env override into the spawn.
++    """
++    import json as _json
++
++    def _run(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
++        if not cache_root.is_dir():
++            raise RuntimeError(
++                f"Card Conjurer source not found at {cache_root}. Run `make cardconjurer` first."
++            )
++        proc = subprocess.Popen(
++            ["node", str(harness_path)],
++            stdin=subprocess.PIPE,
++            stdout=subprocess.PIPE,
++            stderr=subprocess.PIPE,
++            text=True,
++            env={**os.environ, "CC_ROOT": str(cache_root)},
++        )
++        payload = "".join(_json.dumps(j) + "\n" for j in jobs)
++        out, _err = proc.communicate(input=payload)
++        return [r for r in (cc_runner.parse_response(line) for line in out.splitlines()) if r]
++
++    return _run
++
++
++def render_per_card_batch(
++    requests: list[CardConjourerRequest],
++    *,
++    cache_root: Path | None = None,
++    harness_path: Path | None = None,
++    run_harness: RunHarness | None = None,
++) -> dict[str, Path]:
++    """Render every request in a single harness invocation.
++
++    Returns a ``{slot_id: png_path}`` mapping for the requests that succeeded
++    (status=ok). Skipped or absent responses are simply not in the dict —
++    callers fall back to the Scryfall image for those slots.
++
++    ``run_harness`` is injectable for tests; production defaults spawn node
++    with the bundled ``harness.js`` and ``~/.cache/mtg-proxies/cardconjurer``.
++    """
++    if not requests:
++        return {}
++    cache_root = cache_root if cache_root is not None else _default_cache_root()
++    harness_path = harness_path if harness_path is not None else _default_harness_path()
++    if run_harness is None:
++        run_harness = _default_run_harness(cache_root, harness_path)
++
++    jobs = [
++        cc_runner.build_job(
++            slot=int(req.slot_id),
++            name=req.name,
++            frame=req.frame,
++            upscale=req.upscale,
++            set_symbol_path=req.set_symbol_path,
++            art_path=req.art_path,
++        )
++        for req in requests
++    ]
++    responses = run_harness(jobs)
++
++    by_slot: dict[str, Path] = {}
++    for resp in responses:
++        if resp.get("status") != "ok":
++            continue
++        slot = resp.get("slot")
++        out = resp.get("out")
++        if slot is None or out is None:
++            continue
++        by_slot[str(slot)] = Path(out)
++    return by_slot
+diff --git a/mtg_proxies/cardconjourer/runner.py b/mtg_proxies/cardconjourer/runner.py
+new file mode 100644
+index 0000000..e163498
+--- /dev/null
++++ b/mtg_proxies/cardconjourer/runner.py
+@@ -0,0 +1,293 @@
++"""Spawn the headless Card Conjurer node harness and bookkeep its output.
++
++The runner takes a decklist + an output directory + frame flags. It spawns one
++node subprocess for the whole deck (engine boot amortizes), pipes one ND-JSON
++job per card to its stdin, and reads one ND-JSON result per card from stdout.
++
++For each card:
++  * status=ok    → harness wrote ``<OUTDIR>/<NNNN>-<slug>.png``
++  * status=skip  → card needs a Scryfall-based fallback; runner records the
++                   line in ``<OUTDIR>/fallback.txt`` (same decklist format
++                   as the input, so ``mtg-proxies print`` can take it as-is).
++
++Both buckets land in ``<OUTDIR>/report.csv`` for audit.
++
++Module surface (pure functions, no subprocess) so the formatters are unit-
++testable in isolation; the orchestration (``render_deck``) wraps them.
++"""
++
++from __future__ import annotations
++
++import csv
++import io
++import json
++import re
++import shutil
++import subprocess
++from collections.abc import Callable, Iterable
++from pathlib import Path
++from typing import Any
++
++
++def slug(name: str) -> str:
++    """Python mirror of the JS slugifier in harness.js.
++
++    Lowercase, every non-alphanumeric run collapsed to ``_``, no leading or
++    trailing underscores. Must match the JS implementation exactly so the
++    Python side can predict the harness's per-card output filename
++    (``<NNNN>-<slug>.png``) and pre-seed its INPUTS cache.
++    """
++    return re.sub(r"^_+|_+$", "", re.sub(r"[^a-z0-9]+", "_", name.lower()))
++
++# A ``run_harness`` callable receives:
++#   - the list of job dicts (one per non-skipped card; basic fields only)
++#   - an optional ``prepare_each(slot_int) -> dict`` callable; if non-None, the
++#     harness MUST call it right before sending each card's job and merge the
++#     result into the job dict. This is how the cli's ``--upscale`` path
++#     interleaves the slow ESRGAN pass with the harness render rather than
++#     doing them in two phases.
++# It returns the list of response dicts. The default production implementation
++# spawns the node subprocess; tests pass a stub.
++PrepareEach = Callable[[int], dict[str, Any]]
++RunHarness = Callable[..., list[dict[str, Any]]]
++
++
++def build_job(
++    slot: int,
++    name: str,
++    frame: str,
++    art_path: str | None = None,
++    upscale: bool = False,
++    set_symbol_path: str | None = None,
++) -> dict[str, Any]:
++    """Build one ND-JSON job dict for the node harness.
++
++    ``slot`` is the 1-based card index in the decklist; serialized as a 4-digit
++    zero-padded string so the harness's output filename (``<NNNN>-<slug>.png``)
++    sorts correctly in shells and matches the ``mpcfill`` convention.
++
++    ``frame`` is the frame-flag string (``"8th"``, ``"retro"``, or ``"modern"``);
++    the harness dispatches its frame-pack selection on this.
++
++    ``art_path`` (optional) is an absolute local path. When set, the harness
++    skips its built-in Scryfall ``art_crop`` fetch and reads the file directly.
++    The Python side uses this for ESRGAN-upscaled art: download → upscale →
++    pass path here.
++
++    ``upscale`` is currently a passthrough hint for the report; the actual
++    upscaling happens in Python before this is called.
++
++    ``set_symbol_path`` (optional) is an absolute local file path that the
++    harness uploads as the rendered card's set symbol, overriding both the
++    8th-only ``8ed-<rarity>.svg`` hardcode and the engine's per-set fetch.
++    Resolved on the Python side via ``resolve_set_symbol`` so the harness only
++    ever sees a path string.
++    """
++    job: dict[str, Any] = {
++        "slot": f"{slot:04d}",
++        "name": name,
++        "frame": frame,
++    }
++    if art_path is not None:
++        job["art_path"] = art_path
++    if upscale:
++        job["upscale"] = True
++    if set_symbol_path is not None:
++        job["set_symbol_path"] = set_symbol_path
++    return job
++
++
++def parse_response(line: str) -> dict[str, Any] | None:
++    """Parse one ND-JSON line from the harness's stdout.
++
++    Returns the parsed dict, or ``None`` for blank lines / malformed JSON.
++    Malformed lines are tolerated so a transient harness hiccup doesn't kill
++    the whole deck render; the caller logs and continues.
++    """
++    text = line.strip()
++    if not text:
++        return None
++    try:
++        return json.loads(text)
++    except json.JSONDecodeError:
++        return None
++
++
++def format_fallback_txt(rows: Iterable[dict[str, Any]]) -> str:
++    """Render a list of skipped-card dicts as a decklist for ``print`` to consume.
++
++    Each row is ``{"count": int, "name": str, "reason": str}``. ``reason`` is
++    not written into the output (it lives in ``report.csv``); the goal here is
++    a clean decklist ``"<count> <name>"`` so the file pipes straight into
++    ``mtg-proxies print``.
++    """
++    out: list[str] = []
++    for row in rows:
++        count = row["count"]
++        name = row["name"]
++        out.append(f"{count} {name}\n")
++    return "".join(out)
++
++
++def spawn_node_harness(
++    jobs: list[dict[str, Any]],
++    harness_path: str | Path,
++    node_bin: str = "node",
++    timeout: float | None = None,
++) -> list[dict[str, Any]]:
++    """Spawn ``node <harness_path>``, pipe jobs as ND-JSON, collect responses.
++
++    One process for the whole batch — engine boot (~1-2 s) amortizes across
++    every card. stdin closes when all jobs are written so the harness knows
++    to exit cleanly. Malformed response lines are skipped (the harness's own
++    debug prints occasionally land on stdout and we don't want them killing
++    the run).
++
++    Used as the default :data:`run_harness` for :func:`render_deck` in
++    production; tests inject a stub callable instead.
++    """
++    proc = subprocess.Popen(
++        [node_bin, str(harness_path)],
++        stdin=subprocess.PIPE,
++        stdout=subprocess.PIPE,
++        stderr=subprocess.PIPE,
++        text=True,
++    )
++
++    # ``communicate`` handles stdin write + close + stdout/stderr drain in one
++    # call without deadlocking on large outputs. Building the whole input
++    # string up front is fine — even a 500-card deck is ~50 KB of ND-JSON.
++    payload = "".join(json.dumps(job) + "\n" for job in jobs)
++    out, _err = proc.communicate(input=payload, timeout=timeout)
++
++    responses: list[dict[str, Any]] = []
++    for line in out.splitlines():
++        parsed = parse_response(line)
++        if parsed is not None:
++            responses.append(parsed)
++    return responses
++
++
++def render_deck(
++    cards: list[tuple[int, str]],
++    outdir: str | Path,
++    frame: str = "8th",
++    upscale: bool = False,
++    run_harness: RunHarness | None = None,
++    prepare_each: PrepareEach | None = None,
++) -> dict[str, int]:
++    """Render a whole decklist via the headless Card Conjurer harness.
++
++    Each ``(count, name)`` becomes one job (count is *not* duplicated into
++    multiple jobs — we render each *unique* name once and rely on the print
++    pipeline to repeat the image per copy, same as ``mpcfill``).
++
++    Cards whose ``<NNNN>-<slug>.png`` already exists in ``outdir`` are skipped
++    (not sent to the harness, reported as ok with the existing file). Delete
++    a PNG to force a re-render. This makes iterating on a deck cheap.
++
++    ``prepare_each``, if given, is a callable ``(slot_int) -> dict`` that the
++    harness MUST call right before sending each card's job; the returned dict
++    is merged into the job (e.g. ``{"art_path": "/tmp/upscaled-2.png"}``).
++    This is the interleaving hook for ``--upscale``: the slow ESRGAN pass runs
++    just before its card's render rather than batching upfront. Skipped cards
++    short-circuit before ``prepare_each`` fires — no wasted work.
++
++    For every card the harness returns ``status="ok"`` or ``status="skip"``.
++    Ok PNGs are copied into ``outdir`` under their slot-prefixed filename.
++    Skipped cards are recorded in ``outdir/fallback.txt`` (decklist format,
++    so the user can pipe it into ``mtg-proxies print``) and ``outdir/report.csv``.
++
++    ``run_harness`` is injectable so tests can stub the node subprocess.
++    """
++    outdir = Path(outdir)
++    outdir.mkdir(parents=True, exist_ok=True)
++
++    # Build the job list, skipping any card whose output PNG already exists.
++    # Pre-existing PNGs are recorded as synthetic ok responses so the summary,
++    # report.csv, and fallback.txt see them.
++    jobs: list[dict[str, Any]] = []
++    pre_existing: list[dict[str, Any]] = []
++    for i, (_count, name) in enumerate(cards):
++        slot_int = i + 1
++        slot_str = f"{slot_int:04d}"
++        expected = outdir / f"{slot_str}-{slug(name)}.png"
++        if expected.is_file():
++            pre_existing.append({
++                "slot": slot_str, "status": "ok", "out": str(expected), "ms": 0,
++            })
++            continue
++        jobs.append(build_job(slot=slot_int, name=name, frame=frame, upscale=upscale))
++
++    if run_harness is None:
++        raise NotImplementedError(
++            "Default subprocess-spawning run_harness not implemented yet; "
++            "pass run_harness= for now."
++        )
++    if jobs:
++        # Support both the simple (jobs,) signature and the new (jobs, prepare) one.
++        # Tests written before the prepare_each hook only accept one positional arg.
++        try:
++            responses = list(run_harness(jobs, prepare_each))
++        except TypeError:
++            responses = list(run_harness(jobs))
++    else:
++        responses = []
++    responses.extend(pre_existing)
++
++    # Index responses by slot for O(1) lookup, since slots may come back out of order.
++    responses_by_slot = {r["slot"]: r for r in responses}
++
++    fallback_rows: list[dict[str, Any]] = []
++    report_rows: list[dict[str, Any]] = []
++    ok = skipped = 0
++    for i, (count, name) in enumerate(cards):
++        slot_str = f"{i + 1:04d}"
++        r = responses_by_slot.get(slot_str, {"status": "skip", "reason": "no response"})
++        if r["status"] == "ok":
++            src = Path(r["out"])
++            dst = outdir / src.name
++            # When the harness writes directly into ``outdir`` the names match
++            # and shutil.copy is a no-op-ish overwrite; otherwise we move it
++            # into place. Use copy (not move) so the harness's working directory
++            # is left intact for debugging.
++            if src.resolve() != dst.resolve():
++                shutil.copyfile(src, dst)
++            report_rows.append({
++                "slot": slot_str, "name": name, "status": "ok",
++                "reason": "", "png": dst.name, "ms": r.get("ms", 0),
++            })
++            ok += 1
++        else:
++            fallback_rows.append({"count": count, "name": name, "reason": r.get("reason", "")})
++            report_rows.append({
++                "slot": slot_str, "name": name, "status": "skip",
++                "reason": r.get("reason", ""), "png": "", "ms": 0,
++            })
++            skipped += 1
++
++    (outdir / "fallback.txt").write_text(format_fallback_txt(fallback_rows))
++    (outdir / "report.csv").write_text(format_report_csv(report_rows))
++
++    return {"ok": ok, "skipped": skipped, "total": len(cards)}
++
++
++def format_report_csv(rows: Iterable[dict[str, Any]]) -> str:
++    """Render a list of per-card result dicts as CSV.
++
++    Columns: slot, name, status (ok/skip), reason, png (filename or empty),
++    ms (render time). Card names with commas are quoted by ``csv.writer``.
++    """
++    buf = io.StringIO()
++    writer = csv.writer(buf, lineterminator="\n")
++    writer.writerow(["slot", "name", "status", "reason", "png", "ms"])
++    for row in rows:
++        writer.writerow([
++            row["slot"],
++            row["name"],
++            row["status"],
++            row["reason"],
++            row["png"],
++            row["ms"],
++        ])
++    return buf.getvalue()
+diff --git a/mtg_proxies/cardconjourer/set_symbol.py b/mtg_proxies/cardconjourer/set_symbol.py
+new file mode 100644
+index 0000000..fa492ea
+--- /dev/null
++++ b/mtg_proxies/cardconjourer/set_symbol.py
+@@ -0,0 +1,64 @@
++r"""Resolve a ``--set-symbol`` value into an absolute file path the harness can upload.
++
++The CLI / modeline accepts either form interchangeably:
++
++  * **Path** — anything that contains ``/``, ``\``, or has a file extension. Treated
++    as a filesystem path, ``~`` is expanded, must point at an existing file.
++  * **CC set code** — alphanumeric, no separator, no extension (e.g. ``LTC``, ``MKM``,
++    ``proxy``). Resolved per-card to ``<cc_root>/img/setSymbols/official/<code>-<rarity>.svg``
++    against the cached Card Conjurer engine.
++
++Detection examples::
++
++    resolve_set_symbol("./logo.png", "r", cc_root)  # path (contains '/')
++    resolve_set_symbol("logo.png",   "r", cc_root)  # path (extension '.png')
++    resolve_set_symbol("LTC",        "r", cc_root)  # code  → <cc>/...ltc-r.svg
++    resolve_set_symbol("MKM/",       "r", cc_root)  # path (trailing '/'), errors
++
++Resolution lives on the Python side because the set-code form needs each card's
++rarity, and the path form needs ``cc_root`` injection — both inputs are easier
++to thread through Python than into the Node harness.
++"""
++
++from __future__ import annotations
++
++from pathlib import Path
++
++_VALID_RARITY_CHARS = frozenset({"c", "u", "r", "m", "s"})
++
++
++def resolve_set_symbol(value: str | None, rarity: str, cc_root: Path) -> str | None:
++    """Resolve a ``--set-symbol`` value to an absolute file path, or None.
++
++    Args:
++        value: User-supplied value from CLI flag or modeline. Falsy (``None``,
++            empty string) returns ``None`` — caller should treat as "no override".
++        rarity: The card's Scryfall rarity (``"common"``/``"uncommon"``/``"rare"``/
++            ``"mythic"``/``"special"``). Only the first character matters; unknown
++            chars fall back to ``c``. Used only for the set-code form.
++        cc_root: Root of the cached Card Conjurer engine
++            (typically ``~/.cache/mtg-proxies/cardconjurer``). Used only for the
++            set-code form. Injected so tests can point at a fixture directory.
++
++    Returns:
++        An absolute file path as a string, or ``None`` if ``value`` is falsy.
++
++    Raises:
++        FileNotFoundError: When a path doesn't point at an existing file, or
++            when a set code resolves to a missing CC asset. Both messages echo
++            the resolved location so the user can fix it.
++    """
++    if not value:
++        return None
++    if "/" in value or "\\" in value or Path(value).suffix:
++        p = Path(value).expanduser().resolve()
++        if not p.is_file():
++            raise FileNotFoundError(f"--set-symbol path not found: {p}")
++        return str(p)
++    r = (rarity or "c")[:1].lower()
++    if r not in _VALID_RARITY_CHARS:
++        r = "c"
++    asset = cc_root / "img" / "setSymbols" / "official" / f"{value.lower()}-{r}.svg"
++    if not asset.is_file():
++        raise FileNotFoundError(f"--set-symbol set code {value!r}: no CC asset at {asset}")
++    return str(asset)
+diff --git a/tests/cardconjourer/__init__.py b/tests/cardconjourer/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/tests/cardconjourer/test_cli.py b/tests/cardconjourer/test_cli.py
+new file mode 100644
+index 0000000..f0f63dd
+--- /dev/null
++++ b/tests/cardconjourer/test_cli.py
+@@ -0,0 +1,481 @@
++"""CLI integration for ``mtg-proxies cardconjourer``."""
++
++from __future__ import annotations
++
++from pathlib import Path
++from unittest.mock import patch
++
++import pytest
++
++
++def test_main_help_lists_cardconjourer_subcommand(capsys: pytest.CaptureFixture) -> None:
++    """Top-level help mentions the new subcommand."""
++    from mtg_proxies.cli import main
++
++    with patch("sys.argv", ["mtg-proxies", "--help"]), pytest.raises(SystemExit):
++        main()
++
++    captured = capsys.readouterr()
++    assert "cardconjourer" in captured.out
++
++
++def test_main_cardconjourer_help_mentions_frame_flags(capsys: pytest.CaptureFixture) -> None:
++    """`mtg-proxies cardconjourer --help` documents --8th, --retro, --modern, --upscale, --set-symbol."""
++    from mtg_proxies.cli import main
++
++    with patch("sys.argv", ["mtg-proxies", "cardconjourer", "--help"]), pytest.raises(SystemExit):
++        main()
++
++    out = capsys.readouterr().out
++    assert "--8th" in out
++    assert "--retro" in out
++    assert "--modern" in out
++    assert "--upscale" in out
++    assert "--set-symbol" in out
++
++
++def test_main_cardconjourer_requires_a_frame_flag(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
++    """Either --8th or --retro must be specified; absent → exits with error."""
++    from mtg_proxies.cli import main
++
++    deck = tmp_path / "d.txt"
++    deck.write_text("1 Murder\n")
++
++    with patch("sys.argv", ["mtg-proxies", "cardconjourer", str(deck), str(tmp_path / "out")]):
++        with pytest.raises(SystemExit):
++            main()
++
++    err = capsys.readouterr().err
++    assert "--8th" in err or "--retro" in err
++
++
++def test_main_cardconjourer_invokes_render_deck(tmp_path: Path) -> None:
++    """`cardconjourer --8th deck.txt OUTDIR` calls render_deck with parsed cards + frame=8th."""
++    from mtg_proxies.cli import main
++
++    deck = tmp_path / "d.txt"
++    deck.write_text("1 Murder\n2 Spin Out\n")
++    outdir = tmp_path / "out"
++
++    with (
++        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(outdir)]),
++        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
++    ):
++        mock_render.return_value = {"ok": 2, "skipped": 0, "total": 2}
++        main()
++
++    mock_render.assert_called_once()
++    kwargs = mock_render.call_args.kwargs
++    args = mock_render.call_args.args
++    # First positional arg: cards list of (count, name) tuples
++    cards = args[0] if args else kwargs.get("cards")
++    assert cards == [(1, "Murder"), (2, "Spin Out")]
++    # Frame is 8th
++    assert kwargs.get("frame") == "8th" or (len(args) >= 3 and args[2] == "8th")
++    # Upscale defaults off
++    assert kwargs.get("upscale", False) is False
++
++
++def test_main_cardconjourer_upscale_flag_propagates(tmp_path: Path) -> None:
++    """``--upscale`` enables the ESRGAN pass for cards where MTGPics misses."""
++    from PIL import Image
++
++    from mtg_proxies.cli import main
++
++    deck = tmp_path / "d.txt"
++    deck.write_text("1 Murder\n")
++    outdir = tmp_path / "out"
++    art_jpg = tmp_path / "art.jpg"
++    Image.new("RGB", (10, 10)).save(art_jpg, format="JPEG")
++
++    with (
++        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", "--upscale", str(deck), str(outdir)]),
++        # MTGPics miss → Scryfall fallback path → upscale runs.
++        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=None),
++        patch("mtg_proxies.scryfall.get_image", return_value=str(art_jpg)),
++        patch("mtg_proxies.upscale.upscale_images", return_value=[str(tmp_path / "art_4x.png")]),
++        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
++    ):
++        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
++        main()
++
++    assert mock_render.call_args.kwargs.get("upscale") is True
++
++
++def test_main_cardconjourer_upscale_interleaves_via_prepare_each(tmp_path: Path) -> None:
++    """`--upscale` passes a `prepare_each` callable to render_deck instead of pre-batching.
++
++    Interleaved flow: render_deck/_run calls `prepare_each(slot)` right before each
++    card's job is sent to the harness. The callable does the JPG→PNG transcode + ESRGAN
++    upscale for that one card and returns the `art_path` override. This is what makes
++    PNGs appear in outdir as each card finishes rather than after the whole upscale
++    phase completes.
++    """
++    from PIL import Image
++
++    from mtg_proxies.cli import main
++
++    deck = tmp_path / "d.txt"
++    deck.write_text("1 Murder\n")
++    outdir = tmp_path / "out"
++
++    downloaded = tmp_path / "art.jpg"
++    Image.new("RGB", (10, 10), color=(0, 0, 0)).save(downloaded, format="JPEG")
++    upscaled = tmp_path / "art_4x.png"
++    upscaled.write_bytes(b"PNG-bytes")
++
++    with (
++        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", "--upscale", str(deck), str(outdir)]),
++        # MTGPics miss → Scryfall fallback path → upscale runs on the Scryfall art.
++        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=None),
++        patch("mtg_proxies.scryfall.get_image", return_value=str(downloaded)),
++        patch("mtg_proxies.upscale.upscale_images", return_value=[str(upscaled)]) as mock_upscale,
++        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
++    ):
++        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
++        main()
++
++        # render_deck got a prepare_each callable. Invoke it for slot 1 inside the
++        # patch scope so the mocked upscaler intercepts the call.
++        prepare_each = mock_render.call_args.kwargs.get("prepare_each")
++        assert callable(prepare_each), f"expected prepare_each callable, got {prepare_each!r}"
++
++        extras = prepare_each(1)
++        assert extras.get("art_path") == str(upscaled)
++
++        # The upscaler was invoked exactly once (for slot 1, when prepare_each fired).
++        mock_upscale.assert_called_once()
++        upscale_paths = mock_upscale.call_args.args[0]
++        assert len(upscale_paths) == 1
++        assert upscale_paths[0].endswith(".png"), f"upscaler got non-png: {upscale_paths[0]!r}"
++        assert Path(upscale_paths[0]).is_file()
++
++
++def test_main_cardconjourer_no_upscale_still_passes_prepare_each(tmp_path: Path) -> None:
++    """Even without --upscale, prepare_each is now ALWAYS passed (MTGPics is the new default).
++
++    Without the upscale flag: MTGPics is still tried; on a hit ``art_path`` is the
++    high-res MTGPics file, on a miss it's the raw Scryfall art_crop (no ESRGAN).
++    Upscale_images is never invoked.
++    """
++    from mtg_proxies.cli import main
++
++    deck = tmp_path / "d.txt"
++    deck.write_text("1 Murder\n")
++    outdir = tmp_path / "out"
++
++    with (
++        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(outdir)]),
++        patch("mtg_proxies.upscale.upscale_images") as mock_upscale,
++        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
++    ):
++        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
++        main()
++
++    # prepare_each is always supplied; upscale_images must never run without --upscale.
++    assert callable(mock_render.call_args.kwargs.get("prepare_each"))
++    mock_upscale.assert_not_called()
++
++
++def test_main_cardconjourer_mtgpics_hit_returns_native_art_path(tmp_path: Path) -> None:
++    """MTGPics hit on prepare_each(1) returns the local hi-res file path as art_path."""
++    from mtg_proxies.cli import main
++
++    deck = tmp_path / "d.txt"
++    deck.write_text("1 Murder\n")
++    outdir = tmp_path / "out"
++    mtgpics_path = tmp_path / "mtgp" / "soc" / "128.jpg"
++    mtgpics_path.parent.mkdir(parents=True)
++    mtgpics_path.write_bytes(b"x" * 10000)
++
++    with (
++        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(outdir)]),
++        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=mtgpics_path) as mock_mtgp,
++        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
++    ):
++        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
++        main()
++
++        prepare_each = mock_render.call_args.kwargs.get("prepare_each")
++        extras = prepare_each(1)
++        assert extras.get("art_path") == str(mtgpics_path)
++        mock_mtgp.assert_called_once()
++
++
++def test_main_cardconjourer_mtgpics_miss_falls_back_to_raw_scryfall(tmp_path: Path) -> None:
++    """MTGPics miss + no --upscale → fall back to Scryfall art_crop, raw (no upscale)."""
++    from mtg_proxies.cli import main
++
++    deck = tmp_path / "d.txt"
++    deck.write_text("1 Murder\n")
++    outdir = tmp_path / "out"
++
++    with (
++        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(outdir)]),
++        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=None),
++        patch("mtg_proxies.scryfall.get_image", return_value="/tmp/scryfall.jpg") as mock_scry,
++        patch("mtg_proxies.upscale.upscale_images") as mock_upscale,
++        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
++    ):
++        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
++        main()
++
++        prepare_each = mock_render.call_args.kwargs.get("prepare_each")
++        extras = prepare_each(1)
++        assert extras.get("art_path") == "/tmp/scryfall.jpg"
++        mock_scry.assert_called_once()
++        mock_upscale.assert_not_called()
++
++
++def test_main_cardconjourer_scryfall_flag_skips_mtgpics(tmp_path: Path) -> None:
++    """`--scryfall` skips MTGPics entirely; fetch_mtgpics_art is never called."""
++    from mtg_proxies.cli import main
++
++    deck = tmp_path / "d.txt"
++    deck.write_text("1 Murder\n")
++    outdir = tmp_path / "out"
++
++    with (
++        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", "--scryfall", str(deck), str(outdir)]),
++        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art") as mock_mtgp,
++        patch("mtg_proxies.scryfall.get_image", return_value="/tmp/scryfall.jpg") as mock_scry,
++        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
++    ):
++        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
++        main()
++
++        prepare_each = mock_render.call_args.kwargs.get("prepare_each")
++        extras = prepare_each(1)
++        assert extras.get("art_path") == "/tmp/scryfall.jpg"
++        # MTGPics is bypassed even when the card is one MTGPics would have.
++        mock_mtgp.assert_not_called()
++        mock_scry.assert_called_once()
++
++
++def test_main_cardconjourer_skip_cc_modeline_routes_to_fallback(tmp_path: Path) -> None:
++    """``#cardconjourer --skip-cc`` modeline → card never reaches the harness, synthesized as skip."""
++    from mtg_proxies.cli import main
++
++    deck = tmp_path / "d.txt"
++    deck.write_text("1 Murder #cardconjourer --skip-cc\n")
++    outdir = tmp_path / "out"
++
++    with (
++        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(outdir)]),
++        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
++    ):
++        mock_render.return_value = {"ok": 0, "skipped": 1, "total": 1}
++        main()
++
++        # Pull the run_harness wrapper that cli passes to render_deck and call it with
++        # the job render_deck would have built for slot 1. The wrapper must synthesize
++        # a single skip response and MUST NOT spawn node — verified by patching
++        # subprocess.Popen and asserting it never fires.
++        run_harness = mock_render.call_args.kwargs.get("run_harness")
++        assert callable(run_harness)
++
++        jobs = [{"slot": "0001", "name": "Murder", "frame": "8th"}]
++        with patch("subprocess.Popen") as mock_popen:
++            responses = run_harness(jobs, None)
++
++        assert len(responses) == 1
++        assert responses[0]["status"] == "skip"
++        assert "skip-cc" in responses[0]["reason"]
++        mock_popen.assert_not_called()
++
++
++# ---------------------------------------------------------------------------
++# --modern frame + --set-symbol (M15 frame routing + per-card symbol override)
++# ---------------------------------------------------------------------------
++
++
++def test_main_cardconjourer_modern_propagates_frame(tmp_path: Path) -> None:
++    """`cardconjourer --modern deck.txt OUTDIR` reaches render_deck with frame='modern'."""
++    from mtg_proxies.cli import main
++
++    deck = tmp_path / "d.txt"
++    deck.write_text("1 Murder\n")
++
++    with (
++        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--modern", str(deck), str(tmp_path / "out")]),
++        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
++    ):
++        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
++        main()
++
++    assert mock_render.call_args.kwargs.get("frame") == "modern"
++
++
++def test_main_cardconjourer_modern_and_8th_mutex(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
++    """`--modern` and `--8th` are mutually exclusive."""
++    from mtg_proxies.cli import main
++
++    deck = tmp_path / "d.txt"
++    deck.write_text("1 Murder\n")
++    argv = ["mtg-proxies", "cardconjourer", "--modern", "--8th", str(deck), str(tmp_path / "out")]
++
++    with patch("sys.argv", argv), pytest.raises(SystemExit):
++        main()
++
++    err = capsys.readouterr().err
++    assert "not allowed" in err or "argument" in err
++
++
++def _make_cc_root_with_ltc(tmp_path: Path) -> Path:
++    """Build a CC cache root with the LTC set-symbol assets across all rarities.
++
++    Seeded for c/u/r/m so the test doesn't have to know which rarity Scryfall
++    returns for the Murder fixture card.
++    """
++    cc_root = tmp_path / "cc-cache"
++    official = cc_root / "img" / "setSymbols" / "official"
++    official.mkdir(parents=True)
++    for char in ("c", "u", "r", "m"):
++        (official / f"ltc-{char}.svg").write_text("<svg/>")
++    return cc_root
++
++
++def test_main_cardconjourer_set_symbol_path_reaches_prepare_each(tmp_path: Path) -> None:
++    """`--set-symbol PATH` (existing file) lands in the job's extras via prepare_each."""
++    from mtg_proxies.cli import main
++
++    deck = tmp_path / "d.txt"
++    deck.write_text("1 Murder\n")
++    sym = tmp_path / "logo.png"
++    sym.write_bytes(b"png")
++
++    with (
++        patch(
++            "sys.argv",
++            ["mtg-proxies", "cardconjourer", "--8th", "--set-symbol", str(sym), str(deck), str(tmp_path / "out")],
++        ),
++        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=None),
++        patch("mtg_proxies.scryfall.get_image", return_value="/tmp/scryfall.jpg"),
++        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
++    ):
++        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
++        main()
++
++        prepare_each = mock_render.call_args.kwargs.get("prepare_each")
++        extras = prepare_each(1)
++        assert extras.get("set_symbol_path") == str(sym.resolve())
++
++
++def test_main_cardconjourer_set_symbol_works_on_modern(tmp_path: Path) -> None:
++    """`--modern --set-symbol PATH` propagates the same way as `--8th --set-symbol`."""
++    from mtg_proxies.cli import main
++
++    deck = tmp_path / "d.txt"
++    deck.write_text("1 Murder\n")
++    sym = tmp_path / "logo.png"
++    sym.write_bytes(b"png")
++
++    with (
++        patch(
++            "sys.argv",
++            ["mtg-proxies", "cardconjourer", "--modern", "--set-symbol", str(sym), str(deck), str(tmp_path / "out")],
++        ),
++        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=None),
++        patch("mtg_proxies.scryfall.get_image", return_value="/tmp/scryfall.jpg"),
++        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
++    ):
++        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
++        main()
++
++        prepare_each = mock_render.call_args.kwargs.get("prepare_each")
++        extras = prepare_each(1)
++        assert extras.get("set_symbol_path") == str(sym.resolve())
++        assert mock_render.call_args.kwargs.get("frame") == "modern"
++
++
++def test_main_cardconjourer_set_symbol_code_resolves_via_cc_cache(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    """`--set-symbol LTC` resolves to ltc-r.svg against the cached CC engine for a rare card.
++
++    The Murder Scryfall card we mock here is parametrized as `rarity="rare"`, so the
++    resolver expects `ltc-r.svg`.
++    """
++    from mtg_proxies.cli import main
++
++    cc_root = _make_cc_root_with_ltc(tmp_path)
++    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
++    # Make the resolver's `~/.cache/mtg-proxies/cardconjurer` point at our fixture.
++    (tmp_path / ".cache" / "mtg-proxies").mkdir(parents=True)
++    (tmp_path / ".cache" / "mtg-proxies" / "cardconjurer").symlink_to(cc_root)
++
++    deck = tmp_path / "d.txt"
++    deck.write_text("1 Murder\n")
++
++    argv = [
++        "mtg-proxies", "cardconjourer", "--modern", "--set-symbol", "LTC",
++        str(deck), str(tmp_path / "out"),
++    ]
++    with (
++        patch("sys.argv", argv),
++        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=None),
++        patch("mtg_proxies.scryfall.get_image", return_value="/tmp/scryfall.jpg"),
++        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
++    ):
++        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
++        main()
++
++        prepare_each = mock_render.call_args.kwargs.get("prepare_each")
++        extras = prepare_each(1)
++        # Resolved path goes through the symlinked cache root → ends in
++        # ltc-<rarity>.svg for whichever rarity Scryfall returns for Murder.
++        sym = extras.get("set_symbol_path", "")
++        assert any(sym.endswith(f"ltc-{c}.svg") for c in "curm"), sym
++
++
++def test_main_cardconjourer_set_symbol_missing_file_exits(
++    capsys: pytest.CaptureFixture, tmp_path: Path
++) -> None:
++    """`--set-symbol /missing.png` errors out cleanly before any subprocess spawn."""
++    from mtg_proxies.cli import main
++
++    deck = tmp_path / "d.txt"
++    deck.write_text("1 Murder\n")
++
++    argv = [
++        "mtg-proxies", "cardconjourer", "--8th", "--set-symbol", "/nope/missing.png",
++        str(deck), str(tmp_path / "out"),
++    ]
++    with (
++        patch("sys.argv", argv),
++        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
++    ):
++        mock_render.return_value = {"ok": 0, "skipped": 0, "total": 0}
++        with pytest.raises(SystemExit):
++            main()
++
++    captured = capsys.readouterr()
++    assert "--set-symbol" in (captured.out + captured.err)
++
++
++# ---------------------------------------------------------------------------
++# Bundled fonts (don't default to arial on a fresh checkout)
++# ---------------------------------------------------------------------------
++
++
++def test_cardconjourer_fonts_are_bundled_in_repo() -> None:
++    """The 12 fonts the harness registers must ship in the repo so a fresh checkout doesn't
++    fall back to arial when the user hasn't run ``make cardconjurer``.
++    """
++    fonts_dir = Path(__file__).resolve().parents[2] / "mtg_proxies" / "cardconjourer" / "node" / "fonts"
++    expected = [
++        "matrix.ttf",
++        "matrix-b.ttf",
++        "Matrix Bold Small Caps.ttf",
++        "mplantin.ttf",
++        "mplantin-i.ttf",
++        "beleren-b.ttf",
++        "beleren-bsc.ttf",
++        "gotham-medium.ttf",
++        "gothambold.otf",
++        "goudy-medieval.ttf",
++        "phyrexian.ttf",
++        "NotoSans-Regular.ttf",
++    ]
++    missing = [f for f in expected if not (fonts_dir / f).is_file()]
++    assert not missing, f"missing bundled fonts: {missing}"
+diff --git a/tests/cardconjourer/test_mtgpics.py b/tests/cardconjourer/test_mtgpics.py
+new file mode 100644
+index 0000000..851e7ce
+--- /dev/null
++++ b/tests/cardconjourer/test_mtgpics.py
+@@ -0,0 +1,103 @@
++"""Tests for the MTGPics hi-res art fetcher (cardconjourer-side)."""
++
++from __future__ import annotations
++
++from pathlib import Path
++from unittest.mock import MagicMock
++
++import pytest
++
++
++def test_fetch_mtgpics_art_builds_correct_url() -> None:
++    """The URL pattern is ``https://www.mtgpics.com/pics/art/{set}/{collector}.jpg``."""
++    from mtg_proxies.cardconjourer.mtgpics import _art_url
++
++    assert _art_url("soc", "128") == "https://www.mtgpics.com/pics/art/soc/128.jpg"
++    # Set codes are lowercased for the URL.
++    assert _art_url("SOC", "128") == "https://www.mtgpics.com/pics/art/soc/128.jpg"
++    # Collector number is passed through verbatim (alphanumeric supported).
++    assert _art_url("soc", "12a") == "https://www.mtgpics.com/pics/art/soc/12a.jpg"
++
++
++def test_fetch_mtgpics_art_returns_path_on_200(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
++    """Successful 200 fetch writes the bytes to the cache and returns the local Path."""
++    from mtg_proxies.cardconjourer import mtgpics
++
++    # Plausible-sized body (real MTGPics art crops are 100-500 KB). The fetcher
++    # treats anything under ~4 KB as a "we don't have this" placeholder.
++    body = b"JPEG-BYTES" + b"\x00" * 8000
++    fake_response = MagicMock()
++    fake_response.status_code = 200
++    fake_response.content = body
++    fake_response.headers = {"content-type": "image/jpeg"}
++    monkeypatch.setattr(mtgpics, "requests", MagicMock(get=MagicMock(return_value=fake_response)))
++
++    out = mtgpics.fetch_mtgpics_art("soc", "128", cache_root=tmp_path)
++
++    assert out is not None
++    assert out.is_file()
++    assert out.read_bytes() == body
++    # File is laid out as <cache>/<set>/<collector>.jpg for easy inspection.
++    assert out == tmp_path / "soc" / "128.jpg"
++
++
++def test_fetch_mtgpics_art_returns_none_on_404(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
++    """404 means MTGPics doesn't have this card — caller falls back to Scryfall."""
++    from mtg_proxies.cardconjourer import mtgpics
++
++    fake_response = MagicMock()
++    fake_response.status_code = 404
++    fake_response.content = b""
++    fake_response.headers = {}
++    monkeypatch.setattr(mtgpics, "requests", MagicMock(get=MagicMock(return_value=fake_response)))
++
++    assert mtgpics.fetch_mtgpics_art("xxx", "999", cache_root=tmp_path) is None
++    # No cache file written.
++    assert not (tmp_path / "xxx").exists()
++
++
++def test_fetch_mtgpics_art_returns_none_when_response_is_too_small(
++    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
++) -> None:
++    """MTGPics returns a 200 with a tiny placeholder when the card is unknown — treat as miss."""
++    from mtg_proxies.cardconjourer import mtgpics
++
++    fake_response = MagicMock()
++    fake_response.status_code = 200
++    fake_response.content = b"x" * 100  # 100 bytes — too small to be a real art crop
++    fake_response.headers = {"content-type": "image/jpeg"}
++    monkeypatch.setattr(mtgpics, "requests", MagicMock(get=MagicMock(return_value=fake_response)))
++
++    assert mtgpics.fetch_mtgpics_art("xxx", "999", cache_root=tmp_path) is None
++
++
++def test_fetch_mtgpics_art_uses_cache_on_repeat(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
++    """Cached file is returned without re-hitting the network."""
++    from mtg_proxies.cardconjourer import mtgpics
++
++    # Pre-seed the cache.
++    cached = tmp_path / "soc" / "128.jpg"
++    cached.parent.mkdir(parents=True)
++    cached.write_bytes(b"CACHED-JPEG-BYTES" + b"x" * 8000)
++
++    fake_get = MagicMock()
++    monkeypatch.setattr(mtgpics, "requests", MagicMock(get=fake_get))
++
++    out = mtgpics.fetch_mtgpics_art("soc", "128", cache_root=tmp_path)
++
++    assert out == cached
++    assert out.read_bytes().startswith(b"CACHED-JPEG-BYTES")
++    fake_get.assert_not_called()
++
++
++def test_fetch_mtgpics_art_network_failure_returns_none(
++    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
++) -> None:
++    """Network exception during fetch returns None — caller falls back to Scryfall."""
++    from mtg_proxies.cardconjourer import mtgpics
++
++    fake_requests = MagicMock()
++    fake_requests.get = MagicMock(side_effect=OSError("connection refused"))
++    monkeypatch.setattr(mtgpics, "requests", fake_requests)
++
++    assert mtgpics.fetch_mtgpics_art("soc", "128", cache_root=tmp_path) is None
+diff --git a/tests/cardconjourer/test_runner.py b/tests/cardconjourer/test_runner.py
+new file mode 100644
+index 0000000..40d5720
+--- /dev/null
++++ b/tests/cardconjourer/test_runner.py
+@@ -0,0 +1,453 @@
++"""Unit tests for the cardconjourer runner: ND-JSON protocol, output bookkeeping.
++
++The actual node subprocess + harness rendering is covered by an end-to-end
++integration test (separate file). These tests pin down the pure-Python pieces:
++fallback.txt and report.csv generation, response parsing, slot-filename layout.
++"""
++
++from __future__ import annotations
++
++import csv
++import io
++from pathlib import Path
++
++
++def test_format_fallback_txt_empty() -> None:
++    """No skipped cards → empty file content (still a valid empty decklist)."""
++    from mtg_proxies.cardconjourer.runner import format_fallback_txt
++
++    assert format_fallback_txt([]) == ""
++
++
++def test_format_fallback_txt_single_card() -> None:
++    """One skipped card → one line in standard "<count> <name>" decklist format."""
++    from mtg_proxies.cardconjourer.runner import format_fallback_txt
++
++    rows = [{"count": 1, "name": "Urza's Saga", "reason": "layout 'saga'"}]
++
++    assert format_fallback_txt(rows) == "1 Urza's Saga\n"
++
++
++def test_format_fallback_txt_multiple_preserves_order() -> None:
++    """Skipped cards round-trip in the order given (caller's slot order)."""
++    from mtg_proxies.cardconjourer.runner import format_fallback_txt
++
++    rows = [
++        {"count": 1, "name": "Jacob Hauken, Inspector", "reason": "layout 'transform'"},
++        {"count": 2, "name": "Urza's Saga", "reason": "layout 'saga'"},
++        {"count": 1, "name": "Ashiok, Wicked Manipulator", "reason": "planeswalker"},
++    ]
++
++    out = format_fallback_txt(rows)
++
++    assert out.splitlines() == [
++        "1 Jacob Hauken, Inspector",
++        "2 Urza's Saga",
++        "1 Ashiok, Wicked Manipulator",
++    ]
++
++
++def test_format_report_csv_columns() -> None:
++    """report.csv carries one row per card with the audit fields the user reviews."""
++    from mtg_proxies.cardconjourer.runner import format_report_csv
++
++    rows = [
++        {"slot": 1, "name": "Murder",       "status": "ok",   "reason": "",                  "png": "0001-murder.png",  "ms": 1240},
++        {"slot": 2, "name": "Urza's Saga",  "status": "skip", "reason": "layout 'saga'",     "png": "",                 "ms": 0},
++    ]
++
++    out = format_report_csv(rows)
++
++    reader = csv.reader(io.StringIO(out))
++    header = next(reader)
++    assert header == ["slot", "name", "status", "reason", "png", "ms"]
++    body = list(reader)
++    assert body == [
++        ["1", "Murder",      "ok",   "",              "0001-murder.png", "1240"],
++        ["2", "Urza's Saga", "skip", "layout 'saga'", "",                "0"],
++    ]
++
++
++def test_format_report_csv_quotes_commas_in_names() -> None:
++    """Card names with commas (``Jacob Hauken, Inspector``) must round-trip via CSV quoting."""
++    from mtg_proxies.cardconjourer.runner import format_report_csv
++
++    rows = [{"slot": 1, "name": "Jacob Hauken, Inspector", "status": "skip",
++             "reason": "layout 'transform'", "png": "", "ms": 0}]
++
++    out = format_report_csv(rows)
++
++    reader = csv.reader(io.StringIO(out))
++    next(reader)  # header
++    [parsed] = list(reader)
++    assert parsed[1] == "Jacob Hauken, Inspector"
++
++
++# ND-JSON job builder
++def test_build_job_minimal() -> None:
++    """Minimal job: slot + name + frame. No art_path, no upscale."""
++    from mtg_proxies.cardconjourer.runner import build_job
++
++    job = build_job(slot=1, name="Murder", frame="8th")
++
++    assert job == {"slot": "0001", "name": "Murder", "frame": "8th"}
++
++
++def test_build_job_slot_zero_padding() -> None:
++    """Slot is zero-padded to 4 digits even for low slots, for sort-friendliness."""
++    from mtg_proxies.cardconjourer.runner import build_job
++
++    assert build_job(slot=42, name="X", frame="8th")["slot"] == "0042"
++    assert build_job(slot=9999, name="X", frame="8th")["slot"] == "9999"
++
++
++def test_build_job_with_local_art_path() -> None:
++    """``art_path`` overrides the harness's default Scryfall fetch.
++
++    Used when ESRGAN upscale ran in Python and the local file replaces the URL.
++    """
++    from mtg_proxies.cardconjourer.runner import build_job
++
++    job = build_job(slot=1, name="Murder", frame="8th", art_path="/tmp/upscaled.png")
++
++    assert job["art_path"] == "/tmp/upscaled.png"
++
++
++def test_build_job_with_frame_retro() -> None:
++    """The frame flag selector is passed through verbatim (so the harness can dispatch)."""
++    from mtg_proxies.cardconjourer.runner import build_job
++
++    assert build_job(slot=1, name="Murder", frame="retro")["frame"] == "retro"
++
++
++def test_build_job_with_frame_modern() -> None:
++    """``frame="modern"`` rides through the same channel as 8th / retro."""
++    from mtg_proxies.cardconjourer.runner import build_job
++
++    assert build_job(slot=1, name="Murder", frame="modern")["frame"] == "modern"
++
++
++def test_build_job_with_set_symbol_path() -> None:
++    """``set_symbol_path`` is emitted into the job dict for the harness to upload."""
++    from mtg_proxies.cardconjourer.runner import build_job
++
++    job = build_job(slot=1, name="Murder", frame="8th", set_symbol_path="/abs/ltc-r.svg")
++
++    assert job["set_symbol_path"] == "/abs/ltc-r.svg"
++
++
++def test_build_job_set_symbol_path_omitted_when_none() -> None:
++    """No ``set_symbol_path`` key when caller passes None — keeps job dicts lean."""
++    from mtg_proxies.cardconjourer.runner import build_job
++
++    job = build_job(slot=1, name="Murder", frame="8th")
++
++    assert "set_symbol_path" not in job
++
++
++# Response parser
++def test_parse_response_ok() -> None:
++    """``status=ok`` rows carry the absolute PNG path the harness wrote."""
++    from mtg_proxies.cardconjourer.runner import parse_response
++
++    line = '{"slot":"0001","status":"ok","out":"/abs/0001-murder.png","ms":1240}'
++    parsed = parse_response(line)
++
++    assert parsed == {"slot": "0001", "status": "ok", "out": "/abs/0001-murder.png", "ms": 1240}
++
++
++def test_parse_response_skip_carries_reason() -> None:
++    """``status=skip`` rows include the harness's reason string for the report."""
++    from mtg_proxies.cardconjourer.runner import parse_response
++
++    line = '{"slot":"0003","status":"skip","reason":"layout \'saga\' not supported"}'
++    parsed = parse_response(line)
++
++    assert parsed["status"] == "skip"
++    assert "saga" in parsed["reason"]
++
++
++def test_parse_response_strips_whitespace_and_ignores_blank_lines() -> None:
++    """Trailing newlines / blank lines don't blow up the parser."""
++    from mtg_proxies.cardconjourer.runner import parse_response
++
++    assert parse_response("") is None
++    assert parse_response("   \n") is None
++    line = '   {"slot":"0001","status":"ok","out":"/x.png","ms":1}\n'
++    parsed = parse_response(line)
++    assert parsed is not None and parsed["slot"] == "0001"
++
++
++def test_parse_response_malformed_returns_none() -> None:
++    """A non-JSON line is reported as None, not raised — keeps the runner alive."""
++    from mtg_proxies.cardconjourer.runner import parse_response
++
++    assert parse_response("not json {") is None
++
++
++# Orchestration: render_deck takes a list of (count, name) and an injectable
++# ``run_harness`` callable so subprocess is mocked out in unit tests.
++def test_render_deck_writes_pngs_fallback_and_report(tmp_path: Path) -> None:
++    """End-to-end pure-python: jobs out, responses in, files on disk."""
++    from mtg_proxies.cardconjourer.runner import render_deck
++
++    cards = [
++        (1, "Murder"),
++        (1, "Urza's Saga"),
++        (2, "Anje Falkenrath"),
++    ]
++
++    # Fake harness: writes a real PNG file for ok cards (so the runner can
++    # rename/move it into OUTDIR), skips the saga.
++    pngs_dir = tmp_path / "harness_out"
++    pngs_dir.mkdir()
++    (pngs_dir / "0001-murder.png").write_bytes(b"PNG-bytes-1")
++    (pngs_dir / "0003-anje_falkenrath.png").write_bytes(b"PNG-bytes-2")
++
++    def fake_run_harness(jobs: list[dict]) -> list[dict]:
++        # Verify the runner serialised the jobs the way we expect
++        assert [j["name"] for j in jobs] == ["Murder", "Urza's Saga", "Anje Falkenrath"]
++        assert all(j["frame"] == "8th" for j in jobs)
++        return [
++            {"slot": "0001", "status": "ok",   "out": str(pngs_dir / "0001-murder.png"), "ms": 1240},
++            {"slot": "0002", "status": "skip", "reason": "layout 'saga'"},
++            {"slot": "0003", "status": "ok",   "out": str(pngs_dir / "0003-anje_falkenrath.png"), "ms": 1100},
++        ]
++
++    outdir = tmp_path / "out"
++    summary = render_deck(cards, outdir, frame="8th", run_harness=fake_run_harness)
++
++    # PNGs landed at slot-prefixed names
++    assert (outdir / "0001-murder.png").read_bytes() == b"PNG-bytes-1"
++    assert (outdir / "0003-anje_falkenrath.png").read_bytes() == b"PNG-bytes-2"
++    assert not (outdir / "0002-urzas_saga.png").exists()
++
++    # fallback.txt has the skipped saga in decklist format
++    fallback = (outdir / "fallback.txt").read_text()
++    assert fallback == "1 Urza's Saga\n"
++
++    # report.csv has one row per slot
++    report = (outdir / "report.csv").read_text()
++    assert report.startswith("slot,name,status,reason,png,ms\n")
++    assert "0001,Murder,ok" in report
++    assert "0002,Urza's Saga,skip,layout 'saga'" in report
++    assert "0003,Anje Falkenrath,ok" in report
++
++    assert summary["ok"] == 2
++    assert summary["skipped"] == 1
++
++
++def test_render_deck_creates_outdir(tmp_path: Path) -> None:
++    """OUTDIR is created if it doesn't exist (mirrors mpcfill behavior)."""
++    from mtg_proxies.cardconjourer.runner import render_deck
++
++    outdir = tmp_path / "fresh"  # doesn't exist
++    assert not outdir.exists()
++
++    def empty_run(jobs: list[dict]) -> list[dict]:
++        return []
++
++    render_deck([], outdir, frame="8th", run_harness=empty_run)
++    assert outdir.is_dir()
++
++
++def test_render_deck_count_in_fallback_reflects_decklist(tmp_path: Path) -> None:
++    """A ``2 Urza's Saga`` skipped card writes ``2 Urza's Saga`` to fallback.txt."""
++    from mtg_proxies.cardconjourer.runner import render_deck
++
++    def skip_all(jobs: list[dict]) -> list[dict]:
++        return [{"slot": j["slot"], "status": "skip", "reason": "test"} for j in jobs]
++
++    render_deck([(2, "Urza's Saga")], tmp_path, frame="8th", run_harness=skip_all)
++
++    assert (tmp_path / "fallback.txt").read_text() == "2 Urza's Saga\n"
++
++
++# Integration: the default run_harness actually spawns a node subprocess.
++# We exercise it with a tiny stub script that echoes one canned response per
++# job line on stdin — proves the ND-JSON wire protocol, not the harness logic.
++def test_spawn_node_harness_round_trips_jobs(tmp_path: Path) -> None:
++    """Stub harness reads jobs from stdin, writes a response per job to stdout."""
++    import shutil as _shutil
++
++    from mtg_proxies.cardconjourer.runner import spawn_node_harness
++
++    if not _shutil.which("node"):
++        import pytest as _pytest
++        _pytest.skip("node not on PATH")
++
++    stub = tmp_path / "stub.js"
++    stub.write_text(
++        # For each ND-JSON line on stdin, write back a single ok-response
++        # echoing the slot, with a fixed out path and ms value.
++        "process.stdin.setEncoding('utf8');\n"
++        "let buf = '';\n"
++        "process.stdin.on('data', (d) => {\n"
++        "  buf += d;\n"
++        "  let i;\n"
++        "  while ((i = buf.indexOf('\\n')) >= 0) {\n"
++        "    const line = buf.slice(0, i); buf = buf.slice(i + 1);\n"
++        "    if (!line.trim()) continue;\n"
++        "    const j = JSON.parse(line);\n"
++        "    process.stdout.write(JSON.stringify({slot: j.slot, status: 'ok', out: '/tmp/x.png', ms: 7}) + '\\n');\n"
++        "  }\n"
++        "});\n"
++    )
++
++    jobs = [{"slot": "0001", "name": "Murder", "frame": "8th"},
++            {"slot": "0002", "name": "Spin Out", "frame": "8th"}]
++
++    responses = spawn_node_harness(jobs, harness_path=stub)
++
++    assert len(responses) == 2
++    assert responses[0]["slot"] == "0001"
++    assert responses[0]["status"] == "ok"
++    assert responses[1]["slot"] == "0002"
++    assert responses[0]["ms"] == 7
++
++
++# ---------------------------------------------------------------------------
++# Slug + skip-existing (avoid wasted re-renders)
++# ---------------------------------------------------------------------------
++
++
++def test_slug_matches_harness_js() -> None:
++    """Python slug helper must exactly match the JS slugify in harness.js."""
++    from mtg_proxies.cardconjourer.runner import slug
++
++    assert slug("Ambition's Cost") == "ambition_s_cost"
++    assert slug("Murderous Rider // Swift End") == "murderous_rider_swift_end"
++    assert slug("Birds of Paradise") == "birds_of_paradise"
++    assert slug("Beast Within") == "beast_within"
++
++
++def test_render_deck_skips_card_with_existing_png(tmp_path: Path) -> None:
++    """If <outdir>/<NNNN>-<slug>.png already exists, the card is reported ok and not enqueued."""
++    from mtg_proxies.cardconjourer.runner import render_deck
++
++    outdir = tmp_path / "out"
++    outdir.mkdir()
++    # Pre-seed slot 2 as already done.
++    (outdir / "0002-already_done.png").write_bytes(b"OLD")
++
++    enqueued: list[dict] = []
++
++    def fake_run(jobs: list[dict]) -> list[dict]:
++        enqueued.extend(jobs)
++        responses = []
++        for j in jobs:
++            slot = j["slot"]
++            name = j["name"]
++            png = outdir / f"{slot}-{name.lower().replace(' ', '_')}.png"
++            png.write_bytes(b"NEW")
++            responses.append({"slot": slot, "status": "ok", "out": str(png), "ms": 5})
++        return responses
++
++    cards = [(1, "Murder"), (1, "Already Done"), (1, "Beast Within")]
++    summary = render_deck(cards, outdir, frame="8th", run_harness=fake_run)
++
++    # Slot 2 was skipped (not in the harness call), but counts as ok in the summary.
++    assert [j["name"] for j in enqueued] == ["Murder", "Beast Within"]
++    assert summary["ok"] == 3
++    assert summary["skipped"] == 0
++    # Pre-existing PNG is preserved untouched.
++    assert (outdir / "0002-already_done.png").read_bytes() == b"OLD"
++    # report.csv reflects slot 2 as ok with the existing filename.
++    report = (outdir / "report.csv").read_text()
++    assert "0002,Already Done,ok" in report
++
++
++def test_render_deck_redoes_when_png_deleted(tmp_path: Path) -> None:
++    """User deletes a PNG to trigger re-render; that slot IS sent to the harness."""
++    from mtg_proxies.cardconjourer.runner import render_deck
++
++    outdir = tmp_path / "out"
++    outdir.mkdir()
++    # No pre-existing PNG for any slot → harness sees both.
++
++    enqueued: list[dict] = []
++
++    def fake_run(jobs: list[dict]) -> list[dict]:
++        enqueued.extend(jobs)
++        return []
++
++    render_deck([(1, "Murder"), (1, "Beast Within")], outdir, frame="8th", run_harness=fake_run)
++
++    assert [j["name"] for j in enqueued] == ["Murder", "Beast Within"]
++
++
++def test_render_deck_prepare_each_called_per_slot_with_merged_fields(tmp_path: Path) -> None:
++    """`prepare_each(slot) -> dict` runs just-before-send and its result merges into the job."""
++    from mtg_proxies.cardconjourer.runner import render_deck
++
++    prepare_calls: list[int] = []
++
++    def prepare_each(slot_int: int) -> dict:
++        prepare_calls.append(slot_int)
++        return {"art_path": f"/tmp/upscaled-{slot_int}.png"}
++
++    sent_jobs: list[dict] = []
++
++    def fake_run(jobs: list[dict], prepare: object | None = None) -> list[dict]:
++        # The contract: run_harness now receives the bare job list + the prepare
++        # callable; it merges prepare(slot) into each job right before sending.
++        responses = []
++        for j in jobs:
++            slot_int = int(j["slot"])
++            extras = prepare(slot_int) if prepare else {}
++            merged = {**j, **extras}
++            sent_jobs.append(merged)
++            png = tmp_path / "out" / f"{j['slot']}-{j['name'].lower().replace(' ', '_')}.png"
++            png.parent.mkdir(parents=True, exist_ok=True)
++            png.write_bytes(b"PNG")
++            responses.append({"slot": j["slot"], "status": "ok", "out": str(png), "ms": 1})
++        return responses
++
++    render_deck(
++        [(1, "Murder"), (1, "Beast Within")],
++        tmp_path / "out",
++        frame="8th",
++        run_harness=fake_run,
++        prepare_each=prepare_each,
++    )
++
++    # prepare_each was called once per slot
++    assert prepare_calls == [1, 2]
++    # Each sent job carries the override
++    assert [j["art_path"] for j in sent_jobs] == ["/tmp/upscaled-1.png", "/tmp/upscaled-2.png"]
++
++
++def test_render_deck_prepare_each_skipped_for_existing_pngs(tmp_path: Path) -> None:
++    """Pre-existing PNGs short-circuit before prepare_each fires — no wasted upscale work."""
++    from mtg_proxies.cardconjourer.runner import render_deck
++
++    outdir = tmp_path / "out"
++    outdir.mkdir()
++    (outdir / "0001-murder.png").write_bytes(b"OLD")  # slot 1 already done
++
++    prepare_calls: list[int] = []
++
++    def prepare_each(slot_int: int) -> dict:
++        prepare_calls.append(slot_int)
++        return {"art_path": f"/tmp/u{slot_int}.png"}
++
++    def fake_run(jobs: list[dict], prepare: object | None = None) -> list[dict]:
++        responses = []
++        for j in jobs:
++            if prepare:
++                prepare(int(j["slot"]))
++            png = outdir / f"{j['slot']}-{j['name'].lower().replace(' ', '_')}.png"
++            png.write_bytes(b"NEW")
++            responses.append({"slot": j["slot"], "status": "ok", "out": str(png), "ms": 0})
++        return responses
++
++    render_deck(
++        [(1, "Murder"), (1, "Beast Within")],
++        outdir,
++        frame="8th",
++        run_harness=fake_run,
++        prepare_each=prepare_each,
++    )
++
++    # Slot 1 was skipped entirely. prepare_each only fired for slot 2.
++    assert prepare_calls == [2]
+diff --git a/tests/cardconjourer/test_set_symbol.py b/tests/cardconjourer/test_set_symbol.py
+new file mode 100644
+index 0000000..a06cbe1
+--- /dev/null
++++ b/tests/cardconjourer/test_set_symbol.py
+@@ -0,0 +1,127 @@
++"""Unit tests for ``resolve_set_symbol``: path vs CC-set-code detection + lookup."""
++
++from __future__ import annotations
++
++from pathlib import Path
++
++import pytest
++
++
++@pytest.fixture
++def cc_root(tmp_path: Path) -> Path:
++    """Build a minimal CC root with a few set-code assets for the code-form tests."""
++    official = tmp_path / "img" / "setSymbols" / "official"
++    official.mkdir(parents=True)
++    for stem in ("ltc-c", "ltc-u", "ltc-r", "ltc-m", "mkm-r", "proxy-c"):
++        (official / f"{stem}.svg").write_text("<svg/>")
++    return tmp_path
++
++
++def test_resolve_set_symbol_returns_none_for_falsy(cc_root: Path) -> None:
++    from mtg_proxies.cardconjourer.set_symbol import resolve_set_symbol
++
++    assert resolve_set_symbol(None, "r", cc_root) is None
++    assert resolve_set_symbol("", "r", cc_root) is None
++
++
++def test_resolve_set_symbol_existing_path_with_slash(tmp_path: Path, cc_root: Path) -> None:
++    """``./folder/logo.png`` form: contains slash → treated as path."""
++    from mtg_proxies.cardconjourer.set_symbol import resolve_set_symbol
++
++    sym = tmp_path / "folder" / "logo.png"
++    sym.parent.mkdir()
++    sym.write_bytes(b"png")
++    out = resolve_set_symbol(str(sym), "r", cc_root)
++    assert out == str(sym.resolve())
++
++
++def test_resolve_set_symbol_relative_path_with_extension(
++    tmp_path: Path, cc_root: Path, monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """``logo.png`` (no separator, has extension) → treated as path."""
++    from mtg_proxies.cardconjourer.set_symbol import resolve_set_symbol
++
++    sym = tmp_path / "logo.png"
++    sym.write_bytes(b"png")
++    monkeypatch.chdir(tmp_path)
++    out = resolve_set_symbol("logo.png", "r", cc_root)
++    assert out == str(sym.resolve())
++
++
++def test_resolve_set_symbol_set_code_resolves_per_rarity(cc_root: Path) -> None:
++    """Bare ``LTC`` resolves to ``ltc-<rarity>.svg`` against ``cc_root``."""
++    from mtg_proxies.cardconjourer.set_symbol import resolve_set_symbol
++
++    expected = cc_root / "img" / "setSymbols" / "official" / "ltc-r.svg"
++    assert resolve_set_symbol("LTC", "rare", cc_root) == str(expected)
++
++
++@pytest.mark.parametrize(
++    ("rarity_in", "char_out"),
++    [("common", "c"), ("uncommon", "u"), ("rare", "r"), ("mythic", "m")],
++)
++def test_resolve_set_symbol_set_code_rarity_chars(cc_root: Path, rarity_in: str, char_out: str) -> None:
++    """``LTC`` resolves to ltc-c/u/r/m for the four common Scryfall rarities."""
++    from mtg_proxies.cardconjourer.set_symbol import resolve_set_symbol
++
++    expected = cc_root / "img" / "setSymbols" / "official" / f"ltc-{char_out}.svg"
++    assert resolve_set_symbol("LTC", rarity_in, cc_root) == str(expected)
++
++
++def test_resolve_set_symbol_set_code_lowercased(cc_root: Path) -> None:
++    """``MKM`` and ``mkm`` both resolve to the lowercase asset filename."""
++    from mtg_proxies.cardconjourer.set_symbol import resolve_set_symbol
++
++    expected = cc_root / "img" / "setSymbols" / "official" / "mkm-r.svg"
++    assert resolve_set_symbol("MKM", "r", cc_root) == str(expected)
++    assert resolve_set_symbol("mkm", "r", cc_root) == str(expected)
++
++
++def test_resolve_set_symbol_unknown_rarity_falls_back_to_common(cc_root: Path) -> None:
++    """Unknown rarity char (e.g. timeshifted ``t``) falls back to ``c``."""
++    from mtg_proxies.cardconjourer.set_symbol import resolve_set_symbol
++
++    expected = cc_root / "img" / "setSymbols" / "official" / "proxy-c.svg"
++    assert resolve_set_symbol("proxy", "timeshifted", cc_root) == str(expected)
++
++
++def test_resolve_set_symbol_empty_rarity_falls_back_to_common(cc_root: Path) -> None:
++    from mtg_proxies.cardconjourer.set_symbol import resolve_set_symbol
++
++    expected = cc_root / "img" / "setSymbols" / "official" / "proxy-c.svg"
++    assert resolve_set_symbol("proxy", "", cc_root) == str(expected)
++
++
++def test_resolve_set_symbol_path_with_trailing_slash_is_path_form(tmp_path: Path, cc_root: Path) -> None:
++    """``MKM/`` (trailing slash) is detected as a path — and errors because no such file."""
++    from mtg_proxies.cardconjourer.set_symbol import resolve_set_symbol
++
++    with pytest.raises(FileNotFoundError, match="path not found"):
++        resolve_set_symbol("MKM/", "r", cc_root)
++
++
++def test_resolve_set_symbol_missing_path_errors_with_resolved_location(cc_root: Path) -> None:
++    from mtg_proxies.cardconjourer.set_symbol import resolve_set_symbol
++
++    with pytest.raises(FileNotFoundError, match="path not found"):
++        resolve_set_symbol("/nonexistent/sym.png", "r", cc_root)
++
++
++def test_resolve_set_symbol_unknown_code_errors_with_asset_location(cc_root: Path) -> None:
++    from mtg_proxies.cardconjourer.set_symbol import resolve_set_symbol
++
++    with pytest.raises(FileNotFoundError, match="no CC asset at"):
++        resolve_set_symbol("ZZZ", "r", cc_root)
++
++
++def test_resolve_set_symbol_tilde_path_expanded(
++    tmp_path: Path, cc_root: Path, monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """``~/sym.png`` form: ``~`` expands to the home dir, treated as path."""
++    from mtg_proxies.cardconjourer.set_symbol import resolve_set_symbol
++
++    monkeypatch.setenv("HOME", str(tmp_path))
++    sym = tmp_path / "sym.png"
++    sym.write_bytes(b"png")
++    out = resolve_set_symbol("~/sym.png", "r", cc_root)
++    assert out == str(sym.resolve())

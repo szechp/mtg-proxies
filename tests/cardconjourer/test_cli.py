@@ -20,7 +20,7 @@ def test_main_help_lists_cardconjourer_subcommand(capsys: pytest.CaptureFixture)
 
 
 def test_main_cardconjourer_help_mentions_frame_flags(capsys: pytest.CaptureFixture) -> None:
-    """`mtg-proxies cardconjourer --help` documents --8th, --retro, --modern, --upscale, --set-symbol."""
+    """`mtg-proxies cardconjourer --help` documents --8th, --modern, --upscale, --set-symbol."""
     from mtg_proxies.cli import main
 
     with patch("sys.argv", ["mtg-proxies", "cardconjourer", "--help"]), pytest.raises(SystemExit):
@@ -28,14 +28,13 @@ def test_main_cardconjourer_help_mentions_frame_flags(capsys: pytest.CaptureFixt
 
     out = capsys.readouterr().out
     assert "--8th" in out
-    assert "--retro" in out
     assert "--modern" in out
     assert "--upscale" in out
     assert "--set-symbol" in out
 
 
 def test_main_cardconjourer_requires_a_frame_flag(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
-    """Either --8th or --retro must be specified; absent → exits with error."""
+    """Either --8th or --modern must be specified; absent → exits with error."""
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"
@@ -46,7 +45,7 @@ def test_main_cardconjourer_requires_a_frame_flag(capsys: pytest.CaptureFixture,
             main()
 
     err = capsys.readouterr().err
-    assert "--8th" in err or "--retro" in err
+    assert "--8th" in err or "--modern" in err
 
 
 def test_main_cardconjourer_invokes_render_deck(tmp_path: Path) -> None:

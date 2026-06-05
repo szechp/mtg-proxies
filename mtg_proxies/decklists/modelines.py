@@ -89,7 +89,7 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     "no-shadow-lift": {},
     # ``#cardconjourer`` — render this single card via the headless Card Conjurer engine
     # (the ``cardconjourer`` subcommand also does the whole deck). Mutually-exclusive frame
-    # selectors ``--8th`` / ``--retro`` / ``--modern`` pick the style; ``--upscale`` pre-runs
+    # selectors ``--8th`` / ``--modern`` pick the style; ``--upscale`` pre-runs
     # the art through Real-ESRGAN. ``--scryfall`` skips MTGPics for this card (use Scryfall
     # art_crop directly) — useful per-card override when MTGPics's scan has a burned-in
     # artist signature / watermark. ``--skip-cc`` opts the card out of CC rendering entirely
@@ -103,7 +103,6 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     # built-in Scryfall ``art_crop`` fetch.
     "cardconjourer": {
         "--8th":        NO_VALUE,
-        "--retro":      NO_VALUE,
         "--modern":     NO_VALUE,
         "--upscale":    NO_VALUE,
         "--scryfall":   NO_VALUE,

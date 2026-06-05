@@ -66,8 +66,8 @@ def build_job(
     zero-padded string so the harness's output filename (``<NNNN>-<slug>.png``)
     sorts correctly in shells and matches the ``mpcfill`` convention.
 
-    ``frame`` is the frame-flag string (``"8th"``, ``"retro"``, or ``"modern"``);
-    the harness dispatches its frame-pack selection on this.
+    ``frame`` is the frame-flag string (``"8th"`` or ``"modern"``); the harness
+    dispatches its frame-pack selection on this.
 
     ``art_path`` (optional) is an absolute local path. When set, the harness
     skips its built-in Scryfall ``art_crop`` fetch and reads the file directly.
@@ -143,9 +143,13 @@ def spawn_node_harness(
     debug prints occasionally land on stdout and we don't want them killing
     the run).
 
-    Used as the default :data:`run_harness` for :func:`render_deck` in
-    production; tests inject a stub callable instead.
+    Timeout policy: if not supplied, defaults to ``max(60, len(jobs) * 30)``
+    seconds — generous enough that slow networks just work; only a genuinely
+    deadlocked harness gets killed. On timeout or non-zero exit, surfaces the
+    harness's stderr tail in the raised exception.
     """
+    if timeout is None:
+        timeout = max(60.0, len(jobs) * 30.0)
     proc = subprocess.Popen(
         [node_bin, str(harness_path)],
         stdin=subprocess.PIPE,
@@ -158,7 +162,20 @@ def spawn_node_harness(
     # call without deadlocking on large outputs. Building the whole input
     # string up front is fine — even a 500-card deck is ~50 KB of ND-JSON.
     payload = "".join(json.dumps(job) + "\n" for job in jobs)
-    out, _err = proc.communicate(input=payload, timeout=timeout)
+    try:
+        out, err = proc.communicate(input=payload, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, err = proc.communicate()
+        raise RuntimeError(
+            f"Card Conjurer harness timed out after {timeout}s (jobs={len(jobs)}). "
+            f"stderr tail:\n{(err or '')[-1000:]}"
+        ) from None
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"Card Conjurer harness exited {proc.returncode}.\n"
+            f"stderr tail:\n{(err or '')[-1000:]}"
+        )
 
     responses: list[dict[str, Any]] = []
     for line in out.splitlines():
@@ -171,9 +188,10 @@ def spawn_node_harness(
 def render_deck(
     cards: list[tuple[int, str]],
     outdir: str | Path,
+    *,
+    run_harness: RunHarness,
     frame: str = "8th",
     upscale: bool = False,
-    run_harness: RunHarness | None = None,
     prepare_each: PrepareEach | None = None,
 ) -> dict[str, int]:
     """Render a whole decklist via the headless Card Conjurer harness.
@@ -219,11 +237,6 @@ def render_deck(
             continue
         jobs.append(build_job(slot=slot_int, name=name, frame=frame, upscale=upscale))
 
-    if run_harness is None:
-        raise NotImplementedError(
-            "Default subprocess-spawning run_harness not implemented yet; "
-            "pass run_harness= for now."
-        )
     if jobs:
         # Support both the simple (jobs,) signature and the new (jobs, prepare) one.
         # Tests written before the prepare_each hook only accept one positional arg.

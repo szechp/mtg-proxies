@@ -32,7 +32,7 @@ class CardConjourerRequest:
 
     slot_id: str
     name: str
-    frame: str  # "8th" | "retro" | "modern"
+    frame: str  # "8th" | "modern"
     upscale: bool = False
     set_symbol_path: str | None = None
     art_path: str | None = None
@@ -54,6 +54,10 @@ def _default_run_harness(cache_root: Path, harness_path: Path) -> RunHarness:
 
     Tests inject their own ``run_harness``; production code calls this so the
     closure carries the CC_ROOT env override into the spawn.
+
+    Timeout policy: budget-based — ``max(60, len(jobs) * 30)`` seconds. A 10-card
+    batch gets 5 minutes; a 200-card batch gets 100 minutes. Generous enough that
+    slow networks just work; only a genuinely deadlocked harness gets killed.
     """
     import json as _json
 
@@ -71,7 +75,21 @@ def _default_run_harness(cache_root: Path, harness_path: Path) -> RunHarness:
             env={**os.environ, "CC_ROOT": str(cache_root)},
         )
         payload = "".join(_json.dumps(j) + "\n" for j in jobs)
-        out, _err = proc.communicate(input=payload)
+        timeout = max(60, len(jobs) * 30)
+        try:
+            out, err = proc.communicate(input=payload, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+            raise RuntimeError(
+                f"Card Conjurer harness timed out after {timeout}s (jobs={len(jobs)}). "
+                f"stderr tail:\n{(err or '')[-1000:]}"
+            ) from None
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"Card Conjurer harness exited {proc.returncode}.\n"
+                f"stderr tail:\n{(err or '')[-1000:]}"
+            )
         return [r for r in (cc_runner.parse_response(line) for line in out.splitlines()) if r]
 
     return _run

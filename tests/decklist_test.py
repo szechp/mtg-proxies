@@ -500,17 +500,6 @@ def test_modeline_parse_cardconjourer_8th() -> None:
     assert warnings == []
 
 
-def test_modeline_parse_cardconjourer_retro() -> None:
-    """`--retro` is the future companion flag; parses the same way as `--8th`."""
-    from mtg_proxies.decklists.modelines import parse_modeline_trailer
-
-    directives, warnings = parse_modeline_trailer("#cardconjourer --retro")
-
-    assert len(directives) == 1
-    assert directives[0].flags == {"--retro": True}
-    assert warnings == []
-
-
 def test_modeline_parse_cardconjourer_upscale() -> None:
     """`--upscale` opts this card in to ESRGAN upres before rendering."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
