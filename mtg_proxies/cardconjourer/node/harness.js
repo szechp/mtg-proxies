@@ -14,6 +14,7 @@
 
 'use strict';
 const fs        = require('node:fs');
+const os        = require('node:os');
 const path      = require('node:path');
 const vm        = require('node:vm');
 const canvasPkg = require('canvas');
@@ -214,6 +215,56 @@ function wrapContext(ctx) {
     const orig = ctx.drawImage.bind(ctx);
     ctx.drawImage = function (img, ...rest) { return orig(unwrap(img), ...rest); };
     return ctx;
+}
+
+// Sample the dominant color from a basic-land watermark PNG. Averages RGB
+// across mostly-opaque pixels — gives CC's canonical "Plains/Island/Swamp/
+// Mountain/Forest" tint without us hard-coding hex values.
+const _basicLandRGBCache = new Map();
+async function getBasicLandRGB(relSrc) {
+    if (_basicLandRGBCache.has(relSrc)) return _basicLandRGBCache.get(relSrc);
+    const srcAbs = path.join(CC_ROOT, relSrc.replace(/^\//, ''));
+    const img = await loadImage(srcAbs);
+    const cv = createCanvas(img.width, img.height);
+    const ctx = cv.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const data = ctx.getImageData(0, 0, img.width, img.height).data;
+    let r = 0, g = 0, b = 0, count = 0;
+    for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3] > 128) {
+            r += data[i]; g += data[i + 1]; b += data[i + 2]; count++;
+        }
+    }
+    const rgb = count > 0
+        ? [Math.round(r / count), Math.round(g / count), Math.round(b / count)]
+        : [128, 128, 128];
+    const hex = '#' + rgb.map(v => v.toString(16).padStart(2, '0')).join('');
+    _basicLandRGBCache.set(relSrc, hex);
+    return hex;
+}
+
+// Basic-land watermark, pre-rotated 180° on disk. Flip-pair lands need a
+// watermark on each rules box so the two halves read as different basics; the
+// engine doesn't rotate frame-entry images the way it rotates rules2 text, so
+// we bake the rotation into a temp file once per color.
+const _watermarkRotCache = new Map();
+async function getRotatedWatermark(relSrc) {
+    if (_watermarkRotCache.has(relSrc)) return _watermarkRotCache.get(relSrc);
+    const srcAbs = path.join(CC_ROOT, relSrc.replace(/^\//, ''));
+    const cacheDir = path.join(os.tmpdir(), 'cc-watermark-rot');
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const dstAbs = path.join(cacheDir, path.basename(srcAbs, '.png') + '-rot180.png');
+    if (!fs.existsSync(dstAbs)) {
+        const img = await loadImage(srcAbs);
+        const cv = createCanvas(img.width, img.height);
+        const ctx = cv.getContext('2d');
+        ctx.translate(img.width / 2, img.height / 2);
+        ctx.rotate(Math.PI);
+        ctx.drawImage(img, -img.width / 2, -img.height / 2);
+        fs.writeFileSync(dstAbs, cv.toBuffer('image/png'));
+    }
+    _watermarkRotCache.set(relSrc, dstAbs);
+    return dstAbs;
 }
 function wrapCanvas(c) {
     const origCtx = c.getContext.bind(c);
@@ -860,7 +911,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             if (colors.includes('B')) return 'Black Frame';
             if (colors.includes('R')) return 'Red Frame';
             if (colors.includes('G')) return 'Green Frame';
-            
+
             const types = (f.type_line || '').toLowerCase();
             if (types.includes('artifact')) return 'Artifact Frame';
             if (types.includes('land')) return 'Land Frame';
@@ -909,6 +960,111 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
                  await global.addFrame([{name: 'Bottom PT', src: '/img/frames/bottomHalfSharp.svg'}]);
              }
         }
+
+        // Basic-land tint for flip-pair lands. Both halves still wear the parchment
+        // Land Frame; this paints the basic-land watermark (same asset CC uses for
+        // basic Plains/Island/Swamp/Mountain/Forest) over each face's rules box so
+        // the two halves are visually distinct at a glance. The mana letter is
+        // detected from each face's "Add {X}" oracle text.
+        //
+        // Sizing: the source PNGs are 521×524 (≈1:1). We keep that aspect by
+        // centring a square box on each face's rules centre — stretching to fit
+        // the wide rules region would distort the symbol grotesquely.
+        // Bounds centre derived from packFlip rules-text centres:
+        //   top rules centre ≈ (0.5, 0.162)   (rules at y:0.102, height:0.12)
+        //   bottom rules centre ≈ (0.5, 0.761) (rules2 anchored at y:0.821 rotation:180)
+        // The bottom asset is pre-rotated 180° so its symbol orientation matches the
+        // bottom face's text direction (the engine rotates rules2 text but not frame
+        // entries).
+        // opacity: 40 — matches CC's default `card.watermarkOpacity = 0.4`. The
+        // frame system reads `item.opacity / 100` at draw time (creator-23.js:500).
+        const _basicWatermark = { W: '/img/frames/m15/basics/w.png',
+                                  U: '/img/frames/m15/basics/u.png',
+                                  B: '/img/frames/m15/basics/b.png',
+                                  R: '/img/frames/m15/basics/r.png',
+                                  G: '/img/frames/m15/basics/g.png' };
+        const detectLandColor = (face) => {
+            if (!face || !(face.type_line || '').toLowerCase().includes('land')) return null;
+            const m = (face.oracle_text || '').match(/Add\b[^.]*?\{([WUBRG])\}/);
+            return m ? m[1] : null;
+        };
+        const topColor = detectLandColor(scry.card_faces?.[0]);
+        const botColor = detectLandColor(scry.card_faces?.[1]);
+        // height matches the rules-text region (0.12); width derived from the 1:1
+        // source aspect and the 1500×2100 card → 0.12 × 2100/1500 = 0.168.
+        const WM_H = 0.13;
+        const WM_W = WM_H * 2100 / 1500;            // ≈ 0.182
+        const WM_X = 0.5 - WM_W / 2;                // ≈ 0.409
+        const TOP_WM_Y = 0.162 - WM_H / 2;          // top rules centre 0.162
+        const BOT_WM_Y = 0.761 - WM_H / 2;          // bottom rules centre 0.761
+        if (topColor && _basicWatermark[topColor]) {
+            global.availableFrames.push({
+                name: '_flip_land_watermark_top',
+                src: _basicWatermark[topColor],
+                bounds: { x: WM_X, y: TOP_WM_Y, width: WM_W, height: WM_H },
+                opacity: 40,
+            });
+            global.selectedFrameIndex = global.availableFrames.length - 1;
+            await global.addFrame([]);
+        }
+        if (botColor && _basicWatermark[botColor]) {
+            const rotatedSrc = await getRotatedWatermark(_basicWatermark[botColor]);
+            global.availableFrames.push({
+                name: '_flip_land_watermark_bottom',
+                src: rotatedSrc,
+                bounds: { x: WM_X, y: BOT_WM_Y, width: WM_W, height: WM_H },
+                opacity: 40,
+            });
+            global.selectedFrameIndex = global.availableFrames.length - 1;
+            await global.addFrame([]);
+        }
+
+        // Soft tint on each rules-box background, so the half reads as a basic
+        // land of the right color even without the watermark in view. Sourced from
+        // the same /img/frames/m15/basics/*.png the watermarks use — averaged
+        // RGB → solid hex applied via the engine's `colorOverlay` field
+        // (creator-23.js:538). The masks AND together so the tint hits only the
+        // top (or bottom) half AND only the rules region — pinline and twins are
+        // untouched.
+        // opacity: 30 — subtle enough that text stays clearly readable.
+        const addRulesTint = async (color, halfMaskSrc, name) => {
+            if (!color || !_basicWatermark[color]) return;
+            const hex = await getBasicLandRGB(_basicWatermark[color]);
+            global.availableFrames.push({
+                name,
+                src: '/img/frames/m15/flip/l.png',
+                bounds: { x: 0, y: 0, width: 1, height: 1 },
+                colorOverlayCheck: true,
+                colorOverlay: hex,
+                opacity: 30,
+            });
+            global.selectedFrameIndex = global.availableFrames.length - 1;
+            await global.addFrame([
+                { name: 'Half', src: halfMaskSrc },
+                { name: 'Rules', src: '/img/frames/m15/flip/rules.svg' },
+            ]);
+        };
+        await addRulesTint(topColor, '/img/frames/topHalfSharp.svg', '_flip_land_tint_top');
+        await addRulesTint(botColor, '/img/frames/bottomHalfSharp.svg', '_flip_land_tint_bottom');
+
+        // Colored pinline. packFlip already ships colored frames with the
+        // pinline baked in (w/u/b/r/g.png), and a 'Pinline' mask. Apply the
+        // colored frame with [Half, Pinline] masks → the pinline of that half
+        // picks up the right color.
+        const _colorFrameName = { W: 'White Frame', U: 'Blue Frame', B: 'Black Frame',
+                                  R: 'Red Frame',  G: 'Green Frame' };
+        const addPinline = async (color, halfMaskSrc) => {
+            if (!color || !_colorFrameName[color]) return;
+            const idx = (global.availableFrames || []).findIndex(f => f && f.name === _colorFrameName[color]);
+            if (idx < 0) return;
+            global.selectedFrameIndex = idx;
+            await global.addFrame([
+                { name: 'Half', src: halfMaskSrc },
+                { name: 'Pinline', src: '/img/frames/m15/flip/pinline.svg' },
+            ]);
+        };
+        await addPinline(topColor, '/img/frames/maskTopHalf.png');
+        await addPinline(botColor, '/img/frames/maskBottomHalf.png');
     } else {
         // Fallback path: autoFrame() reads #autoFrame.value, which we already
         // set per-render in the prologue above — so this honors the requested
