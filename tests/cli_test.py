@@ -271,7 +271,7 @@ def test_main_print_custom_art_missing_folder_errors(tmp_path, capsys: pytest.Ca
         main()
 
     captured = capsys.readouterr()
-    assert f"Error: custom art folder '{missing_dir}' does not exist" in captured.out
+    assert f"Error: custom art folder '{missing_dir}' does not exist" in captured.err
 
 
 def test_main_print_requires_decklist_or_custom_art(tmp_path, capsys: pytest.CaptureFixture) -> None:
@@ -283,7 +283,7 @@ def test_main_print_requires_decklist_or_custom_art(tmp_path, capsys: pytest.Cap
         main()
 
     captured = capsys.readouterr()
-    assert "Error: must provide either a decklist, --custom-art folder, or --card-back PATH" in captured.out
+    assert "Error: must provide either a decklist, --custom-art folder, or --card-back PATH" in captured.err
 
 
 def test_main_print_custom_art_empty_folder_warns_and_continues_with_decklist(
@@ -310,7 +310,7 @@ def test_main_print_custom_art_empty_folder_warns_and_continues_with_decklist(
         main()
 
     captured = capsys.readouterr()
-    assert f"Warning: no PNG files found in '{custom_dir}'" in captured.out
+    assert f"Warning: no PNG files found in '{custom_dir}'" in captured.err
     print_cards_fpdf.assert_called_once()
     assert print_cards_fpdf.call_args.args[0] == fake_images
 
@@ -565,7 +565,7 @@ def test_main_print_card_back_missing_image_file_errors(tmp_path, capsys: pytest
         main()
 
     captured = capsys.readouterr()
-    assert "card back image not found" in captured.out
+    assert "card back image not found" in captured.err
 
 
 def test_build_duplex_layout_mirrors_back_row_for_long_edge_flip() -> None:
@@ -640,7 +640,7 @@ def test_main_print_card_back_duplex_mode_without_fronts_errors(tmp_path, capsys
         main()
 
     captured = capsys.readouterr()
-    assert "requires a decklist or --custom-art" in captured.out
+    assert "requires a decklist or --custom-art" in captured.err
 
 
 def test_main_convert_no_preferred_set_flag_no_reordering(tmp_path) -> None:
@@ -1024,7 +1024,7 @@ def test_main_convert_requires_decklist_or_basic_lands(tmp_path, capsys: pytest.
         main()
 
     captured = capsys.readouterr()
-    assert "Error: must provide either a decklist or --basic-lands" in captured.out
+    assert "Error: must provide either a decklist or --basic-lands" in captured.err
 
 
 def test_main_convert_rejects_premium_without_basic_lands(tmp_path, capsys: pytest.CaptureFixture) -> None:
@@ -1042,7 +1042,7 @@ def test_main_convert_rejects_premium_without_basic_lands(tmp_path, capsys: pyte
         main()
 
     captured = capsys.readouterr()
-    assert "Error: --art-preference premium is only supported with --basic-lands" in captured.out
+    assert "Error: --art-preference premium is only supported with --basic-lands" in captured.err
 
 
 def test_main_convert_basic_lands_invalid_spec_errors(tmp_path, capsys: pytest.CaptureFixture) -> None:
@@ -1060,7 +1060,7 @@ def test_main_convert_basic_lands_invalid_spec_errors(tmp_path, capsys: pytest.C
         main()
 
     captured = capsys.readouterr()
-    assert "Error: Invalid basic land spec 'mountain'. Expected NAME=COUNT." in captured.out
+    assert "Error: Invalid basic land spec 'mountain'. Expected NAME=COUNT." in captured.err
 
 
 def test_main_convert_basic_lands_accepts_explicit_out_flag(tmp_path) -> None:
@@ -1125,7 +1125,7 @@ def test_main_convert_basic_lands_requires_output_file(capsys: pytest.CaptureFix
         main()
 
     captured = capsys.readouterr()
-    assert "Error: must provide an output file for convert" in captured.out
+    assert "Error: must provide an output file for convert" in captured.err
 
 
 def test_generate_basic_lands_decklist_prefers_unique_art_before_repeats() -> None:
@@ -1617,7 +1617,7 @@ def test_main_print_custom_art_bleed_crop_too_large_errors(tmp_path, capsys: pyt
         main()
 
     captured = capsys.readouterr()
-    assert "Error: Custom art bleed crop too large" in captured.out
+    assert "Error: Custom art bleed crop too large" in captured.err
 
 
 def test_generate_basic_lands_decklist_standard_excludes_borderless_basics() -> None:

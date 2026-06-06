@@ -2,11 +2,12 @@ import argparse
 import logging
 import random
 import re
+import sys
 import tempfile
 from collections.abc import Callable, Container
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, NoReturn, cast
 
 import numpy as np
 import requests
@@ -37,6 +38,23 @@ EXCLUDED_BASIC_LAND_PRINTS = {
     ("sld", "257"),
     ("sld", "258"),
 }
+
+
+def _die(msg: str, code: int = 1) -> NoReturn:
+    """Print ``msg`` to stderr and raise ``SystemExit(code)``.
+
+    Centralizes the "user-facing CLI error" pattern so error messages land on
+    stderr (the standard place for them — downstream tools and ``2>/dev/null``
+    redirects expect that convention). Returns ``NoReturn`` so callers can
+    follow it with the natural control flow without static-analyser noise.
+    """
+    print(msg, file=sys.stderr)
+    raise SystemExit(code)
+
+
+def _warn(msg: str) -> None:
+    """Print a non-fatal warning to stderr."""
+    print(msg, file=sys.stderr)
 
 
 def _float_in_range(lo: float, hi: float) -> Callable[[str], float]:
@@ -70,17 +88,14 @@ def parse_kv_opts(tokens: list[str], schema: dict[str, Callable[[str], Any]]) ->
     allowed = ", ".join(sorted(schema))
     for tok in tokens:
         if "=" not in tok:
-            print(f"Error: expected key=value, got {tok!r}. Allowed keys: {allowed}.")
-            raise SystemExit(1)
+            _die(f"Error: expected key=value, got {tok!r}. Allowed keys: {allowed}.")
         key, raw = tok.split("=", 1)
         if key not in schema:
-            print(f"Error: unknown key {key!r}. Allowed keys: {allowed}.")
-            raise SystemExit(1)
+            _die(f"Error: unknown key {key!r}. Allowed keys: {allowed}.")
         try:
             parsed[key] = schema[key](raw)
         except (ValueError, TypeError) as exc:
-            print(f"Error: invalid value for {key}: {exc}.")
-            raise SystemExit(1) from exc
+            _die(f"Error: invalid value for {key}: {exc}.")
     return parsed
 
 
@@ -220,18 +235,16 @@ def parse_decklist_spec(
             art_before=art_before,
         )
     else:
-        print(f"Cant find decklist '{decklist_spec}'")
-        raise SystemExit(1)
+        _die(f"Cant find decklist '{decklist_spec}'")
 
-    # Print warnings
+    # Print warnings to stderr (informational; not errors but not stdout output either).
     for warning in warnings:
         if warning.level in warn_levels:
-            print(warning)
+            _warn(str(warning))
 
     # Check for grave errors
     if not ok:
-        print("Decklist contains invalid card names. Fix errors above before reattempting.")
-        raise SystemExit(1)
+        _die("Decklist contains invalid card names. Fix errors above before reattempting.")
 
     print(f"Found {decklist.total_count} cards in total with {decklist.total_count_unique} unique cards.")
 
@@ -248,11 +261,35 @@ def papersize(string: str) -> np.ndarray:
         return np.array([21, 29.7]) / 2.54
     if "x" in spec:
         split = spec.split("x")
-        return np.array([float(split[0]), float(split[1])])
-    raise argparse.ArgumentTypeError()
+        try:
+            return np.array([float(split[0]), float(split[1])])
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(
+                f"--paper {string!r}: expected 'a4' or WIDTHxHEIGHT in inches (e.g. '8.5x11'), "
+                f"got non-numeric segments: {exc}"
+            ) from exc
+    raise argparse.ArgumentTypeError(
+        f"--paper {string!r}: expected 'a4' or WIDTHxHEIGHT in inches (e.g. '8.5x11')"
+    )
 
 
-_PIPELINE_CACHE_SUFFIX_RE = re.compile(r"(_norm(_cp[\d.eE+-]+)?|_shadow(_a[\d.eE+-]+)?|_bg\d{9}|_crop\d+|_bleed[\d.]+)$")
+# Suffixes that indicate a pipeline-stage derivative file, NOT a user-supplied source
+# image. Used by ``_normalize_custom_art_images`` to exclude cached intermediates from
+# the next run's ``--custom-art FOLDER`` ingestion — otherwise the folder gradually
+# accumulates ``_norm``, ``_shadow``, ``_bg``, etc. variants that look like new cards.
+#
+# Add a matching alternation entry when introducing a new pipeline stage. Current set:
+#   ``_norm`` / ``_norm_cp<lift>``  — normalize.py (output: ``_norm_l<lift>``; cp form is legacy)
+#   ``_shadow`` / ``_shadow_a<a>``  — shadow_lift.py
+#   ``_bg<RGB>``                    — composite.py (e.g. ``_bg000000128``)
+#   ``_crop<N>``                    — print_cards.py per-card layout crop cache
+#   ``_bleed<pct>``                 — bleed.py
+# NOTE: black_vignette.py (``_bv<…>``) is NOT yet in this list — its outputs would be
+# re-ingested on the next ``--custom-art`` pass. Add when the renderer is updated to
+# emit user-visible bv-suffixed caches.
+_PIPELINE_CACHE_SUFFIX_RE = re.compile(
+    r"(_norm(_cp[\d.eE+-]+)?|_shadow(_a[\d.eE+-]+)?|_bg\d{9}|_crop\d+|_bleed[\d.]+)$"
+)
 
 
 def _normalize_custom_art_images(
@@ -1263,11 +1300,11 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
             return skip_cc_responses
 
         if not cc_cache.is_dir():
-            print(
-                "[cardconjourer] Card Conjurer source not found at "
-                f"{cc_cache}. Run `make cardconjurer` first."
+            _die(
+                f"[cardconjourer] Card Conjurer source not found at "
+                f"{cc_cache}. Run `make cardconjurer` first.",
+                code=2,
             )
-            raise SystemExit(2)
         jobs = harness_jobs
         # Interleaved streaming: per-card, (1) run prepare_each (e.g. ESRGAN upscale),
         # (2) write the job to the harness's stdin, (3) wait for its response on stdout,
@@ -1297,9 +1334,8 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
             # (Windows + .gitattributes binary attrs missing). Drained in a thread
             # so its pipe can't fill and deadlock the subprocess.
             assert proc.stderr is not None
-            import sys as _sys
             for line in proc.stderr:
-                _sys.stderr.write(line)
+                sys.stderr.write(line)
 
         threading.Thread(target=_drain_stderr, daemon=True).start()
 
@@ -1343,14 +1379,26 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                 bar.set_postfix_str(f"ok={ok_count} skip={len(responses) - ok_count}", refresh=False)
 
         proc.stdin.close()
-        proc.wait()
+        # 60s grace period for the harness's cleanup phase. The render loop above
+        # is bounded by user ctrl-C — but proc.wait() with no timeout would hang
+        # forever if the harness deadlocks AFTER stdin closes (e.g. waiting on
+        # an unresolved pendingImages promise). Kill on timeout so the CLI exits.
+        try:
+            proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            print(
+                "[cardconjourer] harness hung after stdin close — killed",
+                file=sys.stderr,
+            )
         if proc.returncode != 0:
             # stderr was already forwarded by _drain_stderr; the user has seen it.
             # Re-flag here so the run doesn't silently end with half the deck missing.
             print(
                 f"[cardconjourer] harness exited {proc.returncode} — partial render "
                 f"({len(responses)}/{len(jobs)} cards processed before the crash)",
-                file=__import__("sys").stderr,
+                file=sys.stderr,
             )
         return responses + skip_cc_responses
 
@@ -1380,7 +1428,9 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
 def main() -> None:
     """Run mtg-proxies CLI."""
     parser = argparse.ArgumentParser("mtg-proxies", description="Create high quality MtG proxies from your decklist.")
-    subparsers = parser.add_subparsers(dest="command")
+    # required=True so bare ``mtg-proxies`` (no subcommand) prints usage + exits non-zero
+    # instead of silently falling through the match below with args.command=None.
+    subparsers = parser.add_subparsers(dest="command", required=True)
 
     # Print tool
     print_parser = subparsers.add_parser(
@@ -1744,19 +1794,19 @@ def main() -> None:
             upscale_scope = resolve_upscale_scope(args)
 
             if args.card_back is None and args.card_back_count is not None:
-                print("Error: --card-back-count requires --card-back PATH")
+                print("Error: --card-back-count requires --card-back PATH", file=sys.stderr)
                 raise SystemExit(1)
             if args.card_back_count is not None and args.card_back_count <= 0:
-                print(f"Error: --card-back-count must be positive (got {args.card_back_count})")
+                print(f"Error: --card-back-count must be positive (got {args.card_back_count})", file=sys.stderr)
                 raise SystemExit(1)
             if upscale_scope is not None and not args.decklist:
-                print("Error: --upscale requires a decklist (it operates on Scryfall scans)")
+                print("Error: --upscale requires a decklist (it operates on Scryfall scans)", file=sys.stderr)
                 raise SystemExit(1)
             if args.split_pages is not None and args.split_pages <= 0:
-                print(f"Error: --split-pages must be positive (got {args.split_pages})")
+                print(f"Error: --split-pages must be positive (got {args.split_pages})", file=sys.stderr)
                 raise SystemExit(1)
             if args.upscale_target_width <= 0:
-                print(f"Error: --upscale-target-width must be positive (got {args.upscale_target_width})")
+                print(f"Error: --upscale-target-width must be positive (got {args.upscale_target_width})", file=sys.stderr)
                 raise SystemExit(1)
 
             # Duplex mode is triggered by --card-back PATH alone (without --card-back-count).
@@ -1765,7 +1815,7 @@ def main() -> None:
             # own back face; all other cards (single-faced + custom art) use the supplied card_back.
             duplex_mode = args.card_back is not None and args.card_back_count is None
             if args.card_back is not None and not Path(args.card_back).is_file():
-                print(f"Error: card back image not found: {args.card_back}")
+                print(f"Error: card back image not found: {args.card_back}", file=sys.stderr)
                 raise SystemExit(1)
 
             fronts: list[str] = []
@@ -1836,7 +1886,7 @@ def main() -> None:
             if args.custom_art:
                 custom_folder = Path(args.custom_art)
                 if not custom_folder.exists():
-                    print(f"Error: custom art folder '{args.custom_art}' does not exist")
+                    print(f"Error: custom art folder '{args.custom_art}' does not exist", file=sys.stderr)
                     raise SystemExit(1)
 
                 try:
@@ -1850,10 +1900,10 @@ def main() -> None:
                     else:
                         custom_images = _normalize_custom_art_images(custom_folder)
                 except ValueError as exc:
-                    print(f"Error: {exc}")
+                    print(f"Error: {exc}", file=sys.stderr)
                     raise SystemExit(1) from exc
                 if not custom_images:
-                    print(f"Warning: no PNG files found in '{args.custom_art}'")
+                    print(f"Warning: no PNG files found in '{args.custom_art}'", file=sys.stderr)
                 if duplex_mode:
                     fronts.extend(custom_images)
                     backs.extend([args.card_back] * len(custom_images))
@@ -1870,7 +1920,7 @@ def main() -> None:
             image_flags: list[bool]
             if duplex_mode:
                 if not fronts:
-                    print("Error: --card-back requires a decklist or --custom-art to pair backs with")
+                    print("Error: --card-back requires a decklist or --custom-art to pair backs with", file=sys.stderr)
                     raise SystemExit(1)
                 cards_per_row, rows_per_sheet = _cards_per_sheet_dims(args.paper, args.scale)
                 images = _build_duplex_layout(fronts, backs, args.card_back, cards_per_row, rows_per_sheet)
@@ -1900,7 +1950,7 @@ def main() -> None:
                     image_flags.extend([True] * (len(images) - len(image_flags)))
 
             if not images:
-                print("Error: must provide either a decklist, --custom-art folder, or --card-back PATH")
+                print("Error: must provide either a decklist, --custom-art folder, or --card-back PATH", file=sys.stderr)
                 raise SystemExit(1)
 
             # Custom art and card-back images are user-supplied and assumed pristine — they
@@ -2036,7 +2086,10 @@ def main() -> None:
 
                 from mtg_proxies.composite import composite_against_bg
 
-                bg_rgb = tuple((np.array(colors.to_rgb(args.background)) * 255).astype(int))
+                # Coerce to Python ints (not numpy ints) at the boundary so the tuple
+                # downstream is a plain (int, int, int) shape rather than three np.int64s
+                # that may surprise type-narrow consumers.
+                bg_rgb = tuple(int(c) for c in (np.array(colors.to_rgb(args.background)) * 255).astype(int))
                 images = composite_against_bg(images, bg_color=bg_rgb, skip_paths=user_supplied)
 
             try:
@@ -2093,21 +2146,21 @@ def main() -> None:
                     candidate = basic_land_specs[-1]
                     # Catch typos like `--basic-lands mountain=9 forest` (forgot `=COUNT` on the last spec).
                     if candidate.strip().lower() in BASIC_LAND_NAMES:
-                        print(f"Error: basic land spec {candidate!r} is missing a count. Expected NAME=COUNT.")
+                        print(f"Error: basic land spec {candidate!r} is missing a count. Expected NAME=COUNT.", file=sys.stderr)
                         raise SystemExit(1)
                     outfile = Path(candidate)
                     basic_land_specs = basic_land_specs[:-1]
 
             if args.basic_lands:
                 if outfile is None:
-                    print("Error: must provide an output file for convert")
+                    print("Error: must provide an output file for convert", file=sys.stderr)
                     raise SystemExit(1)
                 try:
                     basics_decklist = _generate_basic_lands_decklist(
                         basic_land_specs, art_preference=args.art_preference
                     )
                 except ValueError as exc:
-                    print(f"Error: {exc}")
+                    print(f"Error: {exc}", file=sys.stderr)
                     raise SystemExit(1) from exc
 
                 # When an input decklist is also provided, parse it and append the basics.
@@ -2139,7 +2192,7 @@ def main() -> None:
             else:
                 decklist_spec = args.decklist
                 if args.art_preference == "premium":
-                    print("Error: --art-preference premium is only supported with --basic-lands")
+                    print("Error: --art-preference premium is only supported with --basic-lands", file=sys.stderr)
                     raise SystemExit(1)
                 if decklist_spec is not None and outfile is None:
                     looks_like_decklist = (
@@ -2148,15 +2201,15 @@ def main() -> None:
                         or decklist_spec.lower().startswith("archidekt:")
                     )
                     if looks_like_decklist:
-                        print("Error: must provide an output file for convert")
+                        print("Error: must provide an output file for convert", file=sys.stderr)
                         raise SystemExit(1)
                     decklist_spec = None
 
                 if args.decklist is None:
-                    print("Error: must provide either a decklist or --basic-lands")
+                    print("Error: must provide either a decklist or --basic-lands", file=sys.stderr)
                     raise SystemExit(1)
                 if outfile is None:
-                    print("Error: must provide either a decklist or --basic-lands")
+                    print("Error: must provide either a decklist or --basic-lands", file=sys.stderr)
                     raise SystemExit(1)
 
                 # Parse decklist
