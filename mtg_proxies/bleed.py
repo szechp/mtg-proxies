@@ -51,5 +51,10 @@ def crop_bleed(input_path: str | Path, output_path: str | Path, bleed_crop_perce
             raise ValueError(f"bleed crop {bleed_crop_percent}% too large for {input_path}")
         cropped = img.crop((crop_x, crop_y, width - crop_x, height - crop_y))
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        cropped.save(output_path, format="PNG")
+        # Atomic write: a SIGKILL mid-save would otherwise leave a partial PNG
+        # at ``output_path`` that the per_card cache short-circuit would serve
+        # silently on the next run.
+        tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+        cropped.save(tmp_path, format="PNG")
+        tmp_path.replace(output_path)
     return output_path

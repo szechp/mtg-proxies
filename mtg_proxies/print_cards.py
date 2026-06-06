@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -300,7 +301,6 @@ def print_cards_fpdf(
         if border_crop > 0:
             # Symmetrical uniform pixel crop: remove exactly half of border_crop from each side.
             # This keeps the black borders perfectly uniform in appearance.
-            import hashlib
             h = hashlib.sha256(str(Path(image).absolute()).encode()).hexdigest()[:12]
             cache_dir = Path.home() / ".cache" / "mtg-proxies" / "layout-crops"
             cache_dir.mkdir(parents=True, exist_ok=True)
@@ -314,7 +314,8 @@ def print_cards_fpdf(
             c_top = int(round(bc / 2 * actual_h / image_size[1]))
             c_bottom = int(round(bc * actual_h / image_size[1])) - c_top
 
-            if not Path(cropped_image).is_file():
+            cropped_path = Path(cropped_image)
+            if not cropped_path.is_file() or cropped_path.stat().st_size == 0:
                 plt.imsave(cropped_image, img_arr[c_top : actual_h - c_bottom, c_left : actual_w - c_right])
             
             factors = (image_size - bc) / image_size

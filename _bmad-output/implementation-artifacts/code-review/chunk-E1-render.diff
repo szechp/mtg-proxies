@@ -1,0 +1,2057 @@
+diff --git a/mtg_proxies/black_vignette.py b/mtg_proxies/black_vignette.py
+new file mode 100644
+index 0000000..aefb0ad
+--- /dev/null
++++ b/mtg_proxies/black_vignette.py
+@@ -0,0 +1,121 @@
++"""Pull near-black pixels near the card edge to true black.
++
++Card scans often render the outer rim as gray-ish (luminance ~15-30) rather than the
++intended #000. Globally lifting blacks (via gamma, shadow-lift, etc.) makes this worse;
++globally clipping blacks crushes art shadows. This module addresses the specific case:
++restore true-black borders without touching the card interior.
++
++The mask is the elementwise AND of two soft masks: ``edge_mask`` (1 at the image rim,
++0 a few percent inward) and ``near_black_mask`` (1 where the pixel is already near-black,
++0 where it isn't). Pixels with high mask values get pulled toward (0,0,0); pixels with
++low mask values are untouched. The combination is self-limiting: art near the edge that
++isn't near-black is left alone, and gray pixels in the interior are left alone.
++
++Alpha is preserved when the source is RGBA.
++"""
++
++from __future__ import annotations
++
++from collections.abc import Sequence
++from pathlib import Path
++
++import numpy as np
++from PIL import Image
++from tqdm import tqdm
++
++
++def darken_borders_to_black(
++    paths: Sequence[str | Path],
++    *,
++    strength: float = 1.0,
++    edge_fraction: float = 0.05,
++    max_black_threshold: float = 40.0,
++    skip_paths: Sequence[str | Path] | None = None,
++) -> list[str]:
++    """Pull near-black border pixels toward true (0,0,0) on every image in ``paths``.
++
++    Args:
++        paths: Image paths to process.
++        strength: How aggressive the pull is. ``1.0`` = pixels at the very edge with
++            luminance 0 already become 0 (no change); pixels at the edge with luminance
++            near ``max_black_threshold`` get pulled down by their distance to 0 scaled
++            by the masks. ``0.0`` = no-op.
++        edge_fraction: Fraction of the shorter side that the vignette covers (from the
++            edge inward). ``0.05`` = outer 5 %. Smooth falloff to 0 over this range.
++        max_black_threshold: Pixels whose mean RGB is above this value are NOT touched.
++            Higher values affect more (lighter) pixels.
++        skip_paths: Resolved paths to skip entirely (returned as-is). Use for user-supplied
++            content like custom art / card backs.
++
++    Returns:
++        List of paths in input order; cached output is ``{stem}_bv<s>_<e>_<m>.png``.
++        Cache is invalidated by source-mtime comparison so upstream cache regens cascade.
++    """
++    if not paths:
++        return []
++    skip = {str(Path(p).resolve()) for p in (skip_paths or ())}
++    suffix = f"_bv{strength:g}_{edge_fraction:g}_{max_black_threshold:g}.png"
++    out_paths: list[str] = []
++    seen: dict[str, str] = {}
++    for path in tqdm(paths, desc="Darkening borders"):
++        if str(Path(path).resolve()) in skip:
++            out_paths.append(str(path))
++            continue
++        key = str(path)
++        if key in seen:
++            out_paths.append(seen[key])
++            continue
++        src_path = Path(path)
++        out_path = src_path.with_name(f"{src_path.stem}{suffix}")
++        cache_is_stale = (
++            out_path.is_file() and src_path.exists() and src_path.stat().st_mtime > out_path.stat().st_mtime
++        )
++        if not out_path.is_file() or cache_is_stale:
++            _apply_vignette(src_path, out_path, strength, edge_fraction, max_black_threshold)
++        seen[key] = str(out_path)
++        out_paths.append(str(out_path))
++    return out_paths
++
++
++def _apply_vignette(
++    src_path: Path, out_path: Path, strength: float, edge_fraction: float, max_black: float
++) -> None:
++    with Image.open(src_path) as im:
++        im.load()
++        is_rgba = im.mode in ("RGBA", "LA")
++        if is_rgba:
++            arr = np.array(im.convert("RGBA"), dtype=np.uint8)
++            alpha = arr[..., 3:4]
++            rgb = arr[..., :3].astype(np.float32)
++        else:
++            rgb = np.array(im.convert("RGB"), dtype=np.uint8).astype(np.float32)
++            alpha = None
++
++    h, w = rgb.shape[:2]
++    # Distance to the nearest edge, in pixels. Broadcast 1D row/col distances to (h, w)
++    # first so np.minimum can reduce them — minimum.reduce won't broadcast on its own.
++    yy = np.arange(h, dtype=np.float32)[:, None]
++    xx = np.arange(w, dtype=np.float32)[None, :]
++    dist_x = np.broadcast_to(np.minimum(xx, w - 1 - xx), (h, w))
++    dist_y = np.broadcast_to(np.minimum(yy, h - 1 - yy), (h, w))
++    dist_to_edge = np.minimum(dist_x, dist_y)
++    # Width of the falloff in pixels, derived from the shorter side and edge_fraction.
++    edge_px = max(min(h, w) * edge_fraction, 1.0)
++    edge_mask = np.clip(1.0 - dist_to_edge / edge_px, 0.0, 1.0)
++    # ``edge_mask`` is linear; smoothstep makes the transition look natural instead of a hard ramp.
++    edge_mask = edge_mask * edge_mask * (3.0 - 2.0 * edge_mask)
++
++    luminance = rgb.mean(axis=2)
++    near_black_mask = np.clip(1.0 - luminance / max(max_black, 1.0), 0.0, 1.0)
++
++    pull = edge_mask * near_black_mask * float(strength)
++    rgb_new = np.clip(rgb * (1.0 - pull[..., None]), 0.0, 255.0).astype(np.uint8)
++
++    if alpha is not None:
++        out_arr = np.concatenate([rgb_new, alpha], axis=2)
++        out_img = Image.fromarray(out_arr, mode="RGBA")
++    else:
++        out_img = Image.fromarray(rgb_new, mode="RGB")
++    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
++    out_img.save(tmp_path, format="PNG")
++    tmp_path.replace(out_path)
+diff --git a/mtg_proxies/bleed.py b/mtg_proxies/bleed.py
+new file mode 100644
+index 0000000..498f98c
+--- /dev/null
++++ b/mtg_proxies/bleed.py
+@@ -0,0 +1,55 @@
++"""Edge-bleed cropping shared by ``--custom-art`` and ``#mpcfill`` paths.
++
++Both custom-art images and MPCFill renders carry more bleed than Scryfall scans by
++default — they include the print-bleed border the proxy printer expects to trim.
++When laid out in our PDF as a 2.5" x 3.5" card, the extra bleed sticks out past the
++card boundaries, so we trim each side by a percentage of the image dimensions
++before placing it in the grid.
++
++This used to be ``--custom-art-bleed-crop``'s private helper inside cli.py. Pulled
++out so the ``#mpcfill`` modeline can reuse it with the same default (4%) when
++swapping the Scryfall path for an MPCFill render.
++"""
++
++from __future__ import annotations
++
++from pathlib import Path
++
++from PIL import Image
++
++
++def crop_bleed(input_path: str | Path, output_path: str | Path, bleed_crop_percent: float) -> Path:
++    """Crop ``bleed_crop_percent`` of each side off ``input_path`` and save to ``output_path``.
++
++    Uses PIL throughout so the input format is decided by magic bytes rather than the
++    file extension. MPCFill thumbnails come down as whatever Google Drive served (often
++    JPEG even when our cache name says ``.png``); ``matplotlib.imread`` would error on
++    that mismatch, ``PIL.Image.open`` doesn't care.
++
++    Args:
++        input_path: Source image (PNG, JPG, anything Pillow can decode).
++        output_path: Where to write the cropped result. Always PNG (extension irrelevant —
++            we pass ``format="PNG"`` explicitly so a ``.png`` filename for JPEG bytes
++            doesn't surprise downstream consumers).
++        bleed_crop_percent: Edge crop in percent of the image dimensions. Must be in
++            ``(0, 50)``; values >= 50 would crop the entire image away.
++
++    Returns:
++        ``output_path`` as a :class:`Path`.
++
++    Raises:
++        ValueError: When the crop would consume the whole image.
++    """
++    input_path = Path(input_path)
++    output_path = Path(output_path)
++    with Image.open(input_path) as img:
++        img.load()
++        width, height = img.size
++        crop_x = round(width * bleed_crop_percent / 100)
++        crop_y = round(height * bleed_crop_percent / 100)
++        if crop_x * 2 >= width or crop_y * 2 >= height:
++            raise ValueError(f"bleed crop {bleed_crop_percent}% too large for {input_path}")
++        cropped = img.crop((crop_x, crop_y, width - crop_x, height - crop_y))
++        output_path.parent.mkdir(parents=True, exist_ok=True)
++        cropped.save(output_path, format="PNG")
++    return output_path
+diff --git a/mtg_proxies/composite.py b/mtg_proxies/composite.py
+new file mode 100644
+index 0000000..dba0cf8
+--- /dev/null
++++ b/mtg_proxies/composite.py
+@@ -0,0 +1,76 @@
++from __future__ import annotations
++
++from collections.abc import Sequence
++from pathlib import Path
++
++import numpy as np
++from PIL import Image
++from tqdm import tqdm
++
++
++def composite_against_bg(
++    paths: Sequence[str | Path],
++    bg_color: tuple[int, int, int],
++    skip_paths: Sequence[str | Path] | None = None,
++) -> list[str]:
++    """Pre-flatten RGBA card scans against ``bg_color`` so transparent rounded corners render
++    as the chosen color in the final PDF.
++
++    fpdf2's PNG image renderer composites alpha against a white page background, not against
++    rectangles drawn underneath. The result: with ``--background black --border_crop 0`` the
++    transparent corners that Scryfall provides on each card scan show up as white blobs rather
++    than black. Pre-flattening here turns each scan into an opaque PNG with the corners filled
++    by ``bg_color`` so the rendered output matches the intended look.
++
++    Cached as ``{path}_bg{R}{G}{B}.png``.
++
++    Args:
++        paths: Image paths to flatten. Non-RGBA images are returned as-is.
++        bg_color: (R, G, B) integers in [0, 255] to use behind the alpha channel.
++        skip_paths: Paths to leave untouched (returned as-is). Use this for user-supplied
++            content like custom art or a card-back image that is already opaque/pristine.
++
++    Returns:
++        List of paths in input order; duplicates dedupe via cache.
++    """
++    if not paths:
++        return []
++    r, g, b = (int(np.clip(c, 0, 255)) for c in bg_color)
++    suffix = f"_bg{r:03d}{g:03d}{b:03d}.png"
++    skip = {str(Path(p).resolve()) for p in (skip_paths or ())}
++    out_paths: list[str] = []
++    # seen dedupes inputs within this single call (one bg_color); not safe to lift to module scope.
++    seen: dict[str, str] = {}
++    for path in tqdm(paths, desc="Compositing"):
++        if str(Path(path).resolve()) in skip:
++            out_paths.append(str(path))
++            continue
++        key = str(path)
++        if key in seen:
++            out_paths.append(seen[key])
++            continue
++        src_path = Path(path)
++        out_path = src_path.with_name(f"{src_path.stem}{suffix}")
++        # Stale-cache guard: if the source was rewritten after the composite was last
++        # produced (e.g. an upstream step like upscale_images regenerated its cache to
++        # preserve alpha), the cached composite is from the old broken input and would
++        # silently render the pre-fix bug (white corners despite ``--background <color>``).
++        # Re-composite when the source mtime is newer than the cached output's mtime.
++        cache_is_stale = (
++            out_path.is_file() and src_path.exists() and src_path.stat().st_mtime > out_path.stat().st_mtime
++        )
++        if not out_path.is_file() or cache_is_stale:
++            with Image.open(src_path) as im:
++                src = np.array(im.convert("RGBA"), dtype=np.uint8)
++            alpha = src[..., 3:4].astype(np.float32) / 255.0
++            rgb = src[..., :3].astype(np.float32)
++            bg = np.array([r, g, b], dtype=np.float32)
++            out = rgb * alpha + bg * (1.0 - alpha)
++            # Atomic write so a SIGKILL mid-save can't poison the cache with a half-written PNG.
++            # PIL infers format from the destination extension, so we pass format= explicitly.
++            tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
++            Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), mode="RGB").save(tmp_path, format="PNG")
++            tmp_path.replace(out_path)
++        seen[key] = str(out_path)
++        out_paths.append(str(out_path))
++    return out_paths
+diff --git a/mtg_proxies/normalize.py b/mtg_proxies/normalize.py
+new file mode 100644
+index 0000000..aaa3905
+--- /dev/null
++++ b/mtg_proxies/normalize.py
+@@ -0,0 +1,171 @@
++"""Luminance-only curve-lift "normalize" pass for Scryfall scans.
++
++Photoshop-curves-style approach the user describes manually:
++
++1. **Black-point eyedropper** — sample the card's printed black border; remap that value to
++   true (0, 0, 0). Border is sampled from whichever edges qualify (some full-bleed Secret
++   Lair scans only have a black strip at the bottom).
++2. **Anchored curve with a small mid-shadow lift** — pin (0, 0), anchor identity points
++   near 10 %, 50 %, 90 %, pin (255, 255), and lift the ~25 % point by ``lift`` (default
++   small) so muddy shadows open up without affecting blacks, mids, or highlights.
++3. **Apply as luminance delta** — compute ``new_lum - old_lum`` from the curve and add that
++   single delta to every channel. R-G and G-B differences are preserved exactly, so
++   hue/saturation don't drift. The old per-channel stretch warmed skin tones because the
++   red channel of a portrait stretches differently from blue. This eliminates that.
++
++Alpha is preserved when the source is RGBA. Cached as ``{path}_norm_l<lift>.png``; mtime is
++checked against the source so a re-fetch invalidates the cache.
++"""
++
++from __future__ import annotations
++
++from collections.abc import Sequence
++from pathlib import Path
++
++import numpy as np
++from PIL import Image
++from tqdm import tqdm
++
++
++def _load_rgba(path: str | Path) -> np.ndarray:
++    """Load image as RGBA so the rounded-corner transparency Scryfall provides is preserved."""
++    with Image.open(path) as im:
++        return np.array(im.convert("RGBA"), dtype=np.uint8)
++
++
++def _border_black(image: np.ndarray) -> float | None:
++    """Mean *luminance* of the card's printed black border, sampled from whichever edges qualify.
++
++    Operates on luminance only — the new normalize is luminance-driven, no per-channel anchors.
++    Some scans render the border elevated (e.g. ~24 instead of 0); we use that elevated value
++    as the floor and remap it back to 0. Returns None when no edge qualifies (truly borderless
++    scan or alpha-only).
++    """
++    if image.shape[2] != 4:
++        return None
++    h, w = image.shape[:2]
++    strips = (
++        image[5:15, int(w * 0.3) : int(w * 0.7)],
++        image[h - 15 : h - 5, int(w * 0.3) : int(w * 0.7)],
++        image[int(h * 0.3) : int(h * 0.7), 5:15],
++        image[int(h * 0.3) : int(h * 0.7), w - 15 : w - 5],
++    )
++    lums: list[float] = []
++    for strip in strips:
++        opaque = strip[strip[..., 3] > 0]
++        if opaque.size == 0:
++            continue
++        rgb = opaque[..., :3].astype(np.float32)
++        m = rgb.mean(axis=0)
++        # "Near black" gate: real card borders are very dark. Reject dark-but-chromatic
++        # full-art edges (e.g. dark blue sky) by requiring max channel low AND either small
++        # channel range or min channel near zero.
++        m_max = float(m.max())
++        m_min = float(m.min())
++        if m_max <= 35.0 and (m_max - m_min <= 10.0 or m_min <= 5.0):
++            lum = 0.299 * float(m[0]) + 0.587 * float(m[1]) + 0.114 * float(m[2])
++            lums.append(lum)
++    if not lums:
++        return None
++    return float(np.mean(lums))
++
++
++def _build_lut(black_point: float, lift: float) -> np.ndarray:
++    """Construct a 256-entry uint8 LUT for the luminance curve.
++
++    Two-stage curve:
++
++    1. Black-point remap: linearly stretch ``[black_point, 255] → [0, 255]``. Pixels below
++       the black point clip to 0. This matches Photoshop's "black eyedropper" — the user's
++       step 1 ("make black real black").
++    2. Anchored lift: piecewise-linear through control points so most of the tonal range is
++       identity. Only the ~25 % point gets ``+lift``; the surrounding anchors at ~10 % and
++       ~50 % constrain the bulge so blacks, mids, and highlights are untouched.
++
++    The LUT is the COMPOSITION ``curve(black_point_remap(x))``.
++    """
++    x = np.arange(256, dtype=np.float32)
++    bp = float(np.clip(black_point, 0.0, 254.0))
++    if bp > 0:
++        stretched = np.clip((x - bp) * (255.0 / (255.0 - bp)), 0.0, 255.0)
++    else:
++        stretched = x.copy()
++
++    # Anchor points on the post-black-point axis. Lift is concentrated at ~25 % (input 64);
++    # surrounding anchors keep everything else at identity within ~2 LSBs.
++    control_in = np.array([0.0, 26.0, 64.0, 128.0, 200.0, 255.0], dtype=np.float32)
++    control_out = np.array(
++        [0.0, 26.0 + 0.25 * lift, 64.0 + lift, 128.0 + 0.25 * lift, 200.0, 255.0],
++        dtype=np.float32,
++    )
++    curved = np.interp(stretched, control_in, control_out)
++    return np.clip(curved, 0.0, 255.0).astype(np.uint8)
++
++
++def _apply_curve_lift(image: np.ndarray, lift: float) -> np.ndarray:
++    """Apply the black-point + lift curve to luminance, adding a single delta to every channel.
++
++    The same ``new_lum - old_lum`` delta lands on R, G, B → hue and saturation are preserved
++    exactly. Alpha (when present) passes through untouched.
++    """
++    rgb = image[..., :3].astype(np.float32)
++    lum = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
++    black_point = _border_black(image)
++    if black_point is None:
++        black_point = 0.0
++
++    lut = _build_lut(black_point, lift).astype(np.float32)
++    new_lum = lut[np.clip(np.round(lum), 0, 255).astype(np.int32)]
++    delta = (new_lum - lum)[..., None]
++    new_rgb = np.clip(rgb + delta, 0.0, 255.0).astype(np.uint8)
++    out = image.copy()
++    out[..., :3] = new_rgb
++    return out
++
++
++def normalize_images(
++    paths: Sequence[str | Path],
++    lift: float = 6.0,
++    skip_paths: Sequence[str | Path] | None = None,
++) -> list[str]:
++    """Apply the luminance-curve normalize to each image, return new paths.
++
++    Args:
++        paths: Image paths to normalize.
++        lift: Boost applied at the ~25 % mid-shadow point (8-bit units). Default 6 — gentle,
++            opens up muddy shadows without skin-tone warming or banding. Set 0 for pure
++            black-point remap with no mid-tone lift.
++        skip_paths: Paths to leave untouched (returned as-is). Use this for user-supplied
++            content like custom art or a card-back image.
++
++    Returns:
++        List of paths to normalized PNGs (one per input, in order; duplicates are deduped).
++        Cached as ``{path}_norm_l{lift}.png``; cache is invalidated when the source mtime is
++        newer than the cached output (matches the staleness pattern in composite.py).
++    """
++    if not paths:
++        return []
++    skip = {str(Path(p).resolve()) for p in (skip_paths or ())}
++    out_paths: list[str] = [str(p) for p in paths]
++    to_process = [(i, p) for i, p in enumerate(paths) if str(Path(p).resolve()) not in skip]
++    seen: dict[str, str] = {}
++    for i, path in tqdm(to_process, desc="Normalizing"):
++        key = str(path)
++        if key in seen:
++            out_paths[i] = seen[key]
++            continue
++        src_path = Path(path)
++        out_path = src_path.with_name(f"{src_path.stem}_norm_l{lift:g}.png")
++        cache_is_stale = (
++            out_path.is_file() and src_path.exists() and src_path.stat().st_mtime > out_path.stat().st_mtime
++        )
++        if not out_path.is_file() or cache_is_stale:
++            source = _load_rgba(src_path)
++            normalized = _apply_curve_lift(source, lift=lift)
++            mode = "RGBA" if normalized.shape[2] == 4 else "RGB"
++            tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
++            Image.fromarray(normalized, mode=mode).save(tmp_path, format="PNG")
++            tmp_path.replace(out_path)
++        seen[key] = str(out_path)
++        out_paths[i] = str(out_path)
++    return out_paths
+diff --git a/mtg_proxies/print_cards.py b/mtg_proxies/print_cards.py
+index 0d4b69f..66913e4 100644
+--- a/mtg_proxies/print_cards.py
++++ b/mtg_proxies/print_cards.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import re
+ from collections.abc import Sequence
+ from pathlib import Path
+ 
+@@ -13,9 +14,39 @@ from mtg_proxies.plotting import SplitPages
+ 
+ image_size = np.array([745, 1040])
+ 
++# Matches the per-card MPCFill warped output: ``<id>__<hash>_warped<NN>.png`` where NN is the
++# achieved card-content fill percentage. Legacy ``_warped.png`` (no NN) means "assume 0.92" —
++# old caches from before this marker existed.
++_WARPED_RE = re.compile(r"_warped(\d+)?$")
++
++
++def _warped_content_fraction(image_path: str | Path) -> float | None:
++    """Return the card-content fill fraction encoded in a ``_warped<NN>`` filename, or None.
++
++    ``None`` means the file is not an MPCFill warped render and should be placed at the slot
++    boundary with no rescale. ``1.0`` means card content already fills the image (borderless,
++    scale-to-fill, or extent-detection failed) — also no rescale needed. Any value below 1.0
++    means there's a bleed margin and the renderer should scale the image up by 1/fraction so
++    card content fills the slot.
++    """
++    m = _WARPED_RE.search(Path(image_path).stem)
++    if m is None:
++        return None
++    nn = m.group(1)
++    return 0.92 if nn is None else int(nn) / 100.0
++
+ 
+ def _occupied_space(cardsize: np.ndarray, pos: np.ndarray, border_crop: int, closed: bool = False) -> np.ndarray:
+-    return cardsize * (pos * image_size - np.clip(2 * pos - 1 - closed, 0, None) * border_crop) / image_size
++    if border_crop >= 0:
++        # Symmetrical uniform pixel crop: remove exactly 'border_crop' pixels from width and height.
++        # This keeps the black borders uniform in appearance.
++        factors = (image_size - border_crop) / image_size
++        return cardsize * pos * factors
++    # Negative border_crop means gap between cards — cards are full size, gaps in between.
++    # n cards and (n-1) gaps. pos is the index (0, 1, 2...).
++    # For grid size (closed=True), pos is the count.
++    n_gaps = np.clip(pos - closed, 0, None)
++    return cardsize * (pos * image_size - n_gaps * border_crop) / image_size
+ 
+ 
+ def print_cards_matplotlib(
+@@ -38,29 +69,76 @@ def print_cards_matplotlib(
+         border_crop: How many pixel to crop from the border of each card.
+         interpolation: Interpolation method for resizing images.
+         dpi: Dots per inch for the output PDF.
+-        background_color: Background color of the PDF as name or hex code.
++        background_color: Color filled behind the card grid (not the whole page) as name or hex
++            code. Covers the small diamond gaps where rounded card corners meet without flooding
++            the page margins with ink.
+     """
++    border_crop = int(border_crop)
++    if border_crop > min(image_size) // 2:
++        raise ValueError(f"border_crop ({border_crop}) is too large for image_size {tuple(image_size)}")
++
+     # Cards per figure
+     N = np.floor(papersize / cardsize).astype(int)
+     if N[0] == 0 or N[1] == 0:
+         raise ValueError(f"Paper size too small: {papersize}")
+-    offset = (papersize - _occupied_space(cardsize, N, border_crop, closed=True)) / 2
++    cards_per_sheet = int(np.prod(N))
++    grid_size = _occupied_space(cardsize, N, border_crop, closed=True)
++    offset = (papersize - grid_size) / 2
++
++    def background_rects(n_on_sheet: int, padding: float = 1.0) -> list[tuple[float, float, float, float]]:
++        """Rectangles covering the slots that hold actual cards on this sheet (L-shape if partial).
++        
++        Args:
++            n_on_sheet: Number of cards on the sheet.
++            padding: Safety margin in mm/inches to extend the background beyond the card edges.
++        """
++        if n_on_sheet <= 0:
++            return []
++        full_rows = n_on_sheet // N[0]
++        partial_row_cards = n_on_sheet % N[0]
++        rects: list[tuple[float, float, float, float]] = []
++        if full_rows > 0:
++            size = _occupied_space(cardsize, np.array([N[0], full_rows]), border_crop, closed=True)
++            rects.append((float(offset[0] - padding), float(offset[1] - padding), float(size[0] + 2 * padding), float(size[1] + 2 * padding)))
++        if partial_row_cards > 0:
++            # closed=True on the `top` calc so the partial row's top edge meets the full-rows
++            # rect's bottom edge flush. Mismatched closed flags left a thin seam of white.
++            top = offset[1] + _occupied_space(cardsize, np.array([0, full_rows]), border_crop, closed=True)[1]
++            bottom = offset[1] + _occupied_space(cardsize, np.array([0, full_rows + 1]), border_crop, closed=True)[1]
++            right = offset[0] + _occupied_space(cardsize, np.array([partial_row_cards, 1]), border_crop, closed=True)[0]
++            rects.append((float(offset[0] - padding), float(top - padding), float(right - offset[0] + 2 * padding), float(bottom - top + 2 * padding)))
++        return rects
+ 
+     # Ensure directory exists
+     filepath = Path(filepath)
+     filepath.parent.mkdir(parents=True, exist_ok=True)
+ 
+     # Choose pdf of image saver
+-    saver = PdfPages if filepath.suffix == ".pdf" else SplitPages
++    saver = PdfPages if filepath.suffix.lower() == ".pdf" else SplitPages
+ 
+     with saver(filepath) as saver, tqdm(total=len(images), desc="Plotting cards") as pbar:
+         idx = 0
+         while idx < len(images):  # Loop over pages
+             fig = plt.figure(figsize=papersize)
+             ax = fig.add_axes((0, 0, 1, 1))  # ax covers the whole figure
+-            #  Background
++            # Background fills only the slots that hold cards on this sheet, leaving page margins
++            # (and any unused slots on a partial last sheet) white.
+             if background_color is not None:
+-                plt.gca().add_patch(Rectangle((0, 0), 1, 1, color=background_color, zorder=-1000))
++                n_on_sheet = min(cards_per_sheet, len(images) - idx)
++                for rx, ry, rw, rh in background_rects(n_on_sheet):
++                    nx = rx / papersize[0]
++                    ny = ry / papersize[1]
++                    nw = rw / papersize[0]
++                    nh = rh / papersize[1]
++                    plt.gca().add_patch(
++                        Rectangle(
++                            (nx, 1 - ny - nh),
++                            nw,
++                            nh,
++                            color=background_color,
++                            zorder=-1000,
++                        )
++                    )
+ 
+             for y in range(N[1]):
+                 for x in range(N[0]):
+@@ -68,24 +146,44 @@ def print_cards_matplotlib(
+                         img = plt.imread(images[idx])
+                         idx += 1
+ 
+-                        # Crop left and top if not on border of sheet
+-                        left = border_crop if x > 0 else 0
+-                        top = border_crop if y > 0 else 0
+-                        img = img[top:, left:]
++                        # Determine crop and slot size
++                        if border_crop >= 0:
++                            # Symmetrical uniform pixel crop: remove exactly half of border_crop from each side.
++                            # This keeps the black borders perfectly uniform in appearance.
++                            actual_h, actual_w = img.shape[:2]
++                            bc = border_crop
++
++                            c_left = int(round(bc / 2 * actual_w / image_size[0]))
++                            c_right = int(round(bc * actual_w / image_size[0])) - c_left
++                            c_top = int(round(bc / 2 * actual_h / image_size[1]))
++                            c_bottom = int(round(bc * actual_h / image_size[1])) - c_top
++
++                            img = img[c_top : actual_h - c_bottom, c_left : actual_w - c_right]
++                            factors = (image_size - bc) / image_size
++                            base_slot_size = cardsize * factors
++                        else:
++                            # Legacy gap logic: no image crop, slot shift handled by _occupied_space
++                            base_slot_size = cardsize
+ 
+                         # Compute extent
+-                        lower = (offset + _occupied_space(cardsize, np.array([x, y]), border_crop)) / papersize
+-                        upper = (
+-                            offset
+-                            + _occupied_space(cardsize, np.array([x, y]), border_crop)
+-                            + cardsize * (image_size - [left, top]) / image_size
+-                        ) / papersize
++                        slot_lower = offset + _occupied_space(cardsize, np.array([x, y]), border_crop)
++                        slot_size = base_slot_size
++
++                        # MPCFill ``_warped<NN>`` renders carry a bleed margin (``NN``/100
++                        # is the card-content fill fraction); scale up so card content fills
++                        # the slot (matches the fpdf renderer's behavior).
++                        content_fraction = _warped_content_fraction(images[idx - 1])
++                        if content_fraction is not None and content_fraction < 1.0:
++                            slot_size = slot_size / content_fraction
++                            slot_lower = slot_lower - (slot_size - base_slot_size) / 2.0
++                        lower = slot_lower / papersize
++                        upper = (slot_lower + slot_size) / papersize
+                         extent = (lower[0], upper[0], 1 - upper[1], 1 - lower[1])  # flip y-axis
+ 
+                         plt.imshow(
+                             img,
+                             extent=extent,
+-                            aspect=papersize[1] / papersize[0],
++                            aspect="auto",
+                             interpolation=interpolation,
+                         )
+                         pbar.update(1)
+@@ -108,6 +206,7 @@ def print_cards_fpdf(
+     border_crop: int = 14,
+     background_color: tuple[int, int, int] | None = None,
+     cropmarks: bool = True,
++    split_pages: int | None = None,
+ ) -> None:
+     """Print a list of cards to a pdf file.
+ 
+@@ -117,66 +216,174 @@ def print_cards_fpdf(
+         papersize: Size of the paper in inches. Defaults to A4.
+         cardsize: Size of a card in inches.
+         border_crop: How many pixel to crop from the border of each card.
+-        background_color: Background color of the PDF as an RGB tuple.
++        background_color: Color filled behind the card grid (not the whole page) as an RGB tuple.
++            Covers the small diamond gaps where rounded card corners meet without flooding the page
++            margins with ink.
+         cropmarks: Whether to add crop marks to the PDF.
++        split_pages: If set, write a new PDF every N pages with `_<n>` suffix added to the filename.
+     """
+     from fpdf import FPDF
+ 
++    border_crop = int(border_crop)
++    if border_crop > min(image_size) // 2:
++        raise ValueError(f"border_crop ({border_crop}) is too large for image_size {tuple(image_size)}")
++    if split_pages is not None and split_pages <= 0:
++        raise ValueError(f"split_pages must be positive (got {split_pages})")
++
+     # Cards per sheet
+     N = np.floor(papersize / cardsize).astype(int)
+     if N[0] == 0 or N[1] == 0:
+         raise ValueError(f"Paper size too small: {papersize}")
+     cards_per_sheet = np.prod(N)
+-    offset = (papersize - _occupied_space(cardsize, N, border_crop, closed=True)) / 2
++    cards_per_file = None if split_pages is None else cards_per_sheet * split_pages
++    grid_size = _occupied_space(cardsize, N, border_crop, closed=True)
++    offset = (papersize - grid_size) / 2
++
++    def background_rects(n_on_sheet: int, padding: float = 1.0) -> list[tuple[float, float, float, float]]:
++        """Rectangles covering the slots that hold actual cards on this sheet (L-shape if partial).
++        
++        Args:
++            n_on_sheet: Number of cards on the sheet.
++            padding: Safety margin in mm/inches to extend the background beyond the card edges.
++        """
++        if n_on_sheet <= 0:
++            return []
++        full_rows = n_on_sheet // N[0]
++        partial_row_cards = n_on_sheet % N[0]
++        rects: list[tuple[float, float, float, float]] = []
++        if full_rows > 0:
++            size = _occupied_space(cardsize, np.array([N[0], full_rows]), border_crop, closed=True)
++            rects.append((float(offset[0] - padding), float(offset[1] - padding), float(size[0] + 2 * padding), float(size[1] + 2 * padding)))
++        if partial_row_cards > 0:
++            # closed=True on the `top` calc so the partial row's top edge meets the full-rows
++            # rect's bottom edge flush. Mismatched closed flags left a thin seam of white.
++            top = offset[1] + _occupied_space(cardsize, np.array([0, full_rows]), border_crop, closed=True)[1]
++            bottom = offset[1] + _occupied_space(cardsize, np.array([0, full_rows + 1]), border_crop, closed=True)[1]
++            right = offset[0] + _occupied_space(cardsize, np.array([partial_row_cards, 1]), border_crop, closed=True)[0]
++            rects.append((float(offset[0] - padding), float(top - padding), float(right - offset[0] + 2 * padding), float(bottom - top + 2 * padding)))
++        return rects
+ 
+     # Ensure directory exists
+     filepath = Path(filepath)
+     filepath.parent.mkdir(parents=True, exist_ok=True)
+ 
+-    # Initialize PDF
+-    pdf = FPDF(orientation="P", unit="mm", format="A4")
++    def output_filepath(file_index: int) -> Path:
++        if split_pages is None:
++            return filepath
++        return filepath.with_name(f"{filepath.stem}_{file_index + 1}{filepath.suffix}")
++
++    def init_pdf() -> FPDF:
++        # Pass papersize through so non-A4 callers get pages that match the layout math.
++        return FPDF(orientation="P", unit="mm", format=(float(papersize[0]), float(papersize[1])))
++
++    pdf = init_pdf()
+ 
+     for i, image in enumerate(tqdm(images, desc="Plotting cards")):
++        if cards_per_file is not None and i > 0 and i % cards_per_file == 0:
++            current_path = output_filepath(i // cards_per_file - 1)
++            tqdm.write(f"Writing to {current_path}")
++            pdf.output(current_path)
++            pdf = init_pdf()
++
+         if i % cards_per_sheet == 0:  # Startign a new sheet
+             pdf.add_page()
+             if background_color is not None:
++                n_on_sheet = min(cards_per_sheet, len(images) - i)
+                 pdf.set_fill_color(*background_color)
+-                pdf.rect(0, 0, papersize[0], papersize[1], "F")
++                for rx, ry, rw, rh in background_rects(n_on_sheet):
++                    pdf.rect(rx, ry, rw, rh, "F")
+ 
+         x = (i % cards_per_sheet) % N[0]
+         y = (i % cards_per_sheet) // N[0]
+ 
+-        # Crop left and top if not on border of sheet
+-        left = border_crop if x > 0 else 0
+-        top = border_crop if y > 0 else 0
++        # Determine crop and slot size
++        if border_crop > 0:
++            # Symmetrical uniform pixel crop: remove exactly half of border_crop from each side.
++            # This keeps the black borders perfectly uniform in appearance.
++            import hashlib
++            h = hashlib.sha256(str(Path(image).absolute()).encode()).hexdigest()[:12]
++            cache_dir = Path.home() / ".cache" / "mtg-proxies" / "layout-crops"
++            cache_dir.mkdir(parents=True, exist_ok=True)
++            cropped_image = str(cache_dir / (Path(image).stem + f"_{h}_crop{border_crop}" + Path(image).suffix))
++            
++            img_arr = plt.imread(image)
++            actual_h, actual_w = img_arr.shape[:2]
++            bc = border_crop
++            c_left = int(round(bc / 2 * actual_w / image_size[0]))
++            c_right = int(round(bc * actual_w / image_size[0])) - c_left
++            c_top = int(round(bc / 2 * actual_h / image_size[1]))
++            c_bottom = int(round(bc * actual_h / image_size[1])) - c_top
+ 
+-        if left == 0 and top == 0:
+-            cropped_image = image
+-        else:
+-            path = Path(image)
+-            cropped_image = str(path.parent / (path.stem + f"_{left}_{top}" + path.suffix))
+             if not Path(cropped_image).is_file():
+-                # Crop image
+-                plt.imsave(cropped_image, plt.imread(image)[top:, left:])
++                plt.imsave(cropped_image, img_arr[c_top : actual_h - c_bottom, c_left : actual_w - c_right])
++            
++            factors = (image_size - bc) / image_size
++            base_slot_size = cardsize * factors
++        else:
++            # Legacy gap logic or no crop
++            cropped_image = image
++            base_slot_size = cardsize
+ 
+         # Compute extent
+         lower = offset + _occupied_space(cardsize, np.array([x, y]), border_crop)
+-        size = cardsize * (image_size - [left, top]) / image_size
+-
+-        # Plot image
+-        pdf.image(cropped_image, x=lower[0], y=lower[1], w=size[0], h=size[1])
++        size = base_slot_size
++
++        # MPCFill ``_warped<NN>`` renders carry a bleed margin baked in by
++        # ``warp_to_reference`` — card content fills only ``NN`` % of the image's width.
++        content_fraction = _warped_content_fraction(image)
++        if content_fraction is not None and content_fraction < 1.0:
++            place_size = size / content_fraction
++            place_offset = (place_size - size) / 2.0
++            place_pos = lower - place_offset
++            pdf.image(cropped_image, x=place_pos[0], y=place_pos[1], w=place_size[0], h=place_size[1])
++        else:
++            pdf.image(cropped_image, x=lower[0], y=lower[1], w=size[0], h=size[1])
+ 
+-        if cropmarks and ((i + 1) % cards_per_sheet == 0 or i + 1 == len(images)):
++        if (i + 1) % cards_per_sheet == 0 or i + 1 == len(images):
+             # If this was the last card on a page, add crop marks
+-            pdf.set_line_width(0.05)
+-            pdf.set_draw_color(255, 255, 255)
+-            a = cardsize * (image_size - 2 * border_crop) / image_size
+-            b = papersize - N * a
+-            for x in range(N[0] + 1):
+-                for y in range(N[1] + 1):
+-                    mark = b / 2 + a * [x, y]
+-                    pdf.line(mark[0] - 0.5, mark[1], mark[0] + 0.5, mark[1])
+-                    pdf.line(mark[0], mark[1] - 0.5, mark[0], mark[1] + 0.5)
+-
+-    tqdm.write(f"Writing to {filepath}")
+-    pdf.output(filepath)
++            if cropmarks:
++                pdf.set_line_width(0.2)
++                pdf.set_draw_color(255, 255, 255)
++                for x in range(N[0] + 1):
++                    for y in range(N[1] + 1):
++                        mark = offset + _occupied_space(cardsize, np.array([x, y]), border_crop, closed=True)
++                        pdf.line(mark[0] - 0.8, mark[1], mark[0] + 0.8, mark[1])
++                        pdf.line(mark[0], mark[1] - 0.8, mark[0], mark[1] + 0.8)
++            else:
++                # Black cutting ticks that extend outward into the page margin only — invisible
++                # against black card borders, visible on the white paper. For full-bleed prints
++                # where the white crosses above would bleed onto card faces. The outward endpoint
++                # is clamped to PRINTER_SAFE_MARGIN_MM from the page edge so most non-borderless
++                # printers can render them; a side with no margin to spare is skipped.
++                PRINTER_SAFE_MARGIN_MM = 5.0
++                TICK_LEN_MM = 2.0
++                pdf.set_line_width(0.2)
++                pdf.set_draw_color(0, 0, 0)
++                grid_left = offset[0]
++                grid_top = offset[1]
++                grid_right = offset[0] + grid_size[0]
++                grid_bottom = offset[1] + grid_size[1]
++                top_outer = max(grid_top - TICK_LEN_MM, PRINTER_SAFE_MARGIN_MM)
++                bottom_outer = min(grid_bottom + TICK_LEN_MM, papersize[1] - PRINTER_SAFE_MARGIN_MM)
++                left_outer = max(grid_left - TICK_LEN_MM, PRINTER_SAFE_MARGIN_MM)
++                right_outer = min(grid_right + TICK_LEN_MM, papersize[0] - PRINTER_SAFE_MARGIN_MM)
++                if top_outer < grid_top or bottom_outer > grid_bottom:
++                    for gx in range(N[0] + 1):
++                        cx = offset[0] + _occupied_space(cardsize, np.array([gx, 0]), border_crop, closed=True)[0]
++                        if top_outer < grid_top:
++                            pdf.line(cx, top_outer, cx, grid_top)
++                        if bottom_outer > grid_bottom:
++                            pdf.line(cx, grid_bottom, cx, bottom_outer)
++                if left_outer < grid_left or right_outer > grid_right:
++                    for gy in range(N[1] + 1):
++                        cy = offset[1] + _occupied_space(cardsize, np.array([0, gy]), border_crop, closed=True)[1]
++                        if left_outer < grid_left:
++                            pdf.line(left_outer, cy, grid_left, cy)
++                        if right_outer > grid_right:
++                            pdf.line(grid_right, cy, right_outer, cy)
++
++    current_path = filepath
++    if cards_per_file is not None and len(images) > 0:
++        current_path = output_filepath((len(images) - 1) // cards_per_file)
++    tqdm.write(f"Writing to {current_path}")
++    pdf.output(current_path)
+diff --git a/mtg_proxies/upscale.py b/mtg_proxies/upscale.py
+new file mode 100644
+index 0000000..dbb8c2b
+--- /dev/null
++++ b/mtg_proxies/upscale.py
+@@ -0,0 +1,231 @@
++from __future__ import annotations
++
++import hashlib
++from pathlib import Path
++from typing import TYPE_CHECKING
++
++import requests
++from tqdm import tqdm
++
++if TYPE_CHECKING:
++    from PIL import Image
++
++# Default model is MSE-trained Real-ESRNet (no GAN adversarial loss → no hallucinated
++# details, faithful to the source brushwork). Slight softness at 4x is absorbed by the
++# Lanczos downsample to ``target_width``, producing clean print-ready output that
++# matches the artist's painted intent rather than over-sharpening it.
++_MODEL_URL = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.1/RealESRNet_x4plus.pth"
++_MODEL_CACHE = Path.home() / ".cache" / "mtg-proxies" / "RealESRNet_x4plus.pth"
++
++# Default target width after upscaling: matches Scryfall highres PNG width (≈298 DPI on a
++# 2.5" card, the right size for desktop printing). The AI sharpening survives the Lanczos
++# downscale while keeping PDF sizes consistent with normal highres cards.
++DEFAULT_TARGET_WIDTH = 745
++
++
++def _download_model() -> Path:
++    if _MODEL_CACHE.exists():
++        return _MODEL_CACHE
++    _MODEL_CACHE.parent.mkdir(parents=True, exist_ok=True)
++    # Stream into a temp file and rename atomically so an interrupted download does not
++    # leave a corrupt .pth at the cache path that future runs would load. tqdm reports
++    # bytes-per-second + ETA so the run doesn't look frozen on a slow connection.
++    tmp_path = _MODEL_CACHE.with_suffix(_MODEL_CACHE.suffix + ".tmp")
++    try:
++        with requests.get(_MODEL_URL, stream=True, timeout=30) as response:
++            response.raise_for_status()
++            total = int(response.headers.get("content-length", 0)) or None
++            with (
++                tmp_path.open("wb") as fh,
++                tqdm(
++                    desc=f"Downloading {_MODEL_CACHE.name}",
++                    total=total,
++                    unit="B",
++                    unit_scale=True,
++                    unit_divisor=1024,
++                ) as bar,
++            ):
++                for chunk in response.iter_content(chunk_size=64 * 1024):
++                    if not chunk:
++                        continue
++                    fh.write(chunk)
++                    bar.update(len(chunk))
++        tmp_path.replace(_MODEL_CACHE)
++    except BaseException:
++        tmp_path.unlink(missing_ok=True)
++        raise
++    return _MODEL_CACHE
++
++
++def _attach_alpha_from_source(upscaled_rgb: Image.Image, source_rgba: Image.Image) -> Image.Image:
++    """Return an RGBA image: ``upscaled_rgb`` with ``source_rgba``'s alpha channel re-applied.
++
++    The source alpha is Lanczos-resized to match the upscaled output's dimensions, so
++    Scryfall's rounded-corner transparency survives the upscale-then-downscale dance and
++    ``--background <color>`` can flatten the corners against the chosen color downstream.
++    Pulled out so the alpha-preservation logic is unit-testable without loading the
++    upscale model or running torch.
++    """
++    from PIL import Image  # local — module-level import would force torch/spandrel at import time
++
++    alpha = source_rgba.split()[-1]
++    if alpha.size != upscaled_rgb.size:
++        alpha = alpha.resize(upscaled_rgb.size, Image.LANCZOS)
++    out = upscaled_rgb.copy()
++    out.putalpha(alpha)
++    return out
++
++
++def _model_identity_hash(model_path: str | Path) -> str:
++    """Return a 6-char hash of the model filename.
++
++    Used in the upscale cache filename so different models (e.g. anime_6B vs Net vs
++    UltraSharp) produce independent cache entries instead of returning the previously-cached
++    model's output when ``--upscale-model`` changes.
++    """
++    return hashlib.sha1(Path(model_path).name.encode()).hexdigest()[:6]
++
++
++def _upscaled_path(image_path: str | Path, target_width: int, model_id: str) -> Path:
++    p = Path(image_path)
++    return p.parent / (p.stem + f"_4x_w{target_width}_m{model_id}" + p.suffix)
++
++
++def upscale_images(
++    image_paths: list[str],
++    highres_flags: list[bool] | None = None,
++    model_path: str | Path | None = None,
++    target_width: int | None = None,
++    progress: bool = True,
++) -> list[str]:
++    """Upscale lowres card images using a Real-ESRGAN model via spandrel.
++
++    Lowres images are identified by ``highres_flags`` (False = needs upscaling).
++    Upscaled results are cached next to the originals with a ``_4x_w<target_width>_m<id>``
++    suffix so that subsequent runs skip reprocessing — and so that changing either
++    ``target_width`` or the model invalidates the cache automatically.
++
++    Args:
++        image_paths: List of absolute paths to card image files.
++        highres_flags: Per-image boolean flags from Scryfall metadata. If None,
++            all images are treated as needing upscaling.
++        model_path: Path to a local ``.pth`` model file. Defaults to
++            RealESRNet_x4plus (downloaded on first use) — MSE-trained, faithful to
++            the source painterly art, no GAN hallucination.
++        target_width: Final width in pixels to downscale upscaled cards to. The
++            AI sharpening survives the Lanczos downsample. Defaults to
++            :data:`DEFAULT_TARGET_WIDTH` (745, matches Scryfall highres). Higher
++            values produce sharper but larger PDFs; lower values produce smaller
++            PDFs at the cost of detail.
++
++    Returns:
++        List of image paths with lowres entries replaced by their upscaled versions.
++    """
++    if target_width is None:
++        target_width = DEFAULT_TARGET_WIDTH
++
++    # Resolve model identity up-front so cache lookups can be model-aware. For the default
++    # case use the would-be cache path so we don't trigger the download just to compute a
++    # hash — the actual download is still deferred until we know we need to run the model.
++    resolved_model_path: Path = Path(model_path) if model_path else _MODEL_CACHE
++    model_id = _model_identity_hash(resolved_model_path)
++    try:
++        import numpy as np
++        import torch
++        from PIL import Image
++        from spandrel import ModelLoader
++    except ImportError as exc:
++        raise ImportError(
++            "spandrel, torch, pillow, and numpy are required for --upscale.\n"
++            "Install with: pip install spandrel torch pillow numpy"
++        ) from exc
++
++    if highres_flags is None:
++        highres_flags = [False] * len(image_paths)
++
++    def _cache_is_stale(cache_path: Path) -> bool:
++        """Detect pre-alpha-aware cache files written by older builds.
++
++        Older builds called ``Image.open(path).convert("RGB")`` before inference, which
++        flattened Scryfall's transparent corners against white. The cached PNG had no
++        alpha channel; downstream ``composite_against_bg`` then no-op'd and ``--background
++        <color>`` rendered white corners. New builds preserve alpha — but use the SAME
++        cache filename, so without invalidation old runs keep returning the broken file.
++        Treat any cached image that isn't RGBA as stale so the upscale re-runs.
++        """
++        if not cache_path.is_file():
++            return True
++        try:
++            with Image.open(cache_path) as img:
++                mode = img.mode
++        except OSError:
++            return True
++        return mode != "RGBA"
++
++    lowres_paths = [path for path, is_highres in zip(image_paths, highres_flags) if not is_highres]
++    needs_upscale: list[str] = [
++        path for path in lowres_paths
++        if _cache_is_stale(_upscaled_path(path, target_width, model_id))
++    ]
++
++    if needs_upscale:
++        if model_path:
++            if not resolved_model_path.is_file():
++                raise FileNotFoundError(f"Upscale model not found: {resolved_model_path}")
++        else:
++            resolved_model_path = _download_model()
++        # Print status lines so the gap between shadow-lift finishing and the first card
++        # being processed isn't perceived as a hang (model loading + first-inference
++        # warmup can take 10-30 s on CPU for a 64 MB checkpoint).
++        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
++        device_label = torch.cuda.get_device_name(0) if device.type == "cuda" else "CPU"
++        print(f"Loading upscale model {resolved_model_path.name} onto {device_label}…")
++        model = ModelLoader().load_from_file(str(resolved_model_path))
++        model = model.eval().to(device)
++
++        for path in tqdm(needs_upscale, desc="Upscaling lowres images", disable=not progress):
++            # Open RGBA so the rounded-corner transparency Scryfall provides survives the
++            # upscale; the model only takes RGB, so we run RGB through inference and
++            # re-attach the source alpha (Lanczos-resized to the output dimensions).
++            # Without this, ``--background black`` would render white corners because the
++            # upscaled output had alpha pre-flattened against white.
++            with Image.open(path) as raw:
++                raw.load()
++                rgba = raw.convert("RGBA") if raw.mode != "RGBA" else raw.copy()
++            rgb_input = rgba.convert("RGB")
++            tensor = torch.from_numpy(np.array(rgb_input)).permute(2, 0, 1).float() / 255.0
++            tensor = tensor.unsqueeze(0).to(device)
++            with torch.inference_mode():
++                output = model(tensor)
++            result = (output.squeeze(0).permute(1, 2, 0).clamp(0, 1) * 255).byte().cpu().numpy()
++            upscaled_rgb = Image.fromarray(result)
++            # Downscale to ``target_width`` so PDF sizes stay sane while AI sharpening is
++            # preserved by the Lanczos resize (the upscale-then-downscale technique).
++            if upscaled_rgb.width > target_width:
++                ratio = target_width / upscaled_rgb.width
++                upscaled_rgb = upscaled_rgb.resize((target_width, round(upscaled_rgb.height * ratio)), Image.LANCZOS)
++            upscaled_rgba = _attach_alpha_from_source(upscaled_rgb, rgba)
++            upscaled_rgba.save(str(_upscaled_path(path, target_width, model_id)))
++            del tensor, output, result, upscaled_rgb, upscaled_rgba, rgba
++            if device.type == "cuda":
++                torch.cuda.empty_cache()
++    elif lowres_paths:
++        print(f"All {len(lowres_paths)} lowres images already upscaled (cached).")
++    else:
++        # Every image was already flagged highres → the upscale was a no-op. Distinguishing
++        # this from the "cached" case matters: a user who sees "cached" assumes a previous
++        # run did the work, when in fact nothing was eligible. Hint at ``--upscale all`` so
++        # they know how to force the model to run on every card.
++        print(
++            f"Skipping upscale: all {len(image_paths)} images are flagged highres (no lowres "
++            "candidates). Use `--upscale all` to run the model on every card regardless."
++        )
++
++    # Only substitute the upscaled cache for images that were flagged as needing upscaling.
++    # A stale _4x file from a previous run must not be returned for an image that is now highres.
++    return [
++        str(_upscaled_path(p, target_width, model_id))
++        if not is_highres and _upscaled_path(p, target_width, model_id).exists()
++        else p
++        for p, is_highres in zip(image_paths, highres_flags, strict=True)
++    ]
+diff --git a/tests/black_vignette_test.py b/tests/black_vignette_test.py
+new file mode 100644
+index 0000000..f8064ce
+--- /dev/null
++++ b/tests/black_vignette_test.py
+@@ -0,0 +1,130 @@
++from __future__ import annotations
++
++import os
++from pathlib import Path
++
++import numpy as np
++from PIL import Image
++
++
++def _make_card(path: Path, border_rgb: int, interior_rgb: int, border_px: int = 4, size: int = 40) -> None:
++    """Write a square card-like image: a solid border of ``border_rgb`` around a solid interior."""
++    arr = np.full((size, size, 3), interior_rgb, dtype=np.uint8)
++    arr[:border_px, :, :] = border_rgb
++    arr[-border_px:, :, :] = border_rgb
++    arr[:, :border_px, :] = border_rgb
++    arr[:, -border_px:, :] = border_rgb
++    Image.fromarray(arr, mode="RGB").save(path)
++
++
++def test_pulls_gray_border_to_black(tmp_path: Path) -> None:
++    """Sanity: a near-black gray border (~25) inside the edge zone is pulled toward black.
++
++    The pull is ``rgb * (1 - edge_mask * near_black_mask * strength)``. At the very corner
++    edge_mask==1 and with max_black_threshold=80, near_black_mask = 1 - 25/80 ≈ 0.69 →
++    reduction ≈ 17, output ≈ 8. We just assert "clearly darker than source".
++    """
++    from mtg_proxies.black_vignette import darken_borders_to_black
++
++    src = tmp_path / "card.png"
++    _make_card(src, border_rgb=25, interior_rgb=180)
++
++    out_paths = darken_borders_to_black([str(src)], strength=1.0, edge_fraction=0.2, max_black_threshold=80.0)
++
++    with Image.open(out_paths[0]) as out_img:
++        out_arr = np.array(out_img)
++    # Outermost border pixel should drop clearly below the source value of 25.
++    assert out_arr[0, 0, 0] < 15, f"expected near-black at rim, got {out_arr[0, 0, 0]}"
++
++
++def test_white_border_untouched(tmp_path: Path) -> None:
++    """A white-bordered card must not be darkened — near_black_mask should be 0 there."""
++    from mtg_proxies.black_vignette import darken_borders_to_black
++
++    src = tmp_path / "white_border.png"
++    _make_card(src, border_rgb=240, interior_rgb=100)
++
++    out_paths = darken_borders_to_black([str(src)], strength=1.0, edge_fraction=0.2, max_black_threshold=40.0)
++
++    with Image.open(out_paths[0]) as out_img:
++        out_arr = np.array(out_img)
++    # White rim must remain white-ish; max_black_threshold=40 means luminance 240 -> mask 0.
++    assert out_arr[0, 0, 0] >= 235, f"white border was darkened: {out_arr[0, 0, 0]}"
++
++
++def test_art_interior_untouched(tmp_path: Path) -> None:
++    """Dark interior pixels far from the rim must not be affected — edge_mask is 0 there."""
++    from mtg_proxies.black_vignette import darken_borders_to_black
++
++    src = tmp_path / "dark_interior.png"
++    size = 100
++    arr = np.full((size, size, 3), 20, dtype=np.uint8)  # dark all the way through
++    Image.fromarray(arr, mode="RGB").save(src)
++
++    out_paths = darken_borders_to_black([str(src)], strength=1.0, edge_fraction=0.05, max_black_threshold=40.0)
++
++    with Image.open(out_paths[0]) as out_img:
++        out_arr = np.array(out_img)
++    # Center pixel — well outside the 5 % edge zone — must be untouched.
++    assert out_arr[size // 2, size // 2, 0] == 20
++
++
++def test_preserves_alpha_for_rgba_source(tmp_path: Path) -> None:
++    """Alpha must round-trip when the source is RGBA so downstream composite can flatten corners."""
++    from mtg_proxies.black_vignette import darken_borders_to_black
++
++    src = tmp_path / "rgba.png"
++    arr = np.full((40, 40, 4), 25, dtype=np.uint8)  # near-black RGB everywhere
++    arr[:5, :5, 3] = 0  # transparent top-left corner
++    Image.fromarray(arr, mode="RGBA").save(src)
++
++    out_paths = darken_borders_to_black([str(src)], strength=1.0, edge_fraction=0.2, max_black_threshold=40.0)
++
++    with Image.open(out_paths[0]) as out_img:
++        assert out_img.mode == "RGBA"
++        out_arr = np.array(out_img)
++    assert out_arr[0, 0, 3] == 0, "transparent corner alpha must be preserved"
++
++
++def test_invalidates_cache_when_source_newer(tmp_path: Path) -> None:
++    """Regression: cached output must regenerate when the source is newer.
++
++    If an upstream step rewrites its output (e.g. upscale regen) the cached vignette
++    must be re-rendered. Mirrors the staleness guard used by composite_against_bg.
++    """
++    from mtg_proxies.black_vignette import darken_borders_to_black
++
++    src = tmp_path / "card.png"
++    _make_card(src, border_rgb=25, interior_rgb=180)
++
++    out1 = darken_borders_to_black([str(src)])[0]
++    mtime1 = Path(out1).stat().st_mtime
++
++    # Overwrite the source with a different image and push its mtime forward.
++    _make_card(src, border_rgb=240, interior_rgb=100)
++    future = Path(src).stat().st_mtime + 10
++    os.utime(src, (future, future))
++
++    out2 = darken_borders_to_black([str(src)])[0]
++    assert out2 == out1, "output path must be deterministic across calls"
++    assert Path(out2).stat().st_mtime > mtime1, "cache must regenerate when source mtime is newer"
++
++    with Image.open(out2) as out_img:
++        out_arr = np.array(out_img)
++    # The new source has a white border -> output must NOT be near-black anymore.
++    assert out_arr[0, 0, 0] >= 235
++
++
++def test_skip_paths_returned_as_is(tmp_path: Path) -> None:
++    """User-supplied content (custom art / card backs) must pass through untouched."""
++    from mtg_proxies.black_vignette import darken_borders_to_black
++
++    src = tmp_path / "custom.png"
++    _make_card(src, border_rgb=25, interior_rgb=180)
++
++    out_paths = darken_borders_to_black([str(src)], skip_paths=[str(src)])
++
++    assert out_paths == [str(src)]
++    # No sibling cache file should have been produced.
++    siblings = list(tmp_path.glob("custom_bv*.png"))
++    assert siblings == []
+diff --git a/tests/bleed_test.py b/tests/bleed_test.py
+new file mode 100644
+index 0000000..aa2142d
+--- /dev/null
++++ b/tests/bleed_test.py
+@@ -0,0 +1,81 @@
++from __future__ import annotations
++
++from pathlib import Path
++
++import numpy as np
++import pytest
++from PIL import Image
++
++
++def test_crop_bleed_trims_each_side_by_percent(tmp_path: Path) -> None:
++    from mtg_proxies.bleed import crop_bleed
++
++    src = tmp_path / "src.png"
++    out = tmp_path / "out.png"
++    # 100x80 → 4 % crop per side = 4 px horizontal, 3 px vertical (rounded).
++    Image.fromarray(np.full((80, 100, 3), 200, dtype=np.uint8)).save(src)
++
++    crop_bleed(src, out, 4.0)
++
++    with Image.open(out) as cropped:
++        assert cropped.size == (100 - 2 * 4, 80 - 2 * 3)  # (92, 74)
++
++
++def test_crop_bleed_zero_writes_full_image(tmp_path: Path) -> None:
++    from mtg_proxies.bleed import crop_bleed
++
++    src = tmp_path / "src.png"
++    out = tmp_path / "out.png"
++    Image.fromarray(np.full((80, 100, 3), 128, dtype=np.uint8)).save(src)
++
++    # Caller is responsible for skipping the call when percent==0; the function still
++    # works (round(0%) → 0 crop) and writes a copy. Tested for robustness.
++    crop_bleed(src, out, 0.0)
++
++    with Image.open(out) as cropped:
++        assert cropped.size == (100, 80)
++
++
++def test_crop_bleed_raises_when_crop_consumes_image(tmp_path: Path) -> None:
++    from mtg_proxies.bleed import crop_bleed
++
++    src = tmp_path / "src.png"
++    Image.fromarray(np.full((20, 20, 3), 200, dtype=np.uint8)).save(src)
++
++    # 50 % per side → 10 px each = full image. Should raise.
++    with pytest.raises(ValueError, match="bleed crop"):
++        crop_bleed(src, tmp_path / "out.png", 50.0)
++
++
++def test_crop_bleed_handles_jpeg_bytes_in_png_filename(tmp_path: Path) -> None:
++    """Regression: MPCFill returns JPEG bytes even when our cache file is named ``.png``.
++
++    matplotlib's ``imread`` trusted the extension and errored on the mismatch; PIL sniffs
++    by magic bytes so this should just work.
++    """
++    import numpy as np
++
++    src_mislabeled = tmp_path / "render.png"  # filename says PNG…
++    # …but content is JPEG. PIL should still decode.
++    Image.fromarray(np.full((60, 80, 3), 100, dtype=np.uint8)).save(src_mislabeled, format="JPEG")
++
++    from mtg_proxies.bleed import crop_bleed
++
++    out = tmp_path / "cropped.png"
++    crop_bleed(src_mislabeled, out, 4.0)
++
++    with Image.open(out) as cropped:
++        assert cropped.format == "PNG"  # output is always PNG regardless of input format
++        assert cropped.size == (80 - 2 * 3, 60 - 2 * 2)  # 4 % crop on each side
++
++
++def test_crop_bleed_creates_parent_directory(tmp_path: Path) -> None:
++    from mtg_proxies.bleed import crop_bleed
++
++    src = tmp_path / "src.png"
++    Image.fromarray(np.full((50, 50, 3), 50, dtype=np.uint8)).save(src)
++
++    nested_out = tmp_path / "nested" / "deep" / "out.png"
++    crop_bleed(src, nested_out, 5.0)
++
++    assert nested_out.is_file()
+diff --git a/tests/composite_test.py b/tests/composite_test.py
+new file mode 100644
+index 0000000..6c8ff43
+--- /dev/null
++++ b/tests/composite_test.py
+@@ -0,0 +1,84 @@
++from __future__ import annotations
++
++import os
++from pathlib import Path
++
++import numpy as np
++from PIL import Image
++
++
++def test_composite_against_bg_flattens_rgba_corners(tmp_path: Path) -> None:
++    """Sanity: an RGBA card with transparent corners renders the corners as bg_color."""
++    from mtg_proxies.composite import composite_against_bg
++
++    src = tmp_path / "card.png"
++    arr = np.empty((20, 20, 4), dtype=np.uint8)
++    arr[..., :3] = 200  # gray interior
++    arr[..., 3] = 255   # fully opaque everywhere…
++    arr[:5, :5, 3] = 0  # …except the top-left corner
++    Image.fromarray(arr, mode="RGBA").save(src)
++
++    out_paths = composite_against_bg([str(src)], bg_color=(0, 0, 0))
++
++    with Image.open(out_paths[0]) as out_img:
++        assert out_img.mode == "RGB"
++        out_arr = np.array(out_img)
++    # Transparent corner → black after compositing.
++    assert tuple(out_arr[0, 0].tolist()) == (0, 0, 0)
++    # Opaque interior unchanged.
++    assert out_arr[15, 15, 0] == 200
++
++
++def test_composite_against_bg_invalidates_cache_when_source_newer(tmp_path: Path) -> None:
++    """Regression: when an upstream step rewrites its output (e.g. upscale switches from
++    RGB → RGBA after a fix), the cached composite must NOT be returned — its alpha was
++    flattened against white, so corners would silently render white again.
++
++    Simulate the failure mode: write an RGB-only source (the pre-fix output), run
++    composite → produces a cached file with white corners. Then overwrite the source
++    with the corrected RGBA version (mtime now newer). Re-run composite. The cached
++    file must be re-generated, and the new output must have black corners.
++    """
++    from mtg_proxies.composite import composite_against_bg
++
++    src = tmp_path / "card.png"
++    # Step 1: pre-fix source (RGB-only, white corners baked in)
++    Image.fromarray(np.full((20, 20, 3), 200, dtype=np.uint8), mode="RGB").save(src)
++    out_paths_stale = composite_against_bg([str(src)], bg_color=(0, 0, 0))
++    with Image.open(out_paths_stale[0]) as img:
++        stale_corner = tuple(np.array(img)[0, 0].tolist())
++    assert stale_corner != (0, 0, 0), "pre-condition: stale composite has non-black corner"
++
++    # Step 2: simulate an upstream re-run that overwrites the source as RGBA with
++    # transparent corners. Force mtime forward so the staleness check fires.
++    arr = np.full((20, 20, 4), 200, dtype=np.uint8)
++    arr[:5, :5, 3] = 0
++    Image.fromarray(arr, mode="RGBA").save(src)
++    future = Path(src).stat().st_mtime + 10
++    os.utime(src, (future, future))
++
++    # Re-run composite: cached file is older than the new source → must regenerate.
++    out_paths_fresh = composite_against_bg([str(src)], bg_color=(0, 0, 0))
++    with Image.open(out_paths_fresh[0]) as img:
++        fresh_corner = tuple(np.array(img)[0, 0].tolist())
++    assert fresh_corner == (0, 0, 0), f"expected black corner after source refresh, got {fresh_corner}"
++
++
++def test_composite_against_bg_reuses_cache_when_source_unchanged(tmp_path: Path) -> None:
++    """When the source hasn't changed, the cached output must be returned as-is."""
++    from mtg_proxies.composite import composite_against_bg
++
++    src = tmp_path / "card.png"
++    arr = np.full((20, 20, 4), 200, dtype=np.uint8)
++    arr[:5, :5, 3] = 0
++    Image.fromarray(arr, mode="RGBA").save(src)
++
++    out1 = composite_against_bg([str(src)], bg_color=(0, 0, 0))[0]
++    mtime1 = Path(out1).stat().st_mtime
++
++    # Wait a moment then re-run; cache should be untouched.
++    out2 = composite_against_bg([str(src)], bg_color=(0, 0, 0))[0]
++    mtime2 = Path(out2).stat().st_mtime
++
++    assert out1 == out2
++    assert mtime1 == mtime2, "cache should be reused when the source mtime is unchanged"
+diff --git a/tests/normalize_test.py b/tests/normalize_test.py
+new file mode 100644
+index 0000000..4f7f829
+--- /dev/null
++++ b/tests/normalize_test.py
+@@ -0,0 +1,191 @@
++"""Tests for the curve-lift rewrite of ``--normalize``.
++
++The old normalize did per-channel border-anchored stretching, which over-stretched the
++weakest channel in each scan and warmed skin tones. The new normalize is a Photoshop-curves-
++style luminance-only operation: black-point set from the border, then a gentle lift around
++the 25 % shadow region, applied as a single luminance delta to every channel (so hue and
++saturation are preserved exactly).
++
++Contract:
++- (0, 0) and (255, 255) are pinned — true black stays black, white stays white.
++- The card-border anchor sets the black point: pixels at the border value land at 0.
++- Around 25 % brightness there's a gentle lift of ~``lift`` (8-bit units).
++- The lift is applied as a single ``new_lum - old_lum`` delta to every channel, so
++  ``R - G`` and ``G - B`` differences are preserved → hue/saturation unchanged.
++- Alpha is preserved untouched.
++- Cache filename encodes the lift parameter so changing it invalidates the cache.
++"""
++
++from __future__ import annotations
++
++from pathlib import Path
++
++import numpy as np
++from PIL import Image
++
++
++def _make_card(
++    path: Path,
++    *,
++    border_rgb: tuple[int, int, int] = (20, 18, 15),
++    interior_rgb: tuple[int, int, int] = (160, 100, 70),
++    size: int = 200,
++    border_px: int = 22,
++    rgba: bool = True,
++) -> None:
++    """Write a card-like image: solid border around a solid interior."""
++    channels = 4 if rgba else 3
++    arr = np.empty((size, size, channels), dtype=np.uint8)
++    for c in range(3):
++        arr[..., c] = interior_rgb[c]
++        arr[:border_px, :, c] = border_rgb[c]
++        arr[-border_px:, :, c] = border_rgb[c]
++        arr[:, :border_px, c] = border_rgb[c]
++        arr[:, -border_px:, c] = border_rgb[c]
++    if rgba:
++        arr[..., 3] = 255
++    Image.fromarray(arr, mode="RGBA" if rgba else "RGB").save(path)
++
++
++def test_pure_black_stays_black(tmp_path: Path) -> None:
++    """A pixel at (0, 0, 0) must remain (0, 0, 0) regardless of lift."""
++    from mtg_proxies.normalize import normalize_images
++
++    src = tmp_path / "card.png"
++    _make_card(src, border_rgb=(0, 0, 0))
++    out = normalize_images([str(src)])
++    with Image.open(out[0]) as im:
++        arr = np.array(im.convert("RGB"))
++    assert tuple(arr[0, 0].tolist()) == (0, 0, 0), "pure-black border must stay (0,0,0)"
++
++
++def test_pure_white_stays_white(tmp_path: Path) -> None:
++    """A pixel at (255, 255, 255) must remain (255, 255, 255) — the curve pins both ends."""
++    from mtg_proxies.normalize import normalize_images
++
++    src = tmp_path / "card.png"
++    size = 200
++    border_px = 22
++    arr = np.full((size, size, 4), 255, dtype=np.uint8)
++    arr[:border_px, :, :3] = 20
++    arr[-border_px:, :, :3] = 20
++    arr[:, :border_px, :3] = 20
++    arr[:, -border_px:, :3] = 20
++    Image.fromarray(arr, mode="RGBA").save(src)
++
++    out = normalize_images([str(src)])
++    with Image.open(out[0]) as im:
++        narr = np.array(im.convert("RGB"))
++    # Centre pixel is white; the curve pins (255, 255).
++    cx = cy = size // 2
++    assert tuple(narr[cy, cx].tolist()) == (255, 255, 255)
++
++
++def test_border_value_lands_at_black(tmp_path: Path) -> None:
++    """The card's printed black border lands at true (0, 0, 0) — the eyedropper step."""
++    from mtg_proxies.normalize import normalize_images
++
++    src = tmp_path / "card.png"
++    _make_card(src, border_rgb=(20, 18, 15), interior_rgb=(180, 120, 90))
++    out = normalize_images([str(src)])
++    with Image.open(out[0]) as im:
++        arr = np.array(im.convert("RGB"))
++    # Border pixel after normalize must be near pure black on every channel.
++    border_pixel = arr[1, 1]  # well inside the border strip
++    assert all(c <= 5 for c in border_pixel), f"border must be pulled to ~black, got {tuple(border_pixel.tolist())}"
++
++
++def test_hue_is_preserved_in_skin_tones(tmp_path: Path) -> None:
++    """Regression: skin-tone hue must not drift — fixes the orange-warming bug.
++
++    The OLD normalize warmed skin tones because it stretched per channel. The new pass
++    applies the curve to luminance only and shifts each channel by the same delta, so
++    R - G and G - B differences are preserved within +/-2 (rounding).
++    """
++    from mtg_proxies.normalize import normalize_images
++
++    src = tmp_path / "skin.png"
++    # Skin tone: warm, R > G > B. Sits in the 25 % shadow-mid region where the lift acts.
++    skin_rgb = (120, 90, 70)
++    _make_card(src, border_rgb=(20, 18, 15), interior_rgb=skin_rgb)
++    out = normalize_images([str(src)])
++    with Image.open(out[0]) as im:
++        arr = np.array(im.convert("RGB"))
++    cy, cx = arr.shape[0] // 2, arr.shape[1] // 2
++    r, g, b = (int(v) for v in arr[cy, cx])
++    src_r, src_g, src_b = skin_rgb
++    # Channel differences must be preserved (single-delta application).
++    assert abs((r - g) - (src_r - src_g)) <= 2, f"R-G drifted: src={src_r - src_g}, out={r - g}"
++    assert abs((g - b) - (src_g - src_b)) <= 2, f"G-B drifted: src={src_g - src_b}, out={g - b}"
++
++
++def test_default_lift_is_gentle(tmp_path: Path) -> None:
++    """The default lift must be small — neutral mid-shadow rises by at most ~12 units."""
++    from mtg_proxies.normalize import normalize_images
++
++    src = tmp_path / "card.png"
++    # Neutral grey at ~25 % brightness in the interior (no border anchoring confusion since
++    # border is already at (0,0,0) → the black-point step is a no-op).
++    _make_card(src, border_rgb=(0, 0, 0), interior_rgb=(64, 64, 64))
++    out = normalize_images([str(src)])
++    with Image.open(out[0]) as im:
++        arr = np.array(im.convert("RGB"))
++    cy, cx = arr.shape[0] // 2, arr.shape[1] // 2
++    lifted = int(arr[cy, cx, 0])
++    assert lifted >= 64, "lift must not darken the mid-shadows"
++    assert lifted - 64 <= 12, f"default lift too aggressive: 64 -> {lifted}"
++
++
++def test_alpha_preserved_for_rgba_source(tmp_path: Path) -> None:
++    """Alpha must round-trip — the rounded transparent corners feed into composite_against_bg."""
++    from mtg_proxies.normalize import normalize_images
++
++    src = tmp_path / "rgba.png"
++    arr = np.empty((40, 40, 4), dtype=np.uint8)
++    arr[..., :3] = 100
++    arr[..., 3] = 255
++    arr[:5, :5, 3] = 0  # transparent top-left corner
++    Image.fromarray(arr, mode="RGBA").save(src)
++
++    out = normalize_images([str(src)])
++    with Image.open(out[0]) as im:
++        assert im.mode == "RGBA"
++        narr = np.array(im)
++    assert narr[0, 0, 3] == 0, "transparent corner alpha must survive normalize"
++
++
++def test_cache_filename_encodes_lift_parameter(tmp_path: Path) -> None:
++    """Changing the lift must invalidate the cache — different params → different filenames."""
++    from mtg_proxies.normalize import normalize_images
++
++    src = tmp_path / "card.png"
++    _make_card(src)
++
++    out1 = normalize_images([str(src)], lift=6.0)
++    out2 = normalize_images([str(src)], lift=10.0)
++    assert out1[0] != out2[0], "different lift values must produce different cache filenames"
++
++
++def test_skip_paths_returned_as_is(tmp_path: Path) -> None:
++    """User-supplied content must pass through untouched."""
++    from mtg_proxies.normalize import normalize_images
++
++    src = tmp_path / "custom.png"
++    _make_card(src)
++    out = normalize_images([str(src)], skip_paths=[str(src)])
++    assert out == [str(src)]
++    assert not list(tmp_path.glob("custom_norm*"))
++
++
++def test_lift_zero_is_identity_above_black_point(tmp_path: Path) -> None:
++    """With lift=0 and a (0,0,0) border, the curve is identity — every pixel survives unchanged."""
++    from mtg_proxies.normalize import normalize_images
++
++    src = tmp_path / "card.png"
++    interior = (130, 90, 60)
++    _make_card(src, border_rgb=(0, 0, 0), interior_rgb=interior)
++    out = normalize_images([str(src)], lift=0.0)
++    with Image.open(out[0]) as im:
++        arr = np.array(im.convert("RGB"))
++    cy, cx = arr.shape[0] // 2, arr.shape[1] // 2
++    assert tuple(arr[cy, cx].tolist()) == interior, "lift=0 with black border must be identity"
+diff --git a/tests/print_cards_warped_test.py b/tests/print_cards_warped_test.py
+new file mode 100644
+index 0000000..4d8855b
+--- /dev/null
++++ b/tests/print_cards_warped_test.py
+@@ -0,0 +1,121 @@
++"""Regression tests for the MPCFill ``_warped<NN>`` filename to scale-factor pipeline.
++
++Background: ``warp_to_reference`` produces card renders where the card content fills some
++fraction of the image (the rest is bleed margin). When the print step composes pages it
++must scale each warped render by ``1 / content_fraction`` so the card content fills the
++slot exactly. Mis-scaling shows up as random zoom levels and bleed-over onto neighbouring
++cards in the final PDF.
++
++Earlier the print step hard-coded ``content_fraction = 0.92`` for every ``_warped`` file,
++but ``warp_to_reference`` has four code paths that produce different actual fill fractions
++(borderless / scale-down / within-tolerance / standard). The fraction is now encoded in the
++filename — these tests lock that contract in.
++"""
++
++from __future__ import annotations
++
++import math
++from pathlib import Path
++
++
++def test_warped_content_fraction_parses_explicit_fill() -> None:
++    """Filename ``_warped<NN>`` decodes to the fill fraction NN/100.
++
++    ``_warped92.png`` decodes to 0.92; ``_warped100.png`` decodes to 1.0. These are the
++    values that ``per_card.py`` embeds from ``warp_to_reference``'s second return value.
++    """
++    from mtg_proxies.print_cards import _warped_content_fraction
++
++    assert math.isclose(_warped_content_fraction("foo__deadbeef_warped92.png"), 0.92)
++    assert math.isclose(_warped_content_fraction("foo__deadbeef_warped100.png"), 1.0)
++    assert math.isclose(_warped_content_fraction(Path("/tmp/foo_warped87.png")), 0.87)
++
++
++def test_warped_content_fraction_returns_none_for_non_warped() -> None:
++    """A plain Scryfall scan or upscaled file is not a warped MPCFill render."""
++    from mtg_proxies.print_cards import _warped_content_fraction
++
++    assert _warped_content_fraction("regular_scryfall.png") is None
++    assert _warped_content_fraction("card_4x_w1500.png") is None
++    assert _warped_content_fraction("card_bv1_0.05_40.png") is None
++
++
++def test_warped_content_fraction_legacy_no_number_defaults_to_092() -> None:
++    """Legacy ``_warped.png`` (no NN suffix) keeps the old assume-0.92 behaviour.
++
++    Caches written before the NN marker existed should keep working without forcing
++    users to clear their per_card/ cache.
++    """
++    from mtg_proxies.print_cards import _warped_content_fraction
++
++    assert math.isclose(_warped_content_fraction("foo__deadbeef_warped.png"), 0.92)
++
++
++def test_full_fill_warped_does_not_get_rescaled_in_fpdf(tmp_path: Path) -> None:
++    """``_warped100`` images must be placed at slot size; ``_warped92`` at slot/0.92.
++
++    This is the bug the whole change fixes. Before, the fpdf renderer scaled every
++    ``_warped`` image by 1/0.92 regardless of the actual fill — so borderless-branch
++    renders (which fill 100%) got over-zoomed by ~8.7% and spilled onto the neighbour
++    card. We patch ``FPDF`` to capture placement args and assert the placement matches
++    ``size`` for 100% and ``size / 0.92`` for 92%.
++    """
++    import numpy as np
++    from PIL import Image
++
++    from mtg_proxies.print_cards import print_cards_fpdf
++
++    img_full = tmp_path / "card__abc_warped100.png"
++    img_bleed = tmp_path / "card__def_warped92.png"
++    arr = np.full((1040, 745, 3), 128, dtype=np.uint8)
++    Image.fromarray(arr).save(img_full)
++    Image.fromarray(arr).save(img_bleed)
++
++    placements: list[tuple[float, float, float, float]] = []
++
++    class FakePdf:
++        def __init__(self, *_args: object, **_kwargs: object) -> None:
++            pass
++
++        def add_page(self) -> None:
++            pass
++
++        def set_fill_color(self, *_args: object, **_kwargs: object) -> None:
++            pass
++
++        def rect(self, *_args: object, **_kwargs: object) -> None:
++            pass
++
++        def set_line_width(self, *_args: object, **_kwargs: object) -> None:
++            pass
++
++        def set_draw_color(self, *_args: object, **_kwargs: object) -> None:
++            pass
++
++        def line(self, *_args: object, **_kwargs: object) -> None:
++            pass
++
++        def image(self, _path: str, *, x: float, y: float, w: float, h: float) -> None:
++            placements.append((x, y, w, h))
++
++        def output(self, _path: str) -> None:
++            pass
++
++    from unittest.mock import patch
++
++    # FPDF is locally imported inside print_cards_fpdf; patch it at the source module.
++    with patch("fpdf.FPDF", FakePdf):
++        print_cards_fpdf(
++            [str(img_full), str(img_bleed)],
++            filepath=str(tmp_path / "out.pdf"),
++            border_crop=0,
++            cropmarks=False,
++        )
++
++    assert len(placements) == 2
++    w_full, w_bleed = placements[0][2], placements[1][2]
++    ratio = w_bleed / w_full
++    assert math.isclose(ratio, 1 / 0.92, abs_tol=0.01), (
++        f"_warped92 must be placed at 1/0.92 of slot size; _warped100 at slot size. "
++        f"ratio={ratio:.4f}, expected ~{1 / 0.92:.4f}"
++    )
+diff --git a/tests/retro_frame_test.py b/tests/retro_frame_test.py
+new file mode 100644
+index 0000000..9dcf75b
+--- /dev/null
++++ b/tests/retro_frame_test.py
+@@ -0,0 +1,139 @@
++"""Tests for ``--prefer-retro-frame`` on ``mtg-proxies convert``.
++
++Retro frames are the pre-2015 ones: ``"1993"`` (Alpha-era), ``"1997"`` (slight refresh),
++and ``"2003"`` (Eighth Edition through M14). When the user passes ``--prefer-retro-frame``,
++``recommend_print`` should boost prints with those frames hard enough to win over the
++default 2015-frame highres pick, and fall back silently to whatever it would have chosen
++when no retro print exists.
++"""
++
++from __future__ import annotations
++
++from typing import Any
++from unittest.mock import patch
++
++
++def _card(
++    *,
++    card_id: str,
++    name: str = "Test Card",
++    oracle_id: str = "oracle-x",
++    set_code: str = "xxx",
++    collector_number: str = "1",
++    frame: str = "2015",
++    border_color: str = "black",
++    highres: bool = True,
++    digital: bool = False,
++    lang: str = "en",
++    nonfoil: bool = True,
++    full_art: bool = False,
++    frame_effects: list[str] | None = None,
++    promo_types: list[str] | None = None,
++    layout: str = "normal",
++) -> dict[str, Any]:
++    """Build a minimal Scryfall-shaped card dict for scoring tests."""
++    return {
++        "id": card_id,
++        "name": name,
++        "oracle_id": oracle_id,
++        "set": set_code,
++        "collector_number": collector_number,
++        "frame": frame,
++        "border_color": border_color,
++        "highres_image": highres,
++        "digital": digital,
++        "lang": lang,
++        "nonfoil": nonfoil,
++        "full_art": full_art,
++        "frame_effects": frame_effects or [],
++        "promo_types": promo_types or [],
++        "layout": layout,
++    }
++
++
++def test_recommend_print_prefers_retro_frame_when_flag_set() -> None:
++    """A retro-frame print must beat a 2015-frame print when ``prefer_retro_frame=True``."""
++    from mtg_proxies import scryfall
++
++    candidates = [
++        _card(card_id="modern", set_code="m21", frame="2015"),
++        _card(card_id="retro", set_code="brr", frame="2003"),
++    ]
++    with patch("mtg_proxies.scryfall.scryfall.cards_by_oracle_id", return_value={"oracle-x": candidates}):
++        chosen = scryfall.recommend_print(oracle_id="oracle-x", prefer_retro_frame=True)
++    assert chosen["id"] == "retro"
++
++
++def test_recommend_print_default_still_prefers_2015_frame() -> None:
++    """Without the flag, the existing behaviour stands — 2015 frame keeps the small +2 bonus."""
++    from mtg_proxies import scryfall
++
++    candidates = [
++        _card(card_id="modern", set_code="m21", frame="2015"),
++        _card(card_id="retro", set_code="brr", frame="2003"),
++    ]
++    with patch("mtg_proxies.scryfall.scryfall.cards_by_oracle_id", return_value={"oracle-x": candidates}):
++        chosen = scryfall.recommend_print(oracle_id="oracle-x", prefer_retro_frame=False)
++    assert chosen["id"] == "modern"
++
++
++def test_recommend_print_falls_back_when_no_retro_exists() -> None:
++    """If no candidate has a retro frame, return the best available without warnings."""
++    from mtg_proxies import scryfall
++
++    candidates = [
++        _card(card_id="modern", set_code="m21", frame="2015", highres=True),
++        _card(card_id="modern_lowres", set_code="other", frame="2015", highres=False),
++    ]
++    with patch("mtg_proxies.scryfall.scryfall.cards_by_oracle_id", return_value={"oracle-x": candidates}):
++        chosen = scryfall.recommend_print(oracle_id="oracle-x", prefer_retro_frame=True)
++    assert chosen["id"] == "modern"
++
++
++def test_recommend_print_retro_beats_borderless_too() -> None:
++    """The retro boost must outrank wild/borderless picks — user explicitly opted into retro."""
++    from mtg_proxies import scryfall
++
++    candidates = [
++        _card(card_id="borderless", set_code="m21", frame="2015", border_color="borderless"),
++        _card(card_id="retro", set_code="brr", frame="2003"),
++    ]
++    with patch("mtg_proxies.scryfall.scryfall.cards_by_oracle_id", return_value={"oracle-x": candidates}):
++        chosen = scryfall.recommend_print(
++            oracle_id="oracle-x", art_preference="wild", prefer_retro_frame=True
++        )
++    assert chosen["id"] == "retro"
++
++
++def test_recommend_print_retro_picks_highest_quality_among_retros() -> None:
++    """Among multiple retro candidates the rest of the scoring still applies (highres > lowres)."""
++    from mtg_proxies import scryfall
++
++    candidates = [
++        _card(card_id="retro_low", set_code="leb", frame="1993", highres=False),
++        _card(card_id="retro_hi", set_code="brr", frame="2003", highres=True),
++    ]
++    with patch("mtg_proxies.scryfall.scryfall.cards_by_oracle_id", return_value={"oracle-x": candidates}):
++        chosen = scryfall.recommend_print(oracle_id="oracle-x", prefer_retro_frame=True)
++    assert chosen["id"] == "retro_hi"
++
++
++def test_recommend_print_retro_recognizes_1993_and_1997_frames() -> None:
++    """All three pre-2015 frame codes must be treated as retro."""
++    from mtg_proxies import scryfall
++
++    candidates = [
++        _card(card_id="modern", set_code="m21", frame="2015"),
++        _card(card_id="r1997", set_code="ush", frame="1997"),
++    ]
++    with patch("mtg_proxies.scryfall.scryfall.cards_by_oracle_id", return_value={"oracle-x": candidates}):
++        chosen = scryfall.recommend_print(oracle_id="oracle-x", prefer_retro_frame=True)
++    assert chosen["id"] == "r1997"
++
++    candidates = [
++        _card(card_id="modern", set_code="m21", frame="2015"),
++        _card(card_id="r1993", set_code="leb", frame="1993"),
++    ]
++    with patch("mtg_proxies.scryfall.scryfall.cards_by_oracle_id", return_value={"oracle-x": candidates}):
++        chosen = scryfall.recommend_print(oracle_id="oracle-x", prefer_retro_frame=True)
++    assert chosen["id"] == "r1993"
+diff --git a/tests/upscale_test.py b/tests/upscale_test.py
+new file mode 100644
+index 0000000..84ad880
+--- /dev/null
++++ b/tests/upscale_test.py
+@@ -0,0 +1,180 @@
++"""Unit tests for upscale helpers that don't need the spandrel/torch stack."""
++
++from __future__ import annotations
++
++import contextlib
++import hashlib
++import sys
++from pathlib import Path
++from unittest.mock import Mock, patch
++
++import numpy as np
++from PIL import Image
++
++
++def test_attach_alpha_from_source_same_size_preserves_alpha() -> None:
++    """When the upscaled RGB has the same dimensions as the source, alpha copies pixel-for-pixel."""
++    from mtg_proxies.upscale import _attach_alpha_from_source
++
++    # Source has a half-transparent right half (alpha=128); upscaled output is the same size.
++    src = Image.new("RGBA", (40, 40), color=(200, 200, 200, 255))
++    src_array = np.array(src)
++    src_array[:, 20:, 3] = 128  # right half half-transparent
++    src = Image.fromarray(src_array, mode="RGBA")
++    upscaled_rgb = Image.new("RGB", (40, 40), color=(50, 100, 150))
++
++    result = _attach_alpha_from_source(upscaled_rgb, src)
++
++    assert result.mode == "RGBA"
++    assert result.size == (40, 40)
++    # RGB came from upscaled_rgb
++    res_arr = np.array(result)
++    assert res_arr[0, 0, 0] == 50  # R from upscaled_rgb
++    # Alpha came from source
++    assert res_arr[0, 0, 3] == 255  # left half opaque
++    assert res_arr[0, 30, 3] == 128  # right half half-transparent
++
++
++def test_attach_alpha_from_source_resizes_alpha_to_match_upscaled() -> None:
++    """The source alpha gets Lanczos-resized to the upscaled RGB's dimensions."""
++    from mtg_proxies.upscale import _attach_alpha_from_source
++
++    src = Image.new("RGBA", (40, 40), color=(200, 200, 200, 255))
++    src_array = np.array(src)
++    src_array[:, 20:, 3] = 0  # right half fully transparent
++    src = Image.fromarray(src_array, mode="RGBA")
++    upscaled_rgb = Image.new("RGB", (80, 80), color=(50, 100, 150))  # 2x source
++
++    result = _attach_alpha_from_source(upscaled_rgb, src)
++
++    assert result.mode == "RGBA"
++    assert result.size == (80, 80)
++    res_arr = np.array(result)
++    # Left half should remain opaque, right half transparent — Lanczos is smooth around the
++    # boundary so don't assert on the seam, just at far-from-boundary pixels.
++    assert res_arr[40, 5, 3] > 240
++    assert res_arr[40, 75, 3] < 15
++
++
++def test_attach_alpha_from_source_round_corner_pattern_survives_4x() -> None:
++    """Regression: rounded-corner transparency must survive a 4x upscale.
++
++    Mirrors what Scryfall scans look like — opaque card with transparent corners. After
++    upscale + alpha re-attach, the corner pixels should still be (near-)transparent so
++    --background <color> can fill them downstream.
++    """
++    from mtg_proxies.upscale import _attach_alpha_from_source
++
++    # 40x40 RGBA, transparent in the top-left 5x5 corner.
++    src_arr = np.full((40, 40, 4), 255, dtype=np.uint8)
++    src_arr[:5, :5, 3] = 0  # transparent corner
++    src = Image.fromarray(src_arr, mode="RGBA")
++    upscaled_rgb = Image.new("RGB", (160, 160), color=(50, 100, 150))  # 4x
++
++    result = _attach_alpha_from_source(upscaled_rgb, src)
++    res_arr = np.array(result)
++
++    # The corresponding ~20x20 region in the upscaled output should be near-transparent.
++    # Lanczos smooths boundaries, so check well inside the transparent region.
++    assert res_arr[5, 5, 3] < 30  # well inside the upscaled transparent corner
++    # And the opaque region stays opaque.
++    assert res_arr[80, 80, 3] > 240
++
++
++def _model_id() -> str:
++    return hashlib.sha1(b"RealESRNet_x4plus.pth").hexdigest()[:6]
++
++
++def test_upscale_images_treats_rgb_cache_as_stale_and_reprocesses(tmp_path: Path) -> None:
++    """Regression: pre-alpha-aware cache files (RGB) must be invalidated.
++
++    Older builds wrote RGB PNGs to the upscale cache (alpha was flattened against white
++    before inference). After upgrading, the cache key is the same — so the broken file
++    would silently get returned and ``--background black`` would render white corners.
++    The staleness check rejects non-RGBA cache files so they get re-upscaled.
++    """
++    img = tmp_path / "card.png"
++    Image.fromarray(np.full((40, 30, 4), 200, dtype=np.uint8), mode="RGBA").save(img)
++    cached = tmp_path / f"card_4x_w745_m{_model_id()}.png"
++    # Pre-alpha-aware cache: RGB, no transparent corners. Should NOT be returned as-is.
++    Image.fromarray(np.full((40, 30, 3), 220, dtype=np.uint8), mode="RGB").save(cached)
++
++    upscale_run_count = 0
++
++    def _fake_upscale_run() -> None:
++        nonlocal upscale_run_count
++        upscale_run_count += 1
++
++    # Mock spandrel/torch so the inference itself doesn't actually run; assert that the
++    # function chose to TRY the inference path (i.e. needs_upscale was non-empty).
++    fake_spandrel = Mock()
++    fake_torch = Mock()
++    fake_torch.cuda.is_available.return_value = False
++    fake_torch.device.return_value = Mock(type="cpu")
++    fake_model = Mock()
++    fake_spandrel.ModelLoader.return_value.load_from_file.return_value = fake_model
++    fake_model.eval.return_value.to.return_value = fake_model
++
++    with patch.dict(sys.modules, {"spandrel": fake_spandrel, "torch": fake_torch}):
++        from mtg_proxies.upscale import upscale_images
++
++        # Patch the model loader to count attempts at running inference. If the cache had
++        # been accepted as fresh, no model would be loaded.
++        with patch.object(fake_spandrel, "ModelLoader") as mock_loader:
++            mock_loader.return_value.load_from_file.side_effect = lambda *_: _fake_upscale_run() or fake_model
++            # Mocked torch tensor ops will raise once they actually try to compute — we
++            # don't care, we only want to know the cache check refused the RGB file.
++            with contextlib.suppress(Exception):
++                upscale_images([str(img)], highres_flags=[False])
++
++    # Cache was stale → upscale path was attempted (model loader called once).
++    assert upscale_run_count == 1
++
++
++def test_upscale_images_progress_false_disables_inner_tqdm(monkeypatch, tmp_path) -> None:
++    """`progress=False` passes `disable=True` to the internal "Upscaling lowres images" tqdm.
++
++    The cardconjourer subcommand calls upscale_images one image at a time (for the
++    interleaved upscale → render flow). Without this knob, every per-card call
++    prints its own `Upscaling lowres images: 100% 1/1` bar — useless noise on top
++    of the outer "Rendering" bar.
++
++    Implementation note: pre-seed a valid cached PNG at the expected output path so
++    the cache lookup short-circuits before any model load happens; we just want to
++    observe the tqdm spy's ``disable`` argument.
++    """
++    from PIL import Image
++
++    from mtg_proxies import upscale
++
++    src = tmp_path / "a.png"
++    Image.new("RGBA", (8, 8)).save(src)
++
++    captured: dict = {}
++    orig_tqdm = upscale.tqdm
++
++    def spy_tqdm(iterable, *args, **kwargs):
++        captured["disable"] = kwargs.get("disable")
++        return orig_tqdm(iterable, *args, **kwargs)
++
++    monkeypatch.setattr(upscale, "tqdm", spy_tqdm)
++
++    # Bypass the heavy model load + ESRGAN inference by stubbing ModelLoader.
++    # The spy_tqdm captures `disable` as soon as the loop is entered, before
++    # the iteration body would have done any real work.
++    import sys
++    fake_spandrel = type(sys)("spandrel")
++    fake_spandrel.ModelLoader = lambda: type("M", (), {"load_from_file": lambda self, p: type("X", (), {"eval": lambda s: type("Y", (), {"to": lambda s, d: None})()})()})()
++    monkeypatch.setitem(sys.modules, "spandrel", fake_spandrel)
++
++    # Provide a fake model path that exists so the FileNotFoundError gate passes.
++    fake_model = tmp_path / "fake.pth"
++    fake_model.write_bytes(b"x")
++
++    # The actual upscale work will raise inside the loop body (model is a no-op),
++    # but we only need tqdm to have been called by then.
++    import contextlib
++    with contextlib.suppress(Exception):
++        upscale.upscale_images([str(src)], progress=False, model_path=str(fake_model))
++
++    assert captured.get("disable") is True

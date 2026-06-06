@@ -155,11 +155,17 @@ def normalize_images(
             out_paths[i] = seen[key]
             continue
         src_path = Path(path)
-        out_path = src_path.with_name(f"{src_path.stem}_norm_l{lift:g}.png")
+        # Stable two-decimal format so 6, 6.0, and 6.00 all land at the same cache
+        # filename. ``:g`` (the prior form) mixed ``"6"`` for 6.0 and ``"6.5"`` for 6.5,
+        # producing stray dots in basenames and silent cache misses for the same value.
+        out_path = src_path.with_name(f"{src_path.stem}_norm_l{lift:.2f}.png")
+        # ``size > 0`` guard catches 0-byte cache files from a previous run that died
+        # mid-write before the atomic ``replace`` could land.
+        cache_exists = out_path.is_file() and out_path.stat().st_size > 0
         cache_is_stale = (
-            out_path.is_file() and src_path.exists() and src_path.stat().st_mtime > out_path.stat().st_mtime
+            cache_exists and src_path.exists() and src_path.stat().st_mtime > out_path.stat().st_mtime
         )
-        if not out_path.is_file() or cache_is_stale:
+        if not cache_exists or cache_is_stale:
             source = _load_rgba(src_path)
             normalized = _apply_curve_lift(source, lift=lift)
             mode = "RGBA" if normalized.shape[2] == 4 else "RGB"

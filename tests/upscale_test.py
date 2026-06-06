@@ -35,6 +35,19 @@ def test_attach_alpha_from_source_same_size_preserves_alpha() -> None:
     assert res_arr[0, 30, 3] == 128  # right half half-transparent
 
 
+def test_attach_alpha_from_source_rejects_rgb_source() -> None:
+    """An RGB source raises ValueError instead of silently using the blue channel as alpha."""
+    import pytest
+
+    from mtg_proxies.upscale import _attach_alpha_from_source
+
+    src_rgb = Image.new("RGB", (40, 40), color=(200, 200, 200))
+    upscaled_rgb = Image.new("RGB", (160, 160), color=(50, 100, 150))
+
+    with pytest.raises(ValueError, match="expected RGBA"):
+        _attach_alpha_from_source(upscaled_rgb, src_rgb)
+
+
 def test_attach_alpha_from_source_resizes_alpha_to_match_upscaled() -> None:
     """The source alpha gets Lanczos-resized to the upscaled RGB's dimensions."""
     from mtg_proxies.upscale import _attach_alpha_from_source

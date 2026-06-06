@@ -54,7 +54,10 @@ def darken_borders_to_black(
     if not paths:
         return []
     skip = {str(Path(p).resolve()) for p in (skip_paths or ())}
-    suffix = f"_bv{strength:g}_{edge_fraction:g}_{max_black_threshold:g}.png"
+    # Stable two-decimal format on each parameter so 1, 1.0, and 1.00 all land at the
+    # same cache filename. ``:g`` (the prior form) produced a stray dot for non-integer
+    # values and silent misses for equivalent floats.
+    suffix = f"_bv{strength:.2f}_{edge_fraction:.3f}_{max_black_threshold:.1f}.png"
     out_paths: list[str] = []
     seen: dict[str, str] = {}
     for path in tqdm(paths, desc="Darkening borders"):
@@ -67,10 +70,11 @@ def darken_borders_to_black(
             continue
         src_path = Path(path)
         out_path = src_path.with_name(f"{src_path.stem}{suffix}")
+        cache_exists = out_path.is_file() and out_path.stat().st_size > 0
         cache_is_stale = (
-            out_path.is_file() and src_path.exists() and src_path.stat().st_mtime > out_path.stat().st_mtime
+            cache_exists and src_path.exists() and src_path.stat().st_mtime > out_path.stat().st_mtime
         )
-        if not out_path.is_file() or cache_is_stale:
+        if not cache_exists or cache_is_stale:
             _apply_vignette(src_path, out_path, strength, edge_fraction, max_black_threshold)
         seen[key] = str(out_path)
         out_paths.append(str(out_path))
