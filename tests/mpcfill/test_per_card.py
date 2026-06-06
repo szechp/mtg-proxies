@@ -44,7 +44,9 @@ def test_resolve_without_identifier_returns_none(monkeypatch: pytest.MonkeyPatch
 
 def test_resolve_fetch_failure_returns_none(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A thumbnail fetch exception is swallowed; caller falls back to the Scryfall scan."""
-    monkeypatch.setattr(per_card, "fetch_thumbnail", MagicMock(side_effect=RuntimeError("rate limited")))
+    from mtg_proxies.mpcfill.errors import ThumbnailFetchError
+
+    monkeypatch.setattr(per_card, "fetch_thumbnail", MagicMock(side_effect=ThumbnailFetchError("rate limited")))
 
     out = per_card.resolve_per_card_mpcfill(
         scryfall_id="abc-123",
@@ -87,7 +89,8 @@ def test_resolve_bleed_crop_applied_when_requested(monkeypatch: pytest.MonkeyPat
     )
 
     assert out is not None
-    assert "_bc4" in out.name
+    # Stable two-decimal format so 4, 4.0 and 4.00 all land at the same filename.
+    assert "_bc4.00" in out.name
 
 
 def _png_bytes(size: tuple[int, int], color: tuple[int, int, int]) -> bytes:

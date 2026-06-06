@@ -1,0 +1,532 @@
+diff --git a/mtg_proxies/mpcfill/__init__.py b/mtg_proxies/mpcfill/__init__.py
+new file mode 100644
+index 0000000..ca60fa9
+--- /dev/null
++++ b/mtg_proxies/mpcfill/__init__.py
+@@ -0,0 +1,6 @@
++"""MPCFill identifier-fetch helpers.
++
++The auto-matcher (LightGlue/SuperPoint), backend search client, picker, and
++retro classifier were cut in MR8. The only path that remains is "fetch this
++specific render by Drive identifier" via :mod:`drive` and :mod:`per_card`.
++"""
+diff --git a/mtg_proxies/mpcfill/cache.py b/mtg_proxies/mpcfill/cache.py
+new file mode 100644
+index 0000000..01c878f
+--- /dev/null
++++ b/mtg_proxies/mpcfill/cache.py
+@@ -0,0 +1,34 @@
++"""Disk cache helpers for mpcfill artifacts.
++
++Layout under the cache root (default `~/.cache/mtg-proxies/mpcfill/`):
++
++    thumbs/<drive_id>__<size>.<ext>   binary thumbnail, content-addressed, no expiry
++
++The search/ and features/ subtrees were dropped in MR8 when the backend search
++client and the SuperPoint keypoint matcher were removed; only the thumbnail
++cache remains, because :mod:`mtg_proxies.mpcfill.drive` still backs the
++identifier-fetch path.
++"""
++
++from __future__ import annotations
++
++from pathlib import Path
++
++DEFAULT_CACHE_ROOT = Path.home() / ".cache" / "mtg-proxies" / "mpcfill"
++
++
++def default_cache_root() -> Path:
++    """Return the default cache root path (does not create it)."""
++    return DEFAULT_CACHE_ROOT
++
++
++def thumbs_dir(root: Path) -> Path:
++    """Return the path to the thumbnails directory, creating it if needed."""
++    path = root / "thumbs"
++    path.mkdir(parents=True, exist_ok=True)
++    return path
++
++
++def thumbnail_path(root: Path, drive_id: str, size: int, extension: str = "png") -> Path:
++    """Return the on-disk path used to cache a Drive thumbnail at the given size."""
++    return thumbs_dir(root) / f"{drive_id}__{size}.{extension.lstrip('.')}"
+diff --git a/mtg_proxies/mpcfill/drive.py b/mtg_proxies/mpcfill/drive.py
+new file mode 100644
+index 0000000..66ee28d
+--- /dev/null
++++ b/mtg_proxies/mpcfill/drive.py
+@@ -0,0 +1,169 @@
++"""Google Drive thumbnail fetcher with backoff and cross-host fallback.
++
++The mpcfill UI serves preview images via Google Drive's public, no-auth thumbnail endpoint:
++
++    https://drive.google.com/thumbnail?sz=w<N>&id=<DRIVE_ID>
++
++`sz=w<N>` is honored up to the file's actual resolution. Use small sizes (e.g. 400) for
++keypoint matching and large sizes (e.g. 2000) for the final print download.
++
++When `drive.google.com` rate-limits with HTTP 429 or 403, the upstream `chilli-axe/mpc-autofill`
++project documents `https://lh3.googleusercontent.com/d/<ID>=w<N>` as a fallback host that serves
++the same byte stream (see chilli-axe/mpc-autofill discussion #220).
++"""
++
++from __future__ import annotations
++
++import logging
++import time
++from collections.abc import Callable
++from importlib.metadata import PackageNotFoundError, version
++from pathlib import Path
++
++import requests
++
++from mtg_proxies.mpcfill.cache import default_cache_root, thumbnail_path
++from mtg_proxies.mpcfill.errors import ThumbnailFetchError
++
++_log = logging.getLogger(__name__)
++
++_DRIVE_HOST = "https://drive.google.com/thumbnail"
++_LH3_HOST = "https://lh3.googleusercontent.com/d"
++_REQUEST_TIMEOUT_S = 30.0
++_MAX_RETRIES = 5
++_INITIAL_BACKOFF_S = 2.0
++_MAX_BACKOFF_S = 60.0
++_RETRYABLE_STATUSES = {403, 429, 500, 502, 503, 504}
++_CACHE_EXTENSIONS = ("png", "jpg", "webp")
++
++
++def _user_agent() -> str:
++    try:
++        pkg_version = version("mtg-proxies")
++    except PackageNotFoundError:
++        pkg_version = "0+local"
++    return f"mtg-proxies/{pkg_version}"
++
++
++def _drive_url(drive_id: str, size: int) -> str:
++    return f"{_DRIVE_HOST}?sz=w{size}&id={drive_id}"
++
++
++def _lh3_url(drive_id: str, size: int) -> str:
++    return f"{_LH3_HOST}/{drive_id}=w{size}"
++
++
++def _extension_for(content_type: str) -> str:
++    ctype = content_type.lower()
++    if "jpeg" in ctype or "jpg" in ctype:
++        return "jpg"
++    if "webp" in ctype:
++        return "webp"
++    return "png"
++
++
++def _fetch_one(
++    url: str,
++    *,
++    session: requests.Session,
++    sleeper: Callable[[float], None] = time.sleep,
++) -> requests.Response:
++    """Hit a single URL with exponential backoff; return a 200 image response or raise.
++
++    A 200 reply whose Content-Type isn't `image/*` (e.g. Google's "file too large to scan"
++    HTML interstitial) is treated as a fetch failure so the caller can try the fallback host.
++    """
++    backoff = _INITIAL_BACKOFF_S
++    last_exc: Exception | None = None
++    last_status: int | None = None
++    for attempt in range(_MAX_RETRIES):
++        try:
++            response = session.get(
++                url,
++                timeout=_REQUEST_TIMEOUT_S,
++                headers={"User-Agent": _user_agent(), "Accept": "image/*"},
++                allow_redirects=True,
++            )
++        except requests.RequestException as exc:
++            last_exc = exc
++            _log.warning("thumbnail fetch raised %s on %s (attempt %d)", exc, url, attempt + 1)
++        else:
++            if response.status_code == 200:
++                content_type = response.headers.get("Content-Type", "").lower()
++                if content_type.startswith("image/"):
++                    return response
++                # 200 + non-image (HTML interstitial) — treat as a fetch failure so the outer
++                # caller can fall back to the alternate host.
++                raise ThumbnailFetchError(
++                    f"thumbnail fetch got HTTP 200 with non-image Content-Type={content_type!r} for {url!r}"
++                )
++            last_status = response.status_code
++            if response.status_code in _RETRYABLE_STATUSES:
++                _log.info(
++                    "thumbnail fetch got %d on %s (attempt %d/%d); backing off %.1fs",
++                    response.status_code,
++                    url,
++                    attempt + 1,
++                    _MAX_RETRIES,
++                    backoff,
++                )
++                last_exc = ThumbnailFetchError(f"thumbnail fetch got retryable HTTP {response.status_code} for {url!r}")
++            else:
++                raise ThumbnailFetchError(f"thumbnail fetch returned HTTP {response.status_code} for {url!r}")
++        sleeper(backoff)
++        backoff = min(backoff * 2.0, _MAX_BACKOFF_S)
++    detail = f" (last HTTP {last_status})" if last_status is not None else ""
++    if last_exc is not None:
++        raise ThumbnailFetchError(f"thumbnail fetch failed after {_MAX_RETRIES} retries{detail}: {url}") from last_exc
++    raise ThumbnailFetchError(f"thumbnail fetch failed after {_MAX_RETRIES} retries{detail}: {url}")
++
++
++def fetch_thumbnail(
++    drive_id: str,
++    size: int,
++    *,
++    session: requests.Session,
++    cache_root: Path | None = None,
++    sleeper: Callable[[float], None] = time.sleep,
++) -> bytes:
++    """Fetch a Drive thumbnail at the given pixel-width hint, with disk cache and host fallback.
++
++    Args:
++        drive_id: Google Drive file id.
++        size: Width hint passed to the `sz=w<N>` query (or `=w<N>` on the lh3 fallback host).
++        session: Pre-configured `requests.Session`.
++        cache_root: Override the default cache root.
++        sleeper: Injection seam for tests; defaults to `time.sleep`.
++
++    Returns:
++        Raw image bytes.
++
++    Raises:
++        ThumbnailFetchError: When both hosts exhaust their retry budget or the response is not an
++            image (e.g. Google's "file too large to scan" HTML interstitial).
++    """
++    root = cache_root if cache_root is not None else default_cache_root()
++    for ext in _CACHE_EXTENSIONS:
++        candidate = thumbnail_path(root, drive_id, size, ext)
++        if candidate.is_file():
++            return candidate.read_bytes()
++
++    try:
++        response = _fetch_one(_drive_url(drive_id, size), session=session, sleeper=sleeper)
++    except ThumbnailFetchError:
++        _log.info("falling back to lh3 host for drive_id=%s size=%d", drive_id, size)
++        response = _fetch_one(_lh3_url(drive_id, size), session=session, sleeper=sleeper)
++
++    extension = _extension_for(response.headers.get("Content-Type", ""))
++    target = thumbnail_path(root, drive_id, size, extension)
++    target.parent.mkdir(parents=True, exist_ok=True)
++    target.write_bytes(response.content)
++    # Cache invariant: at most one extension per (drive_id, size). Clean up any stale files in
++    # the other extensions so the next cache lookup doesn't return content of the wrong format.
++    for ext in _CACHE_EXTENSIONS:
++        if ext == extension:
++            continue
++        stale = thumbnail_path(root, drive_id, size, ext)
++        if stale.is_file():
++            stale.unlink(missing_ok=True)
++    return response.content
+diff --git a/mtg_proxies/mpcfill/errors.py b/mtg_proxies/mpcfill/errors.py
+new file mode 100644
+index 0000000..bbe151e
+--- /dev/null
++++ b/mtg_proxies/mpcfill/errors.py
+@@ -0,0 +1,9 @@
++from __future__ import annotations
++
++
++class MpcfillError(Exception):
++    """Base class for mpcfill subpackage errors."""
++
++
++class ThumbnailFetchError(MpcfillError):
++    """Raised when a Google Drive thumbnail fetch cannot be completed."""
+diff --git a/mtg_proxies/mpcfill/per_card.py b/mtg_proxies/mpcfill/per_card.py
+new file mode 100644
+index 0000000..7e2707b
+--- /dev/null
++++ b/mtg_proxies/mpcfill/per_card.py
+@@ -0,0 +1,67 @@
++"""Resolve a single card's MPCFill render via an explicit Drive identifier.
++
++Used by the ``print`` per-card-modeline path: a line carrying
++``#mpcfill --identifier <drive_id> [--bleed-crop PCT]`` fetches that one
++specific MPCFill render and writes it into the cache so the slot can swap
++to it. No backend search, no auto-matcher, no picker — those were cut
++because the community-uploaded catalog has no stable contract.
++"""
++
++from __future__ import annotations
++
++import logging
++from pathlib import Path
++
++import requests
++
++from mtg_proxies.mpcfill.drive import fetch_thumbnail
++
++DEFAULT_OUTPUT_SIZE = 1500
++# MPCFill renders ship with more bleed than Scryfall scans by default. 4 % matches
++# the long-standing ``--custom-art-bleed-crop`` value so a swapped MPCFill image
++# lays out the same as a Scryfall scan.
++DEFAULT_BLEED_CROP_PERCENT = 4.0
++
++_log = logging.getLogger(__name__)
++
++
++def resolve_per_card_mpcfill(
++    *,
++    scryfall_id: str,
++    cache_root: Path,
++    session: requests.Session,
++    drive_id_override: str,
++    bleed_crop_percent: float = 0.0,
++    output_size: int = DEFAULT_OUTPUT_SIZE,
++) -> Path | None:
++    """Fetch the MPCFill render at ``drive_id_override`` and persist it under the cache.
++
++    ``scryfall_id`` is used only as the cache filename prefix so the same drive id
++    can coexist with different originating Scryfall printings. Returns ``None`` if
++    the thumbnail fetch fails (the caller falls back to the Scryfall scan).
++    """
++    if not drive_id_override:
++        return None
++    try:
++        image_bytes = fetch_thumbnail(drive_id_override, output_size, session=session, cache_root=cache_root)
++    except Exception as exc:  # noqa: BLE001 — fetch_thumbnail surfaces a tree of network errors
++        _log.warning("per-card mpcfill: thumbnail fetch failed for %s: %s", drive_id_override, exc)
++        return None
++
++    output_dir = cache_root / "per_card"
++    output_dir.mkdir(parents=True, exist_ok=True)
++    raw_path = output_dir / f"{scryfall_id}__{drive_id_override}.png"
++    raw_path.write_bytes(image_bytes)
++
++    if bleed_crop_percent <= 0:
++        return raw_path
++
++    from mtg_proxies.bleed import crop_bleed
++
++    cropped_path = output_dir / f"{scryfall_id}__{drive_id_override}_bc{bleed_crop_percent:g}.png"
++    try:
++        crop_bleed(raw_path, cropped_path, bleed_crop_percent)
++    except ValueError as exc:
++        _log.warning("per-card mpcfill: bleed crop failed for %s (%s); returning uncropped render", scryfall_id, exc)
++        return raw_path
++    return cropped_path
+diff --git a/tests/mpcfill/__init__.py b/tests/mpcfill/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/tests/mpcfill/test_drive.py b/tests/mpcfill/test_drive.py
+new file mode 100644
+index 0000000..d63eeb3
+--- /dev/null
++++ b/tests/mpcfill/test_drive.py
+@@ -0,0 +1,102 @@
++from __future__ import annotations
++
++from dataclasses import dataclass
++from pathlib import Path
++
++
++@dataclass
++class _StubResponse:
++    status_code: int
++    headers: dict[str, str]
++    content: bytes
++
++
++class _StubSession:
++    def __init__(self, responses: list[_StubResponse | Exception]) -> None:
++        self.responses = list(responses)
++        self.calls: list[str] = []
++
++    def get(self, url: str, **_: object) -> _StubResponse:
++        self.calls.append(url)
++        result = self.responses.pop(0)
++        if isinstance(result, Exception):
++            raise result
++        return result
++
++
++def _png_bytes() -> bytes:
++    import io
++
++    from PIL import Image
++
++    img = Image.new("RGB", (4, 4), color="white")
++    buf = io.BytesIO()
++    img.save(buf, format="PNG")
++    return buf.getvalue()
++
++
++def test_fetch_thumbnail_returns_image_bytes(tmp_path: Path) -> None:
++    from mtg_proxies.mpcfill.drive import fetch_thumbnail
++
++    body = _png_bytes()
++    session = _StubSession([_StubResponse(status_code=200, headers={"Content-Type": "image/png"}, content=body)])
++    out = fetch_thumbnail("abc123", 400, session=session, cache_root=tmp_path, sleeper=lambda _: None)
++    assert out == body
++    assert (tmp_path / "thumbs" / "abc123__400.png").is_file()
++
++
++def test_fetch_thumbnail_serves_from_cache_on_second_call(tmp_path: Path) -> None:
++    from mtg_proxies.mpcfill.drive import fetch_thumbnail
++
++    body = _png_bytes()
++    session = _StubSession([_StubResponse(status_code=200, headers={"Content-Type": "image/png"}, content=body)])
++    fetch_thumbnail("abc", 400, session=session, cache_root=tmp_path, sleeper=lambda _: None)
++    fetch_thumbnail("abc", 400, session=session, cache_root=tmp_path, sleeper=lambda _: None)
++    assert len(session.calls) == 1
++
++
++def test_fetch_thumbnail_falls_back_to_lh3_after_429(tmp_path: Path) -> None:
++    from mtg_proxies.mpcfill.drive import fetch_thumbnail
++
++    body = _png_bytes()
++    session = _StubSession([
++        _StubResponse(status_code=429, headers={}, content=b""),
++        _StubResponse(status_code=429, headers={}, content=b""),
++        _StubResponse(status_code=429, headers={}, content=b""),
++        _StubResponse(status_code=429, headers={}, content=b""),
++        _StubResponse(status_code=429, headers={}, content=b""),
++        _StubResponse(status_code=200, headers={"Content-Type": "image/png"}, content=body),
++    ])
++    out = fetch_thumbnail("xyz", 400, session=session, cache_root=tmp_path, sleeper=lambda _: None)
++    assert out == body
++    assert any("lh3.googleusercontent.com" in url for url in session.calls)
++
++
++def test_fetch_thumbnail_falls_back_to_lh3_on_html_interstitial(tmp_path: Path) -> None:
++    """drive.google's 200+text/html "file too large to scan" interstitial triggers lh3 fallback."""
++    from mtg_proxies.mpcfill.drive import fetch_thumbnail
++
++    body = _png_bytes()
++    session = _StubSession([
++        _StubResponse(status_code=200, headers={"Content-Type": "text/html"}, content=b"<html/>"),
++        _StubResponse(status_code=200, headers={"Content-Type": "image/png"}, content=body),
++    ])
++    out = fetch_thumbnail("xyz", 400, session=session, cache_root=tmp_path, sleeper=lambda _: None)
++    assert out == body
++    assert any("drive.google.com" in url for url in session.calls)
++    assert any("lh3.googleusercontent.com" in url for url in session.calls)
++
++
++def test_fetch_thumbnail_raises_when_both_hosts_return_non_image(tmp_path: Path) -> None:
++    """When both hosts serve non-image responses, fetch raises ThumbnailFetchError."""
++    import pytest
++
++    from mtg_proxies.mpcfill.drive import fetch_thumbnail
++    from mtg_proxies.mpcfill.errors import ThumbnailFetchError
++
++    session = _StubSession([
++        _StubResponse(status_code=200, headers={"Content-Type": "text/html"}, content=b"<html/>"),
++        _StubResponse(status_code=200, headers={"Content-Type": "text/html"}, content=b"<html/>"),
++    ])
++    with pytest.raises(ThumbnailFetchError):
++        fetch_thumbnail("xyz", 400, session=session, cache_root=tmp_path, sleeper=lambda _: None)
+diff --git a/tests/mpcfill/test_per_card.py b/tests/mpcfill/test_per_card.py
+new file mode 100644
+index 0000000..1b5af66
+--- /dev/null
++++ b/tests/mpcfill/test_per_card.py
+@@ -0,0 +1,100 @@
++"""Tests for the slim identifier-only per-card MPCFill resolver."""
++
++from __future__ import annotations
++
++from pathlib import Path
++from unittest.mock import MagicMock
++
++import pytest
++
++from mtg_proxies.mpcfill import per_card
++
++
++def test_resolve_returns_path_for_known_identifier(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
++    monkeypatch.setattr(per_card, "fetch_thumbnail", MagicMock(return_value=b"PNG-BYTES"))
++
++    out = per_card.resolve_per_card_mpcfill(
++        scryfall_id="abc-123",
++        cache_root=tmp_path,
++        session=MagicMock(),
++        drive_id_override="drv-xyz",
++    )
++
++    assert out is not None
++    assert out.parent == tmp_path / "per_card"
++    assert "abc-123" in out.name
++    assert "drv-xyz" in out.name
++    assert out.read_bytes() == b"PNG-BYTES"
++
++
++def test_resolve_without_identifier_returns_none(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
++    fetch = MagicMock()
++    monkeypatch.setattr(per_card, "fetch_thumbnail", fetch)
++
++    out = per_card.resolve_per_card_mpcfill(
++        scryfall_id="abc-123",
++        cache_root=tmp_path,
++        session=MagicMock(),
++        drive_id_override="",
++    )
++
++    assert out is None
++    fetch.assert_not_called()
++
++
++def test_resolve_fetch_failure_returns_none(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
++    """A thumbnail fetch exception is swallowed; caller falls back to the Scryfall scan."""
++    monkeypatch.setattr(per_card, "fetch_thumbnail", MagicMock(side_effect=RuntimeError("rate limited")))
++
++    out = per_card.resolve_per_card_mpcfill(
++        scryfall_id="abc-123",
++        cache_root=tmp_path,
++        session=MagicMock(),
++        drive_id_override="drv-xyz",
++    )
++
++    assert out is None
++
++
++def test_resolve_bleed_crop_default_is_off(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
++    """Library-level default applies no crop — `_bc` suffix only present when requested."""
++    from PIL import Image
++
++    img_bytes = _png_bytes((40, 56), (200, 200, 200))
++    monkeypatch.setattr(per_card, "fetch_thumbnail", MagicMock(return_value=img_bytes))
++
++    out = per_card.resolve_per_card_mpcfill(
++        scryfall_id="abc-123",
++        cache_root=tmp_path,
++        session=MagicMock(),
++        drive_id_override="drv-1",
++    )
++
++    assert out is not None
++    assert "_bc" not in out.name
++
++
++def test_resolve_bleed_crop_applied_when_requested(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
++    img_bytes = _png_bytes((40, 56), (200, 200, 200))
++    monkeypatch.setattr(per_card, "fetch_thumbnail", MagicMock(return_value=img_bytes))
++
++    out = per_card.resolve_per_card_mpcfill(
++        scryfall_id="abc-123",
++        cache_root=tmp_path,
++        session=MagicMock(),
++        drive_id_override="drv-1",
++        bleed_crop_percent=4.0,
++    )
++
++    assert out is not None
++    assert "_bc4" in out.name
++
++
++def _png_bytes(size: tuple[int, int], color: tuple[int, int, int]) -> bytes:
++    import io
++
++    from PIL import Image
++
++    buf = io.BytesIO()
++    Image.new("RGB", size, color=color).save(buf, format="PNG")
++    return buf.getvalue()

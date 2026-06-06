@@ -15,6 +15,7 @@ the same byte stream (see chilli-axe/mpc-autofill discussion #220).
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Callable
 from importlib.metadata import PackageNotFoundError, version
@@ -33,7 +34,10 @@ _REQUEST_TIMEOUT_S = 30.0
 _MAX_RETRIES = 5
 _INITIAL_BACKOFF_S = 2.0
 _MAX_BACKOFF_S = 60.0
-_RETRYABLE_STATUSES = {403, 429, 500, 502, 503, 504}
+# 403 is NOT retryable: Drive returns 403 overwhelmingly for "file not public"
+# / "domain policy" (permanent), not rate-limit. The user typing a bad
+# --identifier shouldn't wait 2 minutes of pointless backoff before failing.
+_RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
 _CACHE_EXTENSIONS = ("png", "jpg", "webp")
 
 
@@ -54,12 +58,23 @@ def _lh3_url(drive_id: str, size: int) -> str:
 
 
 def _extension_for(content_type: str) -> str:
+    """Map a Content-Type to a cache file extension.
+
+    Restricted to the three formats Google Drive actually serves for thumbnails;
+    anything else (SVG, GIF, AVIF, HEIC, etc.) raises so we don't write bytes
+    of an unhandled type under a misleading ``.png`` extension and confuse
+    downstream PIL loads.
+    """
     ctype = content_type.lower()
     if "jpeg" in ctype or "jpg" in ctype:
         return "jpg"
     if "webp" in ctype:
         return "webp"
-    return "png"
+    if "png" in ctype:
+        return "png"
+    raise ThumbnailFetchError(
+        f"thumbnail fetch returned unhandled Content-Type={content_type!r}; expected image/png, image/jpeg, or image/webp"
+    )
 
 
 def _fetch_one(
@@ -77,6 +92,10 @@ def _fetch_one(
     last_exc: Exception | None = None
     last_status: int | None = None
     for attempt in range(_MAX_RETRIES):
+        # ``this_backoff`` shadows ``backoff`` for the current iteration's sleep
+        # so a Retry-After hint can override without mutating the exponential
+        # series tracked by ``backoff`` itself.
+        this_backoff = backoff
         try:
             response = session.get(
                 url,
@@ -99,19 +118,34 @@ def _fetch_one(
                 )
             last_status = response.status_code
             if response.status_code in _RETRYABLE_STATUSES:
+                # Honor Retry-After when the server provides one (RFC 7231 §7.1.3).
+                # Use whichever is larger between our local exponential backoff and
+                # the server's hint, capped at _MAX_BACKOFF_S so a hostile / buggy
+                # Retry-After value can't strand us for an hour.
+                retry_after = response.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        this_backoff = min(_MAX_BACKOFF_S, max(this_backoff, float(retry_after)))
+                    except ValueError:
+                        # HTTP-date form (rarely used by APIs) — ignore and stick with local backoff.
+                        pass
                 _log.info(
                     "thumbnail fetch got %d on %s (attempt %d/%d); backing off %.1fs",
                     response.status_code,
                     url,
                     attempt + 1,
                     _MAX_RETRIES,
-                    backoff,
+                    this_backoff,
                 )
                 last_exc = ThumbnailFetchError(f"thumbnail fetch got retryable HTTP {response.status_code} for {url!r}")
             else:
                 raise ThumbnailFetchError(f"thumbnail fetch returned HTTP {response.status_code} for {url!r}")
-        sleeper(backoff)
-        backoff = min(backoff * 2.0, _MAX_BACKOFF_S)
+        # Skip the sleep after the final attempt — we're about to raise; sleeping
+        # up to _MAX_BACKOFF_S for nothing only delays the lh3 fallback / final
+        # error without any chance of success.
+        if attempt < _MAX_RETRIES - 1:
+            sleeper(this_backoff)
+            backoff = min(backoff * 2.0, _MAX_BACKOFF_S)
     detail = f" (last HTTP {last_status})" if last_status is not None else ""
     if last_exc is not None:
         raise ThumbnailFetchError(f"thumbnail fetch failed after {_MAX_RETRIES} retries{detail}: {url}") from last_exc
@@ -145,7 +179,10 @@ def fetch_thumbnail(
     root = cache_root if cache_root is not None else default_cache_root()
     for ext in _CACHE_EXTENSIONS:
         candidate = thumbnail_path(root, drive_id, size, ext)
-        if candidate.is_file():
+        # ``is_file() and st_size > 0`` — guard against 0-byte / truncated cache
+        # files left behind by a previous run that crashed mid-write. Without this
+        # a corrupt cache file silently passes as a valid hit forever.
+        if candidate.is_file() and candidate.stat().st_size > 0:
             return candidate.read_bytes()
 
     try:
@@ -157,7 +194,13 @@ def fetch_thumbnail(
     extension = _extension_for(response.headers.get("Content-Type", ""))
     target = thumbnail_path(root, drive_id, size, extension)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(response.content)
+    # Atomic write: tmp + rename. A SIGKILL between write_bytes and the rename
+    # would leave a .tmp file that the next run ignores (no matching cache
+    # extension lookup), instead of a half-written target that silently passes
+    # the is_file/size check above.
+    tmp = target.with_suffix(target.suffix + f".tmp.{os.getpid()}")
+    tmp.write_bytes(response.content)
+    tmp.replace(target)
     # Cache invariant: at most one extension per (drive_id, size). Clean up any stale files in
     # the other extensions so the next cache lookup doesn't return content of the wrong format.
     for ext in _CACHE_EXTENSIONS:

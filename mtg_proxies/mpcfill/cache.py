@@ -12,14 +12,24 @@ identifier-fetch path.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
-DEFAULT_CACHE_ROOT = Path.home() / ".cache" / "mtg-proxies" / "mpcfill"
+# Google Drive file IDs are alphanumeric with dash + underscore (same shape the
+# modeline parser's _drive_id validator enforces). The validator there should be
+# the only source of these strings, but we guard at the cache boundary too so a
+# bypass anywhere upstream can't path-traverse out of the cache root.
+_DRIVE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_EXTENSION_RE = re.compile(r"^[a-z0-9]+$", re.IGNORECASE)
 
 
 def default_cache_root() -> Path:
-    """Return the default cache root path (does not create it)."""
-    return DEFAULT_CACHE_ROOT
+    """Return the default cache root path (does not create it).
+
+    Evaluated lazily so test environments that ``monkeypatch.setenv("HOME",
+    tmp_path)`` after import see the patched value.
+    """
+    return Path.home() / ".cache" / "mtg-proxies" / "mpcfill"
 
 
 def thumbs_dir(root: Path) -> Path:
@@ -30,5 +40,15 @@ def thumbs_dir(root: Path) -> Path:
 
 
 def thumbnail_path(root: Path, drive_id: str, size: int, extension: str = "png") -> Path:
-    """Return the on-disk path used to cache a Drive thumbnail at the given size."""
-    return thumbs_dir(root) / f"{drive_id}__{size}.{extension.lstrip('.')}"
+    """Return the on-disk path used to cache a Drive thumbnail at the given size.
+
+    Raises ``ValueError`` for ``drive_id`` or ``extension`` strings that contain
+    path-traversal characters (slashes, dots, etc.) — those can't escape the
+    cache root via the filename join.
+    """
+    ext = extension.lstrip(".")
+    if not _DRIVE_ID_RE.match(drive_id):
+        raise ValueError(f"drive_id {drive_id!r} contains characters outside [A-Za-z0-9_-]")
+    if not _EXTENSION_RE.match(ext):
+        raise ValueError(f"extension {extension!r} contains characters outside [A-Za-z0-9]")
+    return thumbs_dir(root) / f"{drive_id}__{size}.{ext}"
