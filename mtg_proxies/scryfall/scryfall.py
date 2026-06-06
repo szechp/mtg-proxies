@@ -7,7 +7,10 @@ See:
 from __future__ import annotations
 
 import json
+import logging
+import os
 import pickle
+import re
 import threading
 import time
 from collections import defaultdict
@@ -28,6 +31,26 @@ _cache_folder.mkdir(parents=True, exist_ok=True)  # Create cache folder
 _BULK_CACHE_TTL = 24 * 60 * 60  # 24 h — how long a local pickle is treated as fresh
 scryfall_rate_limiter = RateLimiter(delay=0.1)
 _download_lock = threading.Lock()
+_log = logging.getLogger(__name__)
+
+# Artist + set combinations that get a hefty standard-art penalty for issuing
+# alternate-treatment art that the user-facing "standard" preference shouldn't
+# pick over a vanilla print. Each entry is a ``(artist, set_code)`` tuple.
+# Curated narrowly — broader rules (full-art, borderless, promo_types) cover
+# the common cases; this list is only for prints that slip through those
+# filters but still look out-of-universe. Drop an entry when the underlying
+# issue is fixed upstream (e.g. Scryfall reclassifies the set) or when the
+# artist no longer produces such prints.
+_NONSTANDARD_ART_OVERRIDES = frozenset({
+    # J22 (Jumpstart 2022) "Anime Border" basic land treatments. Promo_types
+    # don't flag these; the artist+set tuple is the only stable signal.
+    ("Canata Katana", "j22"),
+})
+
+# Date-stamped cache filename shape e.g. ``default-cards-20241201090617.pickle``.
+# Anchored on the digits so the glob can't accidentally match a future variant
+# spelling like ``default-cards-large-<date>.pickle``.
+_DATED_PICKLE_RE = re.compile(r"^.+-\d{8,}\.pickle$")
 
 
 def get_image(image_uri: str, *, silent: bool = False) -> str:
@@ -119,23 +142,65 @@ def search(q: str) -> list[dict]:
     return depaginate(f"https://api.scryfall.com/cards/search?q={q}&format=json")
 
 
+def _load_pickle_safe(path: Path) -> list[dict] | None:
+    """Read a bulk-data pickle, return None on any corruption.
+
+    Caller refetches on None. We catch EOFError/UnpicklingError (partial files
+    from a killed prior run) plus OSError (file disappeared between glob and
+    open) — anything else propagates so a genuine bug isn't masked.
+    """
+    try:
+        with path.open("rb") as f:
+            return pickle.load(f)
+    except (EOFError, pickle.UnpicklingError, OSError) as exc:
+        _log.warning("scryfall cache pickle %s is corrupt (%s); refetching", path.name, exc)
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return None
+
+
+def _write_pickle_atomic(path: Path, data: list[dict]) -> None:
+    """tempfile + os.replace so a SIGKILL mid-write doesn't poison the cache."""
+    tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+    try:
+        with tmp.open("wb") as f:
+            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, path)
+    except OSError:
+        # Clean up the tempfile on failure, then re-raise.
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
 @cache
 def _get_database(database_name: str = "default_cards") -> list[dict]:
     # Fast path: if a pickle for this database type was written within the TTL, load it
     # directly without touching the network. The filename glob matches the date-stamped
-    # filenames Scryfall uses (e.g. default-cards-20241201090617.pickle).
+    # filenames Scryfall uses (e.g. default-cards-20241201090617.pickle). Non-date-suffixed
+    # variants (e.g. ``default-cards-large-*.pickle`` if Scryfall ever adds one) are filtered
+    # out via ``_DATED_PICKLE_RE`` so they can't shadow the canonical cache.
     slug = database_name.replace("_", "-")
     cached_pickles = sorted(
-        _cache_folder.glob(f"{slug}-*.pickle"),
+        (p for p in _cache_folder.glob(f"{slug}-*.pickle") if _DATED_PICKLE_RE.match(p.name)),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
-    if cached_pickles:
-        newest = cached_pickles[0]
-        age = time.time() - newest.stat().st_mtime
-        if age < _BULK_CACHE_TTL:
-            with newest.open("rb") as f:
-                return pickle.load(f)
+    for newest in cached_pickles:
+        try:
+            age = time.time() - newest.stat().st_mtime
+        except OSError:
+            continue
+        if age >= _BULK_CACHE_TTL:
+            break
+        data = _load_pickle_safe(newest)
+        if data is not None:
+            return data
+        # Corrupt file was unlinked by _load_pickle_safe; try the next-newest.
 
     # Cache miss or stale: fetch the bulk-data index to find this week's download URL.
     databases = depaginate("https://api.scryfall.com/bulk-data")
@@ -146,13 +211,26 @@ def _get_database(database_name: str = "default_cards") -> list[dict]:
     bulk_file = Path(get_file(bulk_data[0]["download_uri"].split("/")[-1], bulk_data[0]["download_uri"]))
     pickle_file = bulk_file.with_suffix(".pickle")
     if not pickle_file.is_file():  # Convert json to pickle
+        try:
+            with open(bulk_file, encoding="utf-8") as json_file:
+                data = json.load(json_file)
+        except json.JSONDecodeError as exc:
+            # The bulk JSON itself is corrupt — drop it so the next call refetches.
+            _log.warning("scryfall bulk JSON %s is corrupt (%s); deleting for refetch", bulk_file.name, exc)
+            try:
+                bulk_file.unlink()
+            except OSError:
+                pass
+            raise
+        _write_pickle_atomic(pickle_file, data)
+        return data
+    data = _load_pickle_safe(pickle_file)
+    if data is None:
+        # Corrupt pickle — read straight from the JSON we already have.
         with open(bulk_file, encoding="utf-8") as json_file:
             data = json.load(json_file)
-        with open(pickle_file, "wb") as f:
-            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
-        return data
-    with open(pickle_file, "rb") as f:
-        return pickle.load(f)
+        _write_pickle_atomic(pickle_file, data)
+    return data
 
 
 def canonic_card_name(card_name: str) -> str:
@@ -237,6 +315,12 @@ def _standard_art_penalty(card: dict, preferred_sets: list[str] | None = None) -
     lang = card.get("lang", "en")
     preferred_set_codes = {ps.lower() for ps in preferred_sets} if preferred_sets else set()
     in_preferred_set = card.get("set") in preferred_set_codes
+    # Hand-curated Universes Beyond set-name keywords. We *also* check
+    # ``promo_types`` containing ``"universesbeyond"`` further down (line ~360),
+    # but that flag is only set on individual flashy/foil prints — vanilla
+    # prints from UB sets (FIN, LTR, ACR, etc.) don't carry it. The substring
+    # match against ``set_name`` is the only stable signal for those vanilla
+    # prints. Append new IP collabs here as they ship.
     keywords = {
         "fallout",
         "doctor who",
@@ -275,7 +359,7 @@ def _standard_art_penalty(card: dict, preferred_sets: list[str] | None = None) -
         penalty += 32
     if card.get("full_art") or "fullart" in frame_effects or {"fullart", "full_art"} & promo_types:
         penalty += 32
-    if card.get("artist") == "Canata Katana" and card.get("set") == "j22":
+    if (card.get("artist"), card.get("set")) in _NONSTANDARD_ART_OVERRIDES:
         penalty += 128
 
     if "universesbeyond" in promo_types:
@@ -334,7 +418,10 @@ def _select_standard_fallback(alternatives: list[dict], scores: list[int]) -> di
     digital_candidates = [
         card
         for card in highres_candidates
-        if card.get("digital") and card.get("set_type") != "promo" and not _is_stamped_promo(card)
+        if card.get("digital")
+        and card.get("set_type") != "promo"
+        and not _is_stamped_promo(card)
+        and "universesbeyond" not in set(card.get("promo_types", []))
     ]
     if digital_candidates:
         return min(digital_candidates, key=lambda card: -indexed_scores[card["id"]])
@@ -414,11 +501,17 @@ def recommend_print(
             old-frame, Time Spiral Remastered, etc.) win over the default 2015 picks. Falls
             back silently to the regular winner when no retro candidate exists for the card.
         art_before: When set (e.g. ``2023``), restrict candidates to prints released before
-            ``<YEAR>-01-01`` and pick the EARLIEST released. This dodges the wave of new digital
-            art commissioned for recent reprints by preferring the original printing. Falls
-            back silently to the default recommendation when no print qualifies (cards that
-            first appeared after the cutoff still get a result).
+            ``<YEAR>-01-01``, then run the normal scorer on what remains. This dodges the wave
+            of new digital art commissioned for recent reprints — among the pre-cutoff prints,
+            the highest-quality (high-res, black border, en, non-promo, etc.) one wins, NOT
+            necessarily the chronologically earliest. Falls back silently to the default
+            recommendation when no print qualifies (cards that first appeared after the cutoff
+            still get a result).
         mode: Recommendation mode.
+
+    Raises:
+        LookupError: When no prints exist for the requested ``card_name`` / ``oracle_id``
+            (typo, custom card name, deleted Scryfall entry).
     """
     if current is not None and oracle_id is None:  # Use oracle id of current
         if current.get("layout") == "reversible_card":
@@ -444,6 +537,17 @@ def recommend_print(
         if in_preferred:
             alternatives = in_preferred
             preferred_set_restricted = True
+        else:
+            # The user picked --set <X> but no qualifying print exists. Fall through
+            # so the function still returns something, but log so a caller / log reader
+            # can see that the preference was silently dropped. validate_print catches
+            # this at the sanitizing layer with a user-facing ParseWarning; this log is
+            # the visibility for direct recommend_print callers.
+            _log.info(
+                "preferred_sets=%s has no qualifying print for %s (allow_low_res=%s); "
+                "falling back to the full pool",
+                sorted(preferred_set_codes), card_name or oracle_id, allow_low_res,
+            )
 
     # art_before: restrict candidates to prints released before ``<YEAR>-01-01``.
     # This filters out modern digital reprints but lets the normal scoring logic pick
@@ -452,7 +556,10 @@ def recommend_print(
     # so the user doesn't have to special-case.
     if art_before is not None:
         cutoff = f"{art_before}-01-01"
-        older = [a for a in alternatives if a.get("released_at", "9999") < cutoff]
+        # ``or "9999-12-31"`` guards against ``released_at: None`` (rare but valid in
+        # some Scryfall views) — direct ``None < str`` raises TypeError under Python's
+        # comparison rules.
+        older = [a for a in alternatives if (a.get("released_at") or "9999-12-31") < cutoff]
         if older:
             alternatives = older
 
@@ -570,6 +677,14 @@ def card_by_id() -> dict[str, dict]:
 
     Faster than repeated lookup via get_cards().
 
+    Cache lifetime: the ``@cache`` here lives for the whole process, NOT just
+    one ``_BULK_CACHE_TTL`` window. ``mtg-proxies`` is a one-shot CLI so this
+    matters only if a long-running process crosses the 24h TTL boundary and
+    expects refreshed bulk data — call ``.cache_clear()`` on these indexes
+    after a manual ``_get_database.cache_clear()`` if you need that. Same
+    caveat applies to ``card_by_set_collector``, ``cards_by_oracle_id``,
+    and ``cards_by_name_norm``.
+
     Returns:
         dict {id: card}
     """
@@ -599,12 +714,18 @@ def fetch_printing_live(set_code: str, collector_number: str) -> dict | None:
 
     Fallback for ``parse_decklist_stream`` when the local bulk cache does not
     yet have a newly-released printing. Goes through the same rate-limiter as
-    every other Scryfall call. Returns ``None`` on 404 or any non-2xx response
-    so the parser can downgrade the line to a comment + warning.
+    every other Scryfall call. Returns ``None`` on 404, any non-2xx response,
+    JSON decode failure, OR any network exception (connection refused, SSL,
+    DNS, timeout) so the parser can downgrade the line to a comment + warning
+    rather than crashing the whole decklist read on a flaky connection.
     """
     url = f"https://api.scryfall.com/cards/{set_code.lower()}/{collector_number.lower()}"
-    with scryfall_rate_limiter:
-        resp = requests.get(url, timeout=10)
+    try:
+        with scryfall_rate_limiter:
+            resp = requests.get(url, timeout=10)
+    except requests.RequestException as exc:
+        _log.warning("scryfall live fetch failed for %s/%s: %s", set_code, collector_number, exc)
+        return None
     if resp.status_code != 200:
         return None
     try:

@@ -731,3 +731,92 @@ def test_recommend_print_art_before_with_art_preference_still_works() -> None:
     )
 
     assert int(card["released_at"][:4]) < 2024
+
+
+
+# ---------------------------------------------------------------------------
+# Bulk-pickle cache hygiene
+# ---------------------------------------------------------------------------
+
+def test_load_pickle_safe_returns_none_on_corrupt_file(tmp_path):
+    """A truncated pickle is detected, deleted, and returns None for the caller to refetch."""
+    from mtg_proxies.scryfall.scryfall import _load_pickle_safe
+
+    corrupt = tmp_path / "default-cards-20240101.pickle"
+    corrupt.write_bytes(b"\x80\x05\x95\x00\x00")  # truncated pickle prefix
+
+    assert _load_pickle_safe(corrupt) is None
+    assert not corrupt.exists()  # corrupt file is removed
+
+
+def test_write_pickle_atomic_survives_failure_without_clobbering(tmp_path):
+    """If atomic write fails partway, the target file is untouched."""
+    import pickle as _pickle
+
+    from mtg_proxies.scryfall.scryfall import _write_pickle_atomic
+
+    target = tmp_path / "existing.pickle"
+    target.write_bytes(_pickle.dumps([{"a": 1}]))
+
+    # First write succeeds, replacing the target atomically.
+    _write_pickle_atomic(target, [{"b": 2}])
+    assert _pickle.loads(target.read_bytes()) == [{"b": 2}]
+    # No leftover .tmp file from the successful path.
+    assert not any(p.suffix.startswith(".pickle.tmp") for p in tmp_path.iterdir())
+
+
+def test_get_database_skips_corrupt_pickle_and_tries_next(tmp_path, monkeypatch):
+    """A corrupt newest-pickle is skipped in favor of the next-newest (if within TTL)."""
+    import pickle as _pickle
+
+    from mtg_proxies.scryfall import scryfall as sf
+
+    monkeypatch.setattr(sf, "_cache_folder", tmp_path)
+    sf._get_database.cache_clear()
+
+    # Older valid pickle (within TTL) + newer corrupt pickle.
+    older = tmp_path / "default-cards-20240101000000.pickle"
+    older.write_bytes(_pickle.dumps([{"id": "old"}]))
+    newer = tmp_path / "default-cards-20240102000000.pickle"
+    newer.write_bytes(b"\x80\x05\x95")  # truncated
+    # Pin mtimes squarely within the 24h TTL relative to the patched ``time``.
+    import os as _os
+    monkeypatch.setattr(sf.time, "time", lambda: 1_700_086_400)
+    _os.utime(older, (1_700_082_800, 1_700_082_800))   # 1 h ago
+    _os.utime(newer, (1_700_084_600, 1_700_084_600))   # 30 min ago (newest)
+
+    data = sf._get_database("default_cards")
+    assert data == [{"id": "old"}]
+    # Corrupt file was deleted.
+    assert not newer.exists()
+    sf._get_database.cache_clear()
+
+
+
+# ---------------------------------------------------------------------------
+# fetch_printing_live
+# ---------------------------------------------------------------------------
+
+def test_fetch_printing_live_returns_none_on_network_failure(monkeypatch):
+    """Connection / SSL / Timeout errors are caught and return None per docstring."""
+    import requests as _requests
+
+    from mtg_proxies.scryfall import scryfall as sf
+
+    def _raise_conn(*_a, **_k):
+        raise _requests.ConnectionError("DNS lookup failed")
+    monkeypatch.setattr(sf.requests, "get", _raise_conn)
+
+    assert sf.fetch_printing_live("soc", "128") is None
+
+
+def test_fetch_printing_live_returns_none_on_404(monkeypatch):
+    """A 404 response returns None so the parser can downgrade."""
+    from mtg_proxies.scryfall import scryfall as sf
+
+    class _Resp:
+        status_code = 404
+        def json(self): return None
+
+    monkeypatch.setattr(sf.requests, "get", lambda *_a, **_k: _Resp())
+    assert sf.fetch_printing_live("soc", "999999") is None
