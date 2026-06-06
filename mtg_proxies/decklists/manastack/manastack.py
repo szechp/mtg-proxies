@@ -20,6 +20,10 @@ def parse_decklist(
 ) -> tuple[Decklist, bool, list[ParseWarning]]:
     """Parse a decklist from manastack.
 
+    Per-card modelines (e.g. ``#mpcfill --identifier ABC``) are *not* read from
+    Manastack's API — modelines are a feature of the text-format decklist parser.
+    If you need modelines, export the deck to text and use ``parse_decklist``.
+
     Args:
         manastack_id: Deck list id as shown in the deckbuilder URL
         zones: List of zones to include. Available are: `mainboard`, `commander`, `sideboard` and `maybeboard`
@@ -28,11 +32,17 @@ def parse_decklist(
     warnings = []
     ok = True
 
-    r = requests.get(f"https://manastack.com/api/decklist?format=json&id={manastack_id}", timeout=30)
+    try:
+        r = requests.get(f"https://manastack.com/api/decklist?format=json&id={manastack_id}", timeout=30)
+    except requests.RequestException as exc:
+        raise ValueError(f"Manastack request failed: {exc}") from exc
     if r.status_code != 200:
         raise ValueError(f"Manastack returned statuscode {r.status_code}")
 
-    data = r.json()
+    try:
+        data = r.json()
+    except requests.JSONDecodeError as exc:
+        raise ValueError(f"Manastack returned non-JSON body: {exc}") from exc
     for zone in zones:
         if len(data["list"][zone]) > 0:
             decklist.append_comment(zone.capitalize())

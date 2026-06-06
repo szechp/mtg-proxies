@@ -1,0 +1,1668 @@
+diff --git a/mtg_proxies/decklists/archidekt/archidekt.py b/mtg_proxies/decklists/archidekt/archidekt.py
+index 2d2d3d5..f284d4c 100644
+--- a/mtg_proxies/decklists/archidekt/archidekt.py
++++ b/mtg_proxies/decklists/archidekt/archidekt.py
+@@ -1,12 +1,21 @@
+ from __future__ import annotations
+ 
++from typing import Literal
++
+ import requests
+ 
+ from mtg_proxies.decklists import Decklist, ParseWarning
+ from mtg_proxies.decklists.sanitizing import validate_card_name, validate_print
+ 
+ 
+-def parse_decklist(archidekt_id: str) -> tuple[Decklist, bool, list[ParseWarning]]:
++def parse_decklist(
++    archidekt_id: str,
++    art_preference: Literal["standard", "wild"] = "standard",
++    preferred_sets: list[str] | None = None,
++    allow_low_res: bool = False,
++    prefer_retro_frame: bool = False,
++    art_before: int | None = None,
++) -> tuple[Decklist, bool, list[ParseWarning]]:
+     """Parse a decklist from manastack.
+ 
+     Args:
+@@ -17,9 +26,9 @@ def parse_decklist(archidekt_id: str) -> tuple[Decklist, bool, list[ParseWarning
+     warnings = []
+     ok = True
+ 
+-    r = requests.get(f"https://archidekt.com/api/decks/{archidekt_id}/")
++    r = requests.get(f"https://archidekt.com/api/decks/{archidekt_id}/", timeout=30)
+     if r.status_code != 200:
+-        raise (ValueError(f"Archidekt returned statuscode {r.status_code}"))
++        raise ValueError(f"Archidekt returned statuscode {r.status_code}")
+ 
+     data = r.json()
+ 
+@@ -43,7 +52,16 @@ def parse_decklist(archidekt_id: str) -> tuple[Decklist, bool, list[ParseWarning
+             continue
+ 
+         # Validate card print
+-        card, warnings_print = validate_print(card_name, set_id, collector_number)
++        card, warnings_print = validate_print(
++            card_name,
++            set_id,
++            collector_number,
++            art_preference=art_preference,
++            preferred_sets=preferred_sets,
++            allow_low_res=allow_low_res,
++            prefer_retro_frame=prefer_retro_frame,
++            art_before=art_before,
++        )
+ 
+         decklist.append_card(count, card)
+         warnings.extend(warnings_name + warnings_print)
+diff --git a/mtg_proxies/decklists/cleaning.py b/mtg_proxies/decklists/cleaning.py
+index 4d20c0e..3fdf25c 100644
+--- a/mtg_proxies/decklists/cleaning.py
++++ b/mtg_proxies/decklists/cleaning.py
+@@ -13,21 +13,20 @@ def merge_duplicates(decklist: Decklist, identifier: str = "oracle_id") -> Deckl
+         decklist: Decklist object
+         identifier: Id to merge on.
+     """
+-    cards_by_id = {}
++    # Cards with different per-card modelines must NOT merge — they carry different print-time
++    # directives and merging would silently drop everything after the first.
++    cards_by_key: dict[tuple[str, str], Card] = {}
+ 
+     merged = Decklist()
+     for entry in decklist.entries:
+         if isinstance(entry, Card):
+-            card_id = entry[identifier]
+-            if card_id in cards_by_id:
+-                # Merge
+-                cards_by_id[card_id].count += entry.count
++            key = (entry[identifier], entry.modeline)
++            if key in cards_by_key:
++                cards_by_key[key].count += entry.count
+             else:
+-                # Append card
+                 merged.entries.append(entry)
+-                cards_by_id[card_id] = merged.entries[-1]
++                cards_by_key[key] = merged.entries[-1]
+         else:
+-            # Append comment
+             merged.entries.append(entry)
+ 
+     return merged
+diff --git a/mtg_proxies/decklists/decklist.py b/mtg_proxies/decklists/decklist.py
+index 3ae5ee1..197db62 100644
+--- a/mtg_proxies/decklists/decklist.py
++++ b/mtg_proxies/decklists/decklist.py
+@@ -3,23 +3,82 @@ from __future__ import annotations
+ import os
+ import re
+ from collections import Counter
++from collections.abc import Callable
+ from dataclasses import dataclass, field
+ from pathlib import Path
+ from typing import Any, Literal, TextIO
+ 
+ import mtg_proxies.scryfall as scryfall
++from mtg_proxies.decklists.modelines import parse_modeline_trailer, split_modeline_trailer
+ from mtg_proxies.decklists.sanitizing import ParseWarning, validate_card_name, validate_print
+ 
++# Scryfall URL / shorthand input. Two complementary regexes; both anchored, both
++# tolerant of an optional ``/slug`` segment and trailing query/fragment.
++# Full URL: optional scheme + optional www. + ``scryfall.com/card/<set>/<cn>[/...]``.
++_SCRYFALL_URL_RE = re.compile(
++    r"^(?:https?://)?(?:www\.)?scryfall\.com/card/([^/?#]+)/([^/?#]+)(?:/[^?#]*)?(?:[?#].*)?$",
++    re.IGNORECASE,
++)
++# Shorthand: optional ``card/`` prefix, then set/cn with optional slug. Set
++# segment is locked to 2-6 alphanumerics so a plain card name (no slash) never
++# matches and a single-character "set" can't swallow garbage like ``a/1``.
++_SCRYFALL_SHORT_RE = re.compile(
++    r"^(?:card/)?([a-z0-9]{2,6})/([^/?#]+)(?:/[^?#]*)?$",
++    re.IGNORECASE,
++)
++
++
++def parse_scryfall_ref(token: str) -> tuple[str, str] | None:
++    """Parse a Scryfall URL or shorthand into ``(set, collector_number)``.
++
++    Returns ``None`` for anything that doesn't look like a Scryfall ref so the
++    caller can fall through to the normal card-name regex. Case is preserved;
++    the resolver lowercases for index lookup.
++    """
++    token = token.strip()
++    if not token:
++        return None
++    m = _SCRYFALL_URL_RE.match(token)
++    if m:
++        return m.group(1), m.group(2)
++    m = _SCRYFALL_SHORT_RE.match(token)
++    if m:
++        return m.group(1), m.group(2)
++    return None
++
++
++def resolve_printing(
++    set_code: str,
++    collector_number: str,
++    *,
++    index: dict[tuple[str, str], dict],
++    fetcher: Callable[[str, str], dict | None],
++) -> dict | None:
++    """Look up a printing by ``(set, cn)`` against ``index``, then ``fetcher``.
++
++    Both lookups use lowercased keys. ``index`` is intended to be the cached
++    ``scryfall.card_by_set_collector()``; ``fetcher`` is the live-API fallback
++    for printings newer than the local bulk cache. Returns ``None`` on miss.
++    """
++    key = (set_code.lower(), collector_number.lower())
++    hit = index.get(key)
++    if hit is not None:
++        return hit
++    return fetcher(key[0], key[1])
++
+ 
+ @dataclass(slots=True)
+ class Card:
+     """Card in a decklist.
+ 
+-    Composed of a count and a Scryfall object.
++    Composed of a count, a Scryfall object, and an optional raw modeline trailer
++    (e.g. ``"#mpcfill --similarity 0.83"``) preserved verbatim from the source line so
++    serialization round-trips byte-for-byte.
+     """
+ 
+     count: int
+     card: dict[str, Any]
++    modeline: str = ""
+ 
+     def __getitem__(self, key: str) -> Any:  # noqa: ANN401
+         return self.card[key]
+@@ -36,10 +95,12 @@ class Card:
+         return [face["image_uris"] for face in scryfall.get_faces(self.card)]
+ 
+     def __format__(self, format_spec: str) -> str:
++        # ``modeline`` already includes its leading whitespace so the original line round-trips
++        # byte-for-byte; append it verbatim, no extra space.
+         if format_spec == "text":
+-            return f"{self.count} {self['name']}"
++            return f"{self.count} {self['name']}{self.modeline}"
+         if format_spec == "arena":
+-            return f"{self.count} {self['name']} ({self['set'].upper()}) {self['collector_number']}"
++            return f"{self.count} {self['name']} ({self['set'].upper()}) {self['collector_number']}{self.modeline}"
+         raise ValueError(f"Unkown format {format_spec}")
+ 
+ 
+@@ -66,9 +127,9 @@ class Decklist:
+     entries: list[DecklistEntry] = field(default_factory=list)
+     name: str | None = None
+ 
+-    def append_card(self, count: int, card: dict) -> None:
++    def append_card(self, count: int, card: dict, modeline: str = "") -> None:
+         """Append a card line to this decklist."""
+-        self.entries.append(Card(count, card))
++        self.entries.append(Card(count, card, modeline))
+ 
+     def append_comment(self, text: str) -> None:
+         """Append a comment line to this decklist."""
+@@ -116,7 +177,14 @@ class Decklist:
+         return decklist
+ 
+ 
+-def parse_decklist(filepath: str | Path) -> tuple[Decklist, bool, list[ParseWarning]]:
++def parse_decklist(
++    filepath: str | Path,
++    art_preference: Literal["standard", "wild"] = "standard",
++    preferred_sets: list[str] | None = None,
++    allow_low_res: bool = False,
++    prefer_retro_frame: bool = False,
++    art_before: int | None = None,
++) -> tuple[Decklist, bool, list[ParseWarning]]:
+     """Parse card information from a decklist in text or MtG Arena (or mixed) format.
+ 
+     E.g.:
+@@ -132,8 +200,16 @@ def parse_decklist(filepath: str | Path) -> tuple[Decklist, bool, list[ParseWarn
+         ok: whether all cards could be found
+         warnings: List of warnings and error encountered during parsing
+     """
+-    with open(filepath, encoding="utf-8") as f:
+-        decklist, ok, warnings = parse_decklist_stream(f)
++    # utf-8-sig strips a leading BOM (Notepad/Excel saves UTF-8 files with one).
++    with open(filepath, encoding="utf-8-sig") as f:
++        decklist, ok, warnings = parse_decklist_stream(
++            f,
++            art_preference=art_preference,
++            preferred_sets=preferred_sets,
++            allow_low_res=allow_low_res,
++            prefer_retro_frame=prefer_retro_frame,
++            art_before=art_before,
++        )
+ 
+     # Use file name without extension as name
+     decklist.name = Path(filepath).stem
+@@ -141,7 +217,14 @@ def parse_decklist(filepath: str | Path) -> tuple[Decklist, bool, list[ParseWarn
+     return decklist, ok, warnings
+ 
+ 
+-def parse_decklist_stream(stream: TextIO) -> tuple[Decklist, bool, list[ParseWarning]]:
++def parse_decklist_stream(
++    stream: TextIO,
++    art_preference: Literal["standard", "wild"] = "standard",
++    preferred_sets: list[str] | None = None,
++    allow_low_res: bool = False,
++    prefer_retro_frame: bool = False,
++    art_before: int | None = None,
++) -> tuple[Decklist, bool, list[ParseWarning]]:
+     """Parse card information from a decklist in text or MtG Arena (or mixed) format from a stream.
+ 
+     See:
+@@ -151,10 +234,70 @@ def parse_decklist_stream(stream: TextIO) -> tuple[Decklist, bool, list[ParseWar
+     warnings = []
+     ok = True
+     for line in stream:
+-        m = re.search(r"([0-9]+)x?\s+(.+?)(?:\s+\((\S*)\)\s+(\S+))?\s*$", line)
+-        if m:
++        stripped = line.strip()
++        if not stripped or stripped.startswith("#"):
++            decklist.append_comment(line.rstrip())
++            continue
++
++        # Split off any trailing modeline (e.g. " #mpcfill --similarity 0.83") before
++        # the main regex runs. ``split_modeline_trailer`` only strips when the first
++        # segment is a recognized verb, so ad-hoc annotations like ``#my favorite copy``
++        # stay attached to the line. The trailer keeps its leading whitespace so the line
++        # round-trips byte-for-byte. Either way, we attempt-parse the candidate trailer
++        # so unknown-verb / malformed-flag warnings surface through the normal channel.
++        stripped, modeline_trailer = split_modeline_trailer(stripped)
++        modeline_candidate_match = re.search(r"(\s+#\S.*)$", stripped)
++        if modeline_trailer:
++            _, modeline_warnings = parse_modeline_trailer(modeline_trailer)
++            warnings.extend(modeline_warnings)
++        elif modeline_candidate_match:
++            # First verb wasn't recognized: warn but DON'T strip — the user may have
++            # meant a free-form annotation, and silently mangling the line is worse.
++            _, candidate_warnings = parse_modeline_trailer(modeline_candidate_match.group(1))
++            warnings.extend(candidate_warnings)
++
++        # Strip trailing foil markers e.g. `*F*`, `*E*`. Loop to handle stacked markers like `*F* *E*`.
++        while True:
++            new_stripped = re.sub(r"\s+\*[A-Za-z]+\*\s*$", "", stripped)
++            if new_stripped == stripped:
++                break
++            stripped = new_stripped
++
++        # Scryfall URL / shorthand line form: ``[<count> ] (URL|set/cn[/slug])``.
++        # Pull an optional count prefix, then try to parse the remainder as a
++        # Scryfall ref. On hit we resolve the printing directly and skip
++        # ``validate_card_name`` (the printing is the identity; name is irrelevant).
++        # On miss we fall through to the existing card-name regex.
++        url_count_match = re.match(r"^(?:([0-9]{1,3})x?\s+)?(.+?)\s*$", stripped)
++        if url_count_match:
++            url_count = int(url_count_match.group(1)) if url_count_match.group(1) else 1
++            url_remainder = url_count_match.group(2)
++            ref = parse_scryfall_ref(url_remainder)
++            if ref is not None:
++                set_code, collector_number = ref
++                card = resolve_printing(
++                    set_code,
++                    collector_number,
++                    index=scryfall.scryfall.card_by_set_collector(),
++                    fetcher=scryfall.scryfall.fetch_printing_live,
++                )
++                if card is None:
++                    warnings.append(
++                        ParseWarning(
++                            "ERROR",
++                            f"Could not resolve Scryfall ref {set_code}/{collector_number}.",
++                        )
++                    )
++                    decklist.append_comment(line.rstrip())
++                    ok = False
++                    continue
++                decklist.append_card(url_count, card, modeline=modeline_trailer)
++                continue
++        m = re.search(r"(?:([0-9]{1,3})x?\s+)?(.+?)(?:\s+\((\S*)\)\s+(\S+))?\s*$", stripped)
++        if m and m.group(2) and m.group(2).strip():
+             # Extract relevant data
+-            count = int(m.group(1))
++            has_count = m.group(1) is not None
++            count = int(m.group(1)) if has_count else 1
+             card_name = m.group(2)
+             set_id = m.group(3)  # May be None
+             collector_number = m.group(4)  # May be None
+@@ -163,14 +306,25 @@ def parse_decklist_stream(stream: TextIO) -> tuple[Decklist, bool, list[ParseWar
+             card_name, warnings_name = validate_card_name(card_name)
+             if card_name is None:
+                 decklist.append_comment(line.rstrip())
+-                warnings.extend(warnings_name)
+-                ok = False
++                if has_count:
++                    # Explicit count prefix means user intended a card — report as error
++                    warnings.extend(warnings_name)
++                    ok = False
+                 continue
+ 
+             # Validate card print
+-            card, warnings_print = validate_print(card_name, set_id, collector_number)
+-
+-            decklist.append_card(count, card)
++            card, warnings_print = validate_print(
++                card_name,
++                set_id,
++                collector_number,
++                art_preference=art_preference,
++                preferred_sets=preferred_sets,
++                allow_low_res=allow_low_res,
++                prefer_retro_frame=prefer_retro_frame,
++                art_before=art_before,
++            )
++
++            decklist.append_card(count, card, modeline=modeline_trailer)
+             warnings.extend(warnings_name + warnings_print)
+         else:
+             decklist.append_comment(line.rstrip())
+diff --git a/mtg_proxies/decklists/manastack/manastack.py b/mtg_proxies/decklists/manastack/manastack.py
+index fdc6a43..da73947 100644
+--- a/mtg_proxies/decklists/manastack/manastack.py
++++ b/mtg_proxies/decklists/manastack/manastack.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ from collections.abc import Sequence
++from typing import Literal
+ 
+ import requests
+ 
+@@ -9,7 +10,13 @@ from mtg_proxies.decklists.sanitizing import validate_card_name, validate_print
+ 
+ 
+ def parse_decklist(
+-    manastack_id: str, zones: Sequence[str] = ("commander", "mainboard")
++    manastack_id: str,
++    zones: Sequence[str] = ("commander", "mainboard"),
++    art_preference: Literal["standard", "wild"] = "standard",
++    preferred_sets: list[str] | None = None,
++    allow_low_res: bool = False,
++    prefer_retro_frame: bool = False,
++    art_before: int | None = None,
+ ) -> tuple[Decklist, bool, list[ParseWarning]]:
+     """Parse a decklist from manastack.
+ 
+@@ -21,9 +28,9 @@ def parse_decklist(
+     warnings = []
+     ok = True
+ 
+-    r = requests.get(f"https://manastack.com/api/decklist?format=json&id={manastack_id}")
++    r = requests.get(f"https://manastack.com/api/decklist?format=json&id={manastack_id}", timeout=30)
+     if r.status_code != 200:
+-        raise (ValueError(f"Manastack returned statuscode {r.status_code}"))
++        raise ValueError(f"Manastack returned statuscode {r.status_code}")
+ 
+     data = r.json()
+     for zone in zones:
+@@ -45,7 +52,16 @@ def parse_decklist(
+                     continue
+ 
+                 # Validate card print
+-                card, warnings_print = validate_print(card_name, set_id, collector_number)
++                card, warnings_print = validate_print(
++                    card_name,
++                    set_id,
++                    collector_number,
++                    art_preference=art_preference,
++                    preferred_sets=preferred_sets,
++                    allow_low_res=allow_low_res,
++                    prefer_retro_frame=prefer_retro_frame,
++                    art_before=art_before,
++                )
+ 
+                 decklist.append_card(count, card)
+                 warnings.extend(warnings_name + warnings_print)
+diff --git a/mtg_proxies/decklists/modelines.py b/mtg_proxies/decklists/modelines.py
+new file mode 100644
+index 0000000..ea459d4
+--- /dev/null
++++ b/mtg_proxies/decklists/modelines.py
+@@ -0,0 +1,219 @@
++"""Per-card modeline parsing.
++
++A modeline is a trailing ``#verb [--flag value]…`` segment on a decklist line that
++selectively applies a transformation (mpcfill, upscale, normalize, shadow-lift) to a
++single card. Multiple segments may stack, separated by whitespace-then-``#``.
++
++The decklist parser captures the raw modeline text on each ``Card`` so it round-trips
++byte-for-byte through serialization. The ``print`` command parses the raw text via
++:func:`parse_modeline_trailer` at run time to obtain validated ``Directive`` objects.
++"""
++
++from __future__ import annotations
++
++import re
++from collections.abc import Callable
++from dataclasses import dataclass, field
++from typing import Any
++
++from mtg_proxies.decklists.sanitizing import ParseWarning
++
++FlagValidator = Callable[[str], Any]
++
++# Sentinel used as the "validator" for flags that take no value (e.g. ``--pick``). When the
++# parser sees this, it stores ``True`` for the flag and does NOT consume the next token.
++NO_VALUE = object()
++
++
++def _float_in_range(lo: float, hi: float) -> FlagValidator:
++    def _check(s: str) -> float:
++        v = float(s)
++        if not (lo <= v <= hi):
++            raise ValueError(f"value {v} not in [{lo}, {hi}]")
++        return v
++
++    return _check
++
++
++def _choice(*opts: str) -> FlagValidator:
++    def _check(s: str) -> str:
++        if s not in opts:
++            raise ValueError(f"value {s!r} not in {opts!r}")
++        return s
++
++    return _check
++
++
++def _path_str(s: str) -> str:
++    return s
++
++
++VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
++    "mpcfill": {
++        # ``--identifier <ID>`` locks in a specific MPCFill render by its backend Identifier
++        # (a Google Drive file ID, ~33 chars). The auto-matcher / picker / retro classifier
++        # were cut in MR8: the only way to select an MPCFill render now is by knowing its id.
++        "--identifier": _path_str,
++        # ``--bleed-crop PERCENT`` — edge bleed-crop applied to the MPCFill render before it
++        # replaces the Scryfall scan. Default 4 % (matches ``--custom-art-bleed-crop``).
++        "--bleed-crop": _float_in_range(0.0, 50.0),
++    },
++    "upscale": {
++        # When ``--upscale-model`` is supplied, the directive is treated as an *always-on*
++        # model override — it runs even when the global ``--upscale-all`` is set, so the user
++        # can swap the model for problematic cards (e.g. anime_6B for halftone-print scans).
++        "--upscale-model": _path_str,
++    },
++    "normalize": {
++        # ``--lift VALUE`` — boost applied at the ~25 % mid-shadow point on the 0-255 scale.
++        # Default 6; set 0 for pure black-point remap with no mid-tone lift. Matches the
++        # ``lift`` arg on :func:`normalize_images`.
++        "--lift": _float_in_range(0.0, 64.0),
++    },
++    "shadow-lift": {
++        "--amount": _float_in_range(0.0, 1.0),
++    },
++    # ``#vignette`` — per-card override of the global ``--vignette`` flag. Flag keys mirror
++    # the CLI's ``key=value`` schema so users can copy values across. Not yet wired into
++    # the print pipeline as a per-card override; reserved for the upcoming pipeline stage.
++    "vignette": {
++        "--strength": _float_in_range(0.0, 1.0),
++        "--edge": _float_in_range(0.0, 1.0),
++        "--max-black": _float_in_range(0.0, 255.0),
++    },
++    # Opt-out verbs — exclude this card from a globally-enabled pass. Mirror of
++    # ``#upscale`` / ``#normalize`` / ``#shadow-lift``: those add for a single card when
++    # the global flag is off; these subtract for a single card when the global flag is on.
++    "no-upscale": {},
++    "no-normalize": {},
++    "no-shadow-lift": {},
++    # ``#cardconjourer`` — render this single card via the headless Card Conjurer engine
++    # (the ``cardconjourer`` subcommand also does the whole deck). Mutually-exclusive frame
++    # selectors ``--8th`` / ``--modern`` pick the style; ``--upscale`` pre-runs
++    # the art through Real-ESRGAN. ``--scryfall`` skips MTGPics for this card (use Scryfall
++    # art_crop directly) — useful per-card override when MTGPics's scan has a burned-in
++    # artist signature / watermark. ``--skip-cc`` opts the card out of CC rendering entirely
++    # (routed straight into ``fallback.txt`` so the normal Scryfall scan is used).
++    # ``--set-symbol VALUE`` overrides the rendered set symbol — accepts a file path
++    # (``./logo.png``) OR a CC set code shorthand (``LTC``); the form is auto-detected and
++    # resolved against the cached CC engine. Per-card value overrides any deck-wide flag.
++    # ``--custom-art PATH`` overrides the card's art with a local image file
++    # (PNG / JPG / JPEG / WEBP). Resolved against CWD; ``~`` is expanded. The path
++    # is threaded into the harness's ``job.art_path``, which short-circuits the
++    # built-in Scryfall ``art_crop`` fetch.
++    "cardconjourer": {
++        "--8th":        NO_VALUE,
++        "--modern":     NO_VALUE,
++        "--upscale":    NO_VALUE,
++        "--scryfall":   NO_VALUE,
++        "--skip-cc":    NO_VALUE,
++        "--set-symbol": _path_str,
++        "--custom-art": _path_str,
++    },
++}
++
++
++@dataclass(slots=True)
++class Directive:
++    """One parsed modeline directive: a verb plus validated flag values."""
++
++    verb: str
++    flags: dict[str, Any] = field(default_factory=dict)
++
++
++# Trailing modeline pattern: a whitespace boundary followed by '#' and the rest of the line.
++# Anchored at end-of-line so we only match a true trailer (not a '#' embedded mid-name, which
++# Magic card names don't contain anyway). The leading whitespace IS captured so the modeline
++# round-trips byte-for-byte through ``Decklist.__format__``.
++MODELINE_TRAILER_RE = re.compile(r"(\s+#\S.*)$")
++
++
++def split_modeline_trailer(line: str) -> tuple[str, str]:
++    """Split a decklist line into ``(main, trailer)``.
++
++    The trailer includes its **leading whitespace** plus the ``#`` and everything after.
++    An absent trailer returns ``""``. The split only happens when the first ``#``-segment's
++    verb is recognized in :data:`VERB_REGISTRY`; an unrecognized leading verb is treated as a
++    free-form annotation and the line is returned unchanged. The main portion preserves the
++    trailing characters that the regex did not consume.
++    """
++    m = MODELINE_TRAILER_RE.search(line)
++    if not m:
++        return line, ""
++    trailer_raw = m.group(1)
++    first_segment = _split_segments(trailer_raw.lstrip())
++    if not first_segment or first_segment[0].split()[0] not in VERB_REGISTRY:
++        return line, ""
++    return line[: m.start()], trailer_raw
++
++
++def _split_segments(trailer: str) -> list[str]:
++    """Split a trailer like ``#upscale #mpcfill --similarity 0.83`` into per-verb segments."""
++    if not trailer.startswith("#"):
++        return []
++    parts = re.split(r"\s+#", trailer[1:])
++    return [p.strip() for p in parts if p.strip()]
++
++
++def parse_modeline_trailer(trailer: str) -> tuple[list[Directive], list[ParseWarning]]:
++    """Parse a modeline trailer into directives and warnings.
++
++    Args:
++        trailer: The text of the modeline trailer including the leading ``#`` (or empty).
++
++    Returns:
++        directives: validated directives in source order; segments with unknown verbs or
++            invalid flags are dropped.
++        warnings: one ParseWarning per dropped segment.
++    """
++    directives: list[Directive] = []
++    warnings: list[ParseWarning] = []
++    if not trailer.strip():
++        return directives, warnings
++
++    for segment in _split_segments(trailer.strip()):
++        tokens = segment.split()
++        verb = tokens[0]
++        if verb not in VERB_REGISTRY:
++            warnings.append(ParseWarning("WARNING", f"Unknown modeline verb '#{verb}'; dropping segment."))
++            continue
++
++        flag_specs = VERB_REGISTRY[verb]
++        flag_tokens = tokens[1:]
++        parsed_flags: dict[str, Any] = {}
++        dropped = False
++        i = 0
++        while i < len(flag_tokens):
++            flag = flag_tokens[i]
++            if flag not in flag_specs:
++                warnings.append(ParseWarning("WARNING", f"Unknown flag {flag!r} for #{verb}; dropping segment."))
++                dropped = True
++                break
++            validator = flag_specs[flag]
++            if validator is NO_VALUE:
++                # No-value flag (e.g. ``--pick``) — record presence and advance one token.
++                parsed_flags[flag] = True
++                i += 1
++                continue
++            if i + 1 >= len(flag_tokens):
++                warnings.append(ParseWarning("WARNING", f"Flag {flag!r} for #{verb} missing value; dropping segment."))
++                dropped = True
++                break
++            value_str = flag_tokens[i + 1]
++            try:
++                parsed_flags[flag] = validator(value_str)
++            except ValueError as exc:
++                warnings.append(
++                    ParseWarning(
++                        "WARNING",
++                        f"Invalid value {value_str!r} for {flag} on #{verb}: {exc}; dropping segment.",
++                    )
++                )
++                dropped = True
++                break
++            i += 2
++
++        if not dropped:
++            directives.append(Directive(verb=verb, flags=parsed_flags))
++
++    return directives, warnings
+diff --git a/mtg_proxies/decklists/sanitizing.py b/mtg_proxies/decklists/sanitizing.py
+index 8b8eef6..1f0f45e 100644
+--- a/mtg_proxies/decklists/sanitizing.py
++++ b/mtg_proxies/decklists/sanitizing.py
+@@ -18,7 +18,7 @@ class ParseWarning:
+ 
+ 
+ @cache
+-def card_names() -> tuple[dict[str, str], dict[str, str]]:
++def card_names() -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+     """Return sets of valid card names.
+ 
+     Cached for performance.
+@@ -29,7 +29,30 @@ def card_names() -> tuple[dict[str, str], dict[str, str]]:
+     double_faced_by_front = {
+         name.split("//")[0].strip().lower(): name for name in cards_by_name.values() if "//" in name
+     }
+-    return cards_by_name, double_faced_by_front
++    # Alternative names — distinct printed names that should resolve to a card's oracle name.
++    # Two sources, in priority order:
++    #   1. flavor_name — themed-reprint names (e.g. "Henneth Annûn" for Reflecting Pool in LTC).
++    #   2. printed_name on English prints — covers Arena renames where the digital print uses a
++    #      different name than the paper oracle (e.g. "The Terminus of Return" → "The Soul Stone").
++    # canonic_card_name normalizes lookups consistently (handles æ→ae, lowercasing, etc.).
++    alternative_names_to_oracle: dict[str, str] = {}
++    for card in scryfall.get_cards():
++        fn = card.get("flavor_name")
++        if fn:
++            alternative_names_to_oracle[scryfall.canonic_card_name(fn)] = card["name"]
++    for card in scryfall.get_cards():
++        pn = card.get("printed_name")
++        if not pn or card.get("lang") != "en" or pn == card["name"]:
++            # Skip the no-op case (printed_name == name) and non-English prints to avoid
++            # foreign-language translations shadowing real English oracle names.
++            continue
++        key = scryfall.canonic_card_name(pn)
++        # Don't overwrite an existing alternative-name mapping or shadow a real oracle name —
++        # flavor names and English oracle names take precedence.
++        if key in alternative_names_to_oracle or key in cards_by_name:
++            continue
++        alternative_names_to_oracle[key] = card["name"]
++    return cards_by_name, double_faced_by_front, alternative_names_to_oracle
+ 
+ 
+ def validate_card_name(card_name: str) -> tuple[str | None, list[ParseWarning]]:
+@@ -41,7 +64,7 @@ def validate_card_name(card_name: str) -> tuple[str | None, list[ParseWarning]]:
+         ok: whether the card could be found.
+     """
+     # Unique names of all cards
+-    cards_by_name, double_faced_by_front = card_names()
++    cards_by_name, double_faced_by_front, alternative_names_to_oracle = card_names()
+ 
+     validated_name = None
+     sanizized_name = scryfall.canonic_card_name(card_name)
+@@ -53,6 +76,10 @@ def validate_card_name(card_name: str) -> tuple[str | None, list[ParseWarning]]:
+         warnings.append(
+             ParseWarning("WARNING", f"Misspelled card name {card_name!r}. Assuming you mean {validated_name!r}.")
+         )
++    elif sanizized_name in alternative_names_to_oracle:
++        # Themed-reprint flavor name (LTC etc.) or Arena rename (digital print with a distinct
++        # printed_name) — resolve to the oracle name silently.
++        validated_name = alternative_names_to_oracle[sanizized_name]
+     else:  # No exact match
+         # Try partial matching
+         candidates = [
+@@ -76,8 +103,10 @@ def validate_card_name(card_name: str) -> tuple[str | None, list[ParseWarning]]:
+ def get_print_warnings(card: dict) -> list[str]:
+     """Return warnings for low-resolution scans."""
+     warnings = []
+-    if not card["highres_image"] or card["digital"]:
++    if not card["highres_image"]:
+         warnings.append("low resolution scan")
++    if card["digital"]:
++        warnings.append("digital print")
+     if card["collector_number"][-1] in ["p", "s"]:
+         warnings.append("promo")
+     if card["lang"] != "en":
+@@ -87,7 +116,16 @@ def get_print_warnings(card: dict) -> list[str]:
+     return warnings
+ 
+ 
+-def validate_print(card_name: str, set_id: str, collector_number: str) -> tuple[dict, list[ParseWarning]]:
++def validate_print(
++    card_name: str,
++    set_id: str,
++    collector_number: str,
++    art_preference: Literal["standard", "wild"] = "standard",
++    preferred_sets: list[str] | None = None,
++    allow_low_res: bool = False,
++    prefer_retro_frame: bool = False,
++    art_before: int | None = None,
++) -> tuple[dict, list[ParseWarning]]:
+     """Validate a print against the Scryfall database.
+ 
+     Assumes card name is valid.
+@@ -97,9 +135,18 @@ def validate_print(card_name: str, set_id: str, collector_number: str) -> tuple[
+         warnings: list of warnings.
+     """
+     warnings: list[ParseWarning] = []
++    lowres_upgraded = False
++    preferred_swapped = False
+ 
+     if set_id is None:
+-        card = scryfall.recommend_print(card_name=card_name)
++        card = scryfall.recommend_print(
++            card_name=card_name,
++            art_preference=art_preference,
++            preferred_sets=preferred_sets,
++            allow_low_res=allow_low_res,
++            prefer_retro_frame=prefer_retro_frame,
++            art_before=art_before,
++        )
+         # Warn for tokens, as they are not unique by name
+         if card["layout"] in ["token", "double_faced_token"]:
+             warnings.append(
+@@ -111,7 +158,14 @@ def validate_print(card_name: str, set_id: str, collector_number: str) -> tuple[
+         card = scryfall.get_card(card_name, set_id, collector_number)
+         if card is None:  # No exact match
+             # Find alternative print
+-            card = scryfall.recommend_print(card_name=card_name)
++            card = scryfall.recommend_print(
++                card_name=card_name,
++                art_preference=art_preference,
++                preferred_sets=preferred_sets,
++                allow_low_res=allow_low_res,
++                prefer_retro_frame=prefer_retro_frame,
++                art_before=art_before,
++            )
+             warnings.append(
+                 ParseWarning(
+                     "WARNING",
+@@ -119,20 +173,95 @@ def validate_print(card_name: str, set_id: str, collector_number: str) -> tuple[
+                     + f" Using {format_print(card)!r} instead.",
+                 )
+             )
++        elif not card["highres_image"]:  # Found but low resolution — check if a better print exists
++            if allow_low_res and preferred_sets is None:
++                # print mode (no --set): honor whatever print was requested, do not upgrade
++                pass
++            else:
++                # recommend_print enforces the preferred-set restriction (with allow_low_res honored
++                # inside it) and otherwise returns the highest-scoring alternative.
++                better = scryfall.recommend_print(
++                    card_name=card_name,
++                    art_preference=art_preference,
++                    preferred_sets=preferred_sets,
++                    allow_low_res=allow_low_res,
++                    prefer_retro_frame=prefer_retro_frame,
++                    art_before=art_before,
++                )
++                if better["id"] != card["id"]:
++                    warnings.append(
++                        ParseWarning(
++                            "WARNING",
++                            f"Low resolution scan for {format_print(card)!r}. Upgrading to {format_print(better)!r}.",
++                        )
++                    )
++                    card = better
++                    lowres_upgraded = True
++    # If the card is from a non-preferred set, try to swap to a preferred-set version when one exists.
++    # Without this, a highres explicit print (e.g. "Turtle Tracks (TMC) 129") is accepted as-is even
++    # when --set=SLD asked for the SLD print.
++    if preferred_sets and card["set"] not in {ps.lower() for ps in preferred_sets}:
++        preferred_set_codes = {ps.lower() for ps in preferred_sets}
++        better = scryfall.recommend_print(
++            card,
++            art_preference=art_preference,
++            preferred_sets=preferred_sets,
++            allow_low_res=allow_low_res,
++            prefer_retro_frame=prefer_retro_frame,
++            art_before=art_before,
++        )
++        if better["id"] != card["id"] and better["set"] in preferred_set_codes:
++            warnings.append(
++                ParseWarning(
++                    "WARNING",
++                    f"Swapping {format_print(card)!r} for preferred-set print {format_print(better)!r}.",
++                )
++            )
++            card = better
++            preferred_swapped = True
++
++    # Warn if none of the preferred sets could be used (skipped when a lowres upgrade or
++    # preferred-set swap already explained the substitution).
++    if (
++        preferred_sets
++        and card["set"] not in {ps.lower() for ps in preferred_sets}
++        and not lowres_upgraded
++        and not preferred_swapped
++    ):
++        sets_str = ", ".join(s.upper() for s in preferred_sets)
++        warnings.append(
++            ParseWarning(
++                "WARNING",
++                f"No high-quality print of {card_name!r} found in preferred set(s) ({sets_str})."
++                + f" Using {format_print(card)!r} instead.",
++            )
++        )
+ 
+     # Warnings for low-quality scans
+     quality_warnings = get_print_warnings(card)
+     if len(quality_warnings) > 0:
+         # Get recommendation
+-        recommendation = scryfall.recommend_print(card)
++        recommendation = scryfall.recommend_print(
++            card,
++            art_preference=art_preference,
++            preferred_sets=preferred_sets,
++            allow_low_res=allow_low_res,
++            prefer_retro_frame=prefer_retro_frame,
++            art_before=art_before,
++        )
+ 
+         # Format warnings string
+-        quality_warnings = listing(quality_warnings, ", ", " and ").capitalize()
++        if quality_warnings == ["digital print"]:
++            quality_warning_text = "To avoid low resolution scans, a digital print was chosen"
++        elif quality_warnings == ["low resolution scan", "digital print"]:
++            quality_warning_text = "Low resolution scan and digital print"
++        else:
++            quality_warning_text = listing(quality_warnings, ", ", " and ").capitalize()
+ 
+         warnings.append(
+             ParseWarning(
+                 "COSMETIC",
+-                f"{quality_warnings} for {format_print(card)!r}."
++                f"{quality_warning_text} for {format_print(card)!r}."
+                 + (f" Maybe you want {format_print(recommendation)!r}?" if recommendation != card else ""),
+             )
+         )
+diff --git a/tests/decklist_test.py b/tests/decklist_test.py
+index 36f56fe..d89525c 100644
+--- a/tests/decklist_test.py
++++ b/tests/decklist_test.py
+@@ -55,9 +55,9 @@ def test_parsing(data_dir: Path) -> None:
+         ),
+         (  # Wrong collector number
+             "1 Forbidden Friendship (IKO) 120",
+-            "1 Forbidden Friendship (IKO) 367",
++            "1 Forbidden Friendship (IKO) 119",
+             [
+-                "WARNING: Unable to find scan of 'Forbidden Friendship (IKO) 120'. Using 'Forbidden Friendship (IKO) 367' instead."  # noqa: E501
++                "WARNING: Unable to find scan of 'Forbidden Friendship (IKO) 120'. Using 'Forbidden Friendship (IKO) 119' instead."  # noqa: E501
+             ],
+         ),
+         (  # Incomplete name (but unique)
+@@ -74,7 +74,7 @@ def test_parsing(data_dir: Path) -> None:
+             "1 Counter",
+             None,
+             [
+-                "ERROR: Unable to find card 'Counter'. Did you mean 'Cackling Counterpart', 'Counterspell', 'Counters', 'Countermand', 'Feral Encounter', 'Countervailing Winds', ...?"  # noqa: E501
++                "ERROR: Unable to find card 'Counter'. Did you mean 'Cackling Counterpart', 'Counterspell', 'Counters', 'Countermand', 'Feral Encounter', 'Counterflux', ...?"  # noqa: E501
+             ],
+         ),
+         (  # Non-black border with alternative
+@@ -99,9 +99,9 @@ def test_parsing(data_dir: Path) -> None:
+         ),
+         (  # Token without set and collector number
+             "1 Saproling",
+-            "1 Saproling (TC16) 16",
++            "1 Saproling (TDOM) 12",
+             [
+-                "WARNING: Tokens are not unique by name. Assuming 'Saproling' is a '1/1 green Token Creature — Saproling'.",  # noqa: E501
++                "WARNING: Tokens are not unique by name. Assuming 'Saproling' is a '1/1 green Token Creature — Saproling'."  # noqa: E501
+             ],
+         ),
+         (  # Token with same name as the front of a double faced card (with set and collector number)
+@@ -149,6 +149,223 @@ def test_parse_decklist_warnings(line: str, expected_card_name: str | None, expe
+     assert [str(w) for w in warnings] == expected_warnings
+ 
+ 
++def test_bare_card_name_defaults_to_count_one() -> None:
++    from mtg_proxies.decklists import Card, parse_decklist_stream
++
++    decklist, ok, _ = parse_decklist_stream(StringIO("Esper Sentinel\n"))
++
++    assert ok
++    assert len(decklist.cards) == 1
++    assert type(decklist.entries[0]) is Card
++    assert decklist.entries[0].count == 1
++
++
++def test_count_prefixed_line_still_works() -> None:
++    from mtg_proxies.decklists import Card, parse_decklist_stream
++
++    decklist, ok, _ = parse_decklist_stream(StringIO("4 Lightning Bolt\n"))
++
++    assert ok
++    assert len(decklist.cards) == 1
++    assert type(decklist.entries[0]) is Card
++    assert decklist.entries[0].count == 4
++
++
++def test_bare_name_with_set_and_collector() -> None:
++    from mtg_proxies.decklists import Card, parse_decklist_stream
++
++    decklist, ok, _ = parse_decklist_stream(StringIO("Esper Sentinel (MH2) 12\n"))
++
++    assert ok
++    assert len(decklist.cards) == 1
++    assert type(decklist.entries[0]) is Card
++    assert decklist.entries[0].count == 1
++    assert decklist.entries[0].card["set"] == "mh2"
++    assert decklist.entries[0].card["collector_number"] == "12"
++
++
++def test_bare_name_blank_lines_remain_comments() -> None:
++    from mtg_proxies.decklists import Comment, parse_decklist_stream
++
++    decklist, _, _ = parse_decklist_stream(StringIO("\n"))
++
++    assert len(decklist.entries) == 1
++    assert type(decklist.entries[0]) is Comment
++
++
++def test_bare_invalid_card_name_becomes_silent_comment() -> None:
++    from mtg_proxies.decklists import Comment, parse_decklist_stream
++
++    decklist, ok, warnings = parse_decklist_stream(StringIO("NotARealCardName\n"))
++
++    assert ok
++    assert len(warnings) == 0
++    assert len(decklist.entries) == 1
++    assert type(decklist.entries[0]) is Comment
++
++
++def test_bare_name_hash_comments_remain_comments() -> None:
++    from mtg_proxies.decklists import Comment, parse_decklist_stream
++
++    decklist, _, _ = parse_decklist_stream(StringIO("# Sideboard\n"))
++
++    assert len(decklist.entries) == 1
++    assert type(decklist.entries[0]) is Comment
++    assert decklist.entries[0].text == "# Sideboard"
++
++
++@pytest.mark.parametrize("marker", ["*F*", "*E*"])
++def test_foil_marker_stripped_from_collector_number(marker: str) -> None:
++    """Foil markers like *F* and *E* should be stripped so the correct collector number reaches validate_print."""
++    import mtg_proxies.decklists.decklist as decklist_module
++
++    fake_card = {"id": "x", "set": "ltr", "collector_number": "288", "layout": "normal", "image_uris": {}}
++    captured: list[tuple] = []
++
++    def mock_validate_print(card_name: str, set_id: str, collector_number: str, **kwargs: object) -> tuple:
++        captured.append((set_id, collector_number))
++        return fake_card, []
++
++    decklist_module.validate_card_name = lambda name: ("Sauron, the Lidless Eye", [])  # type: ignore[assignment]
++    decklist_module.validate_print = mock_validate_print  # type: ignore[assignment]
++
++    try:
++        from mtg_proxies.decklists import parse_decklist_stream
++
++        parse_decklist_stream(StringIO(f"1 Sauron, the Lidless Eye (LTR) 288 {marker}\n"))
++    finally:
++        # Restore originals so other tests are unaffected
++        from mtg_proxies.decklists.sanitizing import validate_card_name as _vcn
++        from mtg_proxies.decklists.sanitizing import validate_print as _vp
++
++        decklist_module.validate_card_name = _vcn  # type: ignore[assignment]
++        decklist_module.validate_print = _vp  # type: ignore[assignment]
++
++    assert len(captured) == 1
++    assert captured[0] == ("LTR", "288")  # marker was stripped before reaching validate_print
++
++
++def test_flavor_name_resolves_to_oracle_name(monkeypatch: pytest.MonkeyPatch) -> None:
++    """'Henneth Annûn' is the LTC flavor name for Reflecting Pool and should resolve without a warning."""
++    import mtg_proxies.decklists.sanitizing as sanitizing
++    from mtg_proxies.decklists.sanitizing import card_names, validate_card_name
++
++    fake_cards = [
++        {"name": "Reflecting Pool", "layout": "normal", "flavor_name": "Henneth Annûn"},
++    ]
++    monkeypatch.setattr(sanitizing.scryfall, "get_cards", lambda **kwargs: fake_cards)
++    card_names.cache_clear()
++
++    try:
++        validated_name, warnings = validate_card_name("Henneth Annûn")
++    finally:
++        card_names.cache_clear()
++
++    assert validated_name == "Reflecting Pool"
++    assert len(warnings) == 0
++
++
++def test_arena_printed_name_resolves_to_oracle_name(monkeypatch: pytest.MonkeyPatch) -> None:
++    """`'The Terminus of Return'` (Arena print of `'The Soul Stone'`) should resolve via printed_name."""
++    import mtg_proxies.decklists.sanitizing as sanitizing
++    from mtg_proxies.decklists.sanitizing import card_names, validate_card_name
++
++    fake_cards = [
++        {
++            "name": "The Soul Stone",
++            "layout": "normal",
++            "lang": "en",
++            "digital": True,
++            "printed_name": "The Terminus of Return",
++        },
++    ]
++    monkeypatch.setattr(sanitizing.scryfall, "get_cards", lambda **kwargs: fake_cards)
++    card_names.cache_clear()
++
++    try:
++        validated_name, warnings = validate_card_name("The Terminus of Return")
++    finally:
++        card_names.cache_clear()
++
++    assert validated_name == "The Soul Stone"
++    assert len(warnings) == 0
++
++
++def test_printed_name_does_not_override_real_oracle_name(monkeypatch: pytest.MonkeyPatch) -> None:
++    """A `printed_name` colliding with a real English oracle name must not shadow the oracle."""
++    import mtg_proxies.decklists.sanitizing as sanitizing
++    from mtg_proxies.decklists.sanitizing import card_names, validate_card_name
++
++    fake_cards = [
++        {"name": "Lightning Bolt", "layout": "normal", "lang": "en"},
++        # A different card whose printed_name collides with the oracle name above. The
++        # real "Lightning Bolt" must still win.
++        {
++            "name": "Different Card",
++            "layout": "normal",
++            "lang": "en",
++            "digital": True,
++            "printed_name": "Lightning Bolt",
++        },
++    ]
++    monkeypatch.setattr(sanitizing.scryfall, "get_cards", lambda **kwargs: fake_cards)
++    card_names.cache_clear()
++
++    try:
++        validated_name, _ = validate_card_name("Lightning Bolt")
++    finally:
++        card_names.cache_clear()
++
++    assert validated_name == "Lightning Bolt"
++
++
++def test_non_english_printed_name_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
++    """`printed_name` on non-English prints must NOT enter the lookup (avoids cross-language collisions)."""
++    import mtg_proxies.decklists.sanitizing as sanitizing
++    from mtg_proxies.decklists.sanitizing import card_names, validate_card_name
++
++    fake_cards = [
++        {"name": "Lightning Bolt", "layout": "normal", "lang": "en"},
++        {
++            "name": "Lightning Bolt",
++            "layout": "normal",
++            "lang": "ja",
++            "printed_name": "稲妻",
++        },
++    ]
++    monkeypatch.setattr(sanitizing.scryfall, "get_cards", lambda **kwargs: fake_cards)
++    card_names.cache_clear()
++
++    try:
++        validated_name, warnings = validate_card_name("稲妻")
++    finally:
++        card_names.cache_clear()
++
++    # Japanese name should NOT resolve via printed_name (lang != "en" → skipped).
++    assert validated_name is None
++    assert any("Unable to find card" in str(w) for w in warnings)
++
++
++def test_flavor_name_paths_of_the_dead_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
++    """'Paths of the Dead' is the LTC flavor name for Cavern of Souls and should resolve without a warning."""
++    import mtg_proxies.decklists.sanitizing as sanitizing
++    from mtg_proxies.decklists.sanitizing import card_names, validate_card_name
++
++    fake_cards = [
++        {"name": "Cavern of Souls", "layout": "normal", "flavor_name": "Paths of the Dead"},
++    ]
++    monkeypatch.setattr(sanitizing.scryfall, "get_cards", lambda **kwargs: fake_cards)
++    card_names.cache_clear()
++
++    try:
++        validated_name, warnings = validate_card_name("Paths of the Dead")
++    finally:
++        card_names.cache_clear()
++
++    assert validated_name == "Cavern of Souls"
++    assert len(warnings) == 0
++
++
+ @pytest.mark.parametrize(
+     ("archidekt_id", "expected_first_card"),
+     [
+@@ -165,6 +382,304 @@ def test_archidekt(archidekt_id: str, expected_first_card: str) -> None:
+     assert decklist.cards[0]["name"] == expected_first_card
+ 
+ 
++# ---------------------------------------------------------------------------
++# Per-card modeline tests (feature/per-card-modelines)
++# ---------------------------------------------------------------------------
++
++
++def _patch_card_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
++    """Replace validate_card_name / validate_print so modeline tests don't hit Scryfall."""
++    import mtg_proxies.decklists.decklist as decklist_module
++
++    fake_card = {"id": "x", "set": "c21", "collector_number": "244", "layout": "normal", "image_uris": {}}
++
++    def _fake_validate_card_name(name: str) -> tuple[str, list]:
++        return name, []
++
++    def _fake_validate_print(name: str, set_id: str | None, collector_number: str | None, **_: object) -> tuple:
++        card = {
++            **fake_card,
++            "name": name,
++            "set": (set_id or "c21").lower(),
++            "collector_number": collector_number or "1",
++        }
++        return card, []
++
++    monkeypatch.setattr(decklist_module, "validate_card_name", _fake_validate_card_name)
++    monkeypatch.setattr(decklist_module, "validate_print", _fake_validate_print)
++
++
++def test_modeline_parse_single_verb_bare() -> None:
++    from mtg_proxies.decklists.modelines import parse_modeline_trailer
++
++    directives, warnings = parse_modeline_trailer("#upscale")
++
++    assert len(directives) == 1
++    assert directives[0].verb == "upscale"
++    assert directives[0].flags == {}
++    assert warnings == []
++
++
++def test_modeline_parse_single_verb_with_flags() -> None:
++    from mtg_proxies.decklists.modelines import parse_modeline_trailer
++
++    directives, warnings = parse_modeline_trailer("#mpcfill --identifier abc123 --bleed-crop 4")
++
++    assert len(directives) == 1
++    assert directives[0].verb == "mpcfill"
++    assert directives[0].flags == {"--identifier": "abc123", "--bleed-crop": pytest.approx(4.0)}
++    assert warnings == []
++
++
++def test_modeline_parse_stacked_verbs() -> None:
++    from mtg_proxies.decklists.modelines import parse_modeline_trailer
++
++    directives, warnings = parse_modeline_trailer("#upscale #normalize #shadow-lift")
++
++    assert [d.verb for d in directives] == ["upscale", "normalize", "shadow-lift"]
++    assert all(d.flags == {} for d in directives)
++    assert warnings == []
++
++
++def test_modeline_parse_unknown_verb_warns_and_drops_segment() -> None:
++    from mtg_proxies.decklists.modelines import parse_modeline_trailer
++
++    directives, warnings = parse_modeline_trailer("#frobnicate --x 1")
++
++    assert directives == []
++    assert len(warnings) == 1
++    assert "frobnicate" in str(warnings[0])
++
++
++def test_modeline_parse_unknown_flag_warns_and_drops_segment() -> None:
++    from mtg_proxies.decklists.modelines import parse_modeline_trailer
++
++    directives, warnings = parse_modeline_trailer("#mpcfill --bogus 1")
++
++    assert directives == []
++    assert len(warnings) == 1
++    assert "--bogus" in str(warnings[0])
++
++
++def test_modeline_parse_malformed_flag_value_warns_and_drops_segment() -> None:
++    from mtg_proxies.decklists.modelines import parse_modeline_trailer
++
++    directives, warnings = parse_modeline_trailer("#mpcfill --lightglue-threshold not-a-float")
++
++    assert directives == []
++    assert len(warnings) == 1
++    assert "--lightglue-threshold" in str(warnings[0])
++
++
++def test_modeline_parse_mixed_known_unknown_keeps_known() -> None:
++    from mtg_proxies.decklists.modelines import parse_modeline_trailer
++
++    directives, warnings = parse_modeline_trailer("#upscale #frobnicate")
++
++    assert [d.verb for d in directives] == ["upscale"]
++    assert len(warnings) == 1
++
++
++def test_modeline_parse_empty_trailer() -> None:
++    from mtg_proxies.decklists.modelines import parse_modeline_trailer
++
++    directives, warnings = parse_modeline_trailer("")
++
++    assert directives == []
++
++
++def test_modeline_parse_cardconjourer_8th() -> None:
++    """`#cardconjourer --8th` registers as a no-value-flag directive."""
++    from mtg_proxies.decklists.modelines import parse_modeline_trailer
++
++    directives, warnings = parse_modeline_trailer("#cardconjourer --8th")
++
++    assert len(directives) == 1
++    assert directives[0].verb == "cardconjourer"
++    assert directives[0].flags == {"--8th": True}
++    assert warnings == []
++
++
++def test_modeline_parse_cardconjourer_upscale() -> None:
++    """`--upscale` opts this card in to ESRGAN upres before rendering."""
++    from mtg_proxies.decklists.modelines import parse_modeline_trailer
++
++    directives, warnings = parse_modeline_trailer("#cardconjourer --8th --upscale")
++
++    assert len(directives) == 1
++    assert directives[0].flags == {"--8th": True, "--upscale": True}
++    assert warnings == []
++
++
++def test_modeline_parse_cardconjourer_unknown_flag_warns() -> None:
++    """An unrecognised flag drops the whole segment with a warning, like other verbs."""
++    from mtg_proxies.decklists.modelines import parse_modeline_trailer
++
++    directives, warnings = parse_modeline_trailer("#cardconjourer --bogus")
++
++    assert directives == []
++    assert len(warnings) == 1
++    assert "--bogus" in warnings[0].message
++
++
++def test_modeline_parse_cardconjourer_modern() -> None:
++    """`#cardconjourer --modern` registers as a no-value-flag directive."""
++    from mtg_proxies.decklists.modelines import parse_modeline_trailer
++
++    directives, warnings = parse_modeline_trailer("#cardconjourer --modern")
++
++    assert len(directives) == 1
++    assert directives[0].flags == {"--modern": True}
++    assert warnings == []
++
++
++def test_modeline_parse_cardconjourer_set_symbol_code() -> None:
++    """`--set-symbol VALUE` captures the raw string (resolution happens later)."""
++    from mtg_proxies.decklists.modelines import parse_modeline_trailer
++
++    directives, warnings = parse_modeline_trailer("#cardconjourer --set-symbol LTC")
++
++    assert len(directives) == 1
++    assert directives[0].flags == {"--set-symbol": "LTC"}
++    assert warnings == []
++
++
++def test_modeline_parse_cardconjourer_set_symbol_path() -> None:
++    """`--set-symbol VALUE` accepts a path verbatim — no validation at parse time."""
++    from mtg_proxies.decklists.modelines import parse_modeline_trailer
++
++    directives, warnings = parse_modeline_trailer("#cardconjourer --set-symbol ./sym.png")
++
++    assert len(directives) == 1
++    assert directives[0].flags == {"--set-symbol": "./sym.png"}
++    assert warnings == []
++
++
++def test_modeline_parse_cardconjourer_modern_with_set_symbol() -> None:
++    """Combined `--modern --set-symbol LTC` parses both flags."""
++    from mtg_proxies.decklists.modelines import parse_modeline_trailer
++
++    directives, warnings = parse_modeline_trailer("#cardconjourer --modern --set-symbol LTC")
++
++    assert len(directives) == 1
++    assert directives[0].flags == {"--modern": True, "--set-symbol": "LTC"}
++    assert warnings == []
++
++
++def test_modeline_parse_cardconjourer_custom_art() -> None:
++    """`--custom-art PATH` captures the raw path string (validation happens later)."""
++    from mtg_proxies.decklists.modelines import parse_modeline_trailer
++
++    directives, warnings = parse_modeline_trailer("#cardconjourer --custom-art ./my_art.jpg")
++
++    assert len(directives) == 1
++    assert directives[0].flags == {"--custom-art": "./my_art.jpg"}
++    assert warnings == []
++
++
++def test_decklist_card_no_modeline_has_empty_field(monkeypatch: pytest.MonkeyPatch) -> None:
++    _patch_card_lookup(monkeypatch)
++    from mtg_proxies.decklists import Card, parse_decklist_stream
++
++    decklist, _, _ = parse_decklist_stream(StringIO("1 Sol Ring (C21) 244\n"))
++
++    assert type(decklist.entries[0]) is Card
++    assert decklist.entries[0].modeline == ""
++
++
++def test_decklist_card_captures_single_modeline(monkeypatch: pytest.MonkeyPatch) -> None:
++    _patch_card_lookup(monkeypatch)
++    from mtg_proxies.decklists import Card, parse_decklist_stream
++
++    decklist, _, _ = parse_decklist_stream(StringIO("1 Sol Ring (C21) 244 #upscale\n"))
++
++    assert type(decklist.entries[0]) is Card
++    # Captured WITH leading whitespace so the line round-trips byte-for-byte.
++    assert decklist.entries[0].modeline == " #upscale"
++
++
++def test_decklist_card_captures_stacked_modelines(monkeypatch: pytest.MonkeyPatch) -> None:
++    _patch_card_lookup(monkeypatch)
++    from mtg_proxies.decklists import Card, parse_decklist_stream
++
++    decklist, _, _ = parse_decklist_stream(StringIO("4 Mountain (RVR) 271 #upscale #normalize\n"))
++
++    assert type(decklist.entries[0]) is Card
++    assert decklist.entries[0].modeline == " #upscale #normalize"
++
++
++def test_decklist_card_preserves_internal_whitespace(monkeypatch: pytest.MonkeyPatch) -> None:
++    """Round-trip must be byte-for-byte: multiple spaces between segments are preserved."""
++    _patch_card_lookup(monkeypatch)
++    from mtg_proxies.decklists import parse_decklist_stream
++
++    src = "1 Sol Ring (C21) 244   #upscale   #normalize"
++    decklist, _, _ = parse_decklist_stream(StringIO(src + "\n"))
++
++    assert format(decklist, "arena") == src
++
++
++def test_decklist_unknown_verb_warning_surfaces_at_parse_time(monkeypatch: pytest.MonkeyPatch) -> None:
++    """Modeline ParseWarnings must come back via parse_decklist_stream's warnings list."""
++    _patch_card_lookup(monkeypatch)
++    from mtg_proxies.decklists import parse_decklist_stream
++
++    _, _, warnings = parse_decklist_stream(StringIO("1 Sol Ring (C21) 244 #frobnicate --x 1\n"))
++
++    assert any("frobnicate" in str(w) for w in warnings)
++
++
++def test_decklist_unrecognized_leading_hash_is_not_treated_as_modeline(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """A trailing ``#`` whose first segment is not a known verb is left attached to the line.
++
++    Without this, ad-hoc annotations like ``1 Sol Ring #foil version I own`` would silently
++    have their text mangled into a bogus modeline.
++    """
++    _patch_card_lookup(monkeypatch)
++    from mtg_proxies.decklists import parse_decklist_stream
++
++    # When the suffix isn't a real modeline, parse_decklist_stream should NOT strip it; the
++    # line then fails the card-line regex and becomes a comment (matching pre-feature behavior).
++    decklist, _, _ = parse_decklist_stream(StringIO("1 Sol Ring (C21) 244 #my favourite copy\n"))
++
++    # The line should NOT have been stripped of "#my favourite copy" silently.
++    assert all(getattr(e, "modeline", "") != "#my favourite copy" for e in decklist.entries)
++
++
++def test_decklist_modeline_roundtrip_arena_format(monkeypatch: pytest.MonkeyPatch) -> None:
++    _patch_card_lookup(monkeypatch)
++    from mtg_proxies.decklists import parse_decklist_stream
++
++    src = "1 Caves of Koilos (DRC) 148 #mpcfill --lightglue-threshold 0.15"
++    decklist, _, _ = parse_decklist_stream(StringIO(src + "\n"))
++
++    rendered = format(decklist, "arena")
++    assert rendered == src
++
++
++def test_decklist_modeline_roundtrip_text_format(monkeypatch: pytest.MonkeyPatch) -> None:
++    _patch_card_lookup(monkeypatch)
++    from mtg_proxies.decklists import parse_decklist_stream
++
++    decklist, _, _ = parse_decklist_stream(StringIO("1 Sol Ring (C21) 244 #upscale\n"))
++
++    # text format: "{count} {name}" + " {modeline}"
++    assert format(decklist, "text") == "1 Sol Ring #upscale"
++
++
++def test_decklist_full_line_comment_with_hash_inside_unchanged() -> None:
++    from mtg_proxies.decklists import Comment, parse_decklist_stream
++
++    src = "# 1 Sol Ring (C21) 244 #upscale"
++    decklist, _, _ = parse_decklist_stream(StringIO(src + "\n"))
++
++    assert len(decklist.entries) == 1
++    assert type(decklist.entries[0]) is Comment
++    assert decklist.entries[0].text == src
++
++
+ def test_reversible_cards() -> None:
+     """Check that reversible cards are parsed correctly."""
+     from mtg_proxies import fetch_scans_scryfall
+@@ -178,3 +693,228 @@ def test_reversible_cards() -> None:
+     images = fetch_scans_scryfall(decklist)
+ 
+     assert len(images) == 2  # Front and back
++
++
++# ---------------------------------------------------------------------------
++# Scryfall URL / shorthand input (MR2)
++# ---------------------------------------------------------------------------
++
++
++@pytest.mark.parametrize(
++    ("token", "expected"),
++    [
++        # Full URLs.
++        ("https://scryfall.com/card/soc/128/sol-ring", ("soc", "128")),
++        ("http://scryfall.com/card/soc/128/sol-ring", ("soc", "128")),
++        ("https://www.scryfall.com/card/soc/128/sol-ring", ("soc", "128")),
++        ("scryfall.com/card/soc/128/sol-ring", ("soc", "128")),
++        # No slug.
++        ("https://scryfall.com/card/soc/128", ("soc", "128")),
++        ("scryfall.com/card/soc/128", ("soc", "128")),
++        # Trailing query / fragment.
++        ("https://scryfall.com/card/soc/128/sol-ring?utm=x", ("soc", "128")),
++        ("https://scryfall.com/card/soc/128/sol-ring#art", ("soc", "128")),
++        # `card/` shorthand.
++        ("card/soc/128/sol-ring", ("soc", "128")),
++        ("card/soc/128", ("soc", "128")),
++        # Bare shorthand (the ergonomic one).
++        ("soc/128/sol-ring", ("soc", "128")),
++        ("soc/128", ("soc", "128")),
++        # Sets with digits (real Scryfall codes — 2x2, 30a etc.).
++        ("2x2/123", ("2x2", "123")),
++        ("30a/45", ("30a", "45")),
++        # Mixed-case is preserved by the parser; the resolver lowercases.
++        ("SOC/128", ("SOC", "128")),
++        # Plain card name — must NOT match (no slash).
++        ("Sol Ring", None),
++        # Existing-form pinned line — must NOT match (parens + collector tail).
++        ("Sol Ring (SOC) 128", None),
++        # Empty / blank.
++        ("", None),
++        ("   ", None),
++        # Too-short / too-long set code — fall through.
++        ("a/1", None),
++        ("toolongsetcode/1", None),
++    ],
++)
++def test_parse_scryfall_ref(token: str, expected: tuple[str, str] | None) -> None:
++    from mtg_proxies.decklists.decklist import parse_scryfall_ref
++
++    assert parse_scryfall_ref(token) == expected
++
++
++def test_resolve_printing_hits_local_index_first() -> None:
++    """Local cached index resolves without invoking the live fetcher."""
++    from mtg_proxies.decklists.decklist import resolve_printing
++
++    fake_card = {"id": "x", "name": "Sol Ring", "set": "soc", "collector_number": "128"}
++    fake_index = {("soc", "128"): fake_card}
++
++    def fetcher(_set: str, _cn: str) -> dict | None:
++        raise AssertionError("live fetcher must not be called when index hits")
++
++    assert resolve_printing("soc", "128", index=fake_index, fetcher=fetcher) is fake_card
++
++
++def test_resolve_printing_lowercases_keys() -> None:
++    from mtg_proxies.decklists.decklist import resolve_printing
++
++    fake_card = {"id": "x", "name": "Sol Ring"}
++    fake_index = {("soc", "128"): fake_card}
++
++    def fetcher(_set: str, _cn: str) -> dict | None:
++        return None
++
++    assert resolve_printing("SOC", "128", index=fake_index, fetcher=fetcher) is fake_card
++
++
++def test_resolve_printing_falls_back_to_live_fetcher_on_index_miss() -> None:
++    from mtg_proxies.decklists.decklist import resolve_printing
++
++    called: list[tuple[str, str]] = []
++    live = {"id": "y", "name": "Brand-new card", "set": "fut", "collector_number": "999"}
++
++    def fetcher(set_code: str, cn: str) -> dict | None:
++        called.append((set_code, cn))
++        return live
++
++    card = resolve_printing("FUT", "999", index={}, fetcher=fetcher)
++
++    assert card is live
++    assert called == [("fut", "999")]
++
++
++def test_resolve_printing_returns_none_when_both_miss() -> None:
++    from mtg_proxies.decklists.decklist import resolve_printing
++
++    def fetcher(_set: str, _cn: str) -> dict | None:
++        return None
++
++    assert resolve_printing("xxx", "999", index={}, fetcher=fetcher) is None
++
++
++def test_parse_decklist_url_line_resolves_via_injected_index(monkeypatch: pytest.MonkeyPatch) -> None:
++    """A line that's a Scryfall URL resolves to the indexed printing, bypassing validate_card_name."""
++    from mtg_proxies.decklists import parse_decklist_stream
++
++    fake_card = {
++        "id": "fake-sol-soc",
++        "name": "Sol Ring",
++        "set": "soc",
++        "collector_number": "128",
++        "layout": "normal",
++        "image_uris": {"png": "https://example/sol.png"},
++        "highres_image": True,
++    }
++    monkeypatch.setattr(
++        "mtg_proxies.scryfall.scryfall.card_by_set_collector",
++        lambda: {("soc", "128"): fake_card},
++    )
++    monkeypatch.setattr(
++        "mtg_proxies.scryfall.scryfall.fetch_printing_live",
++        lambda set_code, cn: (_ for _ in ()).throw(AssertionError("live fetcher must not run")),
++    )
++
++    decklist, ok, _warnings = parse_decklist_stream(
++        StringIO("2 https://scryfall.com/card/soc/128/sol-ring\n")
++    )
++
++    assert ok
++    assert len(decklist.cards) == 1
++    assert decklist.cards[0].count == 2
++    assert decklist.cards[0]["set"] == "soc"
++    assert decklist.cards[0]["collector_number"] == "128"
++
++
++def test_parse_decklist_shorthand_line_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
++    from mtg_proxies.decklists import parse_decklist_stream
++
++    fake_card = {
++        "id": "fake-sol-soc",
++        "name": "Sol Ring",
++        "set": "soc",
++        "collector_number": "128",
++        "layout": "normal",
++        "image_uris": {"png": "https://example/sol.png"},
++        "highres_image": True,
++    }
++    monkeypatch.setattr(
++        "mtg_proxies.scryfall.scryfall.card_by_set_collector",
++        lambda: {("soc", "128"): fake_card},
++    )
++
++    decklist, ok, _ = parse_decklist_stream(StringIO("soc/128\n"))
++
++    assert ok
++    assert decklist.cards[0].count == 1
++    assert decklist.cards[0]["id"] == "fake-sol-soc"
++
++
++def test_parse_decklist_url_line_with_modeline_keeps_trailer(monkeypatch: pytest.MonkeyPatch) -> None:
++    from mtg_proxies.decklists import parse_decklist_stream
++
++    fake_card = {
++        "id": "fake-sol-soc",
++        "name": "Sol Ring",
++        "set": "soc",
++        "collector_number": "128",
++        "layout": "normal",
++        "image_uris": {"png": "https://example/sol.png"},
++        "highres_image": True,
++    }
++    monkeypatch.setattr(
++        "mtg_proxies.scryfall.scryfall.card_by_set_collector",
++        lambda: {("soc", "128"): fake_card},
++    )
++
++    decklist, ok, _ = parse_decklist_stream(
++        StringIO("1 https://scryfall.com/card/soc/128 #upscale\n")
++    )
++
++    assert ok
++    assert decklist.cards[0].modeline.strip().startswith("#upscale")
++
++
++def test_modeline_parse_vignette_with_all_keys() -> None:
++    from mtg_proxies.decklists.modelines import parse_modeline_trailer
++
++    directives, warnings = parse_modeline_trailer(" #vignette --strength 0.5 --edge 0.04 --max-black 30")
++    assert warnings == []
++    assert len(directives) == 1
++    d = directives[0]
++    assert d.verb == "vignette"
++    assert d.flags == {"--strength": 0.5, "--edge": 0.04, "--max-black": 30.0}
++
++
++def test_modeline_parse_vignette_bare_no_flags() -> None:
++    from mtg_proxies.decklists.modelines import parse_modeline_trailer
++
++    directives, warnings = parse_modeline_trailer(" #vignette")
++    assert warnings == []
++    assert directives == [type(directives[0])(verb="vignette", flags={})]
++
++
++def test_modeline_parse_vignette_out_of_range_warns() -> None:
++    from mtg_proxies.decklists.modelines import parse_modeline_trailer
++
++    _, warnings = parse_modeline_trailer(" #vignette --strength 2.5")
++    assert any("strength" in str(w).lower() for w in warnings)
++
++
++def test_parse_decklist_url_line_miss_warns_and_comments(monkeypatch: pytest.MonkeyPatch) -> None:
++    """Unknown set/collector emits ERROR and the line becomes a comment."""
++    from mtg_proxies.decklists import parse_decklist_stream
++
++    monkeypatch.setattr("mtg_proxies.scryfall.scryfall.card_by_set_collector", dict)
++    monkeypatch.setattr(
++        "mtg_proxies.scryfall.scryfall.fetch_printing_live",
++        lambda set_code, cn: None,
++    )
++
++    decklist, ok, warnings = parse_decklist_stream(
++        StringIO("1 https://scryfall.com/card/xxx/999/nope\n")
++    )
++
++    assert not ok
++    assert len(decklist.cards) == 0
++    assert any("xxx" in str(w).lower() or "999" in str(w) for w in warnings)

@@ -423,12 +423,28 @@ def test_modeline_parse_single_verb_bare() -> None:
 def test_modeline_parse_single_verb_with_flags() -> None:
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#mpcfill --identifier abc123 --bleed-crop 4")
+    # Realistic Google Drive ID (33 chars [A-Za-z0-9_-]). The `_drive_id`
+    # validator rejects values that don't look like a Drive ID.
+    drive_id = "1A2b3C4d5E6f7G8h9I0jKlMnOpQrStUvW"
+    directives, warnings = parse_modeline_trailer(f"#mpcfill --identifier {drive_id} --bleed-crop 4")
 
     assert len(directives) == 1
     assert directives[0].verb == "mpcfill"
-    assert directives[0].flags == {"--identifier": "abc123", "--bleed-crop": pytest.approx(4.0)}
+    assert directives[0].flags == {"--identifier": drive_id, "--bleed-crop": pytest.approx(4.0)}
     assert warnings == []
+
+
+def test_modeline_parse_mpcfill_identifier_rejects_garbage() -> None:
+    """A clearly-misshaped identifier (URL fragment, too short) fails at parse time."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#mpcfill --identifier nope")
+
+    # Bad value: flag dropped, directive still emitted with no flags after our
+    # finding-#11 change (drop-flag-not-segment on invalid known-flag value).
+    assert len(directives) == 1
+    assert directives[0].flags == {}
+    assert any("does not look like a Google Drive ID" in w.message for w in warnings)
 
 
 def test_modeline_parse_stacked_verbs() -> None:
@@ -461,7 +477,8 @@ def test_modeline_parse_unknown_flag_warns_and_drops_segment() -> None:
     assert "--bogus" in str(warnings[0])
 
 
-def test_modeline_parse_malformed_flag_value_warns_and_drops_segment() -> None:
+def test_modeline_parse_unknown_flag_warns_and_drops_segment() -> None:
+    """An unrecognized flag on a known verb drops the whole segment with a warning."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
     directives, warnings = parse_modeline_trailer("#mpcfill --lightglue-threshold not-a-float")
@@ -469,6 +486,20 @@ def test_modeline_parse_malformed_flag_value_warns_and_drops_segment() -> None:
     assert directives == []
     assert len(warnings) == 1
     assert "--lightglue-threshold" in str(warnings[0])
+
+
+def test_modeline_parse_malformed_known_flag_value_drops_flag_only() -> None:
+    """A known flag with a value its validator rejects: just that flag is dropped."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    # --bleed-crop is a known mpcfill flag that takes a float in [0, 50]. ``NaN``
+    # parses to a float but lies outside the range; the validator raises ValueError.
+    directives, warnings = parse_modeline_trailer("#mpcfill --bleed-crop 999")
+
+    # Finding-#11 behavior: the bad flag is dropped, the segment survives.
+    assert len(directives) == 1
+    assert directives[0].flags == {}
+    assert any("Invalid value" in w.message and "--bleed-crop" in w.message for w in warnings)
 
 
 def test_modeline_parse_mixed_known_unknown_keeps_known() -> None:
@@ -575,6 +606,40 @@ def test_modeline_parse_cardconjourer_custom_art() -> None:
     assert len(directives) == 1
     assert directives[0].flags == {"--custom-art": "./my_art.jpg"}
     assert warnings == []
+
+
+def test_modeline_parse_cardconjourer_custom_art_quoted_path_with_spaces() -> None:
+    """Paths with spaces work when quoted — shlex tokenization preserves the value."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer('#cardconjourer --custom-art "./My Art.png"')
+
+    assert len(directives) == 1
+    assert directives[0].flags == {"--custom-art": "./My Art.png"}
+    assert warnings == []
+
+
+def test_modeline_parse_cardconjourer_mutex_frames_warns_and_clears() -> None:
+    """`#cardconjourer --8th --modern` is conflicting; both flags dropped with a warning."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjourer --8th --modern")
+
+    # The directive survives — only the conflicting frame flags are stripped.
+    assert len(directives) == 1
+    assert "--8th" not in directives[0].flags
+    assert "--modern" not in directives[0].flags
+    assert any("Conflicting frame flags" in w.message for w in warnings)
+
+
+def test_modeline_parse_unbalanced_quote_warns_and_drops() -> None:
+    """An unterminated quote in a segment is reported as malformed; later segments survive."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer('#cardconjourer --custom-art "./broken #upscale')
+
+    # The broken cardconjourer segment is dropped; #upscale (no flags) is parsed.
+    assert any("Malformed modeline segment" in w.message for w in warnings)
 
 
 def test_decklist_card_no_modeline_has_empty_field(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -735,6 +800,17 @@ def test_reversible_cards() -> None:
         # Too-short / too-long set code — fall through.
         ("a/1", None),
         ("toolongsetcode/1", None),
+        # Tightened CN guard: non-CN values after the slash don't match. Without
+        # this, a stray slash in a card name or comment ("Fire/Ice",
+        # "buy/sell list") would be misrouted as a printing reference.
+        ("Fire/Ice", None),
+        ("Go/No", None),
+        ("buy/sell list", None),
+        # Real CN shapes still match: with letter suffix, with token prefix, with ★.
+        ("soc/128a", ("soc", "128a")),
+        ("blb/t1", ("blb", "t1")),
+        ("plst/STA-128★", None),  # set "plst" but CN starts with non-digit letters
+        ("ima/128★", ("ima", "128★")),
     ],
 )
 def test_parse_scryfall_ref(token: str, expected: tuple[str, str] | None) -> None:
@@ -887,11 +963,11 @@ def test_modeline_parse_vignette_with_all_keys() -> None:
 
 
 def test_modeline_parse_vignette_bare_no_flags() -> None:
-    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+    from mtg_proxies.decklists.modelines import Directive, parse_modeline_trailer
 
     directives, warnings = parse_modeline_trailer(" #vignette")
     assert warnings == []
-    assert directives == [type(directives[0])(verb="vignette", flags={})]
+    assert directives == [Directive(verb="vignette", flags={})]
 
 
 def test_modeline_parse_vignette_out_of_range_warns() -> None:

@@ -1,0 +1,7 @@
+[
+  {"location": "modelines.py shlex", "trigger_condition": "modeline value contains spaces or # character", "guard_snippet": "use shlex.split for tokenization", "potential_consequence": "--custom-art paths with spaces or # break parsing"},
+  {"location": "decklists/* network calls", "trigger_condition": "requests.get raises ConnectionError/Timeout/SSLError", "guard_snippet": "wrap in try/except requests.RequestException", "potential_consequence": "Network failure aborts with raw traceback"},
+  {"location": "sanitizing.py card.get accessors", "trigger_condition": "Scryfall card dict missing expected key", "guard_snippet": "use .get() with sensible defaults", "potential_consequence": "KeyError on validate_print of sparse cards"},
+  {"location": "cleaning.py:79 merge_duplicates", "trigger_condition": "card lacks oracle_id (tokens, reversible)", "guard_snippet": "use .get() and skip", "potential_consequence": "merge_duplicates crashes on tokens"},
+  {"location": "decklist.py:229 file open", "trigger_condition": "non-utf8 encoded decklist", "guard_snippet": "try/except UnicodeDecodeError with hint", "potential_consequence": "Bare traceback on Latin-1 / Windows-1252 inputs"}
+]

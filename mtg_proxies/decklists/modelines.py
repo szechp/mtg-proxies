@@ -12,6 +12,7 @@ byte-for-byte through serialization. The ``print`` command parses the raw text v
 from __future__ import annotations
 
 import re
+import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -48,12 +49,30 @@ def _path_str(s: str) -> str:
     return s
 
 
+# Google Drive file IDs: case-sensitive alphanumeric + dash + underscore,
+# typically 25-44 chars. Pattern from Google's URL spec — we use a generous
+# 20-60 to tolerate any minor format drift.
+_DRIVE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{20,60}$")
+
+
+def _drive_id(s: str) -> str:
+    """Validate that ``s`` looks like a Google Drive file ID.
+
+    Catches typos at parse time instead of a downstream HTTP round-trip.
+    Misshaped IDs (URL fragments, partial copies, accidentally-pasted whole
+    URLs) fail here with a clearer error than ``HTTP 404`` later.
+    """
+    if not _DRIVE_ID_RE.match(s):
+        raise ValueError(f"value {s!r} does not look like a Google Drive ID (expected 20-60 [A-Za-z0-9_-])")
+    return s
+
+
 VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     "mpcfill": {
         # ``--identifier <ID>`` locks in a specific MPCFill render by its backend Identifier
         # (a Google Drive file ID, ~33 chars). The auto-matcher / picker / retro classifier
         # were cut in MR8: the only way to select an MPCFill render now is by knowing its id.
-        "--identifier": _path_str,
+        "--identifier": _drive_id,
         # ``--bleed-crop PERCENT`` — edge bleed-crop applied to the MPCFill render before it
         # replaces the Scryfall scan. Default 4 % (matches ``--custom-art-bleed-crop``).
         "--bleed-crop": _float_in_range(0.0, 50.0),
@@ -172,7 +191,19 @@ def parse_modeline_trailer(trailer: str) -> tuple[list[Directive], list[ParseWar
         return directives, warnings
 
     for segment in _split_segments(trailer.strip()):
-        tokens = segment.split()
+        # shlex.split (posix=True) handles quoted values with spaces, so
+        # ``--custom-art "./My Art.png"`` survives tokenization. Unbalanced
+        # quotes raise ValueError — we treat that as a malformed segment and
+        # drop it with a warning. NOTE: ``#`` inside a quoted value is still
+        # split at the trailer level by ``_split_segments`` and won't survive;
+        # paths with ``#`` are not currently supported in modelines.
+        try:
+            tokens = shlex.split(segment, posix=True)
+        except ValueError as exc:
+            warnings.append(ParseWarning("WARNING", f"Malformed modeline segment {segment!r}: {exc}; dropping."))
+            continue
+        if not tokens:
+            continue
         verb = tokens[0]
         if verb not in VERB_REGISTRY:
             warnings.append(ParseWarning("WARNING", f"Unknown modeline verb '#{verb}'; dropping segment."))
@@ -196,24 +227,45 @@ def parse_modeline_trailer(trailer: str) -> tuple[list[Directive], list[ParseWar
                 i += 1
                 continue
             if i + 1 >= len(flag_tokens):
-                warnings.append(ParseWarning("WARNING", f"Flag {flag!r} for #{verb} missing value; dropping segment."))
-                dropped = True
+                # Missing value for a known flag — drop the flag (and the rest of
+                # the segment since we have no way to recover) but keep what we
+                # parsed so far.
+                warnings.append(ParseWarning("WARNING", f"Flag {flag!r} for #{verb} missing value; dropping flag."))
                 break
             value_str = flag_tokens[i + 1]
             try:
                 parsed_flags[flag] = validator(value_str)
             except ValueError as exc:
+                # Known flag, invalid value — drop just this flag and continue.
+                # The rest of the segment's flags (which we know are well-shaped)
+                # still apply. Beats nuking a long modeline because one float
+                # was unparseable.
                 warnings.append(
                     ParseWarning(
                         "WARNING",
-                        f"Invalid value {value_str!r} for {flag} on #{verb}: {exc}; dropping segment.",
+                        f"Invalid value {value_str!r} for {flag} on #{verb}: {exc}; dropping flag.",
                     )
                 )
-                dropped = True
-                break
             i += 2
 
-        if not dropped:
-            directives.append(Directive(verb=verb, flags=parsed_flags))
+        if dropped:
+            continue
+
+        # Mutex enforcement. The cardconjourer verb's frame selectors --8th /
+        # --modern are mutually exclusive: stacking both leaves downstream
+        # frame resolution ambiguous. Drop both flags with a warning rather
+        # than silently picking one.
+        if verb == "cardconjourer":
+            set_frames = [f for f in ("--8th", "--modern") if parsed_flags.get(f)]
+            if len(set_frames) > 1:
+                warnings.append(ParseWarning(
+                    "WARNING",
+                    f"Conflicting frame flags {set_frames} on #cardconjourer; "
+                    f"dropping both (frame falls back to default)."
+                ))
+                for f in set_frames:
+                    parsed_flags.pop(f, None)
+
+        directives.append(Directive(verb=verb, flags=parsed_flags))
 
     return directives, warnings

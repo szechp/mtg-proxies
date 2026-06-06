@@ -233,7 +233,7 @@ def test_apply_per_card_modelines_mpcfill_identifier_swap(monkeypatch: pytest.Mo
 
     decklist = _fake_decklist(
         _fake_card("Sol Ring"),
-        _fake_card("Caves of Koilos", modeline="#mpcfill --identifier abc123 --bleed-crop 2"),
+        _fake_card("Caves of Koilos", modeline="#mpcfill --identifier 1A2b3C4d5E6f7G8h9I0jKlMnOpQrStUvW --bleed-crop 2"),
     )
     image_paths = ["sol.png", "caves_scryfall.png"]
 
@@ -243,7 +243,7 @@ def test_apply_per_card_modelines_mpcfill_identifier_swap(monkeypatch: pytest.Mo
     assert result[1] == str(swapped)
     fake_resolve.assert_called_once()
     kwargs = fake_resolve.call_args.kwargs
-    assert kwargs["drive_id_override"] == "abc123"
+    assert kwargs["drive_id_override"] == "1A2b3C4d5E6f7G8h9I0jKlMnOpQrStUvW"
     assert kwargs["bleed_crop_percent"] == pytest.approx(2.0)
 
 
@@ -270,7 +270,7 @@ def test_apply_per_card_modelines_mpcfill_fetch_failure_falls_back(monkeypatch: 
     fake_resolve = MagicMock(return_value=None)
     monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", fake_resolve)
 
-    decklist = _fake_decklist(_fake_card("Sol Ring", modeline="#mpcfill --identifier xyz"))
+    decklist = _fake_decklist(_fake_card("Sol Ring", modeline="#mpcfill --identifier 1A2b3C4d5E6f7G8h9I0jKlMnOpQrStUvW"))
     image_paths = ["sol_scryfall.png"]
 
     result = cli._apply_per_card_modelines(decklist, image_paths)
@@ -288,7 +288,7 @@ def test_apply_per_card_modelines_mpcfill_count_expansion(monkeypatch: pytest.Mo
     fake_resolve = MagicMock(return_value=swapped)
     monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", fake_resolve)
 
-    decklist = _fake_decklist(_fake_card("Mountain", count=3, modeline="#mpcfill --identifier abc"))
+    decklist = _fake_decklist(_fake_card("Mountain", count=3, modeline="#mpcfill --identifier 1A2b3C4d5E6f7G8h9I0jKlMnOpQrStUvW"))
     image_paths = ["m.png", "m.png", "m.png"]
 
     result = cli._apply_per_card_modelines(decklist, image_paths)
@@ -373,7 +373,7 @@ def test_apply_per_card_modelines_mpcfill_dfc_swaps_front_only(
     monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", fake_resolve)
 
     decklist = _fake_decklist(
-        _fake_dfc_card("Disciple // Garden", modeline="#mpcfill --identifier abc"),
+        _fake_dfc_card("Disciple // Garden", modeline="#mpcfill --identifier 1A2b3C4d5E6f7G8h9I0jKlMnOpQrStUvW"),
     )
     image_paths = ["front_scryfall.png", "back_scryfall.png"]
     result = cli._apply_per_card_modelines(decklist, image_paths)
@@ -381,7 +381,7 @@ def test_apply_per_card_modelines_mpcfill_dfc_swaps_front_only(
     assert result[0] == str(front_render)
     assert result[1] == "back_scryfall.png"  # back untouched — no back-face identifier in the slim contract
     fake_resolve.assert_called_once()
-    assert fake_resolve.call_args.kwargs["drive_id_override"] == "abc"
+    assert fake_resolve.call_args.kwargs["drive_id_override"] == "1A2b3C4d5E6f7G8h9I0jKlMnOpQrStUvW"
 
 
 def test_apply_per_card_modelines_duplex_mpcfill_swaps_front_only(
@@ -398,7 +398,7 @@ def test_apply_per_card_modelines_duplex_mpcfill_swaps_front_only(
     )
 
     decklist = _fake_decklist(
-        _fake_dfc_card("Disciple // Garden", count=2, modeline="#mpcfill --identifier abc"),
+        _fake_dfc_card("Disciple // Garden", count=2, modeline="#mpcfill --identifier 1A2b3C4d5E6f7G8h9I0jKlMnOpQrStUvW"),
     )
     fronts = ["front_scryfall.png", "front_scryfall.png"]
     backs = ["back_scryfall.png", "back_scryfall.png"]
@@ -420,7 +420,7 @@ def test_apply_per_card_modelines_duplex_single_faced_back_untouched(
     fake_resolve = MagicMock(return_value=front_render)
     monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", fake_resolve)
 
-    decklist = _fake_decklist(_fake_card("Sol Ring", modeline="#mpcfill --identifier xyz"))
+    decklist = _fake_decklist(_fake_card("Sol Ring", modeline="#mpcfill --identifier 1A2b3C4d5E6f7G8h9I0jKlMnOpQrStUvW"))
     fronts = ["front_scryfall.png"]
     backs = ["generic_card_back.jpg"]
 
@@ -435,7 +435,7 @@ def test_apply_per_card_modelines_duplex_single_faced_back_untouched(
     assert fronts == [str(front_render)]
     assert backs == ["generic_card_back.jpg"]
     assert fake_resolve.call_count == 1
-    assert fake_resolve.call_args.kwargs["drive_id_override"] == "xyz"
+    assert fake_resolve.call_args.kwargs["drive_id_override"] == "1A2b3C4d5E6f7G8h9I0jKlMnOpQrStUvW"
 
 
 def test_apply_per_card_modelines_duplex_upscale_skips_user_supplied(
@@ -581,7 +581,7 @@ def test_apply_per_card_modelines_mpcfill_implies_no_upscale(monkeypatch: pytest
     swapped.write_bytes(b"PNG")
     monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", MagicMock(return_value=swapped))
 
-    decklist = _fake_decklist(_fake_card("Concordant Crossroads", modeline="#mpcfill --identifier xyz"))
+    decklist = _fake_decklist(_fake_card("Concordant Crossroads", modeline="#mpcfill --identifier 1A2b3C4d5E6f7G8h9I0jKlMnOpQrStUvW"))
     image_paths = ["scry.png"]
     skip_upscale: set[str] = set()
 

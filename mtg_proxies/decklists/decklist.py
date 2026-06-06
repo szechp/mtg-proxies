@@ -21,9 +21,13 @@ _SCRYFALL_URL_RE = re.compile(
 )
 # Shorthand: optional ``card/`` prefix, then set/cn with optional slug. Set
 # segment is locked to 2-6 alphanumerics so a plain card name (no slash) never
-# matches and a single-character "set" can't swallow garbage like ``a/1``.
+# matches and a single-character "set" can't swallow garbage like ``a/1``. The
+# collector-number segment is locked to Scryfall's CN shape — leading digits
+# with optional token-prefix letter, optional suffix letter, optional ★ —
+# so non-ref strings with a stray slash (``Fire/Ice``, an Archidekt comment
+# ``buy/sell``) don't get misrouted as printing references.
 _SCRYFALL_SHORT_RE = re.compile(
-    r"^(?:card/)?([a-z0-9]{2,6})/([^/?#]+)(?:/[^?#]*)?$",
+    r"^(?:card/)?([a-z0-9]{2,6})/([a-z]?\d+[a-z]?★?)(?:/[^?#]*)?$",
     re.IGNORECASE,
 )
 
@@ -72,8 +76,14 @@ class Card:
     """Card in a decklist.
 
     Composed of a count, a Scryfall object, and an optional raw modeline trailer
-    (e.g. ``"#mpcfill --similarity 0.83"``) preserved verbatim from the source line so
-    serialization round-trips byte-for-byte.
+    (e.g. ``"#mpcfill --similarity 0.83"``) preserved verbatim from the source line.
+
+    Serialization round-trips the count, the set/cn (if pinned), and the modeline
+    *trailer* byte-for-byte. It does NOT preserve every superficial variant of the
+    source line: a bare-name input (``"Esper Sentinel"``) re-emits as
+    ``"1 Esper Sentinel"``, an ``"4x Lightning Bolt"`` style count re-emits without
+    the ``x``, trailing whitespace on comments is stripped. The Card's structural
+    fields are the round-trip contract; raw cosmetic input is not.
     """
 
     count: int
@@ -201,7 +211,27 @@ def parse_decklist(
         warnings: List of warnings and error encountered during parsing
     """
     # utf-8-sig strips a leading BOM (Notepad/Excel saves UTF-8 files with one).
-    with open(filepath, encoding="utf-8-sig") as f:
+    # Non-UTF-8 input (Latin-1, Windows-1252) raises UnicodeDecodeError — catch
+    # and re-raise with a clearer hint than a bare traceback. We don't silently
+    # fall back to another encoding: a wrong codec produces silently-garbled
+    # card names, which is worse than the explicit error.
+    try:
+        f = open(filepath, encoding="utf-8-sig")
+    except OSError as exc:
+        raise OSError(f"Could not open decklist {filepath!r}: {exc}") from exc
+    try:
+        try:
+            text = f.read()
+        except UnicodeDecodeError as exc:
+            raise UnicodeDecodeError(
+                exc.encoding, exc.object, exc.start, exc.end,
+                f"Decklist {filepath!r} is not UTF-8. Re-save as UTF-8 (Notepad: "
+                f"Save As → Encoding: UTF-8) or pass the text via parse_decklist_stream.",
+            ) from exc
+    finally:
+        f.close()
+    from io import StringIO
+    with StringIO(text) as f:
         decklist, ok, warnings = parse_decklist_stream(
             f,
             art_preference=art_preference,
@@ -256,9 +286,13 @@ def parse_decklist_stream(
             _, candidate_warnings = parse_modeline_trailer(modeline_candidate_match.group(1))
             warnings.extend(candidate_warnings)
 
-        # Strip trailing foil markers e.g. `*F*`, `*E*`. Loop to handle stacked markers like `*F* *E*`.
+        # Strip trailing foil markers — `*F*` (foil), `*E*` (etched), `*P*` (promo)
+        # per MTGO conventions; longer forms `*FOIL*`, `*ETCHED*`, `*PROMO*` cover
+        # other exporters. Restricted to this whitelist so legitimate annotations
+        # like `*Misprint*` or `*Beta*` survive unchanged. Loop to handle stacked
+        # markers like `*F* *E*`.
         while True:
-            new_stripped = re.sub(r"\s+\*[A-Za-z]+\*\s*$", "", stripped)
+            new_stripped = re.sub(r"\s+\*(?:F|E|P|FOIL|ETCHED|PROMO)\*\s*$", "", stripped, flags=re.IGNORECASE)
             if new_stripped == stripped:
                 break
             stripped = new_stripped

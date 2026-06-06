@@ -35,12 +35,16 @@ def card_names() -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
     #   2. printed_name on English prints — covers Arena renames where the digital print uses a
     #      different name than the paper oracle (e.g. "The Terminus of Return" → "The Soul Stone").
     # canonic_card_name normalizes lookups consistently (handles æ→ae, lowercasing, etc.).
+    # Both sources use first-writer-wins so the mapping is deterministic across runs and a
+    # shared flavor_name (e.g. duplicate LTC promo variants) doesn't silently flip on iteration
+    # order. Single pass over the corpus — halves the I/O cost vs. iterating twice.
     alternative_names_to_oracle: dict[str, str] = {}
     for card in scryfall.get_cards():
         fn = card.get("flavor_name")
         if fn:
-            alternative_names_to_oracle[scryfall.canonic_card_name(fn)] = card["name"]
-    for card in scryfall.get_cards():
+            key = scryfall.canonic_card_name(fn)
+            if key not in alternative_names_to_oracle and key not in cards_by_name:
+                alternative_names_to_oracle[key] = card["name"]
         pn = card.get("printed_name")
         if not pn or card.get("lang") != "en" or pn == card["name"]:
             # Skip the no-op case (printed_name == name) and non-English prints to avoid
@@ -137,6 +141,11 @@ def validate_print(
     warnings: list[ParseWarning] = []
     lowres_upgraded = False
     preferred_swapped = False
+    # Tracks whether the current ``card`` has already been routed through
+    # ``recommend_print`` (which honors ``preferred_sets``). If so, the
+    # preferred-set swap block below is wasted work — calling recommend_print
+    # twice in a row on its own output can flip non-idempotently on score ties.
+    already_recommended = False
 
     if set_id is None:
         card = scryfall.recommend_print(
@@ -147,6 +156,7 @@ def validate_print(
             prefer_retro_frame=prefer_retro_frame,
             art_before=art_before,
         )
+        already_recommended = True
         # Warn for tokens, as they are not unique by name
         if card["layout"] in ["token", "double_faced_token"]:
             warnings.append(
@@ -166,6 +176,7 @@ def validate_print(
                 prefer_retro_frame=prefer_retro_frame,
                 art_before=art_before,
             )
+            already_recommended = True
             warnings.append(
                 ParseWarning(
                     "WARNING",
@@ -179,9 +190,11 @@ def validate_print(
                 pass
             else:
                 # recommend_print enforces the preferred-set restriction (with allow_low_res honored
-                # inside it) and otherwise returns the highest-scoring alternative.
+                # inside it) and otherwise returns the highest-scoring alternative. Pass ``current=card``
+                # rather than ``card_name=`` so the oracle_id is derived from the dict — handles
+                # reversible_card layout correctly (recommend_print's special case at scryfall.py:424).
                 better = scryfall.recommend_print(
-                    card_name=card_name,
+                    card,
                     art_preference=art_preference,
                     preferred_sets=preferred_sets,
                     allow_low_res=allow_low_res,
@@ -197,10 +210,12 @@ def validate_print(
                     )
                     card = better
                     lowres_upgraded = True
+                    already_recommended = True
     # If the card is from a non-preferred set, try to swap to a preferred-set version when one exists.
     # Without this, a highres explicit print (e.g. "Turtle Tracks (TMC) 129") is accepted as-is even
-    # when --set=SLD asked for the SLD print.
-    if preferred_sets and card["set"] not in {ps.lower() for ps in preferred_sets}:
+    # when --set=SLD asked for the SLD print. Skipped when ``recommend_print`` already ran above —
+    # it already considered ``preferred_sets``.
+    if not already_recommended and preferred_sets and card["set"] not in {ps.lower() for ps in preferred_sets}:
         preferred_set_codes = {ps.lower() for ps in preferred_sets}
         better = scryfall.recommend_print(
             card,

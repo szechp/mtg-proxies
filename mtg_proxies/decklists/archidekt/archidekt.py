@@ -16,21 +16,30 @@ def parse_decklist(
     prefer_retro_frame: bool = False,
     art_before: int | None = None,
 ) -> tuple[Decklist, bool, list[ParseWarning]]:
-    """Parse a decklist from manastack.
+    """Parse a decklist from Archidekt.
+
+    Per-card modelines (e.g. ``#mpcfill --identifier ABC``) are *not* read from
+    Archidekt's API — modelines are a feature of the text-format decklist parser.
+    If you need modelines, export the deck to text and use ``parse_decklist``.
 
     Args:
         archidekt_id: Deck list id as shown in the deckbuilder URL
-        zones: List of zones to include. Available are: `mainboard`, `commander`, `sideboard` and `maybeboard`
     """
     decklist = Decklist()
     warnings = []
     ok = True
 
-    r = requests.get(f"https://archidekt.com/api/decks/{archidekt_id}/", timeout=30)
+    try:
+        r = requests.get(f"https://archidekt.com/api/decks/{archidekt_id}/", timeout=30)
+    except requests.RequestException as exc:
+        raise ValueError(f"Archidekt request failed: {exc}") from exc
     if r.status_code != 200:
         raise ValueError(f"Archidekt returned statuscode {r.status_code}")
 
-    data = r.json()
+    try:
+        data = r.json()
+    except requests.JSONDecodeError as exc:
+        raise ValueError(f"Archidekt returned non-JSON body: {exc}") from exc
 
     in_deck = {cat["name"] for cat in data["categories"] if cat["includedInDeck"]}
 
