@@ -373,7 +373,11 @@ const SELECTOR_OVERRIDES = {
     '#grayscale-art':             { checked: false },
     '#show-guidelines':           { checked: false },
     '#hide-reminder-text':        { checked: false },
-    '#italicize-reminder-text':   { checked: false },
+    // Italicize reminder text — matches printed cards. The parens reminder
+    // ("Flying (This creature can't be blocked except by creatures with
+    // flying or reach.)") is italic on every real print; the engine doesn't
+    // do this automatically without the checkbox.
+    '#italicize-reminder-text':   { checked: true },
     '#enableNewCollectorStyle':   { checked: false },
     '#info-language':             { value: 'EN' },
     '#info-year':                 { value: String(new Date().getFullYear()) },
