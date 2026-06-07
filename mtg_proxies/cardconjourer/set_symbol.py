@@ -1,19 +1,24 @@
 r"""Resolve a ``--set-symbol`` value into an absolute file path the harness can upload.
 
-The CLI / modeline accepts either form interchangeably:
+The CLI / modeline accepts three forms interchangeably:
 
   * **Path** — anything that contains ``/``, ``\``, or has a file extension. Treated
     as a filesystem path, ``~`` is expanded, must point at an existing file.
   * **CC set code** — alphanumeric, no separator, no extension (e.g. ``LTC``, ``MKM``,
     ``proxy``). Resolved per-card to ``<cc_root>/img/setSymbols/official/<code>-<rarity>.svg``
     against the cached Card Conjurer engine.
+  * **Customset** — ``customset:XY``, two letters that get auto-laid out on the
+    8th-edition shield via Goudy Medieval. Generated on first use, cached under
+    ``<cc_root>/img/setSymbols/customset/``. First char is upper-cased, second
+    lower-cased regardless of input casing (``customset:an`` == ``customset:An``).
 
 Detection examples::
 
-    resolve_set_symbol("./logo.png", "r", cc_root)  # path (contains '/')
-    resolve_set_symbol("logo.png",   "r", cc_root)  # path (extension '.png')
-    resolve_set_symbol("LTC",        "r", cc_root)  # code  → <cc>/...ltc-r.svg
-    resolve_set_symbol("MKM/",       "r", cc_root)  # path (trailing '/'), errors
+    resolve_set_symbol("./logo.png",   "r", cc_root)  # path (contains '/')
+    resolve_set_symbol("logo.png",     "r", cc_root)  # path (extension '.png')
+    resolve_set_symbol("LTC",          "r", cc_root)  # code  → <cc>/...ltc-r.svg
+    resolve_set_symbol("customset:An", "r", cc_root)  # generated → <cc>/.../an-r.svg
+    resolve_set_symbol("MKM/",         "r", cc_root)  # path (trailing '/'), errors
 
 Resolution lives on the Python side because the set-code form needs each card's
 rarity, and the path form needs ``cc_root`` injection — both inputs are easier
@@ -31,6 +36,8 @@ _VALID_RARITY_CHARS = frozenset({"c", "u", "r", "m", "s"})
 # formats so dotted set codes (e.g. hypothetical ``set.code``) aren't
 # misclassified as paths and routed to FileNotFoundError.
 _PATH_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif"})
+
+_CUSTOMSET_PREFIX = "customset:"
 
 
 def _looks_like_path(value: str) -> bool:
@@ -68,6 +75,11 @@ def resolve_set_symbol(value: str | None, rarity: str, cc_root: Path) -> str | N
     """
     if not value:
         return None
+    if value.startswith(_CUSTOMSET_PREFIX):
+        # Lazy import — keeps fontTools out of the import path for callers
+        # that never use customset.
+        from mtg_proxies.cardconjourer.customset import ensure_customset  # noqa: PLC0415
+        return ensure_customset(value[len(_CUSTOMSET_PREFIX):], rarity, cc_root)
     if _looks_like_path(value):
         try:
             p = Path(value).expanduser().resolve()

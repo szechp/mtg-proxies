@@ -114,8 +114,9 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     # artist signature / watermark. ``--skip-cc`` opts the card out of CC rendering entirely
     # (routed straight into ``fallback.txt`` so the normal Scryfall scan is used).
     # ``--set-symbol VALUE`` overrides the rendered set symbol — accepts a file path
-    # (``./logo.png``) OR a CC set code shorthand (``LTC``); the form is auto-detected and
-    # resolved against the cached CC engine. Per-card value overrides any deck-wide flag.
+    # (``./logo.png``), a CC set code shorthand (``LTC``), or a customset
+    # (``customset:An`` — two letters auto-laid out on the 8th-edition shield).
+    # The form is auto-detected. Per-card value overrides any deck-wide flag.
     # ``--custom-art PATH`` overrides the card's art with a local image file
     # (PNG / JPG / JPEG / WEBP). Resolved against CWD; ``~`` is expanded. The path
     # is threaded into the harness's ``job.art_path``, which short-circuits the

@@ -1738,9 +1738,11 @@ def main() -> None:
     cardconjourer_parser.add_argument(
         "--set-symbol", dest="set_symbol", default=None, metavar="VALUE",
         help=(
-            "override the rendered set symbol. Accepts either a file path"
-            " (./logo.png, absolute, or ~-prefixed) or a CC set code shorthand"
-            " (LTC, MKM, proxy). Works with any frame. Without this flag: 8th"
+            "override the rendered set symbol. Accepts a file path"
+            " (./logo.png, absolute, or ~-prefixed), a CC set code shorthand"
+            " (LTC, MKM, proxy), or a customset (customset:An — two letters"
+            " auto-laid out on the 8th-edition shield in Goudy Medieval, cached"
+            " after first use). Works with any frame. Without this flag: 8th"
             " keeps its hardcoded 8ed-<rarity>.svg default; modern uses the"
             " engine's per-card set icon."
         ),
