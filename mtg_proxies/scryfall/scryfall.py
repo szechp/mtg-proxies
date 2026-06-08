@@ -33,6 +33,11 @@ scryfall_rate_limiter = RateLimiter(delay=0.1)
 _download_lock = threading.Lock()
 _log = logging.getLogger(__name__)
 
+# Scryfall's API now rejects requests without a User-Agent (HTTP 400). Apply
+# the same identifying UA to every Scryfall call.
+_USER_AGENT = f"mtg-proxies/{version('mtg-proxies')}"
+_SCRYFALL_HEADERS = {"User-Agent": _USER_AGENT, "Accept": "*/*"}
+
 # Artist + set combinations that get a hefty standard-art penalty for issuing
 # alternate-treatment art that the user-facing "standard" preference shouldn't
 # pick over a vanilla print. Each entry is a ``(artist, set_code)`` tuple.
@@ -88,9 +93,7 @@ def get_file(file_name: str, url: str, *, silent: bool = False) -> str:
 
 def download(url: str, dst: Path | str, *, chunk_size: int = 1024 * 4, silent: bool = False) -> None:
     """Download a file with a tqdm progress bar."""
-    with requests.get(
-        url, stream=True, headers={"User-Agent": f"mtg-proxies/{version('mtg-proxies')}", "Accept": "*/*"}
-    ) as req:
+    with requests.get(url, stream=True, headers=_SCRYFALL_HEADERS) as req:
         req.raise_for_status()
         file_size = int(req.headers["Content-Length"]) if "Content-Length" in req.headers else None
         with (
@@ -118,7 +121,7 @@ def depaginate(url: str) -> list[dict]:
         list: Concatenation of all `data` entries.
     """
     with scryfall_rate_limiter:
-        response = requests.get(url).json()
+        response = requests.get(url, headers=_SCRYFALL_HEADERS).json()
     assert response["object"]
 
     if "data" not in response:
@@ -722,7 +725,7 @@ def fetch_printing_live(set_code: str, collector_number: str) -> dict | None:
     url = f"https://api.scryfall.com/cards/{set_code.lower()}/{collector_number.lower()}"
     try:
         with scryfall_rate_limiter:
-            resp = requests.get(url, timeout=10)
+            resp = requests.get(url, headers=_SCRYFALL_HEADERS, timeout=10)
     except requests.RequestException as exc:
         _log.warning("scryfall live fetch failed for %s/%s: %s", set_code, collector_number, exc)
         return None
