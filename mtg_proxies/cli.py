@@ -305,11 +305,11 @@ def _normalize_custom_art_images(
         and p.suffix.lower() in (".png", ".jpg", ".jpeg")
         and not _PIPELINE_CACHE_SUFFIX_RE.search(p.stem)
     )
-    if bleed_crop_percent <= 0:
+    if bleed_crop_percent == 0:
         return [str(path) for path in images]
 
     if output_dir is None:
-        raise ValueError("output_dir must be provided when custom art bleed crop is positive")
+        raise ValueError("output_dir must be provided when custom art bleed crop is non-zero")
 
     from tqdm import tqdm
 
@@ -1504,7 +1504,12 @@ def main() -> None:
     )
     print_parser.add_argument(
         "--custom-art-bleed-crop",
-        help="percent to trim from each edge of custom art images before printing (default: %(default)s)",
+        help=(
+            "percent to trim from each edge of custom art images before printing"
+            " (default: %(default)s). Negative values pad outward with black instead"
+            " of cropping — useful when an image has too little bleed and you've set"
+            " --border_crop large enough to absorb the extra padding."
+        ),
         type=float,
         default=DEFAULT_CUSTOM_ART_BLEED_CROP_PERCENT,
         metavar="PERCENT",
@@ -1892,7 +1897,7 @@ def main() -> None:
                     raise SystemExit(1)
 
                 try:
-                    if args.custom_art_bleed_crop > 0:
+                    if args.custom_art_bleed_crop != 0:
                         custom_art_dir = tempfile.TemporaryDirectory()
                         custom_images = _normalize_custom_art_images(
                             custom_folder,
