@@ -33,8 +33,11 @@ _FONT_PATH = Path(__file__).parent / "node" / "fonts" / "goudy-medieval.ttf"
 _CENTER_X = 300
 # Maximum half-width / vertical extent letters can occupy inside the front
 # card before they bleed into the back cards or the top/bottom borders.
+# Top/bottom measured from a viewBox-scale raster of 8ed-c.svg by sweeping
+# the centre column for the silver-gradient interior — the front card body
+# actually spans y=31..419, not the wider y=40..425 I'd eyeballed before.
 _FRONT_HALF_WIDTH = 130                   # → letters fit x ∈ [170, 430]
-_FRONT_TOP, _FRONT_BOTTOM = 40, 425       # vertical bounds inside the card
+_FRONT_TOP, _FRONT_BOTTOM = 31, 419       # vertical bounds inside the card
 
 # Uniform spacing — used for top, bottom, left, right margins AND the gap
 # between the two letters. Tuned by hand against the keyrune visual feel.
