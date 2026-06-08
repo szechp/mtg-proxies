@@ -767,6 +767,15 @@ function setLeanBottomInfo() {
 
 
 async function renderBottomInfo() {
+    // Zero-pad the collector number to 3 digits (matches CC's own GUI logic
+    // when #enableNewCollectorStyle is off — see creator-23.js:4417-4419).
+    // We don't try to append "/<printed_size>" because Scryfall populates
+    // printed_size inconsistently across sets (NEO has it, CMD/MKM/LTC don't),
+    // so a uniform "0037" reads cleaner than a sometimes-present "0037/302".
+    const numberEl = querySelector('#info-number');
+    if (numberEl && /^\d+$/.test(String(numberEl.value))) {
+        numberEl.value = String(numberEl.value).padStart(3, '0');
+    }
     // Mirror the first half of bottomInfoEdited (creator-23.js:2867) so the
     // engine's writeText path resolves the tokens against fresh values.
     global.card.infoNumber   = querySelector('#info-number').value;
