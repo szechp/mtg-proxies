@@ -28,9 +28,13 @@ from fontTools.ttLib import TTFont
 
 _FONT_PATH = Path(__file__).parent / "node" / "fonts" / "goudy-medieval.ttf"
 
-# Front (central) card bounds inside the 8th-edition shield SVG's 600×503
-# viewBox — eyeballed from a rasterised 8ed-c.svg and verified visually.
-_FRONT_CARD = (235, 40, 435, 425)   # x0, y0, x1, y1
+# Letters anchor to the viewBox's geometric centre — the 8ed shield is laid
+# out symmetrically around x=300, so the front card centres there by design.
+_CENTER_X = 300
+# Maximum half-width / vertical extent letters can occupy inside the front
+# card before they bleed into the back cards or the top/bottom borders.
+_FRONT_HALF_WIDTH = 130                   # → letters fit x ∈ [170, 430]
+_FRONT_TOP, _FRONT_BOTTOM = 40, 425       # vertical bounds inside the card
 
 # Uniform spacing — used for top, bottom, left, right margins AND the gap
 # between the two letters. Tuned by hand against the keyrune visual feel.
@@ -101,18 +105,15 @@ def _build_glyphs(letters: str, fill: str, font: TTFont) -> str:
     gap and left/right margins stay at ``_GAP``.
     """
     big_ch, small_ch = letters[0], letters[1]
-    fc_x0, fc_y0, fc_x1, fc_y1 = _FRONT_CARD
-    fc_h = fc_y1 - fc_y0
-    inner_w = (fc_x1 - fc_x0) - 2 * _GAP
-    cx = (fc_x0 + fc_x1) / 2
+    fc_h = _FRONT_BOTTOM - _FRONT_TOP
+    inner_w = 2 * _FRONT_HALF_WIDTH - 2 * _GAP
 
     usable_h = fc_h - 3 * _GAP
     small_target = usable_h / (_BIG_SMALL_RATIO + 1)
     big_target = small_target * _BIG_SMALL_RATIO
 
-    # Measure the *actual* rendered height each letter will take, so we can
-    # vertically centre the stack even when widths constrain a letter smaller
-    # than its height target.
+    # Measure each letter's actual rendered height (may be width-constrained
+    # smaller than its height target), so we can vertically centre the stack.
     def measured(ch: str, target: float) -> float:
         xmin, ymin, xmax, ymax, _ = _glyph_em_bbox(font, ch)
         if ymax == ymin or xmax == xmin:
@@ -124,11 +125,11 @@ def _build_glyphs(letters: str, fill: str, font: TTFont) -> str:
     small_h = measured(small_ch, small_target)
     stack_h = big_h + _GAP + small_h
     v_margin = (fc_h - stack_h) / 2
-    big_top = fc_y0 + v_margin
+    big_top = _FRONT_TOP + v_margin
     small_top = big_top + big_h + _GAP
 
-    big_path, _ = _letter_path(font, big_ch, big_target, inner_w, big_top, cx, fill)
-    small_path, _ = _letter_path(font, small_ch, small_target, inner_w, small_top, cx, fill)
+    big_path, _ = _letter_path(font, big_ch, big_target, inner_w, big_top, _CENTER_X, fill)
+    small_path, _ = _letter_path(font, small_ch, small_target, inner_w, small_top, _CENTER_X, fill)
     return f"{big_path}\n{small_path}"
 
 
