@@ -378,7 +378,10 @@ const SELECTOR_OVERRIDES = {
     // flying or reach.)") is italic on every real print; the engine doesn't
     // do this automatically without the checkbox.
     '#italicize-reminder-text':   { checked: true },
-    '#enableNewCollectorStyle':   { checked: false },
+    // True → setBottomInfoStyle picks the "{rarity} {number}" combined topLeft
+    // template (creator-23.js:247). False = separate number + rarity elements
+    // laid out left-then-right ("044 …  U") which looks wrong on modern cards.
+    '#enableNewCollectorStyle':   { checked: true },
     '#info-language':             { value: 'EN' },
     '#info-year':                 { value: String(new Date().getFullYear()) },
     '#set-symbol-source':         { value: 'official' },
@@ -767,14 +770,12 @@ function setLeanBottomInfo() {
 
 
 async function renderBottomInfo() {
-    // Zero-pad the collector number to 3 digits (matches CC's own GUI logic
-    // when #enableNewCollectorStyle is off — see creator-23.js:4417-4419).
-    // We don't try to append "/<printed_size>" because Scryfall populates
-    // printed_size inconsistently across sets (NEO has it, CMD/MKM/LTC don't),
-    // so a uniform "0037" reads cleaner than a sometimes-present "0037/302".
+    // Zero-pad the collector number to 4 digits (matches CC's own GUI logic
+    // when #enableNewCollectorStyle is on — see creator-23.js:4407-4409).
+    // Skipped on non-numeric collector numbers (token suffixes, "★1", etc.).
     const numberEl = querySelector('#info-number');
     if (numberEl && /^\d+$/.test(String(numberEl.value))) {
-        numberEl.value = String(numberEl.value).padStart(3, '0');
+        numberEl.value = String(numberEl.value).padStart(4, '0');
     }
     // Mirror the first half of bottomInfoEdited (creator-23.js:2867) so the
     // engine's writeText path resolves the tokens against fresh values.
