@@ -829,7 +829,7 @@ function resetCanvases() {
 
 // Render a single face: load the pack, import + select the indicated face,
 // upload the matching art, autoframe, drain images, draw, save.
-async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath }) {
+async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath, fontSizeDelta = 0 }) {
     resetCanvases();
     await ensurePackLoaded(packFile);
 
@@ -906,6 +906,14 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         if (global.card.text.rules) {
             global.card.text.rules.height = 0.253;
         }
+    }
+
+    // Per-card font-size delta (--font-size modeline). Applied after importCard so it
+    // stacks on top of whatever CC's auto-fit chose. Units: canvas pixels (canvas is
+    // 2814 px tall; rules text baseline is ~76–107 px, so ±5–15 is a visible nudge).
+    if (fontSizeDelta !== 0 && global.card.text && global.card.text.rules) {
+        global.card.text.rules.fontSize =
+            (parseInt(global.card.text.rules.fontSize) || 0) + fontSizeDelta;
     }
 
     // Pick the art URL for THIS face. processScryfallCard propagates the
@@ -1207,7 +1215,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     return outPath;
 }
 
-async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null } = {}) {
+async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fontSizeDelta = 0 } = {}) {
     const skipReason = shouldSkip(scry);
     if (skipReason) {
         throw new Error(`${skipReason} not supported on ${frame} frame — fall back to Scryfall image`);
@@ -1221,7 +1229,7 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null } = 
     global.processScryfallCard(scry, processed);
 
     const packs = packForLayout(scry.layout, frame);
-    return await renderFace({ packFile: packs.single, processed, faceIdx: 0, scry, outName: slug, frame, setSymbolPath });
+    return await renderFace({ packFile: packs.single, processed, faceIdx: 0, scry, outName: slug, frame, setSymbolPath, fontSizeDelta });
 }
 
 
@@ -1312,8 +1320,9 @@ async function runOneJob(job) {
 
         const frame = job.frame || '8th';
         const setSymbolPath = job.set_symbol_path || null;
+        const fontSizeDelta = (job.font_size != null) ? parseInt(job.font_size) : 0;
         const slug = slugify(job.name);
-        const outPath = await renderCard(scry, slug, { frame, setSymbolPath });
+        const outPath = await renderCard(scry, slug, { frame, setSymbolPath, fontSizeDelta });
         writeResponse({
             slot:   job.slot,
             status: 'ok',

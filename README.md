@@ -394,6 +394,7 @@ Supported verbs:
   - `--skip`: Exclude this specific card from the bulk Card Conjurer render. The card will land in `fallback.txt` and be rendered using its normal Scryfall scan.
   - `--scryfall`: Opt-out of MTGPics for this specific card, falling back to Scryfall's `art_crop` (useful if the MTGPics scan has a watermark).
   - `--set-symbol VALUE`: Override the rendered set symbol just for this card.
+  - `--font-size N`: Nudge the rules-text font size by `N` canvas pixels (e.g. `-10` to shrink overflowing text, `+10` to enlarge sparse text). Canvas is 2814 px tall; rules text is ~76–107 px, so ±5–15 is a noticeable step.
 - `#upscale [--upscale-model PATH]` — upscale this card via Real-ESRGAN. With
   `--upscale-model` it's an **always-on override**: even with `--upscale all` set
   globally, this card uses the specified model instead of the global default. Useful

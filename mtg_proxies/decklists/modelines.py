@@ -49,6 +49,10 @@ def _path_str(s: str) -> str:
     return s
 
 
+def _signed_int(s: str) -> int:
+    return int(s)
+
+
 # Google Drive file IDs: case-sensitive alphanumeric + dash + underscore,
 # typically 25-44 chars. Pattern from Google's URL spec — we use a generous
 # 20-60 to tolerate any minor format drift.
@@ -121,14 +125,19 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     # (PNG / JPG / JPEG / WEBP). Resolved against CWD; ``~`` is expanded. The path
     # is threaded into the harness's ``job.art_path``, which short-circuits the
     # built-in Scryfall ``art_crop`` fetch.
+    # ``--font-size N`` adds a signed pixel delta to the rules-text font size after
+    # CC's auto-fit. Canvas is 2814 px tall; rules text is ~76 px, so ±5–15 is a
+    # noticeable nudge. Use negative values to shrink text that overflows, positive
+    # to enlarge text on cards with very short oracle text.
     "cardconjourer": {
         "--8th":        NO_VALUE,
         "--modern":     NO_VALUE,
         "--upscale":    NO_VALUE,
         "--scryfall":   NO_VALUE,
-        "--skip":    NO_VALUE,
+        "--skip":       NO_VALUE,
         "--set-symbol": _path_str,
         "--custom-art": _path_str,
+        "--font-size":  _signed_int,
     },
 }
 

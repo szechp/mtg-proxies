@@ -82,6 +82,7 @@ def build_job(
     art_path: str | None = None,
     upscale: bool = False,
     set_symbol_path: str | None = None,
+    font_size: int | None = None,
 ) -> dict[str, Any]:
     """Build one ND-JSON job dict for the node harness.
 
@@ -117,6 +118,8 @@ def build_job(
         job["upscale"] = True
     if set_symbol_path is not None:
         job["set_symbol_path"] = set_symbol_path
+    if font_size is not None:
+        job["font_size"] = font_size
     return job
 
 

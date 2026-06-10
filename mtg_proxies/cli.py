@@ -1154,6 +1154,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     slot_scryfall_override: dict[int, bool] = {}
     slot_skip: set[int] = set()
     slot_set_symbol: dict[int, str] = {}
+    slot_font_size: dict[int, int] = {}
     for slot_int, card in slot_to_card.items():
         if not card.modeline:
             continue
@@ -1167,6 +1168,9 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                 sym_val = d.flags.get("--set-symbol")
                 if sym_val:
                     slot_set_symbol[slot_int] = sym_val
+                fs_val = d.flags.get("--font-size")
+                if fs_val is not None:
+                    slot_font_size[slot_int] = fs_val
 
     # Resolve the deck-wide / per-card ``--set-symbol`` value to an absolute
     # path per slot. Resolution happens here (not inside _prepare_each) so a
@@ -1196,6 +1200,9 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         # return branch below so it survives whichever art-source path fires.
         sym_override = resolved_set_symbol_by_slot.get(slot_int)
         extras: dict = {"set_symbol_path": sym_override} if sym_override else {}
+        fs_delta = slot_font_size.get(slot_int)
+        if fs_delta is not None:
+            extras["font_size"] = fs_delta
 
         # Per-card art resolution.
         #
