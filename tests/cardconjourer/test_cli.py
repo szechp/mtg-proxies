@@ -253,11 +253,11 @@ def test_main_cardconjourer_scryfall_flag_skips_mtgpics(tmp_path: Path) -> None:
 
 
 def test_main_cardconjourer_skip_cc_modeline_routes_to_fallback(tmp_path: Path) -> None:
-    """``#cardconjourer --skip-cc`` modeline → card never reaches the harness, synthesized as skip."""
+    """``#cardconjourer --skip`` modeline → card never reaches the harness, synthesized as skip."""
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"
-    deck.write_text("1 Murder #cardconjourer --skip-cc\n")
+    deck.write_text("1 Murder #cardconjourer --skip\n")
     outdir = tmp_path / "out"
 
     with (
@@ -280,7 +280,7 @@ def test_main_cardconjourer_skip_cc_modeline_routes_to_fallback(tmp_path: Path) 
 
         assert len(responses) == 1
         assert responses[0]["status"] == "skip"
-        assert "skip-cc" in responses[0]["reason"]
+        assert "--skip" in responses[0]["reason"]
         mock_popen.assert_not_called()
 
 

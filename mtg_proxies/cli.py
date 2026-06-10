@@ -1145,14 +1145,14 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
 
     # Check each card's modeline for ``#cardconjourer --scryfall`` (per-card
     # opt-out of MTGPics on watermark-affected scans without flipping the
-    # whole-deck ``--scryfall`` flag), ``#cardconjourer --skip-cc`` (per-card
+    # whole-deck ``--scryfall`` flag), ``#cardconjourer --skip`` (per-card
     # opt-out of CC rendering entirely — the card lands in fallback.txt and is
     # rendered via the normal Scryfall scan), and ``#cardconjourer --set-symbol
     # VALUE`` (per-card set-symbol override beating the deck-wide ``--set-symbol``
     # flag for that slot only).
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
     slot_scryfall_override: dict[int, bool] = {}
-    slot_skip_cc: set[int] = set()
+    slot_skip: set[int] = set()
     slot_set_symbol: dict[int, str] = {}
     for slot_int, card in slot_to_card.items():
         if not card.modeline:
@@ -1162,8 +1162,8 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
             if d.verb == "cardconjourer":
                 if d.flags.get("--scryfall"):
                     slot_scryfall_override[slot_int] = True
-                if d.flags.get("--skip-cc"):
-                    slot_skip_cc.add(slot_int)
+                if d.flags.get("--skip"):
+                    slot_skip.add(slot_int)
                 sym_val = d.flags.get("--set-symbol")
                 if sym_val:
                     slot_set_symbol[slot_int] = sym_val
@@ -1279,25 +1279,25 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
 
         from tqdm import tqdm
 
-        # Pre-skip cards whose modeline carries ``#cardconjourer --skip-cc``.
+        # Pre-skip cards whose modeline carries ``#cardconjourer --skip``.
         # These never reach the harness — synthesize a skip response so
         # render_deck routes them into fallback.txt for the normal Scryfall
         # scan pipeline.
-        skip_cc_responses: list[dict] = []
+        skip_responses: list[dict] = []
         harness_jobs: list[dict] = []
         for job in jobs:
-            if int(job["slot"]) in slot_skip_cc:
-                skip_cc_responses.append({
+            if int(job["slot"]) in slot_skip:
+                skip_responses.append({
                     "slot": job["slot"],
                     "status": "skip",
-                    "reason": "modeline #cardconjourer --skip-cc",
+                    "reason": "modeline #cardconjourer --skip",
                 })
             else:
                 harness_jobs.append(job)
 
         # If every remaining job is skipped, don't spawn node at all.
         if not harness_jobs:
-            return skip_cc_responses
+            return skip_responses
 
         if not cc_cache.is_dir():
             _die(
@@ -1400,7 +1400,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                 f"({len(responses)}/{len(jobs)} cards processed before the crash)",
                 file=sys.stderr,
             )
-        return responses + skip_cc_responses
+        return responses + skip_responses
 
     summary = cc_runner.render_deck(
         cards,

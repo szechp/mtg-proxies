@@ -382,7 +382,7 @@ Supported verbs:
   ```
   1 Sol Ring (SOC) 128 #mpcfill --identifier 1nUk_jZc6JtMxr-WrFlqHO5MGNkAS--XS --bleed-crop 4
   ```
-- `#cardconjourer --8th | --modern | --retro [--upscale] [--skip-cc] [--scryfall] [--set-symbol VALUE]` — render this card via the headless
+- `#cardconjourer --8th | --modern | --retro [--upscale] [--skip] [--scryfall] [--set-symbol VALUE]` — render this card via the headless
   [Card Conjurer](https://cardconjurer.com) Node harness and use the resulting PNG
   in place of the Scryfall scan. Frame selectors: `--8th` (modern 8th
   edition base frame), `--modern` (M15 frame), `--retro` (legacy pre-2003 look). All flagged cards in the decklist
@@ -391,7 +391,7 @@ Supported verbs:
   `make cardconjurer` (one-time lazy clone of the renderer source).
 
   Extra modifiers for this directive:
-  - `--skip-cc`: Exclude this specific card from the bulk Card Conjurer render. The card will land in `fallback.txt` and be rendered using its normal Scryfall scan.
+  - `--skip`: Exclude this specific card from the bulk Card Conjurer render. The card will land in `fallback.txt` and be rendered using its normal Scryfall scan.
   - `--scryfall`: Opt-out of MTGPics for this specific card, falling back to Scryfall's `art_crop` (useful if the MTGPics scan has a watermark).
   - `--set-symbol VALUE`: Override the rendered set symbol just for this card.
 - `#upscale [--upscale-model PATH]` — upscale this card via Real-ESRGAN. With
