@@ -194,26 +194,26 @@ def test_render_deck_writes_pngs_fallback_and_report(tmp_path: Path) -> None:
     # rename/move it into OUTDIR), skips the saga.
     pngs_dir = tmp_path / "harness_out"
     pngs_dir.mkdir()
-    (pngs_dir / "0001-murder.png").write_bytes(b"PNG-bytes-1")
-    (pngs_dir / "0003-anje_falkenrath.png").write_bytes(b"PNG-bytes-2")
+    (pngs_dir / "murder.png").write_bytes(b"PNG-bytes-1")
+    (pngs_dir / "anje_falkenrath.png").write_bytes(b"PNG-bytes-2")
 
     def fake_run_harness(jobs: list[dict]) -> list[dict]:
         # Verify the runner serialised the jobs the way we expect
         assert [j["name"] for j in jobs] == ["Murder", "Urza's Saga", "Anje Falkenrath"]
         assert all(j["frame"] == "8th" for j in jobs)
         return [
-            {"slot": "0001", "status": "ok",   "out": str(pngs_dir / "0001-murder.png"), "ms": 1240},
+            {"slot": "0001", "status": "ok",   "out": str(pngs_dir / "murder.png"), "ms": 1240},
             {"slot": "0002", "status": "skip", "reason": "layout 'saga'"},
-            {"slot": "0003", "status": "ok",   "out": str(pngs_dir / "0003-anje_falkenrath.png"), "ms": 1100},
+            {"slot": "0003", "status": "ok",   "out": str(pngs_dir / "anje_falkenrath.png"), "ms": 1100},
         ]
 
     outdir = tmp_path / "out"
     summary = render_deck(cards, outdir, frame="8th", run_harness=fake_run_harness)
 
-    # PNGs landed at slot-prefixed names
-    assert (outdir / "0001-murder.png").read_bytes() == b"PNG-bytes-1"
-    assert (outdir / "0003-anje_falkenrath.png").read_bytes() == b"PNG-bytes-2"
-    assert not (outdir / "0002-urzas_saga.png").exists()
+    # PNGs landed at name-slug filenames (no slot prefix)
+    assert (outdir / "murder.png").read_bytes() == b"PNG-bytes-1"
+    assert (outdir / "anje_falkenrath.png").read_bytes() == b"PNG-bytes-2"
+    assert not (outdir / "urzas_saga.png").exists()
 
     # fallback.txt has the skipped saga in decklist format
     fallback = (outdir / "fallback.txt").read_text()
@@ -349,13 +349,13 @@ def test_slug_matches_harness_js() -> None:
 
 
 def test_render_deck_skips_card_with_existing_png(tmp_path: Path) -> None:
-    """If <outdir>/<NNNN>-<slug>.png already exists, the card is reported ok and not enqueued."""
+    """If <outdir>/<slug>.png already exists, the card is reported ok and not enqueued."""
     from mtg_proxies.cardconjourer.runner import render_deck
 
     outdir = tmp_path / "out"
     outdir.mkdir()
     # Pre-seed slot 2 as already done.
-    (outdir / "0002-already_done.png").write_bytes(b"OLD")
+    (outdir / "already_done.png").write_bytes(b"OLD")
 
     enqueued: list[dict] = []
 
@@ -365,7 +365,7 @@ def test_render_deck_skips_card_with_existing_png(tmp_path: Path) -> None:
         for j in jobs:
             slot = j["slot"]
             name = j["name"]
-            png = outdir / f"{slot}-{name.lower().replace(' ', '_')}.png"
+            png = outdir / f"{name.lower().replace(' ', '_')}.png"
             png.write_bytes(b"NEW")
             responses.append({"slot": slot, "status": "ok", "out": str(png), "ms": 5})
         return responses
@@ -378,7 +378,7 @@ def test_render_deck_skips_card_with_existing_png(tmp_path: Path) -> None:
     assert summary["ok"] == 3
     assert summary["skipped"] == 0
     # Pre-existing PNG is preserved untouched.
-    assert (outdir / "0002-already_done.png").read_bytes() == b"OLD"
+    assert (outdir / "already_done.png").read_bytes() == b"OLD"
     # report.csv reflects slot 2 as ok with the existing filename.
     report = (outdir / "report.csv").read_text()
     assert "0002,Already Done,ok" in report
@@ -391,8 +391,8 @@ def test_render_deck_redoes_when_png_deleted(tmp_path: Path) -> None:
     outdir = tmp_path / "out"
     outdir.mkdir()
     # Seed both PNGs as already done so the first pass is a no-op...
-    (outdir / "0001-murder.png").write_bytes(b"OLD")
-    (outdir / "0002-beast_within.png").write_bytes(b"OLD")
+    (outdir / "murder.png").write_bytes(b"OLD")
+    (outdir / "beast_within.png").write_bytes(b"OLD")
 
     enqueued: list[dict] = []
 
@@ -405,7 +405,7 @@ def test_render_deck_redoes_when_png_deleted(tmp_path: Path) -> None:
     assert enqueued == []
 
     # Now delete one PNG and re-run — only the deleted slot should be sent.
-    (outdir / "0001-murder.png").unlink()
+    (outdir / "murder.png").unlink()
     render_deck([(1, "Murder"), (1, "Beast Within")], outdir, frame="8th", run_harness=fake_run)
     assert [j["name"] for j in enqueued] == ["Murder"]
     assert [j["slot"] for j in enqueued] == ["0001"]
@@ -432,7 +432,7 @@ def test_render_deck_prepare_each_called_per_slot_with_merged_fields(tmp_path: P
             extras = prepare(slot_int) if prepare else {}
             merged = {**j, **extras}
             sent_jobs.append(merged)
-            png = tmp_path / "out" / f"{j['slot']}-{j['name'].lower().replace(' ', '_')}.png"
+            png = tmp_path / "out" / f"{j['name'].lower().replace(' ', '_')}.png"
             png.parent.mkdir(parents=True, exist_ok=True)
             png.write_bytes(b"PNG")
             responses.append({"slot": j["slot"], "status": "ok", "out": str(png), "ms": 1})
@@ -458,7 +458,7 @@ def test_render_deck_prepare_each_skipped_for_existing_pngs(tmp_path: Path) -> N
 
     outdir = tmp_path / "out"
     outdir.mkdir()
-    (outdir / "0001-murder.png").write_bytes(b"OLD")  # slot 1 already done
+    (outdir / "murder.png").write_bytes(b"OLD")  # slot 1 already done
 
     prepare_calls: list[int] = []
 
@@ -471,7 +471,7 @@ def test_render_deck_prepare_each_skipped_for_existing_pngs(tmp_path: Path) -> N
         for j in jobs:
             if prepare:
                 prepare(int(j["slot"]))
-            png = outdir / f"{j['slot']}-{j['name'].lower().replace(' ', '_')}.png"
+            png = outdir / f"{j['name'].lower().replace(' ', '_')}.png"
             png.write_bytes(b"NEW")
             responses.append({"slot": j["slot"], "status": "ok", "out": str(png), "ms": 0})
         return responses

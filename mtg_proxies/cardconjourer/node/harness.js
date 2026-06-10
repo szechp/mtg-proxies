@@ -1266,7 +1266,7 @@ async function main() {
 // Reads one job per line on stdin:
 //   {"slot": "0001", "name": "Murder", "frame": "8th", "art_path": "/abs/.png"?}
 // Writes one response per line on stdout:
-//   {"slot": "0001", "status": "ok",   "out": "/abs/0001-murder.png", "ms": 1240}
+//   {"slot": "0001", "status": "ok",   "out": "/abs/murder.png", "ms": 1240}
 //   {"slot": "0003", "status": "skip", "reason": "layout 'saga' …"}
 //
 // One process for the whole deck — engine boot (~1-2 s) amortises across all
@@ -1312,7 +1312,7 @@ async function runOneJob(job) {
 
         const frame = job.frame || '8th';
         const setSymbolPath = job.set_symbol_path || null;
-        const slug = job.slot + '-' + slugify(job.name);
+        const slug = slugify(job.name);
         const outPath = await renderCard(scry, slug, { frame, setSymbolPath });
         writeResponse({
             slot:   job.slot,

@@ -58,7 +58,7 @@ def slug(name: str) -> str:
     Lowercase, every non-alphanumeric run collapsed to ``_``, no leading or
     trailing underscores. Must match the JS implementation exactly so the
     Python side can predict the harness's per-card output filename
-    (``<NNNN>-<slug>.png``) and pre-seed its INPUTS cache.
+    (``<slug>.png``) and pre-seed its INPUTS cache.
     """
     return re.sub(r"^_+|_+$", "", re.sub(r"[^a-z0-9]+", "_", name.lower()))
 
@@ -262,7 +262,7 @@ def render_deck(
     for i, (_count, name) in enumerate(cards):
         slot_int = i + 1
         slot_str = f"{slot_int:04d}"
-        expected = outdir / f"{slot_str}-{slug(name)}.png"
+        expected = outdir / f"{slug(name)}.png"
         # ``is_file() and st_size > 0`` — guard against 0-byte / truncated PNGs
         # left behind by a previous run that crashed mid-write. Without this a
         # corrupt cache file silently passes as "ok" and the user has to delete
