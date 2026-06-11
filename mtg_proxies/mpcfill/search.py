@@ -22,10 +22,6 @@ _SEARCH_URL = "https://mpcfill.com/2/exploreSearch/"
 _PAGE_SIZE = 50
 _TIMEOUT_S = 30.0
 _DFC_RE = re.compile(r"\s*//.*$")
-# MPC Autofill currently has ~275 known sources; enable all so no community
-# uploads are filtered out. The value comes from the gist; safe to over-count.
-_SOURCE_COUNT = 275
-
 
 def _front_name(card_name: str) -> str:
     """Strip the back-face portion of a DFC name."""
@@ -95,7 +91,10 @@ def search_cards(
                     "excludesTags": ["NSFW"],
                 },
                 "sourceSettings": {
-                    "sources": [[i + 1, True] for i in range(_SOURCE_COUNT)],
+                    # null means "all sources" on the server side. A static list
+                    # of IDs 1..275 (from the gist) causes 500s when the server's
+                    # source count differs — null is the safe default.
+                    "sources": None,
                 },
             },
         }
