@@ -480,3 +480,112 @@ def test_cardconjourer_fonts_are_bundled_in_repo() -> None:
     ]
     missing = [f for f in expected if not (fonts_dir / f).is_file()]
     assert not missing, f"missing bundled fonts: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# --dfc-split (render DFC faces as two separate cards)
+# ---------------------------------------------------------------------------
+
+
+def test_main_cardconjourer_help_mentions_dfc_split(capsys: pytest.CaptureFixture) -> None:
+    """`mtg-proxies cardconjourer --help` documents --dfc-split."""
+    from mtg_proxies.cli import main
+
+    with patch("sys.argv", ["mtg-proxies", "cardconjourer", "--help"]), pytest.raises(SystemExit):
+        main()
+
+    assert "--dfc-split" in capsys.readouterr().out
+
+
+def test_main_cardconjourer_dfc_split_modeline_marks_slot(tmp_path: Path) -> None:
+    """`#cardconjourer --dfc-split` on a transform card reaches render_deck as its slot number."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text(
+        "1 Murder\n"
+        "1 Delver of Secrets // Insectile Aberration #cardconjourer --dfc-split\n"
+    )
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 2, "skipped": 0, "total": 2}
+        main()
+
+    assert mock_render.call_args.kwargs.get("dfc_split_slots") == {2}
+
+
+def test_main_cardconjourer_dfc_split_deck_flag_marks_only_dfc_layouts(tmp_path: Path) -> None:
+    """Deck-wide --dfc-split applies to every transform/modal_dfc card but not normal cards."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text(
+        "1 Murder\n"
+        "1 Delver of Secrets // Insectile Aberration\n"
+    )
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", "--dfc-split", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 2, "skipped": 0, "total": 2}
+        main()
+
+    assert mock_render.call_args.kwargs.get("dfc_split_slots") == {2}
+
+
+def test_main_cardconjourer_dfc_split_modeline_noop_on_normal_card(tmp_path: Path) -> None:
+    """`--dfc-split` on a single-faced card is ignored — no slot marked."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder #cardconjourer --dfc-split\n")
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
+        main()
+
+    assert mock_render.call_args.kwargs.get("dfc_split_slots") == set()
+
+
+def test_main_cardconjourer_dfc_split_prepare_each_returns_per_face_art(tmp_path: Path) -> None:
+    """Split slots resolve each face's art separately (no flip composite, no MTGPics)."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Delver of Secrets // Insectile Aberration #cardconjourer --dfc-split\n")
+
+    fetched: list[str] = []
+
+    def fake_get_image(url: str) -> str:
+        fetched.append(url)
+        p = tmp_path / f"art{len(fetched)}.jpg"
+        p.write_bytes(b"JPG")
+        return str(p)
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.scryfall.get_image", side_effect=fake_get_image),
+        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art") as mock_mtgpics,
+        patch("mtg_proxies.cli._composite_dfc_art") as mock_composite,
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
+        main()
+
+        prepare_each = mock_render.call_args.kwargs.get("prepare_each")
+        assert callable(prepare_each)
+        extras = prepare_each(1)
+
+    # Two separate face fetches; front art + back art ride distinct job fields.
+    assert len(fetched) == 2
+    assert extras["art_path"] == str(tmp_path / "art1.jpg")
+    assert extras["art_path_back"] == str(tmp_path / "art2.jpg")
+    mock_composite.assert_not_called()
+    mock_mtgpics.assert_not_called()

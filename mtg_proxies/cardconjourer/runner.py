@@ -41,14 +41,19 @@ class FallbackRow(TypedDict):
     reason: str
 
 
-class ReportRow(TypedDict):
-    """Row shape consumed by :func:`format_report_csv`."""
+class ReportRow(TypedDict, total=False):
+    """Row shape consumed by :func:`format_report_csv`.
+
+    ``png_back`` is only set for ``dfc_split`` cards (the back-face PNG);
+    all other keys are required.
+    """
 
     slot: str
     name: str
     status: str
     reason: str
     png: str
+    png_back: str
     ms: int
 
 
@@ -83,6 +88,7 @@ def build_job(
     upscale: bool = False,
     set_symbol_path: str | None = None,
     font_size: int | None = None,
+    dfc_split: bool = False,
 ) -> dict[str, Any]:
     """Build one ND-JSON job dict for the node harness.
 
@@ -106,6 +112,10 @@ def build_job(
     8th-only ``8ed-<rarity>.svg`` hardcode and the engine's per-set fetch.
     Resolved on the Python side via ``resolve_set_symbol`` so the harness only
     ever sees a path string.
+
+    ``dfc_split`` asks the harness to render a double-faced card as two
+    separate full-size cards (``<slug>.png`` + ``<slug>_back.png``, response
+    carries ``out`` + ``out_back``) instead of the default Kamigawa-flip merge.
     """
     job: dict[str, Any] = {
         "slot": f"{slot:04d}",
@@ -120,6 +130,8 @@ def build_job(
         job["set_symbol_path"] = set_symbol_path
     if font_size is not None:
         job["font_size"] = font_size
+    if dfc_split:
+        job["dfc_split"] = True
     return job
 
 
@@ -229,6 +241,7 @@ def render_deck(
     frame: str = "8th",
     upscale: bool = False,
     prepare_each: PrepareEach | None = None,
+    dfc_split_slots: set[int] | None = None,
 ) -> dict[str, int]:
     """Render a whole decklist via the headless Card Conjurer harness.
 
@@ -252,30 +265,43 @@ def render_deck(
     Skipped cards are recorded in ``outdir/fallback.txt`` (decklist format,
     so the user can pipe it into ``mtg-proxies print``) and ``outdir/report.csv``.
 
+    ``dfc_split_slots`` (1-based slot ints) marks cards to render as two
+    separate faces — their jobs carry ``dfc_split: true``, their cache-hit
+    check requires BOTH ``<slug>.png`` and ``<slug>_back.png``, and their ok
+    responses carry an extra ``out_back`` path that is copied alongside ``out``.
+
     ``run_harness`` is injectable so tests can stub the node subprocess.
     """
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+    dfc_split_slots = dfc_split_slots or set()
 
-    # Build the job list, skipping any card whose output PNG already exists.
+    # ``is_file() and st_size > 0`` — guard against 0-byte / truncated PNGs
+    # left behind by a previous run that crashed mid-write. Without this a
+    # corrupt cache file silently passes as "ok" and the user has to delete
+    # it by hand to force a re-render.
+    def _cached(p: Path) -> bool:
+        return p.is_file() and p.stat().st_size > 0
+
+    # Build the job list, skipping any card whose output PNG(s) already exist.
     # Pre-existing PNGs are recorded as synthetic ok responses so the summary,
-    # report.csv, and fallback.txt see them.
+    # report.csv, and fallback.txt see them. Split slots only count as cached
+    # when both faces are on disk — a front-only leftover re-renders the card.
     jobs: list[dict[str, Any]] = []
     pre_existing: list[dict[str, Any]] = []
     for i, (_count, name) in enumerate(cards):
         slot_int = i + 1
         slot_str = f"{slot_int:04d}"
+        split = slot_int in dfc_split_slots
         expected = outdir / f"{slug(name)}.png"
-        # ``is_file() and st_size > 0`` — guard against 0-byte / truncated PNGs
-        # left behind by a previous run that crashed mid-write. Without this a
-        # corrupt cache file silently passes as "ok" and the user has to delete
-        # it by hand to force a re-render.
-        if expected.is_file() and expected.stat().st_size > 0:
-            pre_existing.append({
-                "slot": slot_str, "status": "ok", "out": str(expected), "ms": 0,
-            })
+        expected_back = outdir / f"{slug(name)}_back.png"
+        if _cached(expected) and (not split or _cached(expected_back)):
+            resp: dict[str, Any] = {"slot": slot_str, "status": "ok", "out": str(expected), "ms": 0}
+            if split:
+                resp["out_back"] = str(expected_back)
+            pre_existing.append(resp)
             continue
-        jobs.append(build_job(slot=slot_int, name=name, frame=frame, upscale=upscale))
+        jobs.append(build_job(slot=slot_int, name=name, frame=frame, upscale=upscale, dfc_split=split))
 
     if jobs:
         # Support both the simple (jobs,) signature and the new (jobs, prepare) one.
@@ -319,9 +345,16 @@ def render_deck(
             # is left intact for debugging.
             if src.resolve() != dst.resolve():
                 shutil.copyfile(src, dst)
+            back_name = ""
+            if r.get("out_back"):
+                src_back = Path(r["out_back"])
+                dst_back = outdir / src_back.name
+                if src_back.resolve() != dst_back.resolve():
+                    shutil.copyfile(src_back, dst_back)
+                back_name = dst_back.name
             report_rows.append({
                 "slot": slot_str, "name": name, "status": "ok",
-                "reason": "", "png": dst.name, "ms": r.get("ms", 0),
+                "reason": "", "png": dst.name, "png_back": back_name, "ms": r.get("ms", 0),
             })
             ok += 1
         else:
@@ -342,11 +375,12 @@ def format_report_csv(rows: Iterable[ReportRow]) -> str:
     """Render a list of per-card result dicts as CSV.
 
     Columns: slot, name, status (ok/skip), reason, png (filename or empty),
-    ms (render time). Card names with commas are quoted by ``csv.writer``.
+    png_back (back-face filename, dfc_split cards only), ms (render time).
+    Card names with commas are quoted by ``csv.writer``.
     """
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n")
-    writer.writerow(["slot", "name", "status", "reason", "png", "ms"])
+    writer.writerow(["slot", "name", "status", "reason", "png", "png_back", "ms"])
     for row in rows:
         writer.writerow([
             row["slot"],
@@ -354,6 +388,7 @@ def format_report_csv(rows: Iterable[ReportRow]) -> str:
             row["status"],
             row["reason"],
             row["png"],
+            row.get("png_back", ""),
             row["ms"],
         ])
     return buf.getvalue()

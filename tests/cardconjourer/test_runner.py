@@ -60,12 +60,31 @@ def test_format_report_csv_columns() -> None:
 
     reader = csv.reader(io.StringIO(out))
     header = next(reader)
-    assert header == ["slot", "name", "status", "reason", "png", "ms"]
+    assert header == ["slot", "name", "status", "reason", "png", "png_back", "ms"]
     body = list(reader)
     assert body == [
-        ["1", "Murder",      "ok",   "",              "0001-murder.png", "1240"],
-        ["2", "Urza's Saga", "skip", "layout 'saga'", "",                "0"],
+        ["1", "Murder",      "ok",   "",              "0001-murder.png", "", "1240"],
+        ["2", "Urza's Saga", "skip", "layout 'saga'", "",                "", "0"],
     ]
+
+
+def test_format_report_csv_png_back_column() -> None:
+    """Split-DFC rows carry the back-face PNG in its own column; plain rows leave it empty."""
+    from mtg_proxies.cardconjourer.runner import format_report_csv
+
+    rows = [
+        {"slot": 1, "name": "Etali, Primal Conqueror // Etali, Primal Sickness", "status": "ok",
+         "reason": "", "png": "etali_primal_conqueror_etali_primal_sickness.png",
+         "png_back": "etali_primal_conqueror_etali_primal_sickness_back.png", "ms": 2400},
+    ]
+
+    out = format_report_csv(rows)
+
+    reader = csv.reader(io.StringIO(out))
+    next(reader)  # header
+    [parsed] = list(reader)
+    assert parsed[4] == "etali_primal_conqueror_etali_primal_sickness.png"
+    assert parsed[5] == "etali_primal_conqueror_etali_primal_sickness_back.png"
 
 
 def test_format_report_csv_quotes_commas_in_names() -> None:
@@ -136,6 +155,25 @@ def test_build_job_set_symbol_path_omitted_when_none() -> None:
     job = build_job(slot=1, name="Murder", frame="8th")
 
     assert "set_symbol_path" not in job
+
+
+def test_build_job_dfc_split() -> None:
+    """``dfc_split=True`` marks the job so the harness renders the faces separately."""
+    from mtg_proxies.cardconjourer.runner import build_job
+
+    job = build_job(slot=1, name="Etali, Primal Conqueror // Etali, Primal Sickness",
+                    frame="8th", dfc_split=True)
+
+    assert job["dfc_split"] is True
+
+
+def test_build_job_dfc_split_omitted_by_default() -> None:
+    """No ``dfc_split`` key unless requested — keeps job dicts lean and the harness default-flip."""
+    from mtg_proxies.cardconjourer.runner import build_job
+
+    job = build_job(slot=1, name="Murder", frame="8th")
+
+    assert "dfc_split" not in job
 
 
 # Response parser
@@ -223,7 +261,7 @@ def test_render_deck_writes_pngs_fallback_and_report(tmp_path: Path) -> None:
     # Pin the count too so a future bug that emits a spurious extra row would
     # surface here instead of silently passing the substring checks.
     report = (outdir / "report.csv").read_text()
-    assert report.startswith("slot,name,status,reason,png,ms\n")
+    assert report.startswith("slot,name,status,reason,png,png_back,ms\n")
     assert report.count("\n") == 4
     assert "0001,Murder,ok" in report
     assert "0002,Urza's Saga,skip,layout 'saga'" in report
@@ -486,3 +524,96 @@ def test_render_deck_prepare_each_skipped_for_existing_pngs(tmp_path: Path) -> N
 
     # Slot 1 was skipped entirely. prepare_each only fired for slot 2.
     assert prepare_calls == [2]
+
+# --- dfc-split: two output PNGs per card ------------------------------------
+
+def test_render_deck_dfc_split_flag_on_jobs_and_both_pngs_copied(tmp_path: Path) -> None:
+    """Split slots send ``dfc_split`` to the harness; ``out`` + ``out_back`` both land in outdir."""
+    from mtg_proxies.cardconjourer.runner import render_deck
+
+    pngs_dir = tmp_path / "harness_out"
+    pngs_dir.mkdir()
+    (pngs_dir / "murder.png").write_bytes(b"FRONT-ONLY")
+    (pngs_dir / "etali_primal_conqueror_etali_primal_sickness.png").write_bytes(b"FRONT")
+    (pngs_dir / "etali_primal_conqueror_etali_primal_sickness_back.png").write_bytes(b"BACK")
+
+    sent_jobs: list[dict] = []
+
+    def fake_run(jobs: list[dict]) -> list[dict]:
+        sent_jobs.extend(jobs)
+        return [
+            {"slot": "0001", "status": "ok", "out": str(pngs_dir / "murder.png"), "ms": 1},
+            {"slot": "0002", "status": "ok",
+             "out": str(pngs_dir / "etali_primal_conqueror_etali_primal_sickness.png"),
+             "out_back": str(pngs_dir / "etali_primal_conqueror_etali_primal_sickness_back.png"),
+             "ms": 2},
+        ]
+
+    outdir = tmp_path / "out"
+    cards = [(1, "Murder"), (1, "Etali, Primal Conqueror // Etali, Primal Sickness")]
+    summary = render_deck(cards, outdir, frame="8th", run_harness=fake_run, dfc_split_slots={2})
+
+    # Only slot 2 carries the flag.
+    assert "dfc_split" not in sent_jobs[0]
+    assert sent_jobs[1]["dfc_split"] is True
+
+    # Both faces landed in outdir.
+    assert (outdir / "etali_primal_conqueror_etali_primal_sickness.png").read_bytes() == b"FRONT"
+    assert (outdir / "etali_primal_conqueror_etali_primal_sickness_back.png").read_bytes() == b"BACK"
+
+    # report.csv: back PNG in its own column on the split row, empty elsewhere.
+    report = (outdir / "report.csv").read_text()
+    assert ",etali_primal_conqueror_etali_primal_sickness.png,etali_primal_conqueror_etali_primal_sickness_back.png," in report
+    assert ",murder.png,," in report
+    assert summary["ok"] == 2
+
+
+def test_render_deck_dfc_split_cache_hit_requires_both_files(tmp_path: Path) -> None:
+    """A split slot with only the front PNG on disk is re-sent; with both files it is skipped."""
+    from mtg_proxies.cardconjourer.runner import render_deck, slug
+
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    name = "Etali, Primal Conqueror // Etali, Primal Sickness"
+    front = outdir / f"{slug(name)}.png"
+    back = outdir / f"{slug(name)}_back.png"
+    front.write_bytes(b"FRONT")  # back missing → re-render
+
+    enqueued: list[dict] = []
+
+    def fake_run(jobs: list[dict]) -> list[dict]:
+        enqueued.extend(jobs)
+        for j in jobs:
+            back.write_bytes(b"BACK")
+            yield_resp = {"slot": j["slot"], "status": "ok", "out": str(front),
+                          "out_back": str(back), "ms": 1}
+        return [yield_resp] if jobs else []
+
+    render_deck([(1, name)], outdir, frame="8th", run_harness=fake_run, dfc_split_slots={1})
+    assert [j["slot"] for j in enqueued] == ["0001"]
+
+    # Second run: both files exist → cache hit, nothing sent, still reported ok.
+    enqueued.clear()
+    summary = render_deck([(1, name)], outdir, frame="8th", run_harness=fake_run, dfc_split_slots={1})
+    assert enqueued == []
+    assert summary["ok"] == 1
+    report = (outdir / "report.csv").read_text()
+    assert f"{slug(name)}_back.png" in report
+
+
+def test_render_deck_non_split_cache_hit_ignores_back_file(tmp_path: Path) -> None:
+    """Without dfc_split_slots the cache-hit check is unchanged: front PNG alone skips the slot."""
+    from mtg_proxies.cardconjourer.runner import render_deck
+
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    (outdir / "murder.png").write_bytes(b"OLD")
+
+    enqueued: list[dict] = []
+
+    def fake_run(jobs: list[dict]) -> list[dict]:
+        enqueued.extend(jobs)
+        return []
+
+    render_deck([(1, "Murder")], outdir, frame="8th", run_harness=fake_run)
+    assert enqueued == []

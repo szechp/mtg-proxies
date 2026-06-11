@@ -619,6 +619,29 @@ def test_modeline_parse_cardconjourer_custom_art_quoted_path_with_spaces() -> No
     assert warnings == []
 
 
+def test_modeline_parse_cardconjourer_dfc_split() -> None:
+    """`--dfc-split` registers as a no-value flag (render DFC faces as two separate cards)."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjourer --dfc-split")
+
+    assert len(directives) == 1
+    assert directives[0].verb == "cardconjourer"
+    assert directives[0].flags == {"--dfc-split": True}
+    assert warnings == []
+
+
+def test_modeline_parse_cardconjourer_dfc_split_stacks_with_frame() -> None:
+    """`--dfc-split` composes with other cardconjourer flags on the same segment."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjourer --8th --dfc-split --font-size -4")
+
+    assert len(directives) == 1
+    assert directives[0].flags == {"--8th": True, "--dfc-split": True, "--font-size": -4}
+    assert warnings == []
+
+
 def test_modeline_parse_cardconjourer_mutex_frames_warns_and_clears() -> None:
     """`#cardconjourer --8th --modern` is conflicting; both flags dropped with a warning."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer

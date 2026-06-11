@@ -712,6 +712,91 @@ function packForLayout(layout, frame) {
     return { single: 'pack8th.js' };
 }
 
+// Per-face packs for dfc_split mode (job.dfc_split): each face of a transform /
+// modal_dfc card renders as its own full-size card using CC's real DFC packs —
+// the ones with the title icon notch, the transform front's "Reverse PT"
+// reminder region, and the MDFC flipside bar. Transform ships per-face pack
+// files with plain frame names; modal is one pack whose frame names carry a
+// ' (Front)' / ' (Back)' suffix — `suffixes` tells renderFace which to append
+// for frame + P/T lookups. reversible_card is excluded (both faces are fronts,
+// no frame_effects): it stays on the flip path.
+function packsForDfcSplit(layout, frame) {
+    if (layout === 'transform') {
+        if (frame === 'modern') return { front: 'packM15TransformFront.js', back: 'packM15TransformBack.js', suffixes: ['', ''] };
+        return { front: 'pack8thTransformFront.js', back: 'pack8thTransformBack.js', suffixes: ['', ''] };
+    }
+    if (layout === 'modal_dfc') {
+        // packM15EighthModal is the 8th-styled MDFC hybrid (custom/m15-eighth assets).
+        const pack = (frame === 'modern') ? 'packModalRegular.js' : 'packM15EighthModal.js';
+        return { front: pack, back: pack, suffixes: [' (Front)', ' (Back)'] };
+    }
+    return null;
+}
+
+// Title-icon names (availableFrames entries in the transform packs) per
+// Scryfall frame_effects value, [front, back]. Anything unmapped — including
+// convertdfc (MOM): the engine snapshot ships no convert icon — gets the
+// generic up/down arrows. MDFC needs no icon here: the arrow is baked into
+// the modal frame art.
+const DFC_ICON_BY_FRAME_EFFECT = {
+    sunmoondfc:             ['Sun', 'Crescent Moon'],
+    mooneldrazidfc:         ['Full Moon', 'Emrakul'],
+    waxingandwaningmoondfc: ['Crescent Moon', 'Full Moon'],
+    compasslanddfc:         ['Compass', 'Land'],
+    originpwdfc:            ['Planeswalker Ember', 'Planeswalker Spark'],
+    fandfc:                 ['Closed Fan', 'Open Fan'],
+};
+const DFC_ICON_DEFAULT = ['Up Arrow', 'Down Arrow'];
+function dfcIconName(scry, faceIdx) {
+    for (const fe of (scry.frame_effects || [])) {
+        if (DFC_ICON_BY_FRAME_EFFECT[fe]) return DFC_ICON_BY_FRAME_EFFECT[fe][faceIdx];
+    }
+    return DFC_ICON_DEFAULT[faceIdx];
+}
+
+// Map a Scryfall face to the loaded pack's '<Color> Frame' name. Shared by the
+// flip path (top/bottom halves) and the dfc_split path (whole-card frames).
+function getFrameNameForFace(f) {
+    if (!f) return 'Colorless Frame';
+    const colors = (Array.isArray(f.colors) && f.colors.length) ? f.colors : [];
+    if (colors.length > 1) return 'Multicolored Frame';
+    if (colors.includes('W')) return 'White Frame';
+    if (colors.includes('U')) return 'Blue Frame';
+    if (colors.includes('B')) return 'Black Frame';
+    if (colors.includes('R')) return 'Red Frame';
+    if (colors.includes('G')) return 'Green Frame';
+
+    const types = (f.type_line || '').toLowerCase();
+    if (types.includes('artifact')) return 'Artifact Frame';
+    if (types.includes('land')) return 'Land Frame';
+    return 'Colorless Frame';
+}
+
+// W/U/B/R/G letter for a land face, detected from its "Add {X}" oracle text.
+// Shared by the flip path (basic-land watermark/tint) and the dfc_split path
+// ('<Color> Land Frame' selection).
+function detectLandColor(face) {
+    if (!face || !(face.type_line || '').toLowerCase().includes('land')) return null;
+    const m = (face.oracle_text || '').match(/Add\b[^.]*?\{([WUBRG])\}/);
+    return m ? m[1] : null;
+}
+
+// Add the first availableFrames entry whose name matches a candidate (in
+// order), with optional extra masks. Returns the matched name or null. The
+// candidate-list form covers pack gaps — e.g. pack8thTransform has no Land /
+// Colorless frame, so land faces fall back to the Artifact parchment.
+async function addFrameByName(candidates, masks = []) {
+    for (const name of candidates) {
+        const idx = (global.availableFrames || []).findIndex(f => f && f.name === name);
+        if (idx >= 0) {
+            global.selectedFrameIndex = idx;
+            await global.addFrame(masks);
+            return name;
+        }
+    }
+    return null;
+}
+
 // Load the given pack file and trigger its loadFrameVersion onclick. The pack
 // replaces availableFrames + sets card.version + populates card.text via
 // loadTextOptions. Called per-card so we can switch packs (e.g. transform
@@ -829,7 +914,8 @@ function resetCanvases() {
 
 // Render a single face: load the pack, import + select the indicated face,
 // upload the matching art, autoframe, drain images, draw, save.
-async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath, fontSizeDelta = 0 }) {
+async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath, fontSizeDelta = 0,
+                             dfcFace = null, frameNameSuffix = '' }) {
     resetCanvases();
     await ensurePackLoaded(packFile);
 
@@ -855,11 +941,15 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // and fire fetchSetSymbol for the per-set icon.
     const isFlip = scry.layout === 'flip';
     const harnessOwnsSetSymbol = (frame === '8th' && !isFlip) || !!setSymbolPath;
-    
+
     let autoFrameTarget = '8th';
     if (isFlip) autoFrameTarget = 'Flip';
     else if (frame === 'modern') autoFrameTarget = 'M15Regular-1';
-    
+    // dfc_split faces build their frames manually from the DFC pack below —
+    // 'false' makes any stray engine-scheduled autoFrame() a no-op so it can't
+    // overwrite them with the regular (non-DFC) frame art.
+    if (dfcFace) autoFrameTarget = 'false';
+
     querySelector('#autoFrame').value = autoFrameTarget;
     querySelector('#lockSetSymbolURL').checked  = harnessOwnsSetSymbol;
     querySelector('#lockSetSymbolCode').checked = harnessOwnsSetSymbol;
@@ -991,7 +1081,58 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     if (scry.layout === 'flip') frameTypeLiteral = 'Flip';
     else if (frame === 'modern') frameTypeLiteral = 'M15Regular-1';
     
-    if (faceColors && scry.layout !== 'flip') {
+    if (dfcFace) {
+        // dfc_split: build the whole-card frame from the loaded DFC pack's
+        // availableFrames. autoFrameUnified can't do this — its 8th/M15 frame
+        // configs point at the regular frame art, not the DFC variants with
+        // the icon notch / flipside-bar regions — so we pick frames by name,
+        // the same approach the flip branch uses.
+        const baseName = getFrameNameForFace(face);
+        const candidates = [];
+        const landWord = { W: 'White', U: 'Blue', B: 'Black', R: 'Red', G: 'Green' }[detectLandColor(face)];
+        if (landWord) candidates.push(`${landWord} Land Frame${frameNameSuffix}`);
+        // pack8thTransform ships no Land/Colorless frame — Artifact parchment
+        // is the closest stand-in for those faces.
+        candidates.push(baseName + frameNameSuffix,
+                        'Artifact Frame' + frameNameSuffix,
+                        'Colorless Frame' + frameNameSuffix);
+        const added = await addFrameByName(candidates);
+        if (!added) console.warn(`[dfc-split] no frame match for '${baseName}${frameNameSuffix}' in ${packFile}`);
+
+        if (face.power != null && face.power !== '') {
+            const ptBase = baseName.replace(' Frame', ' Power/Toughness');
+            await addFrameByName([ptBase + frameNameSuffix, ptBase,
+                                  'Colorless Power/Toughness' + frameNameSuffix,
+                                  'Colorless Power/Toughness']);
+        }
+
+        // Transform title icon (sun/moon, compass/land, …) by frame_effects.
+        // Modal needs none — the MDFC arrow is baked into the frame art.
+        if (scry.layout === 'transform') {
+            await addFrameByName([dfcIconName(scry, faceIdx), DFC_ICON_DEFAULT[faceIdx]]);
+        }
+
+        // Reverse-face hints, filled from Scryfall data (the engine's importer
+        // leaves these pack regions empty):
+        //   transform front  — gray back-face P/T bottom-right ("Reverse PT").
+        //   modal both faces — flipside bar: other face's name (left) + its
+        //                      mana cost, or bare type for lands (right).
+        const otherFace = (scry.card_faces || [])[faceIdx === 0 ? 1 : 0] || {};
+        if (scry.layout === 'transform' && dfcFace === 'front'
+            && otherFace.power != null && otherFace.power !== '' && global.card.text.reminder) {
+            global.card.text.reminder.text = `${otherFace.power}/${otherFace.toughness}`;
+        }
+        if (scry.layout === 'modal_dfc') {
+            if (global.card.text.flipsideType) {
+                global.card.text.flipsideType.text = otherFace.name || '';
+            }
+            if (global.card.text.flipSideReminder) {
+                // CC's inline mana glyphs use lowercase {r}-style codes.
+                global.card.text.flipSideReminder.text = (otherFace.mana_cost || '').toLowerCase()
+                    || (otherFace.type_line || '').split('—')[0].trim();
+            }
+        }
+    } else if (faceColors && scry.layout !== 'flip') {
         await global.autoFrameUnified(frameTypeLiteral,
             faceColors,
             (face.mana_cost || global.card.text.mana?.text || ''),
@@ -1000,23 +1141,6 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     } else if (scry.layout === 'flip') {
         // autoFrame.js does not support 'Flip' layout natively.
         // We must manually pick the correct frame from packFlip.js's availableFrames based on color.
-        
-        function getFrameNameForFace(f) {
-            if (!f) return 'Colorless Frame';
-            const colors = (Array.isArray(f.colors) && f.colors.length) ? f.colors : [];
-            if (colors.length > 1) return 'Multicolored Frame';
-            if (colors.includes('W')) return 'White Frame';
-            if (colors.includes('U')) return 'Blue Frame';
-            if (colors.includes('B')) return 'Black Frame';
-            if (colors.includes('R')) return 'Red Frame';
-            if (colors.includes('G')) return 'Green Frame';
-
-            const types = (f.type_line || '').toLowerCase();
-            if (types.includes('artifact')) return 'Artifact Frame';
-            if (types.includes('land')) return 'Land Frame';
-            return 'Colorless Frame';
-        }
-        
         const topFrameName = getFrameNameForFace(scry.card_faces?.[0]);
         const bottomFrameName = getFrameNameForFace(scry.card_faces?.[1]);
         
@@ -1082,11 +1206,6 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
                                   B: '/img/frames/m15/basics/b.png',
                                   R: '/img/frames/m15/basics/r.png',
                                   G: '/img/frames/m15/basics/g.png' };
-        const detectLandColor = (face) => {
-            if (!face || !(face.type_line || '').toLowerCase().includes('land')) return null;
-            const m = (face.oracle_text || '').match(/Add\b[^.]*?\{([WUBRG])\}/);
-            return m ? m[1] : null;
-        };
         const topColor = detectLandColor(scry.card_faces?.[0]);
         const botColor = detectLandColor(scry.card_faces?.[1]);
         // height matches the rules-text region (0.12); width derived from the 1:1
@@ -1175,8 +1294,9 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // packs include this as a separate availableFrames entry ('Up Arrow', etc.)
     // but autoFrame doesn't add it automatically. We add it for transform /
     // modal_dfc layouts so the rendered card shows the flip indicator like
-    // the real printed card.
-    if (['transform', 'modal_dfc', 'reversible_card'].includes(scry.layout)) {
+    // the real printed card. dfc_split faces are excluded: the split branch
+    // above already added the frame_effects-mapped icon.
+    if (!dfcFace && ['transform', 'modal_dfc', 'reversible_card'].includes(scry.layout)) {
         const idx = (global.availableFrames || []).findIndex(f => f && f.name === 'Up Arrow');
         if (idx >= 0) {
             const prevIdx = global.selectedFrameIndex;
@@ -1215,7 +1335,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     return outPath;
 }
 
-async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fontSizeDelta = 0 } = {}) {
+async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fontSizeDelta = 0, dfcSplit = false } = {}) {
     const skipReason = shouldSkip(scry);
     if (skipReason) {
         throw new Error(`${skipReason} not supported on ${frame} frame — fall back to Scryfall image`);
@@ -1227,6 +1347,21 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
     // into a single PNG via packFlip.
     const processed = [];
     global.processScryfallCard(scry, processed);
+
+    // dfc_split: render each face as its own full-size card via the real DFC
+    // packs. Returns { out, outBack } instead of a single path.
+    const splitPacks = dfcSplit ? packsForDfcSplit(scry.layout, frame) : null;
+    if (splitPacks) {
+        const out = await renderFace({
+            packFile: splitPacks.front, processed, faceIdx: 0, scry, outName: slug,
+            frame, setSymbolPath, fontSizeDelta, dfcFace: 'front', frameNameSuffix: splitPacks.suffixes[0],
+        });
+        const outBack = await renderFace({
+            packFile: splitPacks.back, processed, faceIdx: 1, scry, outName: slug + '_back',
+            frame, setSymbolPath, fontSizeDelta, dfcFace: 'back', frameNameSuffix: splitPacks.suffixes[1],
+        });
+        return { out, outBack };
+    }
 
     const packs = packForLayout(scry.layout, frame);
     return await renderFace({ packFile: packs.single, processed, faceIdx: 0, scry, outName: slug, frame, setSymbolPath, fontSizeDelta });
@@ -1290,9 +1425,16 @@ async function runOneJob(job) {
     try {
         const { scry } = await fetchScryfall(job.name);
         
+        // dfc_split: render transform / modal_dfc faces as two separate cards
+        // instead of the flip merge. reversible_card is excluded — both its
+        // faces are fronts (no transform icon, no frame_effects), so the flip
+        // merge remains the only sensible rendering for it.
+        const dfcSplit = !!job.dfc_split && ['transform', 'modal_dfc'].includes(scry.layout);
+
         // art_path override: ESRGAN-upscaled local file OR Python-composited DFC art.
         // Threaded into scry.image_uris.art_crop and face uris so the engine
-        // picks it up unconditionally.
+        // picks it up unconditionally. In dfc_split mode art_path is the FRONT
+        // face's art and art_path_back the back's — per-face, no smearing.
         if (job.art_path) {
             // Rename local copy `art` to avoid shadowing the top-level `path`
             // module import — a future maintainer adding `path.join(...)` inside
@@ -1304,16 +1446,20 @@ async function runOneJob(job) {
                 scry.card_faces[0].image_uris = scry.card_faces[0].image_uris || {};
                 scry.card_faces[0].image_uris.art_crop = art;
             }
-            if (scry.card_faces && scry.card_faces[1]) {
+            if (!dfcSplit && scry.card_faces && scry.card_faces[1]) {
                 scry.card_faces[1].image_uris = scry.card_faces[1].image_uris || {};
                 scry.card_faces[1].image_uris.art_crop = art;
             }
         }
+        if (dfcSplit && job.art_path_back && scry.card_faces && scry.card_faces[1]) {
+            scry.card_faces[1].image_uris = scry.card_faces[1].image_uris || {};
+            scry.card_faces[1].image_uris.art_crop = job.art_path_back;
+        }
 
-        // Intercept DFCs and route them to a Kamigawa flip card.
+        // Intercept the remaining DFCs and route them to a Kamigawa flip card.
         // We do this at the boundary so the engine's core frame logic is untouched.
         const isDfc = ['transform', 'modal_dfc', 'reversible_card'].includes(scry.layout);
-        if (isDfc) {
+        if (isDfc && !dfcSplit) {
             // Force the layout to flip so the engine splits the faces top/bottom
             scry.layout = 'flip';
         }
@@ -1322,13 +1468,15 @@ async function runOneJob(job) {
         const setSymbolPath = job.set_symbol_path || null;
         const fontSizeDelta = (job.font_size != null) ? parseInt(job.font_size) : 0;
         const slug = slugify(job.name);
-        const outPath = await renderCard(scry, slug, { frame, setSymbolPath, fontSizeDelta });
-        writeResponse({
+        const result = await renderCard(scry, slug, { frame, setSymbolPath, fontSizeDelta, dfcSplit });
+        const response = {
             slot:   job.slot,
             status: 'ok',
-            out:    outPath,
+            out:    (typeof result === 'string') ? result : result.out,
             ms:     Date.now() - start,
-        });
+        };
+        if (result && typeof result === 'object' && result.outBack) response.out_back = result.outBack;
+        writeResponse(response);
     } catch (e) {
         writeResponse({
             slot:   job.slot,

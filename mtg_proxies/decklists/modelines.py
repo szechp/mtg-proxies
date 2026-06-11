@@ -126,15 +126,21 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     # is threaded into the harness's ``job.art_path``, which short-circuits the
     # built-in Scryfall ``art_crop`` fetch.
     # ``--font-size N`` adds a signed pixel delta to the rules-text font size after
-    # CC's auto-fit. Canvas is 2814 px tall; rules text is ~76 px, so ±5–15 is a
+    # CC's auto-fit. Canvas is 2814 px tall; rules text is ~76 px, so ±5-15 is a
     # noticeable nudge. Use negative values to shrink text that overflows, positive
     # to enlarge text on cards with very short oracle text.
+    # ``--dfc-split`` renders a double-faced card (transform / modal_dfc) as TWO
+    # separate full-size cards — front + back PNGs with the real DFC furniture
+    # (transform icon by frame_effects, reverse-P/T reminder, MDFC flipside bar) —
+    # instead of the default Kamigawa-flip merge. Meant for wall-of-text DFCs
+    # whose rules become unreadable at flip-half size. No-op on single-faced cards.
     "cardconjourer": {
         "--8th":        NO_VALUE,
         "--modern":     NO_VALUE,
         "--upscale":    NO_VALUE,
         "--scryfall":   NO_VALUE,
         "--skip":       NO_VALUE,
+        "--dfc-split":  NO_VALUE,
         "--set-symbol": _path_str,
         "--custom-art": _path_str,
         "--font-size":  _signed_int,

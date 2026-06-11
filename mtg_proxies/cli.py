@@ -547,6 +547,14 @@ def _apply_per_card_modelines(
                     continue
                 frame = _resolve_cc_frame(directive.flags)
                 upscale = bool(directive.flags.get("--upscale"))
+                if directive.flags.get("--dfc-split"):
+                    # The print layout has no slot for a second face yet; the
+                    # flag only works in the `cardconjourer` subcommand.
+                    _mpcfill_log.warning(
+                        "#cardconjourer --dfc-split on %r is not supported in `print` "
+                        "(use the `cardconjourer` subcommand); rendering the flip merge instead.",
+                        card["name"],
+                    )
                 sym_value = directive.flags.get("--set-symbol")
                 resolved_sym: str | None = None
                 if sym_value:
@@ -1155,6 +1163,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     slot_skip: set[int] = set()
     slot_set_symbol: dict[int, str] = {}
     slot_font_size: dict[int, int] = {}
+    slot_dfc_split_request: set[int] = set()
     for slot_int, card in slot_to_card.items():
         if not card.modeline:
             continue
@@ -1165,12 +1174,30 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                     slot_scryfall_override[slot_int] = True
                 if d.flags.get("--skip"):
                     slot_skip.add(slot_int)
+                if d.flags.get("--dfc-split"):
+                    slot_dfc_split_request.add(slot_int)
                 sym_val = d.flags.get("--set-symbol")
                 if sym_val:
                     slot_set_symbol[slot_int] = sym_val
                 fs_val = d.flags.get("--font-size")
                 if fs_val is not None:
                     slot_font_size[slot_int] = fs_val
+
+    # dfc-split applies only to layouts the harness can split (transform /
+    # modal_dfc — reversible_card has two fronts and stays on the flip path).
+    # Deck-wide --dfc-split marks every such card; the modeline marks one.
+    # A --dfc-split modeline on any other layout is a no-op (warned, not fatal).
+    splittable_layouts = {"transform", "modal_dfc"}
+    dfc_split_slots = {
+        slot_int for slot_int, card in slot_to_card.items()
+        if card.card.get("layout") in splittable_layouts and (args.dfc_split or slot_int in slot_dfc_split_request)
+    }
+    for slot_int in sorted(slot_dfc_split_request - dfc_split_slots):
+        card = slot_to_card[slot_int]
+        print(
+            f"[cardconjourer] --dfc-split on {card['name']!r} ignored: "
+            f"layout {card.card.get('layout')!r} is not a splittable DFC"
+        )
 
     # Resolve the deck-wide / per-card ``--set-symbol`` value to an absolute
     # path per slot. Resolution happens here (not inside _prepare_each) so a
@@ -1206,8 +1233,10 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
 
         # Per-card art resolution.
         #
-        # DFC composite: if the card is a transform / modal_dfc, we stitch both
-        # arts into a single Kamigawa flip art image.
+        # DFC: both face arts are resolved from Scryfall (MTGPics indexes whole
+        # cards, not faces). Split slots send the two paths as separate job
+        # fields; everything else stitches them into a single Kamigawa flip
+        # art image.
         is_dfc = card.card.get("layout") in ["transform", "modal_dfc", "reversible_card"]
         if is_dfc:
             faces = card.card.get("card_faces") or []
@@ -1215,19 +1244,21 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                 # Resolve URLs for both faces.
                 f_url = faces[0].get("image_uris", {}).get("art_crop")
                 b_url = faces[1].get("image_uris", {}).get("art_crop")
-                
+
                 if f_url and b_url:
                     from mtg_proxies import scryfall as _scryfall
                     f_local = _scryfall.get_image(f_url)
                     b_local = _scryfall.get_image(b_url)
-                    
+
                     if args.upscale:
                         from mtg_proxies import upscale as _upscale_mod
-                        [f_up, b_up] = _upscale_mod.upscale_images([_ensure_png(f_local), _ensure_png(b_local)], progress=False, **upscale_kwargs)
-                        composite = _composite_dfc_art(Path(f_up), Path(b_up))
-                    else:
-                        composite = _composite_dfc_art(Path(f_local), Path(b_local))
-                    
+                        [f_local, b_local] = _upscale_mod.upscale_images(
+                            [_ensure_png(f_local), _ensure_png(b_local)], progress=False, **upscale_kwargs
+                        )
+
+                    if slot_int in dfc_split_slots:
+                        return {**extras, "art_path": str(f_local), "art_path_back": str(b_local)}
+                    composite = _composite_dfc_art(Path(f_local), Path(b_local))
                     return {**extras, "art_path": str(composite)}
 
         # 1) MTGPics by set+collector (Normal cards / fallback for DFCs with missing faces).
@@ -1375,13 +1406,18 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                 responses.append(parsed)
                 if parsed.get("status") == "ok":
                     ok_count += 1
-                    src = Path(parsed["out"])
-                    dst = args.outdir / src.name
-                    if src.resolve() != dst.resolve():
-                        try:
-                            shutil.copyfile(src, dst)
-                        except OSError as exc:
-                            tqdm.write(f"[cardconjourer] copy failed for {src.name}: {exc}")
+                    # dfc_split responses carry a second PNG in out_back —
+                    # stream-copy both so the back face appears alongside the
+                    # front as cards finish, not only at render_deck's end.
+                    outs = [parsed["out"]] + ([parsed["out_back"]] if parsed.get("out_back") else [])
+                    for out_path in outs:
+                        src = Path(out_path)
+                        dst = args.outdir / src.name
+                        if src.resolve() != dst.resolve():
+                            try:
+                                shutil.copyfile(src, dst)
+                            except OSError as exc:
+                                tqdm.write(f"[cardconjourer] copy failed for {src.name}: {exc}")
                 bar.update(1)
                 bar.set_postfix_str(f"ok={ok_count} skip={len(responses) - ok_count}", refresh=False)
 
@@ -1416,6 +1452,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         upscale=args.upscale,
         run_harness=_run,
         prepare_each=prepare_each_cb,
+        dfc_split_slots=dfc_split_slots,
     )
     print(f"[cardconjourer] {summary['ok']}/{summary['total']} rendered, {summary['skipped']} skipped")
     if args.scryfall:
@@ -1765,6 +1802,17 @@ def main() -> None:
             "skip MTGPics entirely and use Scryfall's art_crop directly. Useful when"
             " MTGPics's hi-res scan for a card has an artist signature / watermark"
             " burned in that the renderer would carry into the final card."
+        ),
+    )
+    cardconjourer_parser.add_argument(
+        "--dfc-split", dest="dfc_split", action="store_true", default=False,
+        help=(
+            "render every transform / modal_dfc card as TWO separate full-size cards"
+            " (<slug>.png + <slug>_back.png) with the real DFC frame furniture —"
+            " transform icon, reverse-P/T reminder, MDFC flipside bar — instead of the"
+            " default Kamigawa-flip merge. Per-card opt-in via the"
+            " `#cardconjourer --dfc-split` modeline. Meant for wall-of-text DFCs whose"
+            " rules become unreadable at flip-half size."
         ),
     )
     cardconjourer_parser.add_argument(
