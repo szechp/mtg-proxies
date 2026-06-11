@@ -54,7 +54,9 @@ def print_cards_matplotlib(
     images: Sequence[str | Path],
     filepath: str | Path,
     papersize: np.ndarray = np.array([8.27, 11.69]),
-    cardsize: np.ndarray = np.array([2.5, 3.5]),
+    # Physical MTG cards measure 63 x 88 mm — NOT the nominal 2.5" x 3.5"
+    # (63.5 x 88.9 mm), which printed every card ~0.8 % oversized at 100 %.
+    cardsize: np.ndarray = np.array([63 / 25.4, 88 / 25.4]),
     border_crop: int = 14,
     interpolation: str | None = "lanczos",
     dpi: int = 600,
@@ -66,7 +68,7 @@ def print_cards_matplotlib(
         images: List of image files
         filepath: Name of the pdf file
         papersize: Size of the paper in inches. Defaults to A4.
-        cardsize: Size of a card in inches.
+        cardsize: Size of a card in inches (default: true physical card size, 63 x 88 mm).
         border_crop: How many pixel to crop from the border of each card.
         interpolation: Interpolation method for resizing images.
         dpi: Dots per inch for the output PDF.
@@ -203,7 +205,9 @@ def print_cards_fpdf(
     images: Sequence[str | Path],
     filepath: str | Path,
     papersize: np.ndarray = np.array([210, 297]),
-    cardsize: np.ndarray = np.array([2.5 * 25.4, 3.5 * 25.4]),
+    # Physical MTG cards measure 63 x 88 mm — NOT the nominal 2.5" x 3.5"
+    # (63.5 x 88.9 mm), which printed every card ~0.8 % oversized at 100 %.
+    cardsize: np.ndarray = np.array([63.0, 88.0]),
     border_crop: int = 14,
     background_color: tuple[int, int, int] | None = None,
     cropmarks: bool = True,
@@ -215,7 +219,7 @@ def print_cards_fpdf(
         images: List of image files
         filepath: Name of the pdf file
         papersize: Size of the paper in inches. Defaults to A4.
-        cardsize: Size of a card in inches.
+        cardsize: Size of a card in mm (default: true physical card size, 63 x 88 mm).
         border_crop: How many pixel to crop from the border of each card.
         background_color: Color filled behind the card grid (not the whole page) as an RGB tuple.
             Covers the small diamond gaps where rounded card corners meet without flooding the page

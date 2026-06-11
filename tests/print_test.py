@@ -937,3 +937,36 @@ def test_apply_per_card_modelines_cardconjourer_skips_when_no_directives(
     cli._apply_per_card_modelines(decklist, image_paths)
 
     assert batch_calls == []
+
+
+def test_print_cards_fpdf_places_cards_at_true_physical_size(example_images: list[str], tmp_path: Path) -> None:
+    """Regression: cards must print at REAL MTG card size (63 x 88 mm), not 2.5" x 3.5".
+
+    Physical Magic cards measure 63 x 88 mm; the old 2.5" x 3.5" (63.5 x 88.9 mm) cell
+    printed every card ~0.8 % oversized at 100 % printer scale — visibly overhanging when
+    stickered onto a bulk card. With border_crop=0 the placed image must be exactly the
+    card cell, so we assert the PDF's image transform matrix (1 pt = 1/72 inch).
+    """
+    import re
+    import zlib
+
+    from mtg_proxies import print_cards_fpdf
+
+    out_file = tmp_path / "size.pdf"
+    print_cards_fpdf(example_images[:1], out_file, border_crop=0, cropmarks=False)
+
+    data = out_file.read_bytes()
+    sizes = []
+    for m in re.finditer(rb"stream\r?\n(.*?)endstream", data, re.S):
+        try:
+            content = zlib.decompress(m.group(1))
+        except zlib.error:
+            continue
+        for mm_ in re.finditer(rb"q\s+([\d.]+) 0 0 ([\d.]+) [\d.]+ [\d.]+ cm\s*/I\d+ Do", content):
+            w_pt, h_pt = float(mm_.group(1)), float(mm_.group(2))
+            sizes.append((w_pt / 72 * 25.4, h_pt / 72 * 25.4))
+
+    assert sizes, "no placed card images found in PDF"
+    for w_mm, h_mm in sizes:
+        assert w_mm == pytest.approx(63.0, abs=0.05), f"card width {w_mm:.2f} mm != 63 mm"
+        assert h_mm == pytest.approx(88.0, abs=0.05), f"card height {h_mm:.2f} mm != 88 mm"
