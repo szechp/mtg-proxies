@@ -1123,6 +1123,17 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             global.card.text.reminder.text = `${otherFace.power}/${otherFace.toughness}`;
         }
         if (scry.layout === 'modal_dfc') {
+            // Real MDFCs tint the flipside bar with the OTHER face's color —
+            // it's a breadcrumb to the face you flip into (green front //
+            // blue back ⇒ blue bar on the green front). Overlay the other
+            // face's color frame masked to just the Flipside bar region
+            // (same mask file in both modal packs).
+            const otherLandWord = { W: 'White', U: 'Blue', B: 'Black', R: 'Red', G: 'Green' }[detectLandColor(otherFace)];
+            const otherCands = [];
+            if (otherLandWord) otherCands.push(`${otherLandWord} Land Frame${frameNameSuffix}`);
+            otherCands.push(getFrameNameForFace(otherFace) + frameNameSuffix);
+            await addFrameByName(otherCands, [{ name: 'Flipside', src: '/img/frames/modal/regular/reminder.svg' }]);
+
             if (global.card.text.flipsideType) {
                 global.card.text.flipsideType.text = otherFace.name || '';
             }
@@ -1130,6 +1141,12 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
                 // CC's inline mana glyphs use lowercase {r}-style codes.
                 global.card.text.flipSideReminder.text = (otherFace.mana_cost || '').toLowerCase()
                     || (otherFace.type_line || '').split('—')[0].trim();
+                // Gray the mana/type hint so it reads as secondary next to the
+                // name. Face-specific shade (fronts have a dark bar + white
+                // name, backs a light bar + black name); conditionalColor is
+                // dropped so the engine's '(Back):black' rule can't undo it.
+                delete global.card.text.flipSideReminder.conditionalColor;
+                global.card.text.flipSideReminder.color = (dfcFace === 'front') ? '#cccccc' : '#555555';
             }
         }
 
