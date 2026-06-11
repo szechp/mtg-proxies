@@ -19,9 +19,36 @@ import requests
 _log = logging.getLogger(__name__)
 
 _SEARCH_URL = "https://mpcfill.com/2/exploreSearch/"
+_SOURCES_URL = "https://mpcfill.com/2/sources/"
 _PAGE_SIZE = 50
 _TIMEOUT_S = 30.0
 _DFC_RE = re.compile(r"\s*//.*$")
+
+# Lazily fetched and cached for the process lifetime. The sources list changes
+# slowly; re-fetching once per run is enough. Key: session object identity.
+_sources_cache: list[list] | None = None
+
+
+def _get_sources(session: requests.Session) -> list[list]:
+    """Return [[id, True], ...] for every enabled source on MPC Autofill.
+
+    Fetched once per process from ``/2/sources/`` and cached. Falls back to an
+    empty list on failure (which returns 0 results) rather than crashing.
+    """
+    global _sources_cache
+    if _sources_cache is not None:
+        return _sources_cache
+    try:
+        resp = session.get(_SOURCES_URL, timeout=_TIMEOUT_S)
+        resp.raise_for_status()
+        data = resp.json()
+        results = data.get("results", [])
+        # results is a list of source name strings; indices are 1-based IDs.
+        _sources_cache = [[i + 1, True] for i in range(len(results))]
+    except Exception as exc:
+        _log.warning("could not fetch MPC Autofill source list: %s — searches may return 0 results", exc)
+        _sources_cache = []
+    return _sources_cache
 
 def _front_name(card_name: str) -> str:
     """Strip the back-face portion of a DFC name."""
@@ -91,10 +118,7 @@ def search_cards(
                     "excludesTags": ["NSFW"],
                 },
                 "sourceSettings": {
-                    # null means "all sources" on the server side. A static list
-                    # of IDs 1..275 (from the gist) causes 500s when the server's
-                    # source count differs — null is the safe default.
-                    "sources": None,
+                    "sources": _get_sources(session),
                 },
             },
         }
