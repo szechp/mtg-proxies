@@ -483,28 +483,28 @@ def test_cardconjourer_fonts_are_bundled_in_repo() -> None:
 
 
 # ---------------------------------------------------------------------------
-# --dfc-split (render DFC faces as two separate cards)
+# dfc-split (default) / --dfc-flip (opt-out to the Kamigawa-flip merge)
 # ---------------------------------------------------------------------------
 
 
-def test_main_cardconjourer_help_mentions_dfc_split(capsys: pytest.CaptureFixture) -> None:
-    """`mtg-proxies cardconjourer --help` documents --dfc-split."""
+def test_main_cardconjourer_help_mentions_dfc_flip(capsys: pytest.CaptureFixture) -> None:
+    """`mtg-proxies cardconjourer --help` documents --dfc-flip (split is the default)."""
     from mtg_proxies.cli import main
 
     with patch("sys.argv", ["mtg-proxies", "cardconjourer", "--help"]), pytest.raises(SystemExit):
         main()
 
-    assert "--dfc-split" in capsys.readouterr().out
+    assert "--dfc-flip" in capsys.readouterr().out
 
 
-def test_main_cardconjourer_dfc_split_modeline_marks_slot(tmp_path: Path) -> None:
-    """`#cardconjourer --dfc-split` on a transform card reaches render_deck as its slot number."""
+def test_main_cardconjourer_dfc_split_is_default(tmp_path: Path) -> None:
+    """Without any flag, every transform/modal_dfc slot renders split; normal cards don't."""
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"
     deck.write_text(
         "1 Murder\n"
-        "1 Delver of Secrets // Insectile Aberration #cardconjourer --dfc-split\n"
+        "1 Delver of Secrets // Insectile Aberration\n"
     )
 
     with (
@@ -517,18 +517,35 @@ def test_main_cardconjourer_dfc_split_modeline_marks_slot(tmp_path: Path) -> Non
     assert mock_render.call_args.kwargs.get("dfc_split_slots") == {2}
 
 
-def test_main_cardconjourer_dfc_split_deck_flag_marks_only_dfc_layouts(tmp_path: Path) -> None:
-    """Deck-wide --dfc-split applies to every transform/modal_dfc card but not normal cards."""
+def test_main_cardconjourer_dfc_flip_deck_flag_disables_split(tmp_path: Path) -> None:
+    """Deck-wide --dfc-flip routes every DFC back to the Kamigawa-flip merge."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Delver of Secrets // Insectile Aberration\n")
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", "--dfc-flip", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
+        main()
+
+    assert mock_render.call_args.kwargs.get("dfc_split_slots") == set()
+
+
+def test_main_cardconjourer_dfc_flip_modeline_excludes_one_card(tmp_path: Path) -> None:
+    """`#cardconjourer --dfc-flip` keeps that card on the flip merge while others split."""
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"
     deck.write_text(
-        "1 Murder\n"
-        "1 Delver of Secrets // Insectile Aberration\n"
+        "1 Delver of Secrets // Insectile Aberration #cardconjourer --dfc-flip\n"
+        "1 Malakir Rebirth // Malakir Mire\n"
     )
 
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", "--dfc-split", str(deck), str(tmp_path / "out")]),
+        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(tmp_path / "out")]),
         patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 2, "skipped": 0, "total": 2}
@@ -537,8 +554,28 @@ def test_main_cardconjourer_dfc_split_deck_flag_marks_only_dfc_layouts(tmp_path:
     assert mock_render.call_args.kwargs.get("dfc_split_slots") == {2}
 
 
-def test_main_cardconjourer_dfc_split_modeline_noop_on_normal_card(tmp_path: Path) -> None:
-    """`--dfc-split` on a single-faced card is ignored — no slot marked."""
+def test_main_cardconjourer_dfc_split_modeline_overrides_deck_flip(tmp_path: Path) -> None:
+    """Per-card `--dfc-split` wins over the deck-wide --dfc-flip flag."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text(
+        "1 Delver of Secrets // Insectile Aberration #cardconjourer --dfc-split\n"
+        "1 Malakir Rebirth // Malakir Mire\n"
+    )
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", "--dfc-flip", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 2, "skipped": 0, "total": 2}
+        main()
+
+    assert mock_render.call_args.kwargs.get("dfc_split_slots") == {1}
+
+
+def test_main_cardconjourer_dfc_modelines_noop_on_normal_card(tmp_path: Path) -> None:
+    """DFC modelines on a single-faced card are ignored — no slot marked."""
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"

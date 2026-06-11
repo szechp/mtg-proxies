@@ -129,11 +129,14 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     # CC's auto-fit. Canvas is 2814 px tall; rules text is ~76 px, so ±5-15 is a
     # noticeable nudge. Use negative values to shrink text that overflows, positive
     # to enlarge text on cards with very short oracle text.
-    # ``--dfc-split`` renders a double-faced card (transform / modal_dfc) as TWO
-    # separate full-size cards — front + back PNGs with the real DFC furniture
-    # (transform icon by frame_effects, reverse-P/T reminder, MDFC flipside bar) —
-    # instead of the default Kamigawa-flip merge. Meant for wall-of-text DFCs
-    # whose rules become unreadable at flip-half size. No-op on single-faced cards.
+    # ``--dfc-split`` / ``--dfc-flip`` pick how a double-faced card (transform /
+    # modal_dfc) renders in the ``cardconjourer`` subcommand. Split (the default)
+    # renders TWO separate full-size cards — front + back PNGs with the real DFC
+    # furniture (transform icon by frame_effects, reverse-P/T reminder, MDFC
+    # flipside bar). Flip merges both faces into one Kamigawa-flip card — use it
+    # for short-text DFCs you want on a single physical card. Per-card
+    # ``--dfc-split`` also overrides a deck-wide ``--dfc-flip`` flag. Both are
+    # no-ops on single-faced cards; mutually exclusive on one segment.
     "cardconjourer": {
         "--8th":        NO_VALUE,
         "--modern":     NO_VALUE,
@@ -141,6 +144,7 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         "--scryfall":   NO_VALUE,
         "--skip":       NO_VALUE,
         "--dfc-split":  NO_VALUE,
+        "--dfc-flip":   NO_VALUE,
         "--set-symbol": _path_str,
         "--custom-art": _path_str,
         "--font-size":  _signed_int,
@@ -268,19 +272,21 @@ def parse_modeline_trailer(trailer: str) -> tuple[list[Directive], list[ParseWar
             continue
 
         # Mutex enforcement. The cardconjourer verb's frame selectors --8th /
-        # --modern are mutually exclusive: stacking both leaves downstream
-        # frame resolution ambiguous. Drop both flags with a warning rather
-        # than silently picking one.
+        # --modern are mutually exclusive, as are the DFC mode selectors
+        # --dfc-split / --dfc-flip: stacking either pair leaves downstream
+        # resolution ambiguous. Drop both flags with a warning rather than
+        # silently picking one.
         if verb == "cardconjourer":
-            set_frames = [f for f in ("--8th", "--modern") if parsed_flags.get(f)]
-            if len(set_frames) > 1:
-                warnings.append(ParseWarning(
-                    "WARNING",
-                    f"Conflicting frame flags {set_frames} on #cardconjourer; "
-                    f"dropping both (frame falls back to default)."
-                ))
-                for f in set_frames:
-                    parsed_flags.pop(f, None)
+            for pair, what in ((("--8th", "--modern"), "frame"), (("--dfc-split", "--dfc-flip"), "DFC mode")):
+                set_flags = [f for f in pair if parsed_flags.get(f)]
+                if len(set_flags) > 1:
+                    warnings.append(ParseWarning(
+                        "WARNING",
+                        f"Conflicting {what} flags {set_flags} on #cardconjourer; "
+                        f"dropping both (falls back to default)."
+                    ))
+                    for f in set_flags:
+                        parsed_flags.pop(f, None)
 
         directives.append(Directive(verb=verb, flags=parsed_flags))
 

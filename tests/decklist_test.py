@@ -766,6 +766,29 @@ def test_modeline_parse_cardconjourer_dfc_split_stacks_with_frame() -> None:
     assert warnings == []
 
 
+def test_modeline_parse_cardconjourer_dfc_flip() -> None:
+    """`--dfc-flip` registers as a no-value flag (force the Kamigawa-flip merge for this card)."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjourer --dfc-flip")
+
+    assert len(directives) == 1
+    assert directives[0].flags == {"--dfc-flip": True}
+    assert warnings == []
+
+
+def test_modeline_parse_cardconjourer_mutex_dfc_split_flip_warns_and_clears() -> None:
+    """`--dfc-split --dfc-flip` on one segment is conflicting; both dropped with a warning."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjourer --dfc-split --dfc-flip")
+
+    assert len(directives) == 1
+    assert "--dfc-split" not in directives[0].flags
+    assert "--dfc-flip" not in directives[0].flags
+    assert any("Conflicting" in w.message for w in warnings)
+
+
 def test_modeline_parse_cardconjourer_mutex_frames_warns_and_clears() -> None:
     """`#cardconjourer --8th --modern` is conflicting; both flags dropped with a warning."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer

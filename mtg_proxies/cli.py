@@ -1164,6 +1164,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     slot_set_symbol: dict[int, str] = {}
     slot_font_size: dict[int, int] = {}
     slot_dfc_split_request: set[int] = set()
+    slot_dfc_flip_request: set[int] = set()
     for slot_int, card in slot_to_card.items():
         if not card.modeline:
             continue
@@ -1176,6 +1177,8 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                     slot_skip.add(slot_int)
                 if d.flags.get("--dfc-split"):
                     slot_dfc_split_request.add(slot_int)
+                if d.flags.get("--dfc-flip"):
+                    slot_dfc_flip_request.add(slot_int)
                 sym_val = d.flags.get("--set-symbol")
                 if sym_val:
                     slot_set_symbol[slot_int] = sym_val
@@ -1183,14 +1186,17 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                 if fs_val is not None:
                     slot_font_size[slot_int] = fs_val
 
-    # dfc-split applies only to layouts the harness can split (transform /
-    # modal_dfc — reversible_card has two fronts and stays on the flip path).
-    # Deck-wide --dfc-split marks every such card; the modeline marks one.
-    # A --dfc-split modeline on any other layout is a no-op (warned, not fatal).
+    # Splittable layouts (transform / modal_dfc — reversible_card has two fronts
+    # and stays on the flip path) render as two separate faces BY DEFAULT.
+    # Opt-outs back to the Kamigawa-flip merge: deck-wide --dfc-flip, or the
+    # per-card `--dfc-flip` modeline; the per-card `--dfc-split` modeline wins
+    # over the deck-wide flag. DFC modelines on other layouts are no-ops.
     splittable_layouts = {"transform", "modal_dfc"}
     dfc_split_slots = {
         slot_int for slot_int, card in slot_to_card.items()
-        if card.card.get("layout") in splittable_layouts and (args.dfc_split or slot_int in slot_dfc_split_request)
+        if card.card.get("layout") in splittable_layouts
+        and slot_int not in slot_dfc_flip_request
+        and (slot_int in slot_dfc_split_request or not args.dfc_flip)
     }
     for slot_int in sorted(slot_dfc_split_request - dfc_split_slots):
         card = slot_to_card[slot_int]
@@ -1805,14 +1811,14 @@ def main() -> None:
         ),
     )
     cardconjourer_parser.add_argument(
-        "--dfc-split", dest="dfc_split", action="store_true", default=False,
+        "--dfc-flip", dest="dfc_flip", action="store_true", default=False,
         help=(
-            "render every transform / modal_dfc card as TWO separate full-size cards"
-            " (<slug>.png + <slug>_back.png) with the real DFC frame furniture —"
-            " transform icon, reverse-P/T reminder, MDFC flipside bar — instead of the"
-            " default Kamigawa-flip merge. Per-card opt-in via the"
-            " `#cardconjourer --dfc-split` modeline. Meant for wall-of-text DFCs whose"
-            " rules become unreadable at flip-half size."
+            "render transform / modal_dfc cards as a single Kamigawa-flip merge (both"
+            " faces on one card) instead of the default two separate full-size cards"
+            " (<slug>.png + <slug>_back.png with transform icon, reverse-P/T reminder,"
+            " MDFC flipside bar). Useful for short-text DFCs you want on one physical"
+            " card. Per-card control via the `#cardconjourer --dfc-flip` /"
+            " `--dfc-split` modelines; per-card --dfc-split overrides this flag."
         ),
     )
     cardconjourer_parser.add_argument(
