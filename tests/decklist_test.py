@@ -43,15 +43,16 @@ def test_parsing(data_dir: Path) -> None:
                 "WARNING: Unable to find scan of 'Liliana, Dreadhorde General (WAR2) 97'. Using 'Liliana, Dreadhorde General (RVR) 80' instead."  # noqa: E501
             ],
         ),
-        (  # Only front of double faced card (adventure layout)
+        (  # Only front of double faced card (adventure layout) — standard Arena/Moxfield
+            # export format, resolved silently (not a misspelling).
             "1 Murderous Rider (ELD) 287",
             "1 Murderous Rider // Swift End (ELD) 287",
-            ["WARNING: Misspelled card name 'Murderous Rider'. Assuming you mean 'Murderous Rider // Swift End'."],
+            [],
         ),
         (  # Only front of double faced card (split layout)
             "1 Wear (DGM) 135",
             "1 Wear // Tear (DGM) 135",
-            ["WARNING: Misspelled card name 'Wear'. Assuming you mean 'Wear // Tear'."],
+            [],
         ),
         (  # Wrong collector number
             "1 Forbidden Friendship (IKO) 120",
@@ -344,6 +345,129 @@ def test_non_english_printed_name_is_ignored(monkeypatch: pytest.MonkeyPatch) ->
     # Japanese name should NOT resolve via printed_name (lang != "en" → skipped).
     assert validated_name is None
     assert any("Unable to find card" in str(w) for w in warnings)
+
+
+_VIGGO_FAKE_CARDS = [
+    # om1 "Through the Omenpaths" pattern: the Universes Within rename lives on the FACES
+    # as printed_name; the card-level name stays the Marvel oracle name.
+    {
+        "name": "Eddie Brock // Venom, Lethal Protector",
+        "layout": "modal_dfc",
+        "lang": "en",
+        "card_faces": [
+            {"name": "Eddie Brock", "printed_name": "Viggo, Enforcer of Ig's Crossing"},
+            {"name": "Venom, Lethal Protector", "printed_name": "Viggo, End of Ig's Crossing"},
+        ],
+    },
+]
+
+
+def test_dfc_face_printed_name_resolves_to_oracle_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A DFC's front-face printed_name (Universes Within rename) resolves to the oracle name silently."""
+    import mtg_proxies.decklists.sanitizing as sanitizing
+    from mtg_proxies.decklists.sanitizing import card_names, validate_card_name
+
+    monkeypatch.setattr(sanitizing.scryfall, "get_cards", lambda **kwargs: _VIGGO_FAKE_CARDS)
+    card_names.cache_clear()
+
+    try:
+        validated_name, warnings = validate_card_name("Viggo, Enforcer of Ig's Crossing")
+    finally:
+        card_names.cache_clear()
+
+    assert validated_name == "Eddie Brock // Venom, Lethal Protector"
+    assert len(warnings) == 0
+
+
+def test_dfc_face_printed_names_combined_form_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The 'FrontRename // BackRename' combined form also resolves to the oracle name."""
+    import mtg_proxies.decklists.sanitizing as sanitizing
+    from mtg_proxies.decklists.sanitizing import card_names, validate_card_name
+
+    monkeypatch.setattr(sanitizing.scryfall, "get_cards", lambda **kwargs: _VIGGO_FAKE_CARDS)
+    card_names.cache_clear()
+
+    try:
+        validated_name, warnings = validate_card_name(
+            "Viggo, Enforcer of Ig's Crossing // Viggo, End of Ig's Crossing"
+        )
+    finally:
+        card_names.cache_clear()
+
+    assert validated_name == "Eddie Brock // Venom, Lethal Protector"
+    assert len(warnings) == 0
+
+
+def test_dfc_front_face_oracle_name_resolves_silently(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bare front-face oracle name ('Eddie Brock') resolves without a 'Misspelled' warning."""
+    import mtg_proxies.decklists.sanitizing as sanitizing
+    from mtg_proxies.decklists.sanitizing import card_names, validate_card_name
+
+    monkeypatch.setattr(sanitizing.scryfall, "get_cards", lambda **kwargs: _VIGGO_FAKE_CARDS)
+    card_names.cache_clear()
+
+    try:
+        validated_name, warnings = validate_card_name("Eddie Brock")
+    finally:
+        card_names.cache_clear()
+
+    assert validated_name == "Eddie Brock // Venom, Lethal Protector"
+    assert len(warnings) == 0
+
+
+def test_dfc_face_flavor_name_resolves_to_oracle_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Face-level flavor_name (themed-reprint DFCs) resolves like face-level printed_name."""
+    import mtg_proxies.decklists.sanitizing as sanitizing
+    from mtg_proxies.decklists.sanitizing import card_names, validate_card_name
+
+    fake_cards = [
+        {
+            "name": "Front Oracle // Back Oracle",
+            "layout": "transform",
+            "lang": "en",
+            "card_faces": [
+                {"name": "Front Oracle", "flavor_name": "Front Flavor"},
+                {"name": "Back Oracle", "flavor_name": "Back Flavor"},
+            ],
+        },
+    ]
+    monkeypatch.setattr(sanitizing.scryfall, "get_cards", lambda **kwargs: fake_cards)
+    card_names.cache_clear()
+
+    try:
+        validated_name, warnings = validate_card_name("Front Flavor")
+    finally:
+        card_names.cache_clear()
+
+    assert validated_name == "Front Oracle // Back Oracle"
+    assert len(warnings) == 0
+
+
+def test_dfc_face_printed_name_non_english_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Face printed_name on non-English prints must not enter the lookup."""
+    import mtg_proxies.decklists.sanitizing as sanitizing
+    from mtg_proxies.decklists.sanitizing import card_names, validate_card_name
+
+    fake_cards = [
+        {
+            "name": "Front Oracle // Back Oracle",
+            "layout": "modal_dfc",
+            "lang": "ja",
+            "card_faces": [
+                {"name": "Front Oracle", "printed_name": "日本語の名前"},
+                {"name": "Back Oracle", "printed_name": "裏の名前"},
+            ],
+        },
+    ]
+    monkeypatch.setattr(sanitizing.scryfall, "get_cards", lambda **kwargs: fake_cards)
+    card_names.cache_clear()
+
+    try:
+        validated_name, _warnings = validate_card_name("日本語の名前")
+    finally:
+        card_names.cache_clear()
+
+    assert validated_name is None
 
 
 def test_flavor_name_paths_of_the_dead_resolves(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -30,32 +30,47 @@ def card_names() -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
         name.split("//")[0].strip().lower(): name for name in cards_by_name.values() if "//" in name
     }
     # Alternative names — distinct printed names that should resolve to a card's oracle name.
-    # Two sources, in priority order:
+    # Three sources, in priority order:
     #   1. flavor_name — themed-reprint names (e.g. "Henneth Annûn" for Reflecting Pool in LTC).
     #   2. printed_name on English prints — covers Arena renames where the digital print uses a
     #      different name than the paper oracle (e.g. "The Terminus of Return" → "The Soul Stone").
+    #   3. face-level printed_name / flavor_name on English DFC prints — Universes Within
+    #      renames live on the FACES, not the card (e.g. om1's "Eddie Brock // Venom, Lethal
+    #      Protector" carries face printed_names "Viggo, Enforcer of Ig's Crossing" / "Viggo,
+    #      End of Ig's Crossing"). Both the bare front rename (the form deck exports use) and
+    #      the combined "Front // Back" rename resolve to the oracle name.
     # canonic_card_name normalizes lookups consistently (handles æ→ae, lowercasing, etc.).
-    # Both sources use first-writer-wins so the mapping is deterministic across runs and a
+    # All sources use first-writer-wins so the mapping is deterministic across runs and a
     # shared flavor_name (e.g. duplicate LTC promo variants) doesn't silently flip on iteration
     # order. Single pass over the corpus — halves the I/O cost vs. iterating twice.
     alternative_names_to_oracle: dict[str, str] = {}
+
+    def _register(alt_name: str | None, oracle_name: str) -> None:
+        # First-writer-wins; never shadow a real oracle name.
+        if not alt_name:
+            return
+        key = scryfall.canonic_card_name(alt_name)
+        if key not in alternative_names_to_oracle and key not in cards_by_name:
+            alternative_names_to_oracle[key] = oracle_name
+
     for card in scryfall.get_cards():
-        fn = card.get("flavor_name")
-        if fn:
-            key = scryfall.canonic_card_name(fn)
-            if key not in alternative_names_to_oracle and key not in cards_by_name:
-                alternative_names_to_oracle[key] = card["name"]
+        # Non-English prints are excluded from printed_name sources to avoid foreign-language
+        # translations shadowing real English oracle names. flavor_name has no such risk.
+        is_english = card.get("lang") == "en"
+        _register(card.get("flavor_name"), card["name"])
         pn = card.get("printed_name")
-        if not pn or card.get("lang") != "en" or pn == card["name"]:
-            # Skip the no-op case (printed_name == name) and non-English prints to avoid
-            # foreign-language translations shadowing real English oracle names.
-            continue
-        key = scryfall.canonic_card_name(pn)
-        # Don't overwrite an existing alternative-name mapping or shadow a real oracle name —
-        # flavor names and English oracle names take precedence.
-        if key in alternative_names_to_oracle or key in cards_by_name:
-            continue
-        alternative_names_to_oracle[key] = card["name"]
+        if pn and is_english and pn != card["name"]:
+            _register(pn, card["name"])
+        faces = card.get("card_faces") or []
+        if faces and is_english:
+            front = faces[0]
+            front_alt = front.get("printed_name") or front.get("flavor_name")
+            if front_alt and front_alt != front.get("name"):
+                _register(front_alt, card["name"])
+                back = faces[1] if len(faces) > 1 else {}
+                back_alt = back.get("printed_name") or back.get("flavor_name")
+                if back_alt:
+                    _register(f"{front_alt} // {back_alt}", card["name"])
     return cards_by_name, double_faced_by_front, alternative_names_to_oracle
 
 
@@ -75,11 +90,11 @@ def validate_card_name(card_name: str) -> tuple[str | None, list[ParseWarning]]:
     warnings: list[ParseWarning] = []
     if sanizized_name in cards_by_name:  # Exact match
         validated_name = cards_by_name[sanizized_name]
-    elif sanizized_name in double_faced_by_front:  # Exact match of front of double faced card
+    elif sanizized_name in double_faced_by_front:
+        # Exact match of the front face of a multi-face card (DFC / adventure / split).
+        # This is the standard Arena / Moxfield export format, not a misspelling —
+        # resolve to the full "Front // Back" oracle name silently.
         validated_name = double_faced_by_front[sanizized_name]
-        warnings.append(
-            ParseWarning("WARNING", f"Misspelled card name {card_name!r}. Assuming you mean {validated_name!r}.")
-        )
     elif sanizized_name in alternative_names_to_oracle:
         # Themed-reprint flavor name (LTC etc.) or Arena rename (digital print with a distinct
         # printed_name) — resolve to the oracle name silently.
