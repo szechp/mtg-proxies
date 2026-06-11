@@ -105,6 +105,24 @@ def _upscaled_path(image_path: str | Path, target_width: int, model_id: str) -> 
     return p.parent / (p.stem + f"_4x_w{target_width}_m{model_id}" + p.suffix)
 
 
+def _save_atomic(img: Image.Image, final_path: Path) -> None:
+    """Write ``img`` to ``final_path`` via a temp file + rename.
+
+    A SIGKILL during the save can't leave a truncated PNG at the cache path
+    that the next run's ``_cache_is_stale`` would happily serve (Image.open
+    can succeed on partial PNGs; the mode check passes and the corrupt image
+    lands in the rendered PDF). The temp file's ``.tmp`` suffix means PIL
+    can't infer a format from it — derive the format from the FINAL path
+    instead (PNG when unknown).
+    """
+    from PIL import Image as _Image  # lazy, matching the module's TYPE_CHECKING-only import
+
+    tmp_path = final_path.with_suffix(final_path.suffix + ".tmp")
+    fmt = _Image.registered_extensions().get(final_path.suffix.lower(), "PNG")
+    img.save(str(tmp_path), format=fmt)
+    tmp_path.replace(final_path)
+
+
 def upscale_images(
     image_paths: list[str],
     highres_flags: list[bool] | None = None,
@@ -228,14 +246,7 @@ def upscale_images(
                 ratio = target_width / upscaled_rgb.width
                 upscaled_rgb = upscaled_rgb.resize((target_width, round(upscaled_rgb.height * ratio)), Image.LANCZOS)
             upscaled_rgba = _attach_alpha_from_source(upscaled_rgb, rgba)
-            # Atomic write so a SIGKILL during the save can't leave a truncated PNG
-            # at the cache path that the next run's _cache_is_stale would happily
-            # serve (Image.open can succeed on partial PNGs; the mode check passes
-            # and the corrupt image lands in the rendered PDF).
-            final_path = _upscaled_path(path, target_width, model_id)
-            tmp_path = final_path.with_suffix(final_path.suffix + ".tmp")
-            upscaled_rgba.save(str(tmp_path))
-            tmp_path.replace(final_path)
+            _save_atomic(upscaled_rgba, _upscaled_path(path, target_width, model_id))
             del tensor, output, result, upscaled_rgb, upscaled_rgba, rgba
             if device.type == "cuda":
                 torch.cuda.empty_cache()

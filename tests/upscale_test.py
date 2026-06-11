@@ -191,3 +191,22 @@ def test_upscale_images_progress_false_disables_inner_tqdm(monkeypatch, tmp_path
         upscale.upscale_images([str(src)], progress=False, model_path=str(fake_model))
 
     assert captured.get("disable") is True
+
+
+def test_save_atomic_writes_valid_png_despite_tmp_suffix(tmp_path: Path) -> None:
+    """Regression (issue: `--upscale all` crash): the atomic temp file has a ``.tmp``
+    suffix PIL can't infer a format from — the save must derive the format from the
+    FINAL path so the write succeeds and the rename produces a valid PNG."""
+    from mtg_proxies.upscale import _save_atomic
+
+    final = tmp_path / "card_4x_w745_mabc123.png"
+    img = Image.fromarray(np.full((8, 8, 4), 128, dtype=np.uint8), mode="RGBA")
+
+    _save_atomic(img, final)
+
+    assert final.is_file()
+    # No leftover temp file.
+    assert list(tmp_path.glob("*.tmp")) == []
+    with Image.open(final) as reread:
+        assert reread.format == "PNG"
+        assert reread.mode == "RGBA"
