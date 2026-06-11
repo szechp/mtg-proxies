@@ -42,9 +42,10 @@ def _get_sources(session: requests.Session) -> list[list]:
         resp = session.get(_SOURCES_URL, timeout=_TIMEOUT_S)
         resp.raise_for_status()
         data = resp.json()
-        results = data.get("results", [])
-        # results is a list of source name strings; indices are 1-based IDs.
-        _sources_cache = [[i + 1, True] for i in range(len(results))]
+        results = data.get("results", {})
+        # results is a dict keyed by source name; each value has a "pk" field
+        # which is the actual source ID. PKs are not sequential (gaps exist).
+        _sources_cache = [[v["pk"], True] for v in results.values()]
     except Exception as exc:
         _log.warning("could not fetch MPC Autofill source list: %s — searches may return 0 results", exc)
         _sources_cache = []
