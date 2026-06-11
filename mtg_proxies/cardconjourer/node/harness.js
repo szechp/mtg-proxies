@@ -689,6 +689,10 @@ function shouldSkip(scry) {
     if (SKIP_LAYOUTS.has(scry.layout)) return `layout '${scry.layout}'`;
     // Planeswalker isn't a Scryfall layout (Ashiok's layout is 'normal') — gate on type_line.
     if ((scry.type_line || '').toLowerCase().includes('planeswalker')) return 'planeswalker';
+    // Transform sagas (NEO, Urabrask…) have layout 'transform', not 'saga' — the
+    // joined type_line catches them. The chapter layout breaks on every frame
+    // we render (crammed roman-numeral text, phantom P/T), flip and split alike.
+    if ((scry.type_line || '').toLowerCase().includes('saga')) return 'saga face';
     for (const kw of (scry.keywords || [])) {
         if (SKIP_KEYWORDS.has(kw)) return `keyword '${kw}'`;
     }
@@ -785,14 +789,17 @@ function detectLandColor(face) {
 // order), with optional extra masks. Returns the matched name or null. The
 // candidate-list form covers pack gaps — e.g. pack8thTransform has no Land /
 // Colorless frame, so land faces fall back to the Artifact parchment.
+// Entries whose image file is missing from the CC checkout are skipped too
+// (pack8thTransformBack's Colorless P/T points at a nonexistent l.png).
 async function addFrameByName(candidates, masks = []) {
     for (const name of candidates) {
         const idx = (global.availableFrames || []).findIndex(f => f && f.name === name);
-        if (idx >= 0) {
-            global.selectedFrameIndex = idx;
-            await global.addFrame(masks);
-            return name;
-        }
+        if (idx < 0) continue;
+        const src = global.availableFrames[idx].src || '';
+        if (src.startsWith('/') && !fs.existsSync(path.join(CC_ROOT, src.slice(1)))) continue;
+        global.selectedFrameIndex = idx;
+        await global.addFrame(masks);
+        return name;
     }
     return null;
 }
@@ -924,23 +931,21 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // switching needs to flip them before importCard / autoFrame fires:
     //   #autoFrame.value     — drives the DFC back-face fallback at autoFrame() below.
     //   #lockSetSymbolURL    — when true, the engine skips its per-set icon fetch
-    //                          (so 8th can hold the 8ed glyph). False otherwise so
-    //                          (a) modern uses the engine's per-card icon, and (b)
-    //                          our setSymbolPath upload isn't immediately overwritten.
+    //                          so our setSymbolPath upload isn't immediately
+    //                          overwritten.
     //   #lockSetSymbolCode   — when true, changeCardIndex skips ``#set-symbol-code =
-    //                          cardToImport.set`` (creator-23.js:4452). The harness
-    //                          init force-sets this to true so the 8ed override
-    //                          isn't disturbed; modern needs it FALSE so the engine
-    //                          seeds the per-card set code and fetchSetSymbol fires
-    //                          with the right URL (otherwise empty code → 'cmd'
+    //                          cardToImport.set`` (creator-23.js:4452); must be
+    //                          FALSE when the engine fetches so it seeds the
+    //                          per-card set code and fetchSetSymbol fires with
+    //                          the right URL (otherwise empty code → 'cmd'
     //                          fallback, i.e. the Commander 2011 icon for every card).
-    // Lock the URL whenever we own the upload: 8th (8ed glyph) or any frame
-    // with a setSymbolPath override (LTC / custom file). Without the lock, the
-    // engine's fetchSetSymbol races our upload and the per-set icon wins.
-    // Modern with no override → unlock both, let changeCardIndex seed the code
-    // and fire fetchSetSymbol for the per-set icon.
+    // Lock both only when a setSymbolPath override (LTC / custom file) owns the
+    // upload — without the lock the engine's fetchSetSymbol races our upload and
+    // the per-set icon wins. With no override, every frame (8th included) gets
+    // the engine's per-set icon from the local official set-symbol library
+    // (#set-symbol-source = 'official'); use --set-symbol 8ED for the old look.
     const isFlip = scry.layout === 'flip';
-    const harnessOwnsSetSymbol = (frame === '8th' && !isFlip) || !!setSymbolPath;
+    const harnessOwnsSetSymbol = !!setSymbolPath;
 
     let autoFrameTarget = '8th';
     if (isFlip) autoFrameTarget = 'Flip';
@@ -1035,24 +1040,17 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     if (scry.released_at) querySelector('#info-year').value = scry.released_at.slice(0, 4);
 
     // Set-symbol upload precedence:
-    //   1. setSymbolPath (any frame)  — Python pre-resolved this; could be a CC
-    //      bundled asset (LTC) or a custom user file. Wins unconditionally.
-    //   2. 8th frame, no override     — force the 8ed glyph by rarity, preserving
-    //      the pre-existing 8th look.
-    //   3. modern frame, no override  — do nothing here. importCard above already
-    //      called changeCardIndex (creator-23.js:3342 → 4451-4457), which seeded
+    //   1. setSymbolPath — Python pre-resolved this; could be a CC bundled
+    //      asset (LTC) or a custom user file. Wins unconditionally.
+    //   2. no override   — do nothing here. importCard above already called
+    //      changeCardIndex (creator-23.js:3342 → 4451-4457), which seeded
     //      #set-symbol-code from scry.set + rarity and fired fetchSetSymbol()
-    //      because we keep #lockSetSymbolURL false for the modern path. Adding
-    //      a second fetchSetSymbol here would race with the engine's call and
+    //      against the local official set-symbol library, because we keep
+    //      #lockSetSymbolURL false when we don't own the upload. Adding a
+    //      second fetchSetSymbol here would race with the engine's call and
     //      mis-position the icon.
-    if (typeof global.uploadSetSymbol === 'function') {
-        if (setSymbolPath) {
-            global.uploadSetSymbol(setSymbolPath, 'resetSetSymbol');
-        } else if (frame === '8th' && !isFlip) {
-            const rChar = ((scry.rarity || 'c')[0] || 'c').toLowerCase();
-            const rFile = ['c', 'u', 'r', 'm', 's'].includes(rChar) ? rChar : 'c';
-            global.uploadSetSymbol(`/img/setSymbols/official/8ed-${rFile}.svg`, 'resetSetSymbol');
-        }
+    if (typeof global.uploadSetSymbol === 'function' && setSymbolPath) {
+        global.uploadSetSymbol(setSymbolPath, 'resetSetSymbol');
     }
 
     if (!INCLUDE_FLAVOR) {
@@ -1103,13 +1101,32 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             const ptBase = baseName.replace(' Frame', ' Power/Toughness');
             await addFrameByName([ptBase + frameNameSuffix, ptBase,
                                   'Colorless Power/Toughness' + frameNameSuffix,
-                                  'Colorless Power/Toughness']);
+                                  'Colorless Power/Toughness',
+                                  'Artifact Power/Toughness' + frameNameSuffix,
+                                  'Artifact Power/Toughness']);
         }
 
         // Transform title icon (sun/moon, compass/land, …) by frame_effects.
         // Modal needs none — the MDFC arrow is baked into the frame art.
         if (scry.layout === 'transform') {
             await addFrameByName([dfcIconName(scry, faceIdx), DFC_ICON_DEFAULT[faceIdx]]);
+        }
+
+        // Legendary crown, built with the engine's own autoFrame layers
+        // (cardFrameProperties → pinline letter, makeFrameFunction → crown +
+        // border cover, split left/right for two-color). The modal packs are
+        // M15Eighth geometry; modern transform is plain M15. The 8th transform
+        // packs get none — the authentic 8th frame predates crowns and CC's
+        // own 8th auto-frame config has supportsCrown: false.
+        const crownBuilder = (scry.layout === 'modal_dfc') ? global.makeM15EighthFrameByLetter
+            : (frame === 'modern') ? global.makeM15FrameByLetter
+            : null;
+        if (crownBuilder && (face.type_line || '').toLowerCase().includes('legendary')) {
+            const props = global.cardFrameProperties(
+                face.colors || [], face.mana_cost || '', face.type_line || '', face.power || '');
+            if (props.pinlineRight) await global.addFrame([], crownBuilder(props.pinlineRight, 'Crown', true));
+            await global.addFrame([], crownBuilder(props.pinline, 'Crown', false));
+            await global.addFrame([], crownBuilder(props.pinline, 'Crown Border Cover', false));
         }
 
         // Reverse-face hints, filled from Scryfall data (the engine's importer
