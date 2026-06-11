@@ -1096,20 +1096,17 @@ def _run_mpcfill(args: argparse.Namespace) -> None:
     session = requests.Session()
     session.headers["User-Agent"] = f"mtg-proxies/{version('mtg-proxies')}"
 
-    from mtg_proxies.decklists import parse_decklist
-    decklist = parse_decklist(args.decklist)
-    cards = [(c.count, c) for c in decklist if isinstance(c, Card)]
-
-    # Resolve all card names to Scryfall data up front so we can report
-    # missing cards before doing any network-intensive matching work.
     from mtg_proxies.decklists.cleaning import merge_duplicates
-    from mtg_proxies.decklists.decklist import Decklist as DecklistType
-    unique_cards: list[Card] = list(merge_duplicates(DecklistType(decklist)))
+    decklist = parse_decklist_spec(args.decklist)
+    cards = [(c.count, c) for c in decklist.cards]
+
+    # Deduplicate so Scryfall lookup and matching happen once per unique name.
+    unique_cards: list[Card] = merge_duplicates(decklist).cards
 
     _mpcfill_log.info("Resolving %d unique card(s) via Scryfall…", len(unique_cards))
     scryfall_data: dict[str, dict] = {}
     for card in unique_cards:
-        name = card.name
+        name = card["name"]
         data = scryfall.get_card(name)
         if data is None:
             _mpcfill_log.warning("Scryfall lookup failed for %r — will fall back", name)
@@ -1142,8 +1139,8 @@ def _run_mpcfill(args: argparse.Namespace) -> None:
             if d.verb == "mpcfill":
                 ident = d.flags.get("--identifier")
                 if ident:
-                    identifier_overrides[card.name] = ident
-                    bleed_overrides[card.name] = d.flags.get("--bleed-crop", bleed_crop_pct)
+                    identifier_overrides[card["name"]] = ident
+                    bleed_overrides[card["name"]] = d.flags.get("--bleed-crop", bleed_crop_pct)
 
     # Main loop: one PNG per unique card name.
     ok = skipped = 0
@@ -1151,7 +1148,7 @@ def _run_mpcfill(args: argparse.Namespace) -> None:
     fallback_names: list[str] = []
 
     for i, (count, card) in enumerate(cards, 1):
-        name = card.name
+        name = card["name"]
         slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
         out_path = outdir / f"{slug}.png"
 
