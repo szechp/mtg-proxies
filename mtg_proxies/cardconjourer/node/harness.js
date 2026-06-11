@@ -1127,11 +1127,15 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             // it's a breadcrumb to the face you flip into (green front //
             // blue back ⇒ blue bar on the green front). Overlay the other
             // face's color frame masked to just the Flipside bar region
-            // (same mask file in both modal packs).
+            // (same mask file in both modal packs). Always use the '(Front)'
+            // frame variant for the overlay: the '(Back)' frames are
+            // deliberately pale/washed-out, but real cards print the bar in
+            // the saturated front-style color on both faces.
+            const barSuffix = frameNameSuffix ? ' (Front)' : '';
             const otherLandWord = { W: 'White', U: 'Blue', B: 'Black', R: 'Red', G: 'Green' }[detectLandColor(otherFace)];
             const otherCands = [];
-            if (otherLandWord) otherCands.push(`${otherLandWord} Land Frame${frameNameSuffix}`);
-            otherCands.push(getFrameNameForFace(otherFace) + frameNameSuffix);
+            if (otherLandWord) otherCands.push(`${otherLandWord} Land Frame${barSuffix}`);
+            otherCands.push(getFrameNameForFace(otherFace) + barSuffix);
             await addFrameByName(otherCands, [{ name: 'Flipside', src: '/img/frames/modal/regular/reminder.svg' }]);
 
             if (global.card.text.flipsideType) {
@@ -1369,8 +1373,16 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             // right on top of lean's artist line (y 0.9129). Shift both lean
             // lines down past the bar, preserving their relative spacing
             // (wizards ends at 0.9634 + 0.0153 — still inside the card).
-            global.card.bottomInfo.top.y += 0.021;
-            global.card.bottomInfo.wizards.y += 0.021;
+            // The modal frames also have a dark bottom border in EVERY color
+            // (M15 geometry) — lean's conditionalcolor whitelist only covers
+            // pack8th's dark frames (Black/Land/Colorless), so strip it and
+            // force white unconditionally.
+            for (const k of ['top', 'wizards']) {
+                const region = global.card.bottomInfo[k];
+                region.y += 0.021;
+                region.text = region.text.replace(/^\{conditionalcolor:[^}]*\}/, '');
+                region.color = 'white';
+            }
         }
     }
     await renderBottomInfo();
