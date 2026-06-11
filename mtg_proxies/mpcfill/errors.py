@@ -6,4 +6,8 @@ class MpcfillError(Exception):
 
 
 class ThumbnailFetchError(MpcfillError):
-    """Raised when a Google Drive thumbnail fetch cannot be completed."""
+    """Raised when a thumbnail fetch (Drive or CDN) cannot be completed."""
+
+
+class SearchError(MpcfillError):
+    """Raised when the MPC Autofill search endpoint returns an unexpected response."""

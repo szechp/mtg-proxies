@@ -1,6 +1,11 @@
-"""MPCFill identifier-fetch helpers.
+"""MPCFill helpers: identifier-fetch and auto-matcher.
 
-The auto-matcher (LightGlue/SuperPoint), backend search client, picker, and
-retro classifier were cut in MR8. The only path that remains is "fetch this
-specific render by Drive identifier" via :mod:`drive` and :mod:`per_card`.
+Modules:
+  :mod:`search`     — search MPC Autofill by card name (``/2/exploreSearch/``)
+  :mod:`cdn`        — fetch small CDN thumbnails (no auth, used for matching)
+  :mod:`similarity` — Sobel-NCC image similarity scorer
+  :mod:`automatch`  — combines search + CDN + similarity into one call
+  :mod:`drive`      — fetch full-resolution renders from Google Drive
+  :mod:`per_card`   — resolve a single ``#mpcfill --identifier`` modeline slot
+  :mod:`cache`      — on-disk cache layout helpers
 """

@@ -1061,6 +1061,175 @@ def _composite_dfc_art(front_path: Path, back_path: Path) -> Path:
     return dst
 
 
+def _run_mpcfill(args: argparse.Namespace) -> None:
+    """Orchestrate the ``mpcfill`` subcommand end-to-end.
+
+    For each card in DECKLIST:
+      1. Resolve the Scryfall card and download its ``normal``-size reference image.
+      2. Search MPC Autofill for all proxy variants (cached).
+      3. Score each CDN thumbnail against the reference (Sobel NCC).
+      4. Fetch the full-resolution Drive image for the best match.
+      5. Optionally apply bleed-crop and write ``<slug>.png`` to OUTDIR.
+
+    Cards with a ``#mpcfill --identifier <id>`` modeline skip auto-matching and
+    use that Drive ID directly (same as the per-card path in ``print``).
+    Unmatched cards land in ``OUTDIR/fallback.txt`` (decklist format) so you
+    can pipe them into a ``print`` run.
+    """
+    import csv
+    import shutil
+    from importlib.metadata import version
+
+    from mtg_proxies.bleed import crop_bleed
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+    from mtg_proxies.mpcfill import per_card as mpcfill_per_card
+    from mtg_proxies.mpcfill.automatch import automatch
+    from mtg_proxies.mpcfill.drive import fetch_thumbnail as drive_fetch
+    from mtg_proxies.mpcfill.errors import ThumbnailFetchError
+
+    outdir: Path = args.outdir
+    outdir.mkdir(parents=True, exist_ok=True)
+    cache_root = default_cache_root()
+    bleed_crop_pct: float = args.bleed_crop
+    threshold: int = args.threshold
+
+    session = requests.Session()
+    session.headers["User-Agent"] = f"mtg-proxies/{version('mtg-proxies')}"
+
+    from mtg_proxies.decklists import parse_decklist
+    decklist = parse_decklist(args.decklist)
+    cards = [(c.count, c) for c in decklist if isinstance(c, Card)]
+
+    # Resolve all card names to Scryfall data up front so we can report
+    # missing cards before doing any network-intensive matching work.
+    from mtg_proxies.decklists.cleaning import merge_duplicates
+    from mtg_proxies.decklists.decklist import Decklist as DecklistType
+    unique_cards: list[Card] = list(merge_duplicates(DecklistType(decklist)))
+
+    _mpcfill_log.info("Resolving %d unique card(s) via Scryfall…", len(unique_cards))
+    scryfall_data: dict[str, dict] = {}
+    for card in unique_cards:
+        name = card.name
+        data = scryfall.get_card(name)
+        if data is None:
+            _mpcfill_log.warning("Scryfall lookup failed for %r — will fall back", name)
+        else:
+            scryfall_data[name] = data
+
+    # Download Scryfall normal images (used as similarity reference).
+    normal_paths: dict[str, Path] = {}
+    for name, data in scryfall_data.items():
+        url = (data.get("image_uris") or {}).get("normal")
+        if not url:
+            # DFC — try front face
+            faces = data.get("card_faces") or []
+            url = (faces[0].get("image_uris") or {}).get("normal") if faces else None
+        if not url:
+            _mpcfill_log.warning("No normal image URL for %r — will fall back", name)
+            continue
+        local = scryfall.get_image(url)
+        if local:
+            normal_paths[name] = Path(local)
+
+    # Build per-card identifier overrides from #mpcfill --identifier modelines.
+    identifier_overrides: dict[str, str] = {}
+    bleed_overrides: dict[str, float] = {}
+    for card in unique_cards:
+        if not card.modeline:
+            continue
+        directives, _ = parse_modeline_trailer(card.modeline)
+        for d in directives:
+            if d.verb == "mpcfill":
+                ident = d.flags.get("--identifier")
+                if ident:
+                    identifier_overrides[card.name] = ident
+                    bleed_overrides[card.name] = d.flags.get("--bleed-crop", bleed_crop_pct)
+
+    # Main loop: one PNG per unique card name.
+    ok = skipped = 0
+    report_rows: list[dict] = []
+    fallback_names: list[str] = []
+
+    for i, (count, card) in enumerate(cards, 1):
+        name = card.name
+        slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+        out_path = outdir / f"{slug}.png"
+
+        # Cache hit.
+        if out_path.is_file() and out_path.stat().st_size > 0:
+            print(f"[{i}/{len(cards)}] {name}: cached")
+            report_rows.append({"slot": i, "name": name, "status": "ok",
+                                 "identifier": "cached", "score": ""})
+            ok += 1
+            continue
+
+        # Resolve identifier: explicit modeline override beats auto-match.
+        effective_bleed = bleed_overrides.get(name, bleed_crop_pct)
+        identifier = identifier_overrides.get(name)
+
+        if identifier is None:
+            ref_path = normal_paths.get(name)
+            if ref_path is None:
+                print(f"[{i}/{len(cards)}] {name}: no reference image — skipped")
+                fallback_names.append(f"{count} {name}")
+                report_rows.append({"slot": i, "name": name, "status": "skip",
+                                     "identifier": "", "score": ""})
+                skipped += 1
+                continue
+            print(f"[{i}/{len(cards)}] {name}: matching…", end=" ", flush=True)
+            identifier = automatch(name, ref_path, session, cache_root, threshold=threshold)
+            if identifier is None:
+                print("no match")
+                fallback_names.append(f"{count} {name}")
+                report_rows.append({"slot": i, "name": name, "status": "skip",
+                                     "identifier": "", "score": "below threshold"})
+                skipped += 1
+                continue
+
+        # Fetch the full-resolution Drive image.
+        print(f"[{i}/{len(cards)}] {name}: fetching {identifier}…", end=" ", flush=True)
+        try:
+            img_bytes = drive_fetch(identifier, mpcfill_per_card.DEFAULT_OUTPUT_SIZE,
+                                    session=session, cache_root=cache_root)
+        except (ThumbnailFetchError, requests.RequestException) as exc:
+            print(f"fetch failed: {exc}")
+            fallback_names.append(f"{count} {name}")
+            report_rows.append({"slot": i, "name": name, "status": "skip",
+                                 "identifier": identifier, "score": "fetch error"})
+            skipped += 1
+            continue
+
+        # Write raw PNG, then optionally bleed-crop.
+        raw = outdir / f"{slug}__raw.png"
+        raw.write_bytes(img_bytes)
+        if effective_bleed > 0:
+            try:
+                crop_bleed(raw, out_path, effective_bleed)
+                raw.unlink(missing_ok=True)
+            except ValueError as exc:
+                _mpcfill_log.warning("bleed-crop failed for %s: %s — using uncropped", name, exc)
+                shutil.move(str(raw), out_path)
+        else:
+            shutil.move(str(raw), out_path)
+
+        print("ok")
+        report_rows.append({"slot": i, "name": name, "status": "ok",
+                             "identifier": identifier, "score": ""})
+        ok += 1
+
+    # Write fallback.txt and report.csv.
+    (outdir / "fallback.txt").write_text("\n".join(fallback_names) + ("\n" if fallback_names else ""))
+    with (outdir / "report.csv").open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["slot", "name", "status", "identifier", "score"],
+                           lineterminator="\n")
+        w.writeheader()
+        w.writerows(report_rows)
+
+    print(f"\nDone: {ok} matched, {skipped} skipped → {outdir}")
+    if skipped:
+        print(f"  Unmatched cards written to {outdir / 'fallback.txt'}")
+
+
 def _run_cardconjourer(args: argparse.Namespace) -> None:
     """Orchestrate the `cardconjourer` subcommand end-to-end.
 
@@ -1717,6 +1886,39 @@ def main() -> None:
         type=float,
         default=0.03,
         metavar="FLOAT",
+    )
+
+    mpcfill_parser = subparsers.add_parser(
+        "mpcfill",
+        help="Auto-match each card to the best MPC Autofill proxy and write PNGs",
+        description=(
+            "For each card in DECKLIST, search MPC Autofill for all proxy variants,"
+            " score them against the Scryfall reference image using edge-based"
+            " similarity (Sobel NCC), and write the best match as <slug>.png to OUTDIR."
+            " Cards with a ``#mpcfill --identifier <id>`` modeline skip auto-matching"
+            " and use that Drive ID directly. Unmatched cards land in"
+            " OUTDIR/fallback.txt. Feed the output folder to"
+            " ``mtg-proxies print --custom-art OUTDIR`` for the final PDF."
+        ),
+    )
+    mpcfill_parser.add_argument("decklist", type=Path, help="path to a decklist in text/arena format")
+    mpcfill_parser.add_argument("outdir", type=Path, help="output directory (created if missing)")
+    mpcfill_parser.add_argument(
+        "--bleed-crop",
+        dest="bleed_crop",
+        type=float,
+        default=4.0,
+        metavar="PCT",
+        help="crop each edge of the fetched MPC render by PCT %% before writing"
+             " (default: %(default)s — matches MPC's standard 1/8\" bleed).",
+    )
+    mpcfill_parser.add_argument(
+        "--threshold",
+        type=int,
+        default=40,
+        metavar="PCT",
+        help="minimum similarity score 0–100 to accept a match (default: %(default)s)."
+             " Exact-art matches typically score 70–90; alternate arts 40–60.",
     )
 
     cardconjourer_parser = subparsers.add_parser(
@@ -2378,6 +2580,9 @@ def main() -> None:
 
             # Show deck value decomposition
             show_deck_value(decklist, lump_threshold=args.lump_threshold)
+
+        case "mpcfill":
+            _run_mpcfill(args)
 
         case "cardconjourer":
             _run_cardconjourer(args)
