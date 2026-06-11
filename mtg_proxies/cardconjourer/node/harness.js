@@ -1132,6 +1132,27 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
                     || (otherFace.type_line || '').split('—')[0].trim();
             }
         }
+
+        // De-overlap paired oneLine regions. The engine auto-shrinks each
+        // oneLine text to fit ITS OWN width, but two regions sharing a band
+        // (left-aligned name + right-aligned mana/type) can still collide —
+        // long DFC names run under the symbols. Reserve the right-aligned
+        // region's estimated width on the left-aligned one so the auto-shrink
+        // kicks in. Width units are card-width fractions; `size` is a card-
+        // height fraction, so ×(2100/1500)=1.4 converts a square glyph height
+        // to width. Mana symbols are ~1 glyph each; plain text ~0.55 per char.
+        const estimateWidth = (text, size) => {
+            const symbols = (text.match(/\{[^}]*\}/g) || []).length;
+            const plain = text.replace(/\{[^}]*\}/g, '').length;
+            return (symbols * 1.1 + plain * 0.55) * size * 1.4;
+        };
+        const reserveRight = (leftRegion, rightRegion) => {
+            if (!leftRegion || !rightRegion || !rightRegion.text) return;
+            const reserve = estimateWidth(rightRegion.text, rightRegion.size) + 0.01;
+            leftRegion.width = Math.max(0.2, leftRegion.width - reserve);
+        };
+        reserveRight(global.card.text.title, global.card.text.mana);
+        reserveRight(global.card.text.flipsideType, global.card.text.flipSideReminder);
     } else if (faceColors && scry.layout !== 'flip') {
         await global.autoFrameUnified(frameTypeLiteral,
             faceColors,
@@ -1326,6 +1347,14 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         delete global.card.bottomInfo.bottomRight;
     } else {
         setLeanBottomInfo();
+        if (dfcFace && scry.layout === 'modal_dfc') {
+            // The MDFC flipside bar spans y 0.892–0.931 (height-relative),
+            // right on top of lean's artist line (y 0.9129). Shift both lean
+            // lines down past the bar, preserving their relative spacing
+            // (wizards ends at 0.9634 + 0.0153 — still inside the card).
+            global.card.bottomInfo.top.y += 0.021;
+            global.card.bottomInfo.wizards.y += 0.021;
+        }
     }
     await renderBottomInfo();
     global.drawFrames();
