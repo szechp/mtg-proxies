@@ -1124,9 +1124,17 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         if (crownBuilder && (face.type_line || '').toLowerCase().includes('legendary')) {
             const props = global.cardFrameProperties(
                 face.colors || [], face.mana_cost || '', face.type_line || '', face.power || '');
-            if (props.pinlineRight) await global.addFrame([], crownBuilder(props.pinlineRight, 'Crown', true));
-            await global.addFrame([], crownBuilder(props.pinline, 'Crown', false));
-            await global.addFrame([], crownBuilder(props.pinline, 'Crown Border Cover', false));
+            // addFrame(_, frameObj) only loads the images — registering the
+            // layer in card.frames is the caller's job (autoFrameUnified
+            // assigns card.frames itself). unshift order = z-order, index 0
+            // on top: border cover under the right-half crown under the crown.
+            const layers = [crownBuilder(props.pinline, 'Crown Border Cover', false)];
+            if (props.pinlineRight) layers.push(crownBuilder(props.pinlineRight, 'Crown', true));
+            layers.push(crownBuilder(props.pinline, 'Crown', false));
+            for (const layer of layers) {
+                global.card.frames.unshift(layer);
+                await global.addFrame([], layer);
+            }
         }
 
         // Reverse-face hints, filled from Scryfall data (the engine's importer
