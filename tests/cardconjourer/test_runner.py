@@ -139,6 +139,13 @@ def test_build_job_with_frame_modern() -> None:
     assert build_job(slot=1, name="Murder", frame="modern")["frame"] == "modern"
 
 
+def test_build_job_with_frame_retro() -> None:
+    """``frame="retro"`` (Seventh Edition) rides through the same channel as 8th/modern."""
+    from mtg_proxies.cardconjourer.runner import build_job
+
+    assert build_job(slot=1, name="Murder", frame="retro")["frame"] == "retro"
+
+
 def test_build_job_with_set_symbol_path() -> None:
     """``set_symbol_path`` is emitted into the job dict for the harness to upload."""
     from mtg_proxies.cardconjourer.runner import build_job

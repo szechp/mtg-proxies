@@ -702,17 +702,13 @@ function shouldSkip(scry) {
 // Pack routing per Scryfall layout AND requested frame. ND-JSON's runOneJob
 // rewrites every DFC layout to 'flip' before this fires, so the only multi-
 // face layout that reaches here is 'flip' (Kamigawa + DFC-as-flip), which
-// renders as a single PNG via packFlip. All other layouts route to a single
-// 8th- or M15-modern pack.
-//
-// FUTURE: retro frame support — a third branch here pointing at one of CC's
-// retro packs (packClassicshiftedLands.js, packM15Borders.js, etc.) would
-// give users a pre-2003 frame option. Would also need: new CLI flag in
-// cli.py's cardconjourer subparser, modelines.py registry entry, and frame
-// branching downstream in renderFace (autoFrameTarget, bottom-info layout).
+// renders as a single PNG via packFlip — in the modern flip frame regardless
+// of the requested style (no 8th/Seventh flip pack exists). All other layouts
+// route to a single 8th-, M15-modern, or Seventh-Edition retro pack.
 function packForLayout(layout, frame) {
     if (layout === 'flip') return { single: 'packFlip.js' };
     if (frame === 'modern') return { single: 'packM15Regular-1.js' };
+    if (frame === 'retro') return { single: 'packSeventh.js' };
     return { single: 'pack8th.js' };
 }
 
@@ -725,6 +721,19 @@ function packForLayout(layout, frame) {
 // for frame + P/T lookups. reversible_card is excluded (both faces are fronts,
 // no frame_effects): it stays on the flip path.
 function packsForDfcSplit(layout, frame) {
+    // Retro has no Seventh-Edition DFC pack — the Classicshifted series is the
+    // engine's retro-style family that ships native DFC furniture (Transform
+    // icon + indicators, MDFC flipside bars). It spans pack files: base frames/
+    // PT/crowns + colored land variants + the per-layout addon. Each pack file
+    // REPLACES availableFrames, so ensurePackLoaded merges array entries; the
+    // base must come FIRST so its index-based `complementary` references stay
+    // valid, and the addon LAST so its loadFrameVersion onclick (text regions
+    // incl. reminder / flipsideType) is the live handler.
+    if (frame === 'retro' && (layout === 'transform' || layout === 'modal_dfc')) {
+        const addon = (layout === 'transform') ? 'packClassicshiftedTransform.js' : 'packClassicshiftedDFC.js';
+        const packs = ['packClassicshifted.js', 'packClassicshiftedLands.js', addon];
+        return { front: packs, back: packs, suffixes: ['', ''] };
+    }
     if (layout === 'transform') {
         if (frame === 'modern') return { front: 'packM15TransformFront.js', back: 'packM15TransformBack.js', suffixes: ['', ''] };
         return { front: 'pack8thTransformFront.js', back: 'pack8thTransformBack.js', suffixes: ['', ''] };
@@ -804,19 +813,33 @@ async function addFrameByName(candidates, masks = []) {
     return null;
 }
 
-// Load the given pack file and trigger its loadFrameVersion onclick. The pack
+// Load the given pack file(s) and trigger the loadFrameVersion onclick. A pack
 // replaces availableFrames + sets card.version + populates card.text via
 // loadTextOptions. Called per-card so we can switch packs (e.g. transform
 // front → vanilla 8th) across the deck without restarting the engine.
+//
+// Array form (retro Classicshifted: base + lands + addon): every file is
+// loaded in order and their availableFrames are CONCATENATED, since each file
+// overwrites the global on load. Order contract: the first file's entries
+// keep their original indices (the engine resolves numeric `complementary`
+// references against availableFrames by index), and the last file's
+// loadFrameVersion onclick is the one left live for the re-trigger below.
 let _lastPack = null;
 async function ensurePackLoaded(packFile) {
-    if (_lastPack !== packFile) {
-        const fp = path.join(CC_ROOT, 'js/frames/', packFile);
-        if (!fs.existsSync(fp)) throw new Error('pack not found: ' + packFile);
-        let code = fs.readFileSync(fp, 'utf8');
-        code = code.replace(/^(const|let) (mana|debugging|cardConjurer|setSymbolAliases|baseWidth|baseHeight|highResScale)\b/gm, 'var $2');
-        vm.runInThisContext(code, { filename: fp });
-        _lastPack = packFile;
+    const packFiles = Array.isArray(packFile) ? packFile : [packFile];
+    const packKey = packFiles.join('+');
+    if (_lastPack !== packKey) {
+        const merged = [];
+        for (const oneFile of packFiles) {
+            const fp = path.join(CC_ROOT, 'js/frames/', oneFile);
+            if (!fs.existsSync(fp)) throw new Error('pack not found: ' + oneFile);
+            let code = fs.readFileSync(fp, 'utf8');
+            code = code.replace(/^(const|let) (mana|debugging|cardConjurer|setSymbolAliases|baseWidth|baseHeight|highResScale)\b/gm, 'var $2');
+            vm.runInThisContext(code, { filename: fp });
+            merged.push(...(global.availableFrames || []));
+        }
+        if (packFiles.length > 1) global.availableFrames = merged;
+        _lastPack = packKey;
     }
     // Re-trigger the pack's loadFrameVersion onclick each render so card.text
     // / card.frames are reset to the pack template before importCard overwrites
@@ -950,6 +973,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     let autoFrameTarget = '8th';
     if (isFlip) autoFrameTarget = 'Flip';
     else if (frame === 'modern') autoFrameTarget = 'M15Regular-1';
+    else if (frame === 'retro') autoFrameTarget = 'Seventh';
     // dfc_split faces build their frames manually from the DFC pack below —
     // 'false' makes any stray engine-scheduled autoFrame() a no-op so it can't
     // overwrite them with the regular (non-DFC) frame art.
@@ -1078,6 +1102,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     let frameTypeLiteral = '8th';
     if (scry.layout === 'flip') frameTypeLiteral = 'Flip';
     else if (frame === 'modern') frameTypeLiteral = 'M15Regular-1';
+    else if (frame === 'retro') frameTypeLiteral = 'Seventh';
     
     if (dfcFace) {
         // dfc_split: build the whole-card frame from the loaded DFC pack's
@@ -1106,22 +1131,31 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
                                   'Artifact Power/Toughness']);
         }
 
-        // Transform title icon (sun/moon, compass/land, …) by frame_effects.
-        // Modal needs none — the MDFC arrow is baked into the frame art.
-        if (scry.layout === 'transform') {
-            await addFrameByName([dfcIconName(scry, faceIdx), DFC_ICON_DEFAULT[faceIdx]]);
-        }
-
         // Legendary crown, built with the engine's own autoFrame layers
         // (cardFrameProperties → pinline letter, makeFrameFunction → crown +
         // border cover, split left/right for two-color). The modal packs are
         // M15Eighth geometry; modern transform is plain M15. The 8th transform
         // packs get none — the authentic 8th frame predates crowns and CC's
         // own 8th auto-frame config has supportsCrown: false.
-        const crownBuilder = (scry.layout === 'modal_dfc') ? global.makeM15EighthFrameByLetter
+        const faceIsLegendary = (face.type_line || '').toLowerCase().includes('legendary');
+        if (frame === 'retro' && faceIsLegendary) {
+            // Classicshifted ships crowns as named availableFrames entries (no
+            // autoFrame config exists for it). The pack's numeric `complementary`
+            // index predates its current entry list — today it lands on
+            // 'Artifact Crown' instead of the border cover — so strip it and
+            // add the border cover explicitly, then the crown on top.
+            for (const af of global.availableFrames || []) {
+                if (af && /Crown$/.test(af.name || '')) delete af.complementary;
+            }
+            await addFrameByName(['Legend Crown Border Cover']);
+            await addFrameByName([baseName.replace(' Frame', ' Crown'),
+                                  'Artifact Crown', 'Colorless Crown']);
+        }
+        const crownBuilder = (frame === 'retro') ? null
+            : (scry.layout === 'modal_dfc') ? global.makeM15EighthFrameByLetter
             : (frame === 'modern') ? global.makeM15FrameByLetter
             : null;
-        if (crownBuilder && (face.type_line || '').toLowerCase().includes('legendary')) {
+        if (crownBuilder && faceIsLegendary) {
             const props = global.cardFrameProperties(
                 face.colors || [], face.mana_cost || '', face.type_line || '', face.power || '');
             // addFrame(_, frameObj) only loads the images — registering the
@@ -1137,31 +1171,83 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             }
         }
 
+        // Transform title icon (sun/moon, compass/land, …) by frame_effects.
+        // Modal needs none — the MDFC arrow is baked into the frame art.
+        // Added AFTER the crown so the icon sits on top of it (Classicshifted's
+        // crown band covers the title corner where the icon lives).
+        if (scry.layout === 'transform') {
+            // Classicshifted's icons are bare glyphs — its 'Transform Icon'
+            // notch is a separate layer underneath (the 8th/M15 transform
+            // packs bake the notch into the frame art instead).
+            if (frame === 'retro') await addFrameByName(['Transform Icon']);
+            await addFrameByName([dfcIconName(scry, faceIdx), DFC_ICON_DEFAULT[faceIdx]]);
+        }
+
         // Reverse-face hints, filled from Scryfall data (the engine's importer
         // leaves these pack regions empty):
         //   transform front  — gray back-face P/T bottom-right ("Reverse PT").
         //   modal both faces — flipside bar: other face's name (left) + its
         //                      mana cost, or bare type for lands (right).
         const otherFace = (scry.card_faces || [])[faceIdx === 0 ? 1 : 0] || {};
-        if (scry.layout === 'transform' && dfcFace === 'front'
-            && otherFace.power != null && otherFace.power !== '' && global.card.text.reminder) {
+        const showReversePt = scry.layout === 'transform' && dfcFace === 'front'
+            && otherFace.power != null && otherFace.power !== '' && !!global.card.text.reminder;
+        if (showReversePt) {
             global.card.text.reminder.text = `${otherFace.power}/${otherFace.toughness}`;
+            if (frame === 'retro') {
+                // Classicshifted pairs the reverse-PT line with a small color
+                // chip ('<X> Transform Indicator') at its right end; shave the
+                // text region so the digits sit left of the chip.
+                await addFrameByName([getFrameNameForFace(otherFace).replace(' Frame', ' Transform Indicator'),
+                                      'Colorless Transform Indicator']);
+                global.card.text.reminder.width -= 0.05;
+            }
+        } else if (global.card.text.reminder) {
+            // The Classicshifted transform pack is shared between faces, so the
+            // back face carries a 'Reverse PT' region too — and the engine's
+            // importer fills it from the other face. Real transform backs show
+            // no reverse-PT line; blank it.
+            global.card.text.reminder.text = '';
+        }
+
+        if (frame === 'retro') {
+            // Classicshifted's GUI defaults assume hand-tuning: the type region
+            // runs under the set symbol (right edge 0.9213), and the rules
+            // region runs under the flipside bar (y 0.8896) / reverse-PT line
+            // (y 0.842). Clamp both so the engine's auto-shrink keeps text
+            // inside the visible boxes.
+            if (global.card.text.type) global.card.text.type.width = 0.70;
+            if (global.card.text.rules) {
+                global.card.text.rules.height = showReversePt ? 0.199 : 0.242;  // ends 0.832 / 0.875
+            }
         }
         if (scry.layout === 'modal_dfc') {
             // Real MDFCs tint the flipside bar with the OTHER face's color —
             // it's a breadcrumb to the face you flip into (green front //
-            // blue back ⇒ blue bar on the green front). Overlay the other
-            // face's color frame masked to just the Flipside bar region
-            // (same mask file in both modal packs). Always use the '(Front)'
-            // frame variant for the overlay: the '(Back)' frames are
-            // deliberately pale/washed-out, but real cards print the bar in
-            // the saturated front-style color on both faces.
-            const barSuffix = frameNameSuffix ? ' (Front)' : '';
+            // blue back ⇒ blue bar on the green front).
             const otherLandWord = { W: 'White', U: 'Blue', B: 'Black', R: 'Red', G: 'Green' }[detectLandColor(otherFace)];
-            const otherCands = [];
-            if (otherLandWord) otherCands.push(`${otherLandWord} Land Frame${barSuffix}`);
-            otherCands.push(getFrameNameForFace(otherFace) + barSuffix);
-            await addFrameByName(otherCands, [{ name: 'Flipside', src: '/img/frames/modal/regular/reminder.svg' }]);
+            if (frame === 'retro') {
+                // Classicshifted ships pre-colored '<X> MDFC Flipside' bars and
+                // the left 'Front Face' / 'Back Face' arrow strip as plain
+                // entries — no mask dance needed.
+                const barCands = [];
+                if (otherLandWord) barCands.push(`${otherLandWord} MDFC Flipside`);
+                barCands.push(getFrameNameForFace(otherFace).replace(' Frame', ' MDFC Flipside'),
+                              'Colorless MDFC Flipside');
+                await addFrameByName(barCands);
+                await addFrameByName([dfcFace === 'front' ? 'Front Face' : 'Back Face']);
+            } else {
+                // Overlay the other face's color frame masked to just the
+                // Flipside bar region (same mask file in both modal packs).
+                // Always use the '(Front)' frame variant for the overlay: the
+                // '(Back)' frames are deliberately pale/washed-out, but real
+                // cards print the bar in the saturated front-style color on
+                // both faces.
+                const barSuffix = frameNameSuffix ? ' (Front)' : '';
+                const otherCands = [];
+                if (otherLandWord) otherCands.push(`${otherLandWord} Land Frame${barSuffix}`);
+                otherCands.push(getFrameNameForFace(otherFace) + barSuffix);
+                await addFrameByName(otherCands, [{ name: 'Flipside', src: '/img/frames/modal/regular/reminder.svg' }]);
+            }
 
             if (global.card.text.flipsideType) {
                 global.card.text.flipsideType.text = otherFace.name || '';
@@ -1174,8 +1260,12 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
                 // name. Face-specific shade (fronts have a dark bar + white
                 // name, backs a light bar + black name); conditionalColor is
                 // dropped so the engine's '(Back):black' rule can't undo it.
-                delete global.card.text.flipSideReminder.conditionalColor;
-                global.card.text.flipSideReminder.color = (dfcFace === 'front') ? '#cccccc' : '#555555';
+                // Classicshifted's bars are saturated color on both faces with
+                // white pack-default text — keep that there.
+                if (frame !== 'retro') {
+                    delete global.card.text.flipSideReminder.conditionalColor;
+                    global.card.text.flipSideReminder.color = (dfcFace === 'front') ? '#cccccc' : '#555555';
+                }
             }
         }
 
@@ -1357,6 +1447,13 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         await global.autoFrame();
     }
 
+    // Odyssey-era tombstone icon (flashback / disturb / unearth …): Scryfall
+    // flags eligible prints via frame_effects; packSeventh ships the same icon
+    // asset the GUI offers, positioned left of the title.
+    if (!dfcFace && frame === 'retro' && (scry.frame_effects || []).includes('tombstone')) {
+        await addFrameByName(['Tombstone Icon']);
+    }
+
     // DFC indicator (small icon at top-left next to title) — pack8thTransform
     // packs include this as a separate availableFrames entry ('Up Arrow', etc.)
     // but autoFrame doesn't add it automatically. We add it for transform /
@@ -1380,7 +1477,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     }
 
     await global.drawText();
-    if (frame === 'modern' || scry.layout === 'flip') {
+    if (frame === 'modern' || scry.layout === 'flip' || (frame === 'retro' && dfcFace)) {
         // Use the engine's canonical M15 bottomInfo (creator-23.js:243). It builds
         // a lean variant when #enableNewCollectorStyle is unchecked (the default
         // in SELECTOR_OVERRIDES above) — gothammedium font, set/language/artist,
@@ -1388,9 +1485,27 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         // Strip the two boilerplate keys the engine inlines into every M15 card:
         // the "NOT FOR SALE" stamp (bottomLeft) and the "CardConjurer.com" tag
         // (bottomRight). Other keys (artist/set/copyright) survive untouched.
+        // Retro DFC faces (Classicshifted) take this path too: their addon
+        // packs don't loadBottomInfo, and this engine default (white text,
+        // black outline, in the bottom border) is exactly what the GUI gives
+        // Classicshifted cards via resetCardIrregularities.
         await global.setBottomInfoStyle();
         delete global.card.bottomInfo.bottomLeft;
         delete global.card.bottomInfo.bottomRight;
+    } else if (frame === 'retro') {
+        // packSeventh's loadFrameVersion onclick already loaded the pack's own
+        // centered-white bottom info (engine-native); drop only its combined
+        // "NOT FOR SALE  CardConjurer.com" line.
+        delete global.card.bottomInfo.bottom;
+        // The pack stacks artist (y 1908, 56px tall) and copyright (y 1933)
+        // only 25px apart, so top-anchored writeText prints them over each
+        // other. Re-space the two lines so the whole block sits vertically
+        // CENTERED between the textbox bottom (≈ y 1852 on CC's Seventh
+        // frame) and the start of the border (≈ y 2006), measured off the
+        // rendered frame art — equal clearance above and below, like real
+        // 7ED cards.
+        if (global.card.bottomInfo.top) global.card.bottomInfo.top.y = 1881 / 2100;
+        if (global.card.bottomInfo.wizards) global.card.bottomInfo.wizards.y = 1946 / 2100;
     } else {
         setLeanBottomInfo();
         if (dfcFace && scry.layout === 'modal_dfc') {

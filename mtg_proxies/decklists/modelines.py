@@ -112,7 +112,9 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     "no-shadow-lift": {},
     # ``#cardconjourer`` — render this single card via the headless Card Conjurer engine
     # (the ``cardconjourer`` subcommand also does the whole deck). Mutually-exclusive frame
-    # selectors ``--8th`` / ``--modern`` pick the style; ``--upscale`` pre-runs
+    # selectors ``--8th`` / ``--modern`` / ``--retro`` pick the style (retro = Seventh
+    # Edition 1997 frame; its DFC split faces use the Classicshifted retro DFC packs);
+    # ``--upscale`` pre-runs
     # the art through Real-ESRGAN. ``--scryfall`` skips MTGPics for this card (use Scryfall
     # art_crop directly) — useful per-card override when MTGPics's scan has a burned-in
     # artist signature / watermark. ``--skip`` opts the card out of CC rendering entirely
@@ -140,6 +142,7 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     "cardconjourer": {
         "--8th":        NO_VALUE,
         "--modern":     NO_VALUE,
+        "--retro":      NO_VALUE,
         "--upscale":    NO_VALUE,
         "--scryfall":   NO_VALUE,
         "--skip":       NO_VALUE,
@@ -272,18 +275,21 @@ def parse_modeline_trailer(trailer: str) -> tuple[list[Directive], list[ParseWar
             continue
 
         # Mutex enforcement. The cardconjourer verb's frame selectors --8th /
-        # --modern are mutually exclusive, as are the DFC mode selectors
-        # --dfc-split / --dfc-flip: stacking either pair leaves downstream
-        # resolution ambiguous. Drop both flags with a warning rather than
-        # silently picking one.
+        # --modern / --retro are mutually exclusive, as are the DFC mode
+        # selectors --dfc-split / --dfc-flip: stacking flags from one group
+        # leaves downstream resolution ambiguous. Drop all conflicting flags
+        # with a warning rather than silently picking one.
         if verb == "cardconjourer":
-            for pair, what in ((("--8th", "--modern"), "frame"), (("--dfc-split", "--dfc-flip"), "DFC mode")):
-                set_flags = [f for f in pair if parsed_flags.get(f)]
+            for group, what in (
+                (("--8th", "--modern", "--retro"), "frame"),
+                (("--dfc-split", "--dfc-flip"), "DFC mode"),
+            ):
+                set_flags = [f for f in group if parsed_flags.get(f)]
                 if len(set_flags) > 1:
                     warnings.append(ParseWarning(
                         "WARNING",
                         f"Conflicting {what} flags {set_flags} on #cardconjourer; "
-                        f"dropping both (falls back to default)."
+                        f"dropping all of them (falls back to default)."
                     ))
                     for f in set_flags:
                         parsed_flags.pop(f, None)

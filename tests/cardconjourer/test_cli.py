@@ -306,6 +306,57 @@ def test_main_cardconjourer_modern_propagates_frame(tmp_path: Path) -> None:
     assert mock_render.call_args.kwargs.get("frame") == "modern"
 
 
+def test_main_cardconjourer_retro_propagates_frame(tmp_path: Path) -> None:
+    """`cardconjourer --retro deck.txt OUTDIR` reaches render_deck with frame='retro'."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder\n")
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--retro", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
+        main()
+
+    assert mock_render.call_args.kwargs.get("frame") == "retro"
+
+
+def test_main_cardconjourer_retro_and_modern_mutex(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
+    """`--retro` and `--modern` are mutually exclusive at the argparse level."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder\n")
+    argv = ["mtg-proxies", "cardconjourer", "--retro", "--modern", str(deck), str(tmp_path / "out")]
+
+    with patch("sys.argv", argv), pytest.raises(SystemExit):
+        main()
+
+    err = capsys.readouterr().err
+    assert "not allowed" in err or "argument" in err
+
+
+def test_main_cardconjourer_help_mentions_retro(capsys: pytest.CaptureFixture) -> None:
+    """`cardconjourer --help` documents the --retro frame flag."""
+    from mtg_proxies.cli import main
+
+    with patch("sys.argv", ["mtg-proxies", "cardconjourer", "--help"]), pytest.raises(SystemExit):
+        main()
+
+    assert "--retro" in capsys.readouterr().out
+
+
+def test_resolve_cc_frame_retro_modeline() -> None:
+    """A per-card `#cardconjourer --retro` modeline resolves to the harness frame 'retro'."""
+    from mtg_proxies.cli import _resolve_cc_frame
+
+    assert _resolve_cc_frame({"--retro": True}) == "retro"
+    assert _resolve_cc_frame({"--modern": True}) == "modern"
+    assert _resolve_cc_frame({}) == "8th"
+
+
 def test_main_cardconjourer_modern_and_8th_mutex(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
     """`--modern` and `--8th` are mutually exclusive."""
     from mtg_proxies.cli import main

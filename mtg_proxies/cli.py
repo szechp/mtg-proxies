@@ -117,12 +117,16 @@ def resolve_upscale_scope(args: argparse.Namespace) -> Literal["auto", "all"] | 
 def _resolve_cc_frame(flags: dict) -> str:
     """Map a ``#cardconjourer`` directive's flags to the harness's frame string.
 
-    Mirrors the CLI's ``--modern`` / ``--8th`` precedence. Bare ``#cardconjourer``
-    (no frame flag) defaults to ``"8th"`` so the per-card modeline path is
-    consistent with the standalone subcommand's required-frame contract.
+    Mirrors the CLI's ``--modern`` / ``--retro`` / ``--8th`` precedence. Bare
+    ``#cardconjourer`` (no frame flag) defaults to ``"8th"`` so the per-card
+    modeline path is consistent with the standalone subcommand's required-frame
+    contract. The modeline parser's mutex already drops conflicting frame flags,
+    so at most one of these is set.
     """
     if flags.get("--modern"):
         return "modern"
+    if flags.get("--retro"):
+        return "retro"
     return "8th"
 
 
@@ -1087,7 +1091,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
 
     from mtg_proxies.cardconjourer import runner as cc_runner
 
-    frame = "modern" if args.frame_modern else "8th"
+    frame = "modern" if args.frame_modern else ("retro" if args.frame_retro else "8th")
 
     # Resolve every decklist line to a full Scryfall card dict. parse_decklist_spec
     # handles count prefix, `Name (SET) CN`, the new URL/shorthand form, foil markers,
@@ -1764,10 +1768,10 @@ def main() -> None:
 
     cardconjourer_parser = subparsers.add_parser(
         "cardconjourer",
-        help="Render an 8th-edition or modern frame for each card via headless Card Conjurer",
+        help="Render an 8th-edition, modern, or retro frame for each card via headless Card Conjurer",
         description=(
             "For each card in DECKLIST, render a fresh PNG via the headless Card Conjurer engine"
-            " in the chosen frame style (--8th / --modern) and write it to OUTDIR as"
+            " in the chosen frame style (--8th / --modern / --retro) and write it to OUTDIR as"
             " <NNNN>-<slug>.png. Cards the engine can't render (saga / transform / planeswalker /"
             " 404) are listed in OUTDIR/fallback.txt (decklist format) so you can pipe them into"
             " a normal `mtg-proxies print` run, while `--custom-art OUTDIR/` appends the rendered"
@@ -1789,6 +1793,14 @@ def main() -> None:
     frame_group.add_argument(
         "--modern", dest="frame_modern", action="store_true",
         help="render every card in the modern (M15, 2014) frame style — Nyx enchantments and per-set icons preserved"
+    )
+    frame_group.add_argument(
+        "--retro", dest="frame_retro", action="store_true",
+        help=(
+            "render every card in the retro (Seventh Edition, 1997) frame style — per-color"
+            " land frames, tombstone icon, no legend crowns (authentic). Transform / MDFC"
+            " split faces use the Classicshifted retro DFC frame packs."
+        ),
     )
     cardconjourer_parser.add_argument(
         "--set-symbol", dest="set_symbol", default=None, metavar="VALUE",
