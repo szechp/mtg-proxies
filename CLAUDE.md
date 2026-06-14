@@ -55,7 +55,7 @@ Decklist file / ManaStack ID / Archidekt ID
 - `cleaning.py`: `merge_duplicates()` consolidates identical cards
 
 **`mtg_proxies/scryfall/`** — Scryfall API integration
-- `scryfall.py`: Card lookup with bulk data caching in `/tmp/scryfall_cache`; `recommend_print()` scores prints by resolution, language, promo status; enforces 100ms rate limiting between API calls
+- `scryfall.py`: Card lookup with bulk data caching in `/tmp/scryfall_cache`; `recommend_print()` scores prints by resolution, language, promo status; enforces 100ms rate limiting between API calls. In `standard` art mode it also applies a small per-illustration art-style nudge (`_illustration_style_delta`, sourced from Scryfall's `art_tags` bulk file via `_get_database("art_tags")`): boosts traditional painterly media (oil/acrylic/watercolor/gouache), penalizes off-brand mediums (anime/pixel-art/3d/photo/ascii). Magnitudes (`_ART_STYLE_SCORES`, ≤16) stay below the highres (+32) and English (+64) bonuses, so style only breaks ties and never overrides resolution; matched by `illustration_id`; untagged illustrations are neutral; degrades to no-op if the bulk file can't be fetched.
 - `rate_limit.py`: `RateLimiter` context manager
 
 **`mtg_proxies/print_cards.py`** — Two rendering backends, chosen by output file extension in `cli.py`:

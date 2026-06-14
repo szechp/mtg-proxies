@@ -19,6 +19,7 @@ def _test_card(
     set_code: str = "tst",
     set_name: str = "Test Set",
     layout: str = "normal",
+    illustration_id: str | None = None,
 ) -> dict:
     return {
         "id": card_id,
@@ -38,6 +39,7 @@ def _test_card(
         "lang": lang,
         "promo_types": promo_types or [],
         "frame_effects": frame_effects or [],
+        "illustration_id": illustration_id if illustration_id is not None else card_id,
     }
 
 
@@ -301,6 +303,119 @@ def test_recommend_print_standard_picks_highres_ub_promo_over_lowres_ub_mainset(
     card = scryfall.recommend_print(card_name="Test Card")
 
     assert card["id"] == "ub-promo"
+
+
+def test_illustration_style_delta_builds_net_scores(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mtg_proxies.scryfall import scryfall
+
+    fake_tags = [
+        {"slug": "oil-painting-medium", "taggings": [{"illustration_id": "illo-oil"}]},
+        {"slug": "anime", "taggings": [{"illustration_id": "illo-anime"}, {"illustration_id": "illo-mixed"}]},
+        {"slug": "acrylic-paint", "taggings": [{"illustration_id": "illo-mixed"}]},
+        {"slug": "some-subject-tag", "taggings": [{"illustration_id": "illo-oil"}]},  # not a style slug
+    ]
+    monkeypatch.setattr(scryfall, "_get_database", lambda name="default_cards": fake_tags)
+    scryfall._illustration_style_delta.cache_clear()
+    try:
+        deltas = scryfall._illustration_style_delta()
+        assert deltas["illo-oil"] == 8
+        assert deltas["illo-anime"] == -16
+        assert deltas["illo-mixed"] == -16 + 6  # anime + acrylic stack
+        assert "untagged-illo" not in deltas  # unscored illustrations are absent (neutral)
+    finally:
+        scryfall._illustration_style_delta.cache_clear()
+
+
+def test_illustration_style_delta_degrades_when_bulk_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mtg_proxies.scryfall import scryfall
+
+    def boom(name: str = "default_cards") -> list[dict]:
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(scryfall, "_get_database", boom)
+    scryfall._illustration_style_delta.cache_clear()
+    try:
+        assert scryfall._illustration_style_delta() == {}  # no crash, no adjustment
+    finally:
+        scryfall._illustration_style_delta.cache_clear()
+
+
+def test_recommend_print_standard_penalizes_anime_style(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mtg_proxies.scryfall import scryfall
+
+    anime = _test_card("anime-print", highres_image=True, illustration_id="illo-anime")
+    neutral = _test_card("neutral-print", highres_image=True, illustration_id="illo-neutral")
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [anime, neutral])
+    monkeypatch.setattr(scryfall, "_illustration_style_delta", lambda: {"illo-anime": -16})
+
+    card = scryfall.recommend_print(card_name="Test Card")
+
+    assert card["id"] == "neutral-print"
+
+
+def test_recommend_print_standard_boosts_oil_painting(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mtg_proxies.scryfall import scryfall
+
+    # Neutral is listed first, so argmax would keep it on a tie — the oil boost must flip it.
+    neutral = _test_card("neutral-print", highres_image=True, illustration_id="illo-neutral")
+    oil = _test_card("oil-print", highres_image=True, illustration_id="illo-oil")
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [neutral, oil])
+    monkeypatch.setattr(scryfall, "_illustration_style_delta", lambda: {"illo-oil": 8})
+
+    card = scryfall.recommend_print(card_name="Test Card")
+
+    assert card["id"] == "oil-print"
+
+
+def test_art_style_scores_stay_below_highres_bonus() -> None:
+    """Invariant: no art-style magnitude may reach the +32 highres bonus.
+
+    This is the real guarantee behind "style never overrides resolution" — it's a
+    property of the constants, not of any one pick. Asserted directly so cranking a
+    value too high (e.g. anime -40) fails here regardless of score arithmetic.
+    """
+    from mtg_proxies.scryfall import scryfall
+
+    assert scryfall._ART_STYLE_SCORES, "expected a non-empty art-style table"
+    assert max(abs(v) for v in scryfall._ART_STYLE_SCORES.values()) < 32
+
+
+def test_recommend_print_highres_overrides_art_style(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Behavioral documentation: with style active, resolution still wins.
+
+    A highres anime print (penalized) beats a lowres oil print (boosted). Note this
+    stubs the delta map directly, so it documents the score()-integration behavior at
+    the agreed magnitudes — it does NOT read _ART_STYLE_SCORES; the real magnitude
+    guard is test_art_style_scores_stay_below_highres_bonus.
+    """
+    from mtg_proxies.scryfall import scryfall
+
+    lowres_oil = _test_card("lowres-oil", highres_image=False, illustration_id="illo-oil")
+    highres_anime = _test_card("highres-anime", highres_image=True, illustration_id="illo-anime")
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [lowres_oil, highres_anime])
+    monkeypatch.setattr(scryfall, "_illustration_style_delta", lambda: {"illo-oil": 8, "illo-anime": -16})
+
+    card = scryfall.recommend_print(card_name="Test Card")
+
+    assert card["id"] == "highres-anime"
+
+
+def test_recommend_print_wild_ignores_art_style(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Art-style scoring is a standard-art concern; ``wild`` mode leaves it untouched."""
+    from mtg_proxies.scryfall import scryfall
+
+    anime = _test_card("anime-print", highres_image=True, illustration_id="illo-anime")
+    neutral = _test_card("neutral-print", highres_image=True, illustration_id="illo-neutral")
+    # If wild consulted the style map, anime would lose; assert it does not even get called.
+    def fail() -> dict[str, int]:
+        raise AssertionError("art-style map must not be consulted in wild mode")
+
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [anime, neutral])
+    monkeypatch.setattr(scryfall, "_illustration_style_delta", fail)
+
+    card = scryfall.recommend_print(card_name="Test Card", art_preference="wild")
+
+    assert card["id"] in {"anime-print", "neutral-print"}  # no crash; style not applied
 
 
 def test_get_print_warnings_distinguishes_digital_from_lowres() -> None:

@@ -438,6 +438,62 @@ def _select_standard_fallback(alternatives: list[dict], scores: list[int]) -> di
     return standard_best
 
 
+# Art-style scoring sourced from Scryfall's Tagger ``art_tags`` bulk file. A small,
+# illustration-level nudge applied in ``standard`` art mode only: toward the classic
+# painterly MTG look, away from off-brand mediums. Every magnitude is kept BELOW the
+# highres bonus (+32) and the English bonus (+64) so a clean English scan always wins —
+# style only breaks ties between prints already equal on resolution / language. The
+# match key is ``illustration_id``, so the verdict is consistent across every reprint
+# of one piece of art. Untagged illustrations score 0 (Tagger coverage is partial), so
+# this can only ever re-rank, never exclude a card.
+_ART_STYLE_SCORES: dict[str, int] = {
+    # Boost — traditional painterly media, the look people picture as "MTG".
+    "oil-painting-medium": 8,
+    "acrylic-paint": 6,
+    "watercolor": 4,
+    "gouache": 4,
+    # Penalty — off-brand for the classic fantasy-illustration aesthetic.
+    "3d-render-medium": -8,
+    "photograph-medium": -8,
+    "anime": -16,
+    "pixel-art": -16,
+    "ascii-medium": -16,
+}
+
+
+@cache
+def _illustration_style_delta() -> dict[str, int]:
+    """Map ``illustration_id`` → net art-style score from Scryfall's ``art_tags`` bulk file.
+
+    Only illustrations carrying one of the scored :data:`_ART_STYLE_SCORES` slugs appear
+    in the result; a caller treats a missing key as 0 (neutral). Built once per process
+    and cached. The ~40 MB ``art_tags`` file is fetched and pickled through the same
+    :func:`_get_database` machinery as the card data, so first use downloads it and later
+    runs read the local pickle.
+
+    Degrades to an empty map — i.e. no art-style adjustment — if the bulk file can't be
+    fetched, so an offline or API-down run still selects prints on every other signal.
+    """
+    try:
+        tags = _get_database("art_tags")
+    except Exception as exc:
+        # Art-style is best-effort: a network failure / missing bulk type must never
+        # break print selection, so swallow everything and fall back to no adjustment.
+        _log.warning("art_tags bulk unavailable (%s); art-style scoring disabled this run", exc)
+        return {}
+
+    deltas: dict[str, int] = defaultdict(int)
+    for tag in tags:
+        delta = _ART_STYLE_SCORES.get(tag.get("slug"))
+        if delta is None:
+            continue
+        for tagging in tag.get("taggings", ()):
+            illustration_id = tagging.get("illustration_id")
+            if illustration_id:
+                deltas[illustration_id] += delta
+    return dict(deltas)
+
+
 @overload
 def recommend_print(
     current: dict | None = None,
@@ -600,7 +656,8 @@ def recommend_print(
             points += 64
 
         if art_preference == "standard":
-            return points - _standard_art_penalty(card, preferred_sets=preferred_sets)
+            style = _illustration_style_delta().get(card.get("illustration_id") or "", 0)
+            return points + style - _standard_art_penalty(card, preferred_sets=preferred_sets)
 
         if _has_flashy_treatment(card):
             points += 48
