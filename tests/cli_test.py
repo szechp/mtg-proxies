@@ -102,6 +102,48 @@ def test_main_print_forwards_split_pages(tmp_path) -> None:
     assert print_cards_fpdf.call_args.kwargs["split_pages"] == 3
 
 
+def test_main_print_uses_true_card_size(tmp_path) -> None:
+    """The print subcommand must pass the true 63 x 88 mm card size to the renderer.
+
+    Regression guard for the bug where the CLI hardcoded the nominal 2.5" x 3.5"
+    (63.5 x 88.9 mm) at the call site, silently shadowing the renderer's fixed default
+    and printing every card ~1 % oversized. The library-default test in print_test.py
+    did NOT catch this because the CLI never relied on the default.
+    """
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "decklist.pdf"
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file)]),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=object()),
+        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["image.png"]),
+        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+    ):
+        main()
+
+    cardsize = print_cards_fpdf.call_args.kwargs["cardsize"]
+    assert np.allclose(cardsize, [63.0, 88.0]), f"expected 63 x 88 mm, got {cardsize}"
+
+
+def test_main_print_scale_multiplies_card_size(tmp_path) -> None:
+    """``--scale`` is a pure multiplier on the true card size (2x -> 126 x 176 mm)."""
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "decklist.pdf"
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), "--scale", "2"]),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=object()),
+        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["image.png"]),
+        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+    ):
+        main()
+
+    cardsize = print_cards_fpdf.call_args.kwargs["cardsize"]
+    assert np.allclose(cardsize, [126.0, 176.0]), f"expected 126 x 176 mm, got {cardsize}"
+
+
 def test_main_print_rejects_art_preference_flag(tmp_path) -> None:
     """MR6: `print` no longer accepts --art-preference. That selection brain lives in `convert`."""
     from mtg_proxies.cli import main

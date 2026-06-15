@@ -15,6 +15,12 @@ from mtg_proxies.plotting import SplitPages
 
 image_size = np.array([745, 1040])
 
+# Single source of truth for the printed card size. Physical Magic cards measure 63 x 88 mm —
+# NOT the nominal 2.5" x 3.5" (63.5 x 88.9 mm), which printed every card ~0.8-1 % oversized at
+# 100 %. Every render path (both backends' defaults AND the CLI call sites) derives from this
+# constant so the value can't drift out of sync again.
+CARD_SIZE_MM = np.array([63.0, 88.0])
+
 # Matches the per-card MPCFill warped output: ``<id>__<hash>_warped<NN>.png`` where NN is the
 # achieved card-content fill percentage. Legacy ``_warped.png`` (no NN) means "assume 0.92" —
 # old caches from before this marker existed.
@@ -54,9 +60,8 @@ def print_cards_matplotlib(
     images: Sequence[str | Path],
     filepath: str | Path,
     papersize: np.ndarray = np.array([8.27, 11.69]),
-    # Physical MTG cards measure 63 x 88 mm — NOT the nominal 2.5" x 3.5"
-    # (63.5 x 88.9 mm), which printed every card ~0.8 % oversized at 100 %.
-    cardsize: np.ndarray = np.array([63 / 25.4, 88 / 25.4]),
+    # True physical card size in inches; see CARD_SIZE_MM for why this isn't 2.5" x 3.5".
+    cardsize: np.ndarray = CARD_SIZE_MM / 25.4,
     border_crop: int = 14,
     interpolation: str | None = "lanczos",
     dpi: int = 600,
@@ -205,9 +210,8 @@ def print_cards_fpdf(
     images: Sequence[str | Path],
     filepath: str | Path,
     papersize: np.ndarray = np.array([210, 297]),
-    # Physical MTG cards measure 63 x 88 mm — NOT the nominal 2.5" x 3.5"
-    # (63.5 x 88.9 mm), which printed every card ~0.8 % oversized at 100 %.
-    cardsize: np.ndarray = np.array([63.0, 88.0]),
+    # True physical card size in mm; see CARD_SIZE_MM for why this isn't 63.5 x 88.9.
+    cardsize: np.ndarray = CARD_SIZE_MM,
     border_crop: int = 14,
     background_color: tuple[int, int, int] | None = None,
     cropmarks: bool = True,

@@ -18,6 +18,7 @@ from mtg_proxies.deck_value import show_deck_value
 from mtg_proxies.decklists import archidekt, manastack, parse_decklist
 from mtg_proxies.decklists.decklist import Card, Comment, Decklist
 from mtg_proxies.mpcfill.cache import default_cache_root
+from mtg_proxies.print_cards import CARD_SIZE_MM
 from mtg_proxies.scans import fetch_scans_paired, fetch_scans_scryfall_flagged
 from mtg_proxies.tokens import get_tokens
 
@@ -136,7 +137,7 @@ def _cards_per_sheet_dims(paper_inches: np.ndarray, scale: float) -> tuple[int, 
     Mirrors the calculation inside print_cards.py so the CLI can lay out duplex pages
     consistently with what the renderer will produce.
     """
-    cardsize_inches = np.array([2.5, 3.5]) * scale
+    cardsize_inches = CARD_SIZE_MM / 25.4 * scale
     n = np.floor(paper_inches / cardsize_inches).astype(int)
     return int(n[0]), int(n[1])
 
@@ -2184,7 +2185,7 @@ def main() -> None:
                         images,
                         args.outfile,
                         papersize=args.paper * 25.4,
-                        cardsize=np.array([2.5, 3.5]) * 25.4 * args.scale,
+                        cardsize=CARD_SIZE_MM * args.scale,
                         border_crop=args.border_crop,
                         background_color=background_color,
                         cropmarks=args.cropmarks,
@@ -2195,7 +2196,7 @@ def main() -> None:
                         images,
                         args.outfile,
                         papersize=args.paper,
-                        cardsize=np.array([2.5, 3.5]) * args.scale,
+                        cardsize=CARD_SIZE_MM / 25.4 * args.scale,
                         dpi=args.dpi,
                         border_crop=args.border_crop,
                         background_color=args.background,

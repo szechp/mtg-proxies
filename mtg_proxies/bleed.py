@@ -2,7 +2,7 @@
 
 Both custom-art images and MPCFill renders carry more bleed than Scryfall scans by
 default — they include the print-bleed border the proxy printer expects to trim.
-When laid out in our PDF as a 2.5" x 3.5" card, the extra bleed sticks out past the
+When laid out in our PDF as a 63 x 88 mm card, the extra bleed sticks out past the
 card boundaries, so we trim each side by a percentage of the image dimensions
 before placing it in the grid.
 

@@ -970,3 +970,12 @@ def test_print_cards_fpdf_places_cards_at_true_physical_size(example_images: lis
     for w_mm, h_mm in sizes:
         assert w_mm == pytest.approx(63.0, abs=0.05), f"card width {w_mm:.2f} mm != 63 mm"
         assert h_mm == pytest.approx(88.0, abs=0.05), f"card height {h_mm:.2f} mm != 88 mm"
+
+
+def test_card_size_constant_is_true_physical_size() -> None:
+    """The single source of truth stays at the real card size, not nominal 2.5" x 3.5"."""
+    import numpy as np
+
+    from mtg_proxies.print_cards import CARD_SIZE_MM
+
+    assert np.allclose(CARD_SIZE_MM, [63.0, 88.0])
