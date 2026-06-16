@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -10,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.patches import Rectangle
+from PIL import Image
 from tqdm import tqdm
 
 from mtg_proxies.plotting import SplitPages
@@ -44,43 +43,22 @@ def _warped_content_fraction(image_path: str | Path) -> float | None:
     return 0.92 if nn is None else int(nn) / 100.0
 
 
-def _cached_border_crop(image: str | Path, border_crop: int) -> str:
-    """Return a path to ``image`` with ``border_crop`` px trimmed (split evenly per edge).
+def _border_cropped_image(image: str | Path, border_crop: int) -> Image.Image:
+    """Return ``image`` as a PIL image with ``border_crop`` px trimmed (split evenly per edge).
 
-    The result is cached on disk under ``~/.cache/mtg-proxies/layout-crops``, keyed by the
-    source's absolute path and the crop amount, so reprinting the same deck doesn't re-crop
-    every card. The cache is **mtime-validated**: a regenerated source at the same path (newer
-    mtime) forces a re-crop. Without this, editing a ``--custom-art`` / cardconjourer PNG and
-    reprinting kept serving the previous run's crop — the card's *old* art. On a cache hit the
-    source is not even decoded.
+    Cropped in memory and handed straight to fpdf's ``image()`` (which accepts a ``PIL.Image``),
+    so there is no on-disk intermediate to cache, invalidate, or go stale. ``border_crop`` is
+    split half-and-half across opposing edges so the black border stays uniform; the per-edge
+    pixel counts are scaled from the canonical ``image_size`` to the source's actual resolution.
     """
-    image = Path(image)
-    name_hash = hashlib.sha256(str(image.absolute()).encode()).hexdigest()[:12]
-    cache_dir = Path.home() / ".cache" / "mtg-proxies" / "layout-crops"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cropped_path = cache_dir / f"{image.stem}_{name_hash}_crop{border_crop}{image.suffix}"
-
-    src_mtime = image.stat().st_mtime
-    if (
-        cropped_path.is_file()
-        and cropped_path.stat().st_size > 0
-        and cropped_path.stat().st_mtime >= src_mtime
-    ):
-        return str(cropped_path)
-
-    img_arr = plt.imread(str(image))
-    actual_h, actual_w = img_arr.shape[:2]
-    c_left = int(round(border_crop / 2 * actual_w / image_size[0]))
-    c_right = int(round(border_crop * actual_w / image_size[0])) - c_left
-    c_top = int(round(border_crop / 2 * actual_h / image_size[1]))
-    c_bottom = int(round(border_crop * actual_h / image_size[1])) - c_top
-    # Write to a temp sibling then atomically replace, so a kill mid-encode can't leave a
-    # truncated PNG that the mtime check above would then happily serve. Keep the real
-    # extension LAST so matplotlib/PIL still infers the image format from it.
-    tmp_path = cropped_path.with_name(f"{cropped_path.stem}.tmp.{os.getpid()}{cropped_path.suffix}")
-    plt.imsave(str(tmp_path), img_arr[c_top : actual_h - c_bottom, c_left : actual_w - c_right])
-    tmp_path.replace(cropped_path)
-    return str(cropped_path)
+    with Image.open(image) as img:
+        img.load()
+        actual_w, actual_h = img.size  # PIL: (width, height)
+        c_left = int(round(border_crop / 2 * actual_w / image_size[0]))
+        c_right = int(round(border_crop * actual_w / image_size[0])) - c_left
+        c_top = int(round(border_crop / 2 * actual_h / image_size[1]))
+        c_bottom = int(round(border_crop * actual_h / image_size[1])) - c_top
+        return img.crop((c_left, c_top, actual_w - c_right, actual_h - c_bottom))
 
 
 def _occupied_space(cardsize: np.ndarray, pos: np.ndarray, border_crop: int, closed: bool = False) -> np.ndarray:
@@ -347,16 +325,15 @@ def print_cards_fpdf(
 
         # Determine crop and slot size
         if border_crop > 0:
-            # Symmetrical uniform pixel crop: remove exactly half of border_crop from each side.
-            # This keeps the black borders perfectly uniform in appearance. The cropped image is
-            # cached on disk and mtime-validated, so editing a source PNG re-crops it (see
-            # _cached_border_crop).
-            cropped_image = _cached_border_crop(image, border_crop)
+            # Symmetrical uniform pixel crop: remove exactly half of border_crop from each side,
+            # keeping the black borders uniform. Cropped in memory and passed straight to
+            # pdf.image — no on-disk intermediate, so nothing to cache or go stale.
+            card_image: Image.Image | str = _border_cropped_image(image, border_crop)
             factors = (image_size - border_crop) / image_size
             base_slot_size = cardsize * factors
         else:
-            # Legacy gap logic or no crop
-            cropped_image = image
+            # Legacy gap logic or no crop — fpdf reads the source path directly.
+            card_image = image
             base_slot_size = cardsize
 
         # Compute extent
@@ -370,9 +347,9 @@ def print_cards_fpdf(
             place_size = size / content_fraction
             place_offset = (place_size - size) / 2.0
             place_pos = lower - place_offset
-            pdf.image(cropped_image, x=place_pos[0], y=place_pos[1], w=place_size[0], h=place_size[1])
+            pdf.image(card_image, x=place_pos[0], y=place_pos[1], w=place_size[0], h=place_size[1])
         else:
-            pdf.image(cropped_image, x=lower[0], y=lower[1], w=size[0], h=size[1])
+            pdf.image(card_image, x=lower[0], y=lower[1], w=size[0], h=size[1])
 
         if (i + 1) % cards_per_sheet == 0 or i + 1 == len(images):
             # If this was the last card on a page, add crop marks

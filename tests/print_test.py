@@ -981,37 +981,45 @@ def test_card_size_constant_is_true_physical_size() -> None:
     assert np.allclose(CARD_SIZE_MM, [63.0, 88.0])
 
 
-def test_cached_border_crop_recrops_when_source_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Regression: a regenerated source PNG at the same path must not serve a stale crop.
+def test_border_cropped_image_trims_in_memory(tmp_path: Path) -> None:
+    """``_border_cropped_image`` crops to a PIL image in memory — no on-disk intermediate.
 
-    The layout-crops cache is keyed by source path + crop only; before the mtime check, editing
-    a --custom-art / cardconjourer PNG and reprinting kept rendering its previous (cached) art.
+    The crop must be symmetric (border_crop split evenly per edge) and scaled from the canonical
+    image_size to the source's actual pixels. Cropping in memory is what removes the whole
+    stale-cache bug class (a regenerated source can't serve an old crop because nothing is saved).
     """
-    import os
-    import time
+    from PIL import Image
 
-    from mtg_proxies.print_cards import _cached_border_crop
-
-    # Redirect ~/.cache/mtg-proxies/layout-crops into tmp so we don't touch the real cache.
-    monkeypatch.setenv("HOME", str(tmp_path))
+    from mtg_proxies.print_cards import _border_cropped_image, image_size
 
     src = tmp_path / "card.png"
-    red = np.zeros((1040, 745, 3), dtype=np.uint8)
-    red[..., 0] = 200
-    plt.imsave(str(src), red)
+    Image.new("RGB", (int(image_size[0]), int(image_size[1])), (10, 20, 30)).save(src)
 
-    crop1 = _cached_border_crop(src, 14)
-    arr1 = np.asarray(plt.imread(crop1))[..., :3]
-    assert arr1[..., 0].mean() > arr1[..., 1].mean()  # red dominant
+    cropped = _border_cropped_image(src, 14)
 
-    # Regenerate the SAME path with different content and a strictly newer mtime.
-    green = np.zeros((1040, 745, 3), dtype=np.uint8)
-    green[..., 1] = 200
-    plt.imsave(str(src), green)
-    future = time.time() + 10
-    os.utime(src, (future, future))
+    assert isinstance(cropped, Image.Image)
+    # 14 px total off width and height (7/7 split), at the canonical resolution.
+    assert cropped.size == (int(image_size[0]) - 14, int(image_size[1]) - 14)
 
-    crop2 = _cached_border_crop(src, 14)
-    assert crop2 == crop1  # same cache path (keyed by source path), overwritten in place
-    arr2 = np.asarray(plt.imread(crop2))[..., :3]
-    assert arr2[..., 1].mean() > arr2[..., 0].mean(), "stale red crop served instead of new green"
+
+def test_border_cropped_image_always_reflects_current_source(tmp_path: Path) -> None:
+    """Regression: rewriting the source PNG at the same path is always reflected (no stale crop).
+
+    The old disk cache was keyed by path+crop and once served 3-day-old crops of regenerated
+    --custom-art / cardconjourer PNGs. In-memory cropping decodes the source every call, so this
+    can't happen.
+    """
+    from PIL import Image
+
+    from mtg_proxies.print_cards import _border_cropped_image, image_size
+
+    src = tmp_path / "card.png"
+    w, h = int(image_size[0]), int(image_size[1])
+
+    Image.new("RGB", (w, h), (200, 0, 0)).save(src)  # red
+    red = np.asarray(_border_cropped_image(src, 14)).astype(int)
+    assert red[..., 0].mean() > red[..., 1].mean()
+
+    Image.new("RGB", (w, h), (0, 200, 0)).save(src)  # overwrite same path with green
+    green = np.asarray(_border_cropped_image(src, 14)).astype(int)
+    assert green[..., 1].mean() > green[..., 0].mean(), "stale red crop served instead of new green"
