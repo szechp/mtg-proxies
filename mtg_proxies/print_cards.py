@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -41,6 +42,45 @@ def _warped_content_fraction(image_path: str | Path) -> float | None:
         return None
     nn = m.group(1)
     return 0.92 if nn is None else int(nn) / 100.0
+
+
+def _cached_border_crop(image: str | Path, border_crop: int) -> str:
+    """Return a path to ``image`` with ``border_crop`` px trimmed (split evenly per edge).
+
+    The result is cached on disk under ``~/.cache/mtg-proxies/layout-crops``, keyed by the
+    source's absolute path and the crop amount, so reprinting the same deck doesn't re-crop
+    every card. The cache is **mtime-validated**: a regenerated source at the same path (newer
+    mtime) forces a re-crop. Without this, editing a ``--custom-art`` / cardconjourer PNG and
+    reprinting kept serving the previous run's crop — the card's *old* art. On a cache hit the
+    source is not even decoded.
+    """
+    image = Path(image)
+    name_hash = hashlib.sha256(str(image.absolute()).encode()).hexdigest()[:12]
+    cache_dir = Path.home() / ".cache" / "mtg-proxies" / "layout-crops"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cropped_path = cache_dir / f"{image.stem}_{name_hash}_crop{border_crop}{image.suffix}"
+
+    src_mtime = image.stat().st_mtime
+    if (
+        cropped_path.is_file()
+        and cropped_path.stat().st_size > 0
+        and cropped_path.stat().st_mtime >= src_mtime
+    ):
+        return str(cropped_path)
+
+    img_arr = plt.imread(str(image))
+    actual_h, actual_w = img_arr.shape[:2]
+    c_left = int(round(border_crop / 2 * actual_w / image_size[0]))
+    c_right = int(round(border_crop * actual_w / image_size[0])) - c_left
+    c_top = int(round(border_crop / 2 * actual_h / image_size[1]))
+    c_bottom = int(round(border_crop * actual_h / image_size[1])) - c_top
+    # Write to a temp sibling then atomically replace, so a kill mid-encode can't leave a
+    # truncated PNG that the mtime check above would then happily serve. Keep the real
+    # extension LAST so matplotlib/PIL still infers the image format from it.
+    tmp_path = cropped_path.with_name(f"{cropped_path.stem}.tmp.{os.getpid()}{cropped_path.suffix}")
+    plt.imsave(str(tmp_path), img_arr[c_top : actual_h - c_bottom, c_left : actual_w - c_right])
+    tmp_path.replace(cropped_path)
+    return str(cropped_path)
 
 
 def _occupied_space(cardsize: np.ndarray, pos: np.ndarray, border_crop: int, closed: bool = False) -> np.ndarray:
@@ -308,25 +348,11 @@ def print_cards_fpdf(
         # Determine crop and slot size
         if border_crop > 0:
             # Symmetrical uniform pixel crop: remove exactly half of border_crop from each side.
-            # This keeps the black borders perfectly uniform in appearance.
-            h = hashlib.sha256(str(Path(image).absolute()).encode()).hexdigest()[:12]
-            cache_dir = Path.home() / ".cache" / "mtg-proxies" / "layout-crops"
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            cropped_image = str(cache_dir / (Path(image).stem + f"_{h}_crop{border_crop}" + Path(image).suffix))
-            
-            img_arr = plt.imread(image)
-            actual_h, actual_w = img_arr.shape[:2]
-            bc = border_crop
-            c_left = int(round(bc / 2 * actual_w / image_size[0]))
-            c_right = int(round(bc * actual_w / image_size[0])) - c_left
-            c_top = int(round(bc / 2 * actual_h / image_size[1]))
-            c_bottom = int(round(bc * actual_h / image_size[1])) - c_top
-
-            cropped_path = Path(cropped_image)
-            if not cropped_path.is_file() or cropped_path.stat().st_size == 0:
-                plt.imsave(cropped_image, img_arr[c_top : actual_h - c_bottom, c_left : actual_w - c_right])
-            
-            factors = (image_size - bc) / image_size
+            # This keeps the black borders perfectly uniform in appearance. The cropped image is
+            # cached on disk and mtime-validated, so editing a source PNG re-crops it (see
+            # _cached_border_crop).
+            cropped_image = _cached_border_crop(image, border_crop)
+            factors = (image_size - border_crop) / image_size
             base_slot_size = cardsize * factors
         else:
             # Legacy gap logic or no crop

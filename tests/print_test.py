@@ -979,3 +979,39 @@ def test_card_size_constant_is_true_physical_size() -> None:
     from mtg_proxies.print_cards import CARD_SIZE_MM
 
     assert np.allclose(CARD_SIZE_MM, [63.0, 88.0])
+
+
+def test_cached_border_crop_recrops_when_source_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: a regenerated source PNG at the same path must not serve a stale crop.
+
+    The layout-crops cache is keyed by source path + crop only; before the mtime check, editing
+    a --custom-art / cardconjourer PNG and reprinting kept rendering its previous (cached) art.
+    """
+    import os
+    import time
+
+    from mtg_proxies.print_cards import _cached_border_crop
+
+    # Redirect ~/.cache/mtg-proxies/layout-crops into tmp so we don't touch the real cache.
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    src = tmp_path / "card.png"
+    red = np.zeros((1040, 745, 3), dtype=np.uint8)
+    red[..., 0] = 200
+    plt.imsave(str(src), red)
+
+    crop1 = _cached_border_crop(src, 14)
+    arr1 = np.asarray(plt.imread(crop1))[..., :3]
+    assert arr1[..., 0].mean() > arr1[..., 1].mean()  # red dominant
+
+    # Regenerate the SAME path with different content and a strictly newer mtime.
+    green = np.zeros((1040, 745, 3), dtype=np.uint8)
+    green[..., 1] = 200
+    plt.imsave(str(src), green)
+    future = time.time() + 10
+    os.utime(src, (future, future))
+
+    crop2 = _cached_border_crop(src, 14)
+    assert crop2 == crop1  # same cache path (keyed by source path), overwritten in place
+    arr2 = np.asarray(plt.imread(crop2))[..., :3]
+    assert arr2[..., 1].mean() > arr2[..., 0].mean(), "stale red crop served instead of new green"
