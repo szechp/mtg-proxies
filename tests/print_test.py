@@ -678,10 +678,10 @@ def test_apply_per_card_modelines_cardconjourer_swap_single_card(
     assert result[1] == str(rendered)
 
 
-def test_apply_per_card_modelines_cardconjourer_default_frame_is_8th(
+def test_apply_per_card_modelines_cardconjourer_default_frame_is_auto(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Bare `#cardconjourer` (no frame flag) defaults to 8th."""
+    """Bare `#cardconjourer` (no frame flag) defaults to auto (per-card frame from Scryfall)."""
     from mtg_proxies import cli
 
     rendered = tmp_path / "0001-sol_ring.png"
@@ -699,7 +699,7 @@ def test_apply_per_card_modelines_cardconjourer_default_frame_is_8th(
 
     cli._apply_per_card_modelines(decklist, image_paths)
 
-    assert captured["frame"] == "8th"
+    assert captured["frame"] == "auto"
 
 
 def test_apply_per_card_modelines_cardconjourer_modern_frame(

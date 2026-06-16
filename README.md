@@ -46,7 +46,7 @@ Create a high quality printable PDF from your decklist or a list of cards you wa
   Use ManaStack and Archidekt deck IDs directly as input instead of local files. Archidekt decks must be public.
 
 - **Headless 8th-edition / retro frame rendering**  
-  `mtg-proxies cardconjourer --8th DECKLIST OUTDIR` renders every supported card via a headless [Card Conjurer](https://cardconjurer.com) Node harness, producing 2003-frame PNGs ready to feed back into `print --custom-art OUTDIR`. Re-runs skip cards whose PNG is already in OUTDIR (delete to force a redo). **Hi-res art is fetched from [MTGPics](https://www.mtgpics.com) by default** (~1430×1058 native crops, no GPU upscale needed); cards missing from MTGPics fall back to Scryfall's `art_crop` raw. Optional `--upscale [--upscale-model PATH]` runs the Scryfall fallback through Real-ESRGAN when MTGPics doesn't have a card. Per-card opt-in via `#cardconjourer --8th` modeline is also supported. The Card Conjurer source is lazy-cloned on demand — see `make cardconjurer`.
+  `mtg-proxies cardconjourer DECKLIST OUTDIR` renders every supported card via a headless [Card Conjurer](https://cardconjurer.com) Node harness, producing PNGs ready to feed back into `print --custom-art OUTDIR`. With no frame flag each card's frame is chosen automatically from its Scryfall data (2015→modern, 2003→8th, 1997/1993→retro; frames with no equivalent skip to the scan); pass `--8th` / `--modern` / `--retro` to force one style for the whole deck. Re-runs skip cards whose PNG is already in OUTDIR (delete to force a redo). **Hi-res art is fetched from [MTGPics](https://www.mtgpics.com) by default** (~1430×1058 native crops, no GPU upscale needed); cards missing from MTGPics fall back to Scryfall's `art_crop` raw. Optional `--upscale [--upscale-model PATH]` runs the Scryfall fallback through Real-ESRGAN when MTGPics doesn't have a card. Per-card opt-in via `#cardconjourer --8th` modeline is also supported. The Card Conjurer source is lazy-cloned on demand — see `make cardconjurer`.
 
 - **MPCFill render fetch by identifier**  
   Use `#mpcfill --identifier <drive_id> [--bleed-crop PCT]` on a decklist line to swap that slot to a specific [MPCFill](https://mpcfill.com) community render. The previous auto-matcher (LightGlue/SuperPoint), interactive picker, retro classifier, and standalone `mpcfill` subcommand were cut — the community catalog has no stable contract, so only the deterministic identifier-fetch path is exposed now.
@@ -382,10 +382,12 @@ Supported verbs:
   ```
   1 Sol Ring (SOC) 128 #mpcfill --identifier 1nUk_jZc6JtMxr-WrFlqHO5MGNkAS--XS --bleed-crop 4
   ```
-- `#cardconjourer --8th | --modern | --retro [--upscale] [--skip] [--scryfall] [--set-symbol VALUE]` — render this card via the headless
+- `#cardconjourer [--8th | --modern | --retro] [--upscale] [--skip] [--scryfall] [--set-symbol VALUE]` — render this card via the headless
   [Card Conjurer](https://cardconjurer.com) Node harness and use the resulting PNG
-  in place of the Scryfall scan. Frame selectors: `--8th` (modern 8th
-  edition base frame), `--modern` (M15 frame), `--retro` (legacy pre-2003 look). All flagged cards in the decklist
+  in place of the Scryfall scan. Frame selectors: `--8th` (8th
+  edition base frame), `--modern` (M15 frame), `--retro` (Seventh Edition 1997 look); with
+  no frame flag the frame is chosen automatically from the card's Scryfall data (same mapping
+  as the subcommand). All flagged cards in the decklist
   are batched into a single subprocess invocation, so the ~1-2 s engine boot amortizes
   across the whole deck. Unsupported layouts (sagas, planeswalkers) silently fall back to Scryfall. Requires
   `make cardconjurer` (one-time lazy clone of the renderer source).
@@ -493,19 +495,21 @@ options:
 ### cardconjourer
 
 ```
-usage: mtg-proxies cardconjourer [-h] (--8th | --retro)
+usage: mtg-proxies cardconjourer [-h] [--8th | --modern | --retro]
                                  [--upscale] [--upscale-model PATH]
                                  [--upscale-target-width PX]
                                  decklist outdir
 
 For each card in DECKLIST, render a fresh PNG via the headless Card Conjurer
-engine and write it to OUTDIR. Mutually-exclusive frame selectors --8th /
---retro pick the style. Unsupported layouts (saga, transform, modal_dfc,
-reversible_card, planeswalker) are logged in fallback.txt — a valid decklist
-you can feed straight into `mtg-proxies print` to fill those slots from
-Scryfall. report.csv records the per-card outcome. Re-runs skip any card
-whose <NNNN>-<slug>.png is already in OUTDIR — delete a PNG to force a
-re-render.
+engine and write it to OUTDIR. The mutually-exclusive frame selectors --8th /
+--modern / --retro force one style; with no flag the frame is picked per-card
+from the card's Scryfall frame (2015→modern, 2003→8th, 1997/1993→retro), and
+frames with no Card Conjurer equivalent (Future Sight, unknown) skip to the
+scan. Unsupported layouts (saga, transform, modal_dfc, reversible_card,
+planeswalker) are logged in fallback.txt — a valid decklist you can feed
+straight into `mtg-proxies print` to fill those slots from Scryfall.
+report.csv records the per-card outcome. Re-runs skip any card whose
+<NNNN>-<slug>.png is already in OUTDIR — delete a PNG to force a re-render.
 
 Art source: MTGPics (~1430×1058 native crops) by default; cards missing
 from MTGPics fall back to Scryfall's `art_crop` raw. `--upscale` only
@@ -517,7 +521,9 @@ positional arguments:
 
 options:
   --8th                       render in 8th-edition (2003) base frame
-  --retro                     render in retro (pre-2003) frame
+  --modern                    render in modern (M15, 2015) frame
+  --retro                     render in retro (Seventh Edition, 1997) frame
+                              (omit all three → auto per-card from Scryfall)
   --upscale                   when MTGPics doesn't have a card, run the
                               Scryfall art_crop fallback through Real-ESRGAN
                               before handing it to the renderer (instead of

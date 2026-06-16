@@ -699,6 +699,22 @@ function shouldSkip(scry) {
     return null;
 }
 
+// Auto frame: map a card's Scryfall ``frame`` value to one of our three frame styles.
+// Used when the job asks for frame 'auto' (no explicit --8th/--modern/--retro). Returns
+// null for frames we have no Card Conjurer equivalent for — runOneJob then skips those
+// to fallback.txt so the card prints from its raw Scryfall scan (which, for Future Sight's
+// timeshifted frame and any future/unknown value, already looks right). 1993 (Alpha-era)
+// has no dedicated pack, but the 1997 retro frame is its closest match and renders cleanly.
+const SCRYFALL_FRAME_TO_STYLE = {
+    '2015': 'modern',  // M15 modern frame
+    '2003': '8th',     // Eighth Edition frame
+    '1997': 'retro',   // classic Tempest-era frame (Seventh Edition)
+    '1993': 'retro',   // original Alpha/Beta frame — closest available is retro
+};
+function frameFromScryfall(scry) {
+    return SCRYFALL_FRAME_TO_STYLE[scry.frame] || null;
+}
+
 // Pack routing per Scryfall layout AND requested frame. ND-JSON's runOneJob
 // rewrites every DFC layout to 'flip' before this fires, so the only multi-
 // face layout that reaches here is 'flip' (Kamigawa + DFC-as-flip), which
@@ -1662,7 +1678,23 @@ async function runOneJob(job) {
             scry.layout = 'flip';
         }
 
-        const frame = job.frame || '8th';
+        // Resolve the frame style. 'auto' (no explicit flag) derives it per-card from the
+        // resolved print's Scryfall ``frame``; an unmappable frame (Future Sight, unknown)
+        // skips to fallback.txt so the raw Scryfall scan is used. An explicit style always
+        // renders, even for old/oddball frames.
+        let frame = job.frame || '8th';
+        if (frame === 'auto') {
+            const resolved = frameFromScryfall(scry);
+            if (!resolved) {
+                writeResponse({
+                    slot:   job.slot,
+                    status: 'skip',
+                    reason: `auto: no Card Conjurer frame for Scryfall frame '${scry.frame}' — using Scryfall scan`,
+                });
+                return;
+            }
+            frame = resolved;
+        }
         const setSymbolPath = job.set_symbol_path || null;
         const fontSizeDelta = (job.font_size != null) ? parseInt(job.font_size) : 0;
         const slug = slugify(job.name);

@@ -146,6 +146,13 @@ def test_build_job_with_frame_retro() -> None:
     assert build_job(slot=1, name="Murder", frame="retro")["frame"] == "retro"
 
 
+def test_build_job_with_frame_auto() -> None:
+    """``frame="auto"`` rides through unchanged; the harness resolves it per-card."""
+    from mtg_proxies.cardconjourer.runner import build_job
+
+    assert build_job(slot=1, name="Murder", frame="auto")["frame"] == "auto"
+
+
 def test_build_job_with_set_symbol_path() -> None:
     """``set_symbol_path`` is emitted into the job dict for the harness to upload."""
     from mtg_proxies.cardconjourer.runner import build_job

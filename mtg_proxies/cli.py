@@ -119,16 +119,18 @@ def _resolve_cc_frame(flags: dict) -> str:
     """Map a ``#cardconjourer`` directive's flags to the harness's frame string.
 
     Mirrors the CLI's ``--modern`` / ``--retro`` / ``--8th`` precedence. Bare
-    ``#cardconjourer`` (no frame flag) defaults to ``"8th"`` so the per-card
-    modeline path is consistent with the standalone subcommand's required-frame
-    contract. The modeline parser's mutex already drops conflicting frame flags,
-    so at most one of these is set.
+    ``#cardconjourer`` (no frame flag) resolves to ``"auto"``, matching the
+    subcommand's no-flag default: the harness then derives each card's frame from
+    its Scryfall ``frame`` value. The modeline parser's mutex already drops
+    conflicting frame flags, so at most one of these is set.
     """
     if flags.get("--modern"):
         return "modern"
     if flags.get("--retro"):
         return "retro"
-    return "8th"
+    if flags.get("--8th"):
+        return "8th"
+    return "auto"
 
 
 def _cards_per_sheet_dims(paper_inches: np.ndarray, scale: float) -> tuple[int, int]:
@@ -1092,7 +1094,16 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
 
     from mtg_proxies.cardconjourer import runner as cc_runner
 
-    frame = "modern" if args.frame_modern else ("retro" if args.frame_retro else "8th")
+    # No explicit frame flag → "auto": the harness derives each card's frame from its
+    # Scryfall ``frame`` value, skipping frames with no CC equivalent to fallback.txt.
+    if args.frame_modern:
+        frame = "modern"
+    elif args.frame_retro:
+        frame = "retro"
+    elif args.frame_8th:
+        frame = "8th"
+    else:
+        frame = "auto"
 
     # Resolve every decklist line to a full Scryfall card dict. parse_decklist_spec
     # handles count prefix, `Name (SET) CN`, the new URL/shorthand form, foil markers,
@@ -1772,12 +1783,14 @@ def main() -> None:
         help="Render an 8th-edition, modern, or retro frame for each card via headless Card Conjurer",
         description=(
             "For each card in DECKLIST, render a fresh PNG via the headless Card Conjurer engine"
-            " in the chosen frame style (--8th / --modern / --retro) and write it to OUTDIR as"
-            " <NNNN>-<slug>.png. Cards the engine can't render (saga / transform / planeswalker /"
-            " 404) are listed in OUTDIR/fallback.txt (decklist format) so you can pipe them into"
-            " a normal `mtg-proxies print` run, while `--custom-art OUTDIR/` appends the rendered"
-            " PNGs. ``--set-symbol VALUE`` overrides the rendered set symbol on any frame —"
-            " accepts a file path or a CC set code shorthand."
+            " and write it to OUTDIR as <NNNN>-<slug>.png. The frame style is --8th / --modern /"
+            " --retro, or — with no flag — chosen automatically per card from its Scryfall frame"
+            " (2015→modern, 2003→8th, 1997/1993→retro; frames with no CC equivalent skip to the"
+            " scan). Cards the engine can't render (saga / transform / planeswalker / 404) are"
+            " listed in OUTDIR/fallback.txt (decklist format) so you can pipe them into a normal"
+            " `mtg-proxies print` run, while `--custom-art OUTDIR/` appends the rendered PNGs."
+            " ``--set-symbol VALUE`` overrides the rendered set symbol on any frame — accepts a"
+            " file path or a CC set code shorthand."
         ),
     )
     cardconjourer_parser.add_argument(
@@ -1786,7 +1799,10 @@ def main() -> None:
     cardconjourer_parser.add_argument(
         "outdir", type=Path, help="output directory (will be created if missing)"
     )
-    frame_group = cardconjourer_parser.add_mutually_exclusive_group(required=True)
+    # Optional: with no flag, each card's frame is chosen automatically from its resolved
+    # Scryfall ``frame`` (2015→modern, 2003→8th, 1997/1993→retro); frames with no Card
+    # Conjurer equivalent (Future Sight, unknown) skip to fallback.txt for the Scryfall scan.
+    frame_group = cardconjourer_parser.add_mutually_exclusive_group(required=False)
     frame_group.add_argument(
         "--8th", dest="frame_8th", action="store_true",
         help="render every card in the 8th-edition (2003) frame style"
@@ -1803,6 +1819,7 @@ def main() -> None:
             " split faces use the Classicshifted retro DFC frame packs."
         ),
     )
+    # No --auto flag: auto is simply the absence of an explicit frame flag (the default).
     cardconjourer_parser.add_argument(
         "--set-symbol", dest="set_symbol", default=None, metavar="VALUE",
         help=(

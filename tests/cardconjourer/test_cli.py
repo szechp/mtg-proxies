@@ -31,21 +31,24 @@ def test_main_cardconjourer_help_mentions_frame_flags(capsys: pytest.CaptureFixt
     assert "--modern" in out
     assert "--upscale" in out
     assert "--set-symbol" in out
+    assert "automatically" in out  # documents the no-flag auto-frame default
 
 
-def test_main_cardconjourer_requires_a_frame_flag(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
-    """Either --8th or --modern must be specified; absent → exits with error."""
+def test_main_cardconjourer_no_flag_defaults_to_auto(tmp_path: Path) -> None:
+    """No frame flag is valid: render_deck is called with frame='auto' (per-card from Scryfall)."""
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"
     deck.write_text("1 Murder\n")
 
-    with patch("sys.argv", ["mtg-proxies", "cardconjourer", str(deck), str(tmp_path / "out")]):
-        with pytest.raises(SystemExit):
-            main()
+    with (
+        patch("sys.argv", ["mtg-proxies", "cardconjourer", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
+        main()
 
-    err = capsys.readouterr().err
-    assert "--8th" in err or "--modern" in err
+    assert mock_render.call_args.kwargs["frame"] == "auto"
 
 
 def test_main_cardconjourer_invokes_render_deck(tmp_path: Path) -> None:
@@ -349,12 +352,13 @@ def test_main_cardconjourer_help_mentions_retro(capsys: pytest.CaptureFixture) -
 
 
 def test_resolve_cc_frame_retro_modeline() -> None:
-    """A per-card `#cardconjourer --retro` modeline resolves to the harness frame 'retro'."""
+    """A per-card `#cardconjourer` modeline resolves each frame flag; bare → 'auto'."""
     from mtg_proxies.cli import _resolve_cc_frame
 
     assert _resolve_cc_frame({"--retro": True}) == "retro"
     assert _resolve_cc_frame({"--modern": True}) == "modern"
-    assert _resolve_cc_frame({}) == "8th"
+    assert _resolve_cc_frame({"--8th": True}) == "8th"
+    assert _resolve_cc_frame({}) == "auto"  # bare #cardconjourer → per-card auto frame
 
 
 def test_main_cardconjourer_modern_and_8th_mutex(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
