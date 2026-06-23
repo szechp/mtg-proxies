@@ -128,6 +128,8 @@ def _resolve_cc_frame(flags: dict) -> str:
         return "modern"
     if flags.get("--retro"):
         return "retro"
+    if flags.get("--borderless"):
+        return "borderless"
     if flags.get("--8th"):
         return "8th"
     return "auto"
@@ -1106,6 +1108,8 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         frame = "modern"
     elif args.frame_retro:
         frame = "retro"
+    elif args.frame_borderless:
+        frame = "borderless"
     elif args.frame_8th:
         frame = "8th"
     else:
@@ -1833,6 +1837,14 @@ def main() -> None:
             "render every card in the retro (Seventh Edition, 1997) frame style — per-color"
             " land frames, tombstone icon, no legend crowns (authentic). Transform / MDFC"
             " split faces use the Classicshifted retro DFC frame packs."
+        ),
+    )
+    frame_group.add_argument(
+        "--borderless", dest="frame_borderless", action="store_true",
+        help=(
+            "render every card in the borderless (full-art) frame. Needs full-bleed MTGPics"
+            " art (present for actual borderless printings); single-faced cards without it are"
+            " skipped to fallback.txt for their normal scan. DFCs render modern."
         ),
     )
     # No --auto flag: auto is simply the absence of an explicit frame flag (the default).

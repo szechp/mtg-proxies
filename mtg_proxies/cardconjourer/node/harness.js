@@ -712,6 +712,9 @@ const SCRYFALL_FRAME_TO_STYLE = {
     '1993': 'retro',   // original Alpha/Beta frame — closest available is retro
 };
 function frameFromScryfall(scry) {
+    // Borderless/full-art printings render full-bleed regardless of frame era — and the
+    // pipeline fetches their tall MTGPics art by collector number, so this is faithful.
+    if (scry.border_color === 'borderless') return 'borderless';
     return SCRYFALL_FRAME_TO_STYLE[scry.frame] || null;
 }
 
@@ -725,6 +728,7 @@ function packForLayout(layout, frame) {
     if (layout === 'flip') return { single: 'packFlip.js' };
     if (frame === 'modern') return { single: 'packM15Regular-1.js' };
     if (frame === 'retro') return { single: 'packSeventh.js' };
+    if (frame === 'borderless') return { single: 'packBorderless.js' };
     return { single: 'pack8th.js' };
 }
 
@@ -990,6 +994,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     if (isFlip) autoFrameTarget = 'Flip';
     else if (frame === 'modern') autoFrameTarget = 'M15Regular-1';
     else if (frame === 'retro') autoFrameTarget = 'Seventh';
+    else if (frame === 'borderless') autoFrameTarget = 'Borderless';
     // dfc_split faces build their frames manually from the DFC pack below —
     // 'false' makes any stray engine-scheduled autoFrame() a no-op so it can't
     // overwrite them with the regular (non-DFC) frame art.
@@ -1119,7 +1124,8 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     if (scry.layout === 'flip') frameTypeLiteral = 'Flip';
     else if (frame === 'modern') frameTypeLiteral = 'M15Regular-1';
     else if (frame === 'retro') frameTypeLiteral = 'Seventh';
-    
+    else if (frame === 'borderless') frameTypeLiteral = 'Borderless';
+
     if (dfcFace) {
         // dfc_split: build the whole-card frame from the loaded DFC pack's
         // availableFrames. autoFrameUnified can't do this — its 8th/M15 frame
@@ -1493,7 +1499,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     }
 
     await global.drawText();
-    if (frame === 'modern' || scry.layout === 'flip' || (frame === 'retro' && dfcFace)) {
+    if (frame === 'modern' || frame === 'borderless' || scry.layout === 'flip' || (frame === 'retro' && dfcFace)) {
         // Use the engine's canonical M15 bottomInfo (creator-23.js:243). It builds
         // a lean variant when #enableNewCollectorStyle is unchecked (the default
         // in SELECTOR_OVERRIDES above) — gothammedium font, set/language/artist,
@@ -1695,6 +1701,10 @@ async function runOneJob(job) {
             }
             frame = resolved;
         }
+        // Borderless is single-faced only (v1): no borderless DFC packs are wired, so DFCs
+        // fall back to modern. Matches the Python art-gate, which never treats a DFC as a
+        // borderless candidate. (True-flip layouts ignore frame — they always use packFlip.)
+        if (frame === 'borderless' && isDfc) frame = 'modern';
         const setSymbolPath = job.set_symbol_path || null;
         const fontSizeDelta = (job.font_size != null) ? parseInt(job.font_size) : 0;
         const slug = slugify(job.name);

@@ -788,6 +788,29 @@ def test_modeline_parse_cardconjourer_retro() -> None:
     assert warnings == []
 
 
+def test_modeline_parse_cardconjourer_borderless() -> None:
+    """`--borderless` registers as a no-value flag (borderless / full-art frame)."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjourer --borderless")
+
+    assert len(directives) == 1
+    assert directives[0].flags == {"--borderless": True}
+    assert warnings == []
+
+
+def test_modeline_parse_cardconjourer_mutex_borderless_vs_modern_warns_and_clears() -> None:
+    """`--borderless --modern` on one segment is conflicting; both dropped with a warning."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjourer --borderless --modern")
+
+    assert len(directives) == 1
+    assert "--borderless" not in directives[0].flags
+    assert "--modern" not in directives[0].flags
+    assert any("Conflicting frame flags" in w.message for w in warnings)
+
+
 def test_modeline_parse_cardconjourer_mutex_retro_vs_modern_warns_and_clears() -> None:
     """`--retro --modern` on one segment is conflicting; both dropped with a warning."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer

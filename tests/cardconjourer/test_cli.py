@@ -309,6 +309,44 @@ def test_main_cardconjourer_modern_propagates_frame(tmp_path: Path) -> None:
     assert mock_render.call_args.kwargs.get("frame") == "modern"
 
 
+def test_main_cardconjourer_borderless_propagates_frame(tmp_path: Path) -> None:
+    """`cardconjourer --borderless deck.txt OUTDIR` reaches render_deck with frame='borderless'."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder\n")
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--borderless", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
+        main()
+
+    assert mock_render.call_args.kwargs.get("frame") == "borderless"
+
+
+def test_main_cardconjourer_borderless_and_modern_mutex(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
+    """`--borderless` and `--modern` are mutually exclusive at the argparse level."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder\n")
+    argv = ["mtg-proxies", "cardconjourer", "--borderless", "--modern", str(deck), str(tmp_path / "out")]
+
+    with patch("sys.argv", argv), pytest.raises(SystemExit):
+        main()
+
+    assert "not allowed" in capsys.readouterr().err
+
+
+def test_resolve_cc_frame_borderless_modeline() -> None:
+    """A per-card `#cardconjourer --borderless` modeline resolves to 'borderless'."""
+    from mtg_proxies.cli import _resolve_cc_frame
+
+    assert _resolve_cc_frame({"--borderless": True}) == "borderless"
+
+
 def test_main_cardconjourer_retro_propagates_frame(tmp_path: Path) -> None:
     """`cardconjourer --retro deck.txt OUTDIR` reaches render_deck with frame='retro'."""
     from mtg_proxies.cli import main

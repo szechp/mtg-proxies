@@ -143,6 +143,7 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         "--8th":        NO_VALUE,
         "--modern":     NO_VALUE,
         "--retro":      NO_VALUE,
+        "--borderless": NO_VALUE,
         "--upscale":    NO_VALUE,
         "--scryfall":   NO_VALUE,
         "--skip":       NO_VALUE,
@@ -281,7 +282,7 @@ def parse_modeline_trailer(trailer: str) -> tuple[list[Directive], list[ParseWar
         # with a warning rather than silently picking one.
         if verb == "cardconjourer":
             for group, what in (
-                (("--8th", "--modern", "--retro"), "frame"),
+                (("--8th", "--modern", "--retro", "--borderless"), "frame"),
                 (("--dfc-split", "--dfc-flip"), "DFC mode"),
             ):
                 set_flags = [f for f in group if parsed_flags.get(f)]
