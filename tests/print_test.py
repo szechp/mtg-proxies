@@ -8,6 +8,32 @@ import numpy as np
 import pytest
 
 
+def test_crop_mark_coords_shared_edges_when_no_gap() -> None:
+    """border_crop >= 0: cards touch, so cut lines are shared → N+1 coords per axis."""
+    from mtg_proxies.print_cards import CARD_SIZE_MM, _crop_mark_coords
+
+    offset = np.array([10.0, 10.0])
+    xs = _crop_mark_coords(0, 3, CARD_SIZE_MM, 0, offset)
+
+    assert len(xs) == 4  # N + 1 shared grid lines
+    assert xs[0] == pytest.approx(10.0)  # includes offset
+    assert xs[1] - xs[0] == pytest.approx(63.0)  # one card width, no gap, no crop
+
+
+def test_crop_mark_coords_both_edges_when_gap() -> None:
+    """border_crop < 0: a gap separates cards, so BOTH edges of every card are marked."""
+    from mtg_proxies.print_cards import CARD_SIZE_MM, _crop_mark_coords, image_size
+
+    offset = np.array([10.0, 10.0])
+    xs = _crop_mark_coords(0, 3, CARD_SIZE_MM, -50, offset)
+
+    assert len(xs) == 6  # 2 per card (near + far edge), 3 cards
+    assert xs[1] - xs[0] == pytest.approx(63.0)  # card 0 spans a full card width
+    gap = 63.0 * 50 / image_size[0]  # gap inserted by negative crop
+    assert xs[2] - xs[1] == pytest.approx(gap)  # space between card 0's far edge and card 1's near edge
+    assert xs[3] - xs[2] == pytest.approx(63.0)  # card 1 also a full width
+
+
 @pytest.mark.parametrize("border_crop", [0, 14])
 def test_occupied_space_positive_border_crop_uniform_size(border_crop: int) -> None:
     """With border_crop >= 0, cards are uniformly cropped and placed."""
