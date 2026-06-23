@@ -98,30 +98,44 @@ def test_will_render_borderless() -> None:
     assert _will_render_borderless(bl, "8th") is False             # other frames unaffected
 
 
-def test_borderless_art_or_skip_uses_mtgpics_when_present() -> None:
+def _png(path: Path, w: int, h: int) -> str:
+    from PIL import Image
+
+    Image.new("RGB", (w, h), (10, 20, 30)).save(path)
+    return str(path)
+
+
+def test_is_full_bleed_art(tmp_path) -> None:
+    """Portrait art (taller than wide) is full-bleed; landscape window crops are not."""
+    from mtg_proxies.cli import _is_full_bleed_art
+
+    assert _is_full_bleed_art(_png(tmp_path / "tall.png", 1078, 1321)) is True   # real borderless art
+    assert _is_full_bleed_art(_png(tmp_path / "wide.png", 878, 640)) is False    # MTGPics window crop
+    assert _is_full_bleed_art(tmp_path / "missing.png") is False                 # unreadable → not usable
+
+
+def test_borderless_art_or_skip_uses_portrait_art(tmp_path) -> None:
+    """A full-bleed (portrait) MTGPics art is used for the borderless render."""
     from mtg_proxies.cli import _borderless_art_or_skip
 
-    out = _borderless_art_or_skip({"border_color": "borderless"}, "The One Ring", lambda: "/tmp/x.jpg")
-    assert out == {"art_path": "/tmp/x.jpg"}
+    art = _png(tmp_path / "tall.png", 1078, 1321)
+    assert _borderless_art_or_skip("Hullbreaker Horror", lambda: art) == {"art_path": art}
+
+
+def test_borderless_art_or_skip_skips_landscape_art(tmp_path) -> None:
+    """A landscape MTGPics window crop (Exsanguinate/Kodama case) is rejected → skip, not a ~40% zoom."""
+    from mtg_proxies.cli import _borderless_art_or_skip
+
+    art = _png(tmp_path / "wide.png", 878, 640)
+    out = _borderless_art_or_skip("Exsanguinate", lambda: art)
+    assert "skip" in out and "art_path" not in out
 
 
 def test_borderless_art_or_skip_skips_on_mtgpics_miss() -> None:
     from mtg_proxies.cli import _borderless_art_or_skip
 
-    out = _borderless_art_or_skip({"border_color": "borderless"}, "X", lambda: None)
+    out = _borderless_art_or_skip("X", lambda: None)
     assert "skip" in out and "art_path" not in out
-
-
-def test_borderless_art_or_skip_skips_non_fullbleed_print_without_fetching() -> None:
-    """A non-borderless / non-full-art print forced to borderless skips — and never fetches art."""
-    from mtg_proxies.cli import _borderless_art_or_skip
-
-    fetched: list[int] = []
-    out = _borderless_art_or_skip(
-        {"border_color": "black", "full_art": False}, "X", lambda: fetched.append(1) or "/tmp/x.jpg"
-    )
-    assert "skip" in out
-    assert fetched == []  # metadata gate: no point fetching, no full-bleed art exists
 
 
 def test_main_convert_prefer_borderless_threads_flag(tmp_path) -> None:

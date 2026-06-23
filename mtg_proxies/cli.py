@@ -151,19 +151,36 @@ def _will_render_borderless(card_dict: dict, frame: str) -> bool:
     return frame == "auto" and card_dict.get("border_color") == "borderless"
 
 
-def _borderless_art_or_skip(card_dict: dict, name: str, fetch_mtgpics: Callable[[], object | None]) -> dict:
-    """Resolve borderless art (MTGPics full-bleed only) or a skip signal.
+def _is_full_bleed_art(path: str | Path) -> bool:
+    """Whether ``path`` is portrait (taller than wide) — i.e. usable as full-bleed borderless art.
 
-    Borderless needs vertically-extended art. MTGPics has it for genuine borderless / full-art
-    printings (keyed by collector number); we do NOT fall back to Scryfall's window ``art_crop``
-    here (it would crop ~40 %). A non-full-bleed print, or a missing MTGPics entry, returns a
-    ``{"skip": reason}`` signal so the card lands in fallback.txt (→ its real scan via ``print``).
+    MTGPics serves tall full-bleed art for *some* borderless prints but only a landscape art-window
+    crop for others (e.g. Exsanguinate CMM 638, Kodama's Reach). Cover-fitting a landscape crop into
+    the tall borderless frame zooms it ~40 % and upscales a small image — the only reliable signal is
+    the fetched image's own aspect, not the card's ``border_color`` metadata.
     """
-    if card_dict.get("border_color") == "borderless" or card_dict.get("full_art"):
-        mtgp = fetch_mtgpics()
-        if mtgp:
-            return {"art_path": str(mtgp)}
-    return {"skip": f"borderless: no MTGPics full-bleed art for {name} — use its Scryfall scan"}
+    from PIL import Image
+
+    try:
+        with Image.open(path) as im:
+            w, h = im.size
+    except (OSError, ValueError):
+        return False
+    return h > w
+
+
+def _borderless_art_or_skip(name: str, fetch_mtgpics: Callable[[], object | None]) -> dict:
+    """Resolve borderless art (full-bleed MTGPics only) or a skip signal.
+
+    Borderless needs vertically-extended art. We fetch MTGPics and accept it only when the actual
+    image is portrait (full-bleed); a landscape window crop or a missing entry returns a
+    ``{"skip": reason}`` so the card lands in fallback.txt (→ its real borderless scan via ``print``).
+    No Scryfall ``art_crop`` fallback here — that window crop would crop ~40 %.
+    """
+    mtgp = fetch_mtgpics()
+    if mtgp and _is_full_bleed_art(mtgp):
+        return {"art_path": str(mtgp)}
+    return {"skip": f"borderless: no full-bleed MTGPics art for {name} — use its Scryfall scan"}
 
 
 def _cards_per_sheet_dims(paper_inches: np.ndarray, scale: float) -> tuple[int, int]:
@@ -1313,7 +1330,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                     return None
                 return _mtgpics.fetch_mtgpics_art(set_code, cn, cache_root=mtgpics_cache_root)
 
-            return {**extras, **_borderless_art_or_skip(card.card, card["name"], _fetch_bl)}
+            return {**extras, **_borderless_art_or_skip(card["name"], _fetch_bl)}
 
         # Per-card art resolution.
         #
