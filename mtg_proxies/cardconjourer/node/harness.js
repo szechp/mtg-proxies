@@ -728,8 +728,19 @@ function packForLayout(layout, frame) {
     if (layout === 'flip') return { single: 'packFlip.js' };
     if (frame === 'modern') return { single: 'packM15Regular-1.js' };
     if (frame === 'retro') return { single: 'packSeventh.js' };
-    if (frame === 'borderless') return { single: 'packBorderless.js' };
+    if (frame === 'borderless') return { single: 'packPromoRegular-1.js' };
     return { single: 'pack8th.js' };
+}
+
+// Borderless uses CardConjurer's "Promo Borderless" frames — a smaller (full-art-friendly) text
+// box than the old packBorderless: PromoRegular-1 (~20% box) normally, IkoShort ("Extra Short",
+// ~15%) for short oracle text. Conservative threshold so longer text never gets a too-small box
+// (when unsure, the bigger Regular box wins). Both are self-contained per-color packs (no
+// autoFrame config), rendered name-based in renderFace.
+const BORDERLESS_SHORT_TEXT_MAX = 100;
+function borderlessPack(scry) {
+    const text = (scry.oracle_text || '');
+    return text.length <= BORDERLESS_SHORT_TEXT_MAX ? 'packIkoShort.js' : 'packPromoRegular-1.js';
 }
 
 // Per-face packs for dfc_split mode (job.dfc_split): each face of a transform /
@@ -994,7 +1005,9 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     if (isFlip) autoFrameTarget = 'Flip';
     else if (frame === 'modern') autoFrameTarget = 'M15Regular-1';
     else if (frame === 'retro') autoFrameTarget = 'Seventh';
-    else if (frame === 'borderless') autoFrameTarget = 'Borderless';
+    // Promo borderless packs have no autoFrame config — built name-based below; 'false' keeps
+    // any stray scheduled autoFrame() from overwriting the manual frames.
+    else if (frame === 'borderless') autoFrameTarget = 'false';
     // dfc_split faces build their frames manually from the DFC pack below —
     // 'false' makes any stray engine-scheduled autoFrame() a no-op so it can't
     // overwrite them with the regular (non-DFC) frame art.
@@ -1311,6 +1324,17 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         };
         reserveRight(global.card.text.title, global.card.text.mana);
         reserveRight(global.card.text.flipsideType, global.card.text.flipSideReminder);
+    } else if (frame === 'borderless' && scry.layout !== 'flip') {
+        // Promo borderless (packPromoRegular-1 / packIkoShort): self-contained per-color frame
+        // art with a smaller text box and no autoFrame config — pick frame + P/T by name, like
+        // the flip/retro paths. Legend crowns aren't in these packs (v1: borderless legends get
+        // no crown); the title plate's own art carries the look.
+        const blName = getFrameNameForFace(face);
+        await addFrameByName([blName, 'Colorless Frame', 'Artifact Frame']);
+        if (face.power != null && face.power !== '') {
+            await addFrameByName([blName.replace(' Frame', ' Power/Toughness'),
+                                  'Colorless Power/Toughness', 'Artifact Power/Toughness']);
+        }
     } else if (faceColors && scry.layout !== 'flip') {
         await global.autoFrameUnified(frameTypeLiteral,
             faceColors,
@@ -1583,8 +1607,9 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
         return { out, outBack };
     }
 
-    const packs = packForLayout(scry.layout, frame);
-    return await renderFace({ packFile: packs.single, processed, faceIdx: 0, scry, outName: slug, frame, setSymbolPath, fontSizeDelta });
+    let packFile = packForLayout(scry.layout, frame).single;
+    if (frame === 'borderless' && scry.layout !== 'flip') packFile = borderlessPack(scry);
+    return await renderFace({ packFile, processed, faceIdx: 0, scry, outName: slug, frame, setSymbolPath, fontSizeDelta });
 }
 
 
