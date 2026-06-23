@@ -28,17 +28,24 @@ import shutil
 import subprocess
 from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 _log = logging.getLogger(__name__)
 
 
 class FallbackRow(TypedDict):
-    """Row shape consumed by :func:`format_fallback_txt`."""
+    """Row shape consumed by :func:`format_fallback_txt`.
+
+    ``set_code`` / ``collector_number`` are optional; when both are present the
+    line is written as the pinned ``<count> <name> (<SET>) <cn>`` form so the
+    skipped card resolves to the *same* printing when piped into ``print``.
+    """
 
     count: int
     name: str
     reason: str
+    set_code: NotRequired[str | None]
+    collector_number: NotRequired[str | None]
 
 
 class ReportRow(TypedDict, total=False):
@@ -163,7 +170,12 @@ def format_fallback_txt(rows: Iterable[FallbackRow]) -> str:
     for row in rows:
         count = row["count"]
         name = row["name"]
-        out.append(f"{count} {name}\n")
+        set_code = row.get("set_code")
+        cn = row.get("collector_number")
+        if set_code and cn:
+            out.append(f"{count} {name} ({set_code.upper()}) {cn}\n")
+        else:
+            out.append(f"{count} {name}\n")
     return "".join(out)
 
 
@@ -234,7 +246,7 @@ def spawn_node_harness(
 
 
 def render_deck(
-    cards: list[tuple[int, str]],
+    cards: list[tuple[int, str]] | list[tuple[int, str, str | None, str | None]],
     outdir: str | Path,
     *,
     run_harness: RunHarness,
@@ -289,7 +301,8 @@ def render_deck(
     # when both faces are on disk — a front-only leftover re-renders the card.
     jobs: list[dict[str, Any]] = []
     pre_existing: list[dict[str, Any]] = []
-    for i, (_count, name) in enumerate(cards):
+    for i, spec in enumerate(cards):
+        name = spec[1]
         slot_int = i + 1
         slot_str = f"{slot_int:04d}"
         split = slot_int in dfc_split_slots
@@ -333,7 +346,10 @@ def render_deck(
     fallback_rows: list[dict[str, Any]] = []
     report_rows: list[dict[str, Any]] = []
     ok = skipped = 0
-    for i, (count, name) in enumerate(cards):
+    for i, spec in enumerate(cards):
+        count, name = spec[0], spec[1]
+        set_code = spec[2] if len(spec) > 2 else None
+        cn = spec[3] if len(spec) > 3 else None
         slot_str = f"{i + 1:04d}"
         r = responses_by_slot.get(slot_str, {"status": "skip", "reason": "no response"})
         if r["status"] == "ok":
@@ -358,7 +374,10 @@ def render_deck(
             })
             ok += 1
         else:
-            fallback_rows.append({"count": count, "name": name, "reason": r.get("reason", "")})
+            fallback_rows.append({
+                "count": count, "name": name, "reason": r.get("reason", ""),
+                "set_code": set_code, "collector_number": cn,
+            })
             report_rows.append({
                 "slot": slot_str, "name": name, "status": "skip",
                 "reason": r.get("reason", ""), "png": "", "ms": 0,

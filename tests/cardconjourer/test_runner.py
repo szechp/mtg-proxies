@@ -306,6 +306,37 @@ def test_render_deck_creates_outdir(tmp_path: Path) -> None:
     assert outdir.is_dir()
 
 
+def test_format_fallback_txt_preserves_set_and_collector() -> None:
+    """A row carrying set_code + collector_number writes the pinned ``Name (SET) CN`` form."""
+    from mtg_proxies.cardconjourer.runner import format_fallback_txt
+
+    rows = [{"count": 1, "name": "The One Ring", "reason": "borderless",
+             "set_code": "hoc", "collector_number": "44"}]
+
+    assert format_fallback_txt(rows) == "1 The One Ring (HOC) 44\n"
+
+
+def test_format_fallback_txt_without_pin_is_name_only() -> None:
+    """Rows without set/cn still render the bare ``<count> <name>`` form (unchanged)."""
+    from mtg_proxies.cardconjourer.runner import format_fallback_txt
+
+    rows = [{"count": 2, "name": "Urza's Saga", "reason": "saga"}]
+
+    assert format_fallback_txt(rows) == "2 Urza's Saga\n"
+
+
+def test_render_deck_fallback_preserves_pin_from_card_spec(tmp_path: Path) -> None:
+    """A skipped card given as a 4-tuple (count, name, set, cn) keeps its pin in fallback.txt."""
+    from mtg_proxies.cardconjourer.runner import render_deck
+
+    def skip_all(jobs: list[dict]) -> list[dict]:
+        return [{"slot": j["slot"], "status": "skip", "reason": "test"} for j in jobs]
+
+    render_deck([(1, "The One Ring", "hoc", "44")], tmp_path, frame="8th", run_harness=skip_all)
+
+    assert (tmp_path / "fallback.txt").read_text() == "1 The One Ring (HOC) 44\n"
+
+
 def test_render_deck_count_in_fallback_reflects_decklist(tmp_path: Path) -> None:
     """A ``2 Urza's Saga`` skipped card writes ``2 Urza's Saga`` to fallback.txt."""
     from mtg_proxies.cardconjourer.runner import render_deck

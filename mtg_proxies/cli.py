@@ -1150,7 +1150,12 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     # handles count prefix, `Name (SET) CN`, the new URL/shorthand form, foil markers,
     # and trailing modelines — everything the standalone naive line.split() used to miss.
     decklist = parse_decklist_spec(args.decklist, art_preference="standard", allow_low_res=True)
-    cards: list[tuple[int, str]] = [(c.count, c["name"]) for c in decklist.cards]
+    # Carry each card's set + collector number so skipped cards keep their pin in
+    # fallback.txt (otherwise a skipped borderless/saga/pw print re-resolves to a
+    # different printing when piped into ``print``).
+    cards: list[tuple[int, str, str | None, str | None]] = [
+        (c.count, c["name"], c.card.get("set"), c.card.get("collector_number")) for c in decklist.cards
+    ]
 
     # Pre-seed the harness's inputs cache with the resolved card dicts. The harness's
     # fetchScryfall reads INPUTS/<slug>.json first and only hits the network on cache

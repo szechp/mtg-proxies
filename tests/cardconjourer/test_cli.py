@@ -69,9 +69,10 @@ def test_main_cardconjourer_invokes_render_deck(tmp_path: Path) -> None:
     mock_render.assert_called_once()
     kwargs = mock_render.call_args.kwargs
     args = mock_render.call_args.args
-    # First positional arg: cards list of (count, name) tuples
+    # First positional arg: cards list of (count, name, set, cn) tuples. set/cn depend on
+    # Scryfall print resolution, so assert only the count+name prefix of each spec.
     cards = args[0] if args else kwargs.get("cards")
-    assert cards == [(1, "Murder"), (2, "Spin Out")]
+    assert [(c[0], c[1]) for c in cards] == [(1, "Murder"), (2, "Spin Out")]
     # Frame is 8th — `render_deck`'s signature pins `frame` as a kwarg-only
     # argument so it always lands here, never positionally.
     assert kwargs["frame"] == "8th"
