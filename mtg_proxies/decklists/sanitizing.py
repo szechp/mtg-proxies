@@ -143,6 +143,7 @@ def validate_print(
     preferred_sets: list[str] | None = None,
     allow_low_res: bool = False,
     prefer_retro_frame: bool = False,
+    prefer_borderless: bool = False,
     art_before: int | None = None,
 ) -> tuple[dict, list[ParseWarning]]:
     """Validate a print against the Scryfall database.
@@ -169,6 +170,7 @@ def validate_print(
             preferred_sets=preferred_sets,
             allow_low_res=allow_low_res,
             prefer_retro_frame=prefer_retro_frame,
+            prefer_borderless=prefer_borderless,
             art_before=art_before,
         )
         already_recommended = True
@@ -189,6 +191,7 @@ def validate_print(
                 preferred_sets=preferred_sets,
                 allow_low_res=allow_low_res,
                 prefer_retro_frame=prefer_retro_frame,
+                prefer_borderless=prefer_borderless,
                 art_before=art_before,
             )
             already_recommended = True
@@ -214,6 +217,7 @@ def validate_print(
                     preferred_sets=preferred_sets,
                     allow_low_res=allow_low_res,
                     prefer_retro_frame=prefer_retro_frame,
+                    prefer_borderless=prefer_borderless,
                     art_before=art_before,
                 )
                 if better["id"] != card["id"]:
@@ -238,6 +242,7 @@ def validate_print(
             preferred_sets=preferred_sets,
             allow_low_res=allow_low_res,
             prefer_retro_frame=prefer_retro_frame,
+            prefer_borderless=prefer_borderless,
             art_before=art_before,
         )
         if better["id"] != card["id"] and better["set"] in preferred_set_codes:
@@ -277,6 +282,7 @@ def validate_print(
             preferred_sets=preferred_sets,
             allow_low_res=allow_low_res,
             prefer_retro_frame=prefer_retro_frame,
+            prefer_borderless=prefer_borderless,
             art_before=art_before,
         )
 

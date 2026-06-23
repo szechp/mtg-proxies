@@ -504,6 +504,7 @@ def recommend_print(
     preferred_sets: list[str] | None = None,
     allow_low_res: bool = False,
     prefer_retro_frame: bool = False,
+    prefer_borderless: bool = False,
     art_before: int | None = None,
     mode: Literal["best"] = "best",
 ) -> dict: ...
@@ -519,6 +520,7 @@ def recommend_print(
     preferred_sets: list[str] | None = None,
     allow_low_res: bool = False,
     prefer_retro_frame: bool = False,
+    prefer_borderless: bool = False,
     art_before: int | None = None,
     mode: Literal["all", "choices"],
 ) -> list[dict]: ...
@@ -537,6 +539,7 @@ def recommend_print(
     preferred_sets: list[str] | None = None,
     allow_low_res: bool = False,
     prefer_retro_frame: bool = False,
+    prefer_borderless: bool = False,
     art_before: int | None = None,
     mode: Literal["best", "all", "choices"] = "best",
 ) -> dict | list[dict]:
@@ -559,6 +562,10 @@ def recommend_print(
             get a large scoring bonus so retro reprints (Brothers' War Retro, Mystery Booster
             old-frame, Time Spiral Remastered, etc.) win over the default 2015 picks. Falls
             back silently to the regular winner when no retro candidate exists for the card.
+        prefer_borderless: When True, restrict candidates to borderless printings
+            (``border_color == "borderless"``) when any exist; the normal scorer then picks the
+            best one (art style, high-res, English). Falls back silently to the full pool when
+            the card has no borderless print.
         art_before: When set (e.g. ``2023``), restrict candidates to prints released before
             ``<YEAR>-01-01``, then run the normal scorer on what remains. This dodges the wave
             of new digital art commissioned for recent reprints — among the pre-cutoff prints,
@@ -621,6 +628,14 @@ def recommend_print(
         older = [a for a in alternatives if (a.get("released_at") or "9999-12-31") < cutoff]
         if older:
             alternatives = older
+
+    # prefer_borderless: restrict to borderless printings when any exist, then let the normal
+    # scoring (art-style delta, highres, English) pick the best one. Mirrors the art_before
+    # filter; silent fallback to the full pool when the card has no borderless print.
+    if prefer_borderless:
+        borderless = [a for a in alternatives if a.get("border_color") == "borderless"]
+        if borderless:
+            alternatives = borderless
 
     def score(card: dict) -> int:
         points = 0

@@ -83,6 +83,52 @@ def test_main_convert_help_mentions_basic_lands(capsys: pytest.CaptureFixture) -
     assert "--basic-lands NAME=COUNT" in captured.out
 
 
+def test_main_convert_prefer_borderless_threads_flag(tmp_path) -> None:
+    """`convert --prefer-borderless` reaches parse_decklist_spec with prefer_borderless=True."""
+    from mtg_proxies.cli import main
+    from mtg_proxies.decklists.decklist import Decklist
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder\n")
+    out = tmp_path / "out.txt"
+    captured: dict = {}
+
+    def fake_parse(_spec, **kwargs):
+        captured.update(kwargs)
+        return Decklist()
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "convert", "--prefer-borderless", str(deck), str(out)]),
+        patch("mtg_proxies.cli.parse_decklist_spec", side_effect=fake_parse),
+    ):
+        main()
+
+    assert captured.get("prefer_borderless") is True
+
+
+def test_main_convert_prefer_borderless_defaults_off(tmp_path) -> None:
+    """Without the flag, prefer_borderless is False (no behavior change for normal convert)."""
+    from mtg_proxies.cli import main
+    from mtg_proxies.decklists.decklist import Decklist
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder\n")
+    out = tmp_path / "out.txt"
+    captured: dict = {}
+
+    def fake_parse(_spec, **kwargs):
+        captured.update(kwargs)
+        return Decklist()
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "convert", str(deck), str(out)]),
+        patch("mtg_proxies.cli.parse_decklist_spec", side_effect=fake_parse),
+    ):
+        main()
+
+    assert captured.get("prefer_borderless") is False
+
+
 def test_main_print_forwards_split_pages(tmp_path) -> None:
     from mtg_proxies.cli import main
 

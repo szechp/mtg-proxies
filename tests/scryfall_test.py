@@ -367,6 +367,47 @@ def test_recommend_print_standard_boosts_oil_painting(monkeypatch: pytest.Monkey
     assert card["id"] == "oil-print"
 
 
+def test_recommend_print_prefer_borderless_picks_borderless(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``prefer_borderless`` restricts to borderless prints when one exists."""
+    from mtg_proxies.scryfall import scryfall
+
+    normal = _test_card("normal-print", highres_image=True, border_color="black")
+    borderless = _test_card("borderless-print", highres_image=True, border_color="borderless")
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [normal, borderless])
+
+    card = scryfall.recommend_print(card_name="Test Card", prefer_borderless=True)
+
+    assert card["id"] == "borderless-print"
+
+
+def test_recommend_print_prefer_borderless_best_art_among_borderless(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With several borderless prints, the existing art-style scoring (oil) breaks the tie."""
+    from mtg_proxies.scryfall import scryfall
+
+    # Plain borderless listed first; the oil-tagged borderless must win on the style delta.
+    plain_bl = _test_card("plain-bl", highres_image=True, border_color="borderless", illustration_id="illo-neutral")
+    oil_bl = _test_card("oil-bl", highres_image=True, border_color="borderless", illustration_id="illo-oil")
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [plain_bl, oil_bl])
+    monkeypatch.setattr(scryfall, "_illustration_style_delta", lambda: {"illo-oil": 8})
+
+    card = scryfall.recommend_print(card_name="Test Card", prefer_borderless=True)
+
+    assert card["id"] == "oil-bl"
+
+
+def test_recommend_print_prefer_borderless_falls_back_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No borderless print → silent fallback to the normal best pick."""
+    from mtg_proxies.scryfall import scryfall
+
+    a = _test_card("plain-a", highres_image=True, border_color="black")
+    b = _test_card("plain-b", highres_image=False, border_color="black")
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [a, b])
+
+    card = scryfall.recommend_print(card_name="Test Card", prefer_borderless=True)
+
+    assert card["id"] == "plain-a"  # highres normal wins; no crash
+
+
 def test_art_style_scores_stay_below_highres_bonus() -> None:
     """Invariant: no art-style magnitude may reach the +32 highres bonus.
 

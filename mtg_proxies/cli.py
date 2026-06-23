@@ -187,6 +187,7 @@ def parse_decklist_spec(
     preferred_sets: list[str] | None = None,
     allow_low_res: bool = False,
     prefer_retro_frame: bool = False,
+    prefer_borderless: bool = False,
     art_before: int | None = None,
 ) -> Decklist:
     """Attempt to parse a decklist from different locations.
@@ -201,6 +202,8 @@ def parse_decklist_spec(
             instead of upgrading to highres alternatives.
         prefer_retro_frame: When True, prefer pre-2015 retro frames (1993 / 1997 / 2003); falls
             back silently when no retro print is available for a card.
+        prefer_borderless: When True, prefer borderless (full-art) printings; falls back silently
+            when no borderless print is available for a card.
         art_before: When set (e.g. ``2023``), prefer each card's earliest printing released
             before ``<YEAR>-01-01``. Falls back silently to the default recommendation for
             cards that first appeared after the cutoff. Used by ``convert --art-before``.
@@ -217,6 +220,7 @@ def parse_decklist_spec(
             preferred_sets=preferred_sets,
             allow_low_res=allow_low_res,
             prefer_retro_frame=prefer_retro_frame,
+            prefer_borderless=prefer_borderless,
             art_before=art_before,
         )
     elif decklist_spec.lower().startswith("manastack:") and decklist_spec.split(":")[-1].isdigit():
@@ -228,6 +232,7 @@ def parse_decklist_spec(
             preferred_sets=preferred_sets,
             allow_low_res=allow_low_res,
             prefer_retro_frame=prefer_retro_frame,
+            prefer_borderless=prefer_borderless,
             art_before=art_before,
         )
     elif decklist_spec.lower().startswith("archidekt:") and decklist_spec.split(":")[-1].isdigit():
@@ -239,6 +244,7 @@ def parse_decklist_spec(
             preferred_sets=preferred_sets,
             allow_low_res=allow_low_res,
             prefer_retro_frame=prefer_retro_frame,
+            prefer_borderless=prefer_borderless,
             art_before=art_before,
         )
     else:
@@ -1736,6 +1742,16 @@ def main() -> None:
         ),
     )
     convert_parser.add_argument(
+        "--prefer-borderless",
+        action="store_true",
+        default=False,
+        help=(
+            "prefer borderless (full-art) printings when they exist; among several, the usual"
+            " art criteria (high-res, English, painterly art style) pick the best."
+            " Falls back silently when no borderless print is available for a card"
+        ),
+    )
+    convert_parser.add_argument(
         "--art-before",
         type=int,
         default=None,
@@ -2277,6 +2293,7 @@ def main() -> None:
                         preferred_sets=args.set or None,
                         allow_low_res=allow_low_res,
                         prefer_retro_frame=getattr(args, "prefer_retro_frame", False),
+                        prefer_borderless=getattr(args, "prefer_borderless", False),
                         art_before=getattr(args, "art_before", None),
                     )
                     if decklist.entries and not (
@@ -2319,6 +2336,7 @@ def main() -> None:
                     preferred_sets=args.set or None,
                     allow_low_res=allow_low_res,
                     prefer_retro_frame=getattr(args, "prefer_retro_frame", False),
+                    prefer_borderless=getattr(args, "prefer_borderless", False),
                     art_before=getattr(args, "art_before", None),
                 )
 
