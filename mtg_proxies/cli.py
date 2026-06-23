@@ -135,6 +135,37 @@ def _resolve_cc_frame(flags: dict) -> str:
     return "auto"
 
 
+_DFC_LAYOUTS = {"transform", "modal_dfc", "reversible_card"}
+
+
+def _will_render_borderless(card_dict: dict, frame: str) -> bool:
+    """Whether this card will render in the borderless frame (so it needs full-bleed art).
+
+    Mirrors the harness's frame decision + DFC guard: single-faced only, and either an
+    explicit ``--borderless`` frame or auto mode on an actual borderless printing.
+    """
+    if card_dict.get("layout") in _DFC_LAYOUTS:
+        return False
+    if frame == "borderless":
+        return True
+    return frame == "auto" and card_dict.get("border_color") == "borderless"
+
+
+def _borderless_art_or_skip(card_dict: dict, name: str, fetch_mtgpics: Callable[[], object | None]) -> dict:
+    """Resolve borderless art (MTGPics full-bleed only) or a skip signal.
+
+    Borderless needs vertically-extended art. MTGPics has it for genuine borderless / full-art
+    printings (keyed by collector number); we do NOT fall back to Scryfall's window ``art_crop``
+    here (it would crop ~40 %). A non-full-bleed print, or a missing MTGPics entry, returns a
+    ``{"skip": reason}`` signal so the card lands in fallback.txt (→ its real scan via ``print``).
+    """
+    if card_dict.get("border_color") == "borderless" or card_dict.get("full_art"):
+        mtgp = fetch_mtgpics()
+        if mtgp:
+            return {"art_path": str(mtgp)}
+    return {"skip": f"borderless: no MTGPics full-bleed art for {name} — use its Scryfall scan"}
+
+
 def _cards_per_sheet_dims(paper_inches: np.ndarray, scale: float) -> tuple[int, int]:
     """Return (cards_per_row, rows_per_sheet) for the given paper and card scale.
 
@@ -1263,6 +1294,22 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         if fs_delta is not None:
             extras["font_size"] = fs_delta
 
+        # Borderless render needs full-bleed art, which only MTGPics provides (for genuine
+        # borderless / full-art printings). Resolve it here or signal a skip → fallback.txt
+        # (the card then prints from its real scan). Gated to borderless candidates only, so
+        # the normal MTGPics→Scryfall art fallback below is left untouched for every other card.
+        if _will_render_borderless(card.card, frame):
+            set_code = card.card.get("set") or ""
+            cn = card.card.get("collector_number") or ""
+            allow_mtgpics = bool(set_code and cn) and not (args.scryfall or slot_scryfall_override.get(slot_int))
+
+            def _fetch_bl() -> object | None:
+                if not allow_mtgpics:
+                    return None
+                return _mtgpics.fetch_mtgpics_art(set_code, cn, cache_root=mtgpics_cache_root)
+
+            return {**extras, **_borderless_art_or_skip(card.card, card["name"], _fetch_bl)}
+
         # Per-card art resolution.
         #
         # DFC: both face arts are resolved from Scryfall (MTGPics indexes whole
@@ -1418,6 +1465,13 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
             for job in jobs:
                 slot_int = int(job["slot"])
                 extras = prepare_each(slot_int) if prepare_each else {}
+                # A borderless card with no full-bleed art short-circuits here: record a skip
+                # (→ render_deck routes it into fallback.txt) without bothering the harness.
+                if extras.get("skip"):
+                    responses.append({"slot": job["slot"], "status": "skip", "reason": extras["skip"]})
+                    bar.update(1)
+                    bar.set_postfix_str(f"ok={ok_count} skip={len(responses) - ok_count}", refresh=False)
+                    continue
                 merged = {**job, **extras}
                 proc.stdin.write(_json.dumps(merged) + "\n")
                 proc.stdin.flush()

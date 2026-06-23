@@ -83,6 +83,47 @@ def test_main_convert_help_mentions_basic_lands(capsys: pytest.CaptureFixture) -
     assert "--basic-lands NAME=COUNT" in captured.out
 
 
+def test_will_render_borderless() -> None:
+    """Borderless candidate = single-faced AND (explicit --borderless OR auto+borderless print)."""
+    from mtg_proxies.cli import _will_render_borderless
+
+    bl = {"border_color": "borderless", "layout": "normal"}
+    normal = {"border_color": "black", "layout": "normal"}
+    dfc_bl = {"border_color": "borderless", "layout": "transform"}
+
+    assert _will_render_borderless(bl, "auto") is True
+    assert _will_render_borderless(normal, "auto") is False
+    assert _will_render_borderless(normal, "borderless") is True   # explicit flag forces single-faced
+    assert _will_render_borderless(dfc_bl, "borderless") is False  # DFCs excluded (render modern)
+    assert _will_render_borderless(bl, "8th") is False             # other frames unaffected
+
+
+def test_borderless_art_or_skip_uses_mtgpics_when_present() -> None:
+    from mtg_proxies.cli import _borderless_art_or_skip
+
+    out = _borderless_art_or_skip({"border_color": "borderless"}, "The One Ring", lambda: "/tmp/x.jpg")
+    assert out == {"art_path": "/tmp/x.jpg"}
+
+
+def test_borderless_art_or_skip_skips_on_mtgpics_miss() -> None:
+    from mtg_proxies.cli import _borderless_art_or_skip
+
+    out = _borderless_art_or_skip({"border_color": "borderless"}, "X", lambda: None)
+    assert "skip" in out and "art_path" not in out
+
+
+def test_borderless_art_or_skip_skips_non_fullbleed_print_without_fetching() -> None:
+    """A non-borderless / non-full-art print forced to borderless skips — and never fetches art."""
+    from mtg_proxies.cli import _borderless_art_or_skip
+
+    fetched: list[int] = []
+    out = _borderless_art_or_skip(
+        {"border_color": "black", "full_art": False}, "X", lambda: fetched.append(1) or "/tmp/x.jpg"
+    )
+    assert "skip" in out
+    assert fetched == []  # metadata gate: no point fetching, no full-bleed art exists
+
+
 def test_main_convert_prefer_borderless_threads_flag(tmp_path) -> None:
     """`convert --prefer-borderless` reaches parse_decklist_spec with prefer_borderless=True."""
     from mtg_proxies.cli import main
