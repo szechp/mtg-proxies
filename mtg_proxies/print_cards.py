@@ -50,15 +50,36 @@ def _warped_content_fraction(image_path: str | Path) -> float | None:
     return 0.92 if nn is None else int(nn) / 100.0
 
 
-def _border_cropped_image(image: str | Path, border_crop: int) -> Image.Image:
+def _strip_cc_margin(image: str | Path) -> Image.Image:
+    """Return a cardconjourer render cropped down to its exact card content (bleed removed).
+
+    CardConjurer's "Include Template Margins" grows the canvas anisotropically by
+    ``_CC_MARGIN_SCALE`` (marginX=0.044, marginY=1/35) with the card centred. We strip exactly
+    that margin per axis, so the recovered image has the true card aspect ratio and places
+    identically to a no-bleed scan — no uniform-percent over-trim, no aspect stretch. The
+    per-edge bleed is ``margin / (1 + 2*margin)`` of the margined image on each axis.
+    """
+    with Image.open(image) as img:
+        img.load()
+        w, h = img.size  # PIL: (width, height)
+        frac = (_CC_MARGIN_SCALE - 1.0) / (2.0 * _CC_MARGIN_SCALE)
+        dx, dy = round(w * frac[0]), round(h * frac[1])
+        return img.crop((dx, dy, w - dx, h - dy))
+
+
+def _border_cropped_image(image: Image.Image | str | Path, border_crop: int) -> Image.Image:
     """Return ``image`` as a PIL image with ``border_crop`` px trimmed (split evenly per edge).
 
     Cropped in memory and handed straight to fpdf's ``image()`` (which accepts a ``PIL.Image``),
     so there is no on-disk intermediate to cache, invalidate, or go stale. ``border_crop`` is
     split half-and-half across opposing edges so the black border stays uniform; the per-edge
     pixel counts are scaled from the canonical ``image_size`` to the source's actual resolution.
+    Accepts an already-open ``PIL.Image`` (e.g. a margin-stripped cardconjourer render) as well
+    as a path.
     """
-    with Image.open(image) as img:
+    opened = not isinstance(image, Image.Image)
+    img = Image.open(image) if opened else image
+    try:
         img.load()
         actual_w, actual_h = img.size  # PIL: (width, height)
         c_left = int(round(border_crop / 2 * actual_w / image_size[0]))
@@ -66,6 +87,9 @@ def _border_cropped_image(image: str | Path, border_crop: int) -> Image.Image:
         c_top = int(round(border_crop / 2 * actual_h / image_size[1]))
         c_bottom = int(round(border_crop * actual_h / image_size[1])) - c_top
         return img.crop((c_left, c_top, actual_w - c_right, actual_h - c_bottom))
+    finally:
+        if opened:
+            img.close()
 
 
 def _occupied_space(cardsize: np.ndarray, pos: np.ndarray, border_crop: int, closed: bool = False) -> np.ndarray:
@@ -279,10 +303,12 @@ def print_cards_fpdf(
         cropmarks: Whether to add crop marks to the PDF.
         split_pages: If set, write a new PDF every N pages with `_<n>` suffix added to the filename.
         bleed_images: Paths of custom-art / cardconjourer renders that carry CardConjurer's
-            template-margin bleed. On negative ``border_crop`` (the cutting flow) these are placed
-            so the inner card rect lands exactly on the slot and the bleed spills into the gap;
-            on positive/zero crop they are placed at the slot unchanged (the bleed was already
-            trimmed by ``--custom-art-bleed-crop``). Plain scans (not listed) are never scaled.
+            anisotropic template-margin bleed. On negative ``border_crop`` (the cutting flow) the
+            raw render is placed so the inner card rect lands exactly on the slot and the bleed
+            spills into the gap; on positive/zero crop the exact per-axis margin is stripped
+            (``_strip_cc_margin``) so the card places pixel-identically to a no-bleed scan, with no
+            aspect stretch. Plain scans (not listed) are never scaled or stripped. These renders
+            must be passed raw (``--custom-art-bleed-crop 0``) so the strip math is correct.
     """
     from fpdf import FPDF
 
@@ -358,17 +384,28 @@ def print_cards_fpdf(
         x = (i % cards_per_sheet) % N[0]
         y = (i % cards_per_sheet) // N[0]
 
+        is_cc_bleed = bleed_images is not None and str(image) in bleed_images
+
+        # Cardconjourer renders carry CC's anisotropic template-margin bleed. On the positive/
+        # zero-crop sticker flow, strip exactly that margin (per axis, from the raw render) so the
+        # recovered card content has the true card aspect and places pixel-identically to a
+        # no-bleed scan — no uniform-percent over-trim, no aspect stretch. On negative crop the
+        # bleed is kept and spilled into the gap (place_size scaling below).
+        source: Image.Image | str | Path = image
+        if is_cc_bleed and border_crop >= 0:
+            source = _strip_cc_margin(image)
+
         # Determine crop and slot size
         if border_crop > 0:
             # Symmetrical uniform pixel crop: remove exactly half of border_crop from each side,
             # keeping the black borders uniform. Cropped in memory and passed straight to
             # pdf.image — no on-disk intermediate, so nothing to cache or go stale.
-            card_image: Image.Image | str = _border_cropped_image(image, border_crop)
+            card_image: Image.Image | str | Path = _border_cropped_image(source, border_crop)
             factors = (image_size - border_crop) / image_size
             base_slot_size = cardsize * factors
         else:
-            # Legacy gap logic or no crop — fpdf reads the source path directly.
-            card_image = image
+            # Legacy gap logic or no crop — fpdf reads the source (path or stripped image) directly.
+            card_image = source
             base_slot_size = cardsize
 
         # Compute extent
@@ -378,14 +415,12 @@ def print_cards_fpdf(
         # MPCFill ``_warped<NN>`` renders carry an isotropic bleed margin baked in by
         # ``warp_to_reference`` — card content fills only ``NN`` % of the image's width.
         content_fraction = _warped_content_fraction(image)
-        is_cc_bleed = bleed_images is not None and str(image) in bleed_images
         if content_fraction is not None and content_fraction < 1.0:
             place_size = size / content_fraction
         elif is_cc_bleed and border_crop < 0:
             # Cardconjourer render with CC template-margin bleed, on the cutting flow: scale by
             # the anisotropic margin so the inner card rect stays at the slot and the bleed
-            # spills into the gap. On positive/zero crop the bleed is already trimmed by
-            # --custom-art-bleed-crop, so fall through to plain slot placement.
+            # spills into the gap. (Positive/zero crop already stripped the margin above.)
             place_size = size * _CC_MARGIN_SCALE
         else:
             place_size = None

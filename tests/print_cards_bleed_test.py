@@ -28,9 +28,10 @@ _MARGIN_SCALE_Y = 1 + 2 / 35
 
 
 class _CapturingPdf:
-    """Minimal FPDF stand-in that records ``image`` placement args."""
+    """Minimal FPDF stand-in that records ``image`` placement args + the image objects."""
 
     placements: list[tuple[float, float, float, float]]
+    images: list[object]
 
     def __init__(self, *_a: object, **_k: object) -> None:
         pass
@@ -53,8 +54,9 @@ class _CapturingPdf:
     def line(self, *_a: object, **_k: object) -> None:
         pass
 
-    def image(self, _path: str, *, x: float, y: float, w: float, h: float) -> None:
+    def image(self, image: object, *, x: float, y: float, w: float, h: float) -> None:
         self.placements.append((x, y, w, h))
+        self.images.append(image)
 
     def output(self, _path: str) -> None:
         pass
@@ -67,6 +69,7 @@ def _capture(
 
     placements: list[tuple[float, float, float, float]] = []
     _CapturingPdf.placements = placements
+    _CapturingPdf.images = []
     with patch("fpdf.FPDF", _CapturingPdf):
         print_cards_fpdf(
             images,
@@ -105,8 +108,7 @@ def test_custom_art_bleed_scaled_into_gap_on_negative_crop(tmp_path: Path) -> No
 def test_custom_art_not_scaled_on_positive_crop(tmp_path: Path) -> None:
     """Positive crop: custom-art is placed at the (cropped) slot with NO scale-up.
 
-    The sticker flow is unchanged — the bleed was already trimmed by --custom-art-bleed-crop,
-    so the placement is the plain cropped slot size, never the margin-scaled size.
+    The sticker flow keeps its slot placement — the margin is stripped, never margin-scaled.
     """
     img = _save_card(tmp_path / "kadena.png")
     (_x, _y, w, h) = _capture([img], border_crop=34, bleed_images={img}, tmp=tmp_path)[0]
@@ -117,6 +119,36 @@ def test_custom_art_not_scaled_on_positive_crop(tmp_path: Path) -> None:
     assert math.isclose(h, expected[1], abs_tol=0.01)
     # Must NOT be the bleed-scaled size.
     assert not math.isclose(w, _CARD_SIZE_MM[0] * _MARGIN_SCALE_X, abs_tol=0.01)
+
+
+def test_custom_art_no_aspect_stretch_on_positive_crop(tmp_path: Path) -> None:
+    """Positive crop: the placed image keeps the TRUE card aspect — no stretch.
+
+    A real cardconjourer render is the card content grown by CC's anisotropic margin
+    (``_MARGIN_SCALE_*``). print_cards strips exactly that margin, so the image handed to fpdf
+    has the card's own aspect ratio (it draws stretched to the slot, so a wrong aspect here
+    would stretch the card). This is the regression guard against the uniform-percent over-trim.
+    """
+    from mtg_proxies.print_cards import print_cards_fpdf
+
+    card_w, card_h = 2010, 2814  # true card content
+    margined = (round(card_w * _MARGIN_SCALE_X), round(card_h * _MARGIN_SCALE_Y))
+    img = tmp_path / "kadena.png"
+    Image.fromarray(np.full((margined[1], margined[0], 3), 128, dtype=np.uint8)).save(img)
+
+    _CapturingPdf.placements = []
+    _CapturingPdf.images = []
+    with patch("fpdf.FPDF", _CapturingPdf):
+        print_cards_fpdf(
+            [str(img)], filepath=str(tmp_path / "out.pdf"), border_crop=0, cropmarks=False, bleed_images={str(img)}
+        )
+
+    placed = _CapturingPdf.images[0]
+    pw, ph = placed.size  # a PIL.Image — the margin-stripped card content
+    card_aspect = card_w / card_h
+    assert math.isclose(pw / ph, card_aspect, abs_tol=0.002), f"placed aspect {pw / ph:.4f} != card {card_aspect:.4f}"
+    # And definitely not the margined (un-stripped) aspect, which would stretch the card.
+    assert not math.isclose(pw / ph, margined[0] / margined[1], abs_tol=0.01)
 
 
 def test_plain_scan_not_scaled_on_negative_crop(tmp_path: Path) -> None:
