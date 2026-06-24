@@ -580,6 +580,12 @@ const fsLoadScript = (function () {
 global.loadScript = fsLoadScript;
 loadEngineFile('js/autoFrame.js');
 loadEngineFile('js/frames/pack8th.js');
+// groupMargin.js defines loadMarginVersion (CC's "Include Template Margins" handler).
+// We invoke it per render (via ensurePackLoaded('packMargin-1.js')) so every card carries
+// the same MPC bleed as MPCFill renders. Loaded after creator-23.js so the engine helpers it
+// calls (resetCardIrregularities / autoFitArt / drawFrames …) are already defined; its
+// top-level loadFramePacks([...]) call is the stubbed no-op above.
+loadEngineFile('js/frames/groupMargin.js');
 
 // Engine init (creator-23.js:5002) overwrites #lockSetSymbolURL.checked
 // based on localStorage, undoing our SELECTOR_OVERRIDES default. Force it
@@ -1520,6 +1526,34 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     await Promise.allSettled(pendingImages.splice(0));
     for (let round = 0; round < 5 && pendingImages.length; round++) {
         await Promise.allSettled(pendingImages.splice(0));
+    }
+
+    // MPC bleed — CardConjurer's own "Include Template Margins". Now that the card's frames
+    // and art are in place, run loadMarginVersion (triggered by loading packMargin-1.js): it
+    // resizes the canvases to width*(1+2*0.044) x height*(1+2/35), widens full-art bounds so
+    // borderless art fills the new margin (re-autoFitArt), and — because marginX/Y are now
+    // non-zero — makes drawCard skip the rounded-corner cutout (creator-23.js:3137), giving the
+    // square MPC bleed edge. We then add the matching extension frame so the bleed is filled
+    // (borderless art reaches the edge / black for bordered frames). The render ends up with the
+    // same ~4% bleed as MPCFill, so print_cards places it identically on the cutting flow.
+    //
+    // loadMarginVersion's GUI redraw tail (bottomInfoEdited / watermarkEdited / drawNewGuidelines)
+    // reads live #info-* form state and calls drawCard — that would clobber the lean bottom info
+    // we build below. Stub those three for the call; drawText / renderBottomInfo / drawFrames
+    // further down redraw text, bottom info and frames at the new margined size anyway.
+    const _marginStash = {
+        bottomInfoEdited: global.bottomInfoEdited,
+        watermarkEdited: global.watermarkEdited,
+        drawNewGuidelines: global.drawNewGuidelines,
+    };
+    global.bottomInfoEdited = async () => {};
+    global.watermarkEdited = () => {};
+    global.drawNewGuidelines = () => {};
+    try {
+        await ensurePackLoaded('packMargin-1.js');
+        await addFrameByName([frame === 'borderless' ? 'Borderless Extension' : 'Black Extension']);
+    } finally {
+        Object.assign(global, _marginStash);
     }
 
     await global.drawText();

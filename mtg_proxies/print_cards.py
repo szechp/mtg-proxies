@@ -21,6 +21,13 @@ image_size = np.array([745, 1040])
 # constant so the value can't drift out of sync again.
 CARD_SIZE_MM = np.array([63.0, 88.0])
 
+# CardConjurer's "Include Template Margins" bleed (``loadMarginVersion``: marginX=0.044,
+# marginY=1/35). Cardconjourer renders carry this MPC bleed; the canvas is the card scaled by
+# these factors per axis (creator-23.js sizeCanvas: width*(1+2*marginX), height*(1+2*marginY)).
+# On the negative-crop cutting flow we place the render at this size so the inner 63x88 card
+# rect lands exactly on the slot and the bleed spills into the inter-card gap.
+_CC_MARGIN_SCALE = np.array([1 + 2 * 0.044, 1 + 2 / 35])
+
 # Matches the per-card MPCFill warped output: ``<id>__<hash>_warped<NN>.png`` where NN is the
 # achieved card-content fill percentage. Legacy ``_warped.png`` (no NN) means "assume 0.92" —
 # old caches from before this marker existed.
@@ -256,6 +263,7 @@ def print_cards_fpdf(
     background_color: tuple[int, int, int] | None = None,
     cropmarks: bool = True,
     split_pages: int | None = None,
+    bleed_images: set[str] | None = None,
 ) -> None:
     """Print a list of cards to a pdf file.
 
@@ -270,6 +278,11 @@ def print_cards_fpdf(
             margins with ink.
         cropmarks: Whether to add crop marks to the PDF.
         split_pages: If set, write a new PDF every N pages with `_<n>` suffix added to the filename.
+        bleed_images: Paths of custom-art / cardconjourer renders that carry CardConjurer's
+            template-margin bleed. On negative ``border_crop`` (the cutting flow) these are placed
+            so the inner card rect lands exactly on the slot and the bleed spills into the gap;
+            on positive/zero crop they are placed at the slot unchanged (the bleed was already
+            trimmed by ``--custom-art-bleed-crop``). Plain scans (not listed) are never scaled.
     """
     from fpdf import FPDF
 
@@ -362,13 +375,23 @@ def print_cards_fpdf(
         lower = offset + _occupied_space(cardsize, np.array([x, y]), border_crop)
         size = base_slot_size
 
-        # MPCFill ``_warped<NN>`` renders carry a bleed margin baked in by
+        # MPCFill ``_warped<NN>`` renders carry an isotropic bleed margin baked in by
         # ``warp_to_reference`` — card content fills only ``NN`` % of the image's width.
         content_fraction = _warped_content_fraction(image)
+        is_cc_bleed = bleed_images is not None and str(image) in bleed_images
         if content_fraction is not None and content_fraction < 1.0:
             place_size = size / content_fraction
-            place_offset = (place_size - size) / 2.0
-            place_pos = lower - place_offset
+        elif is_cc_bleed and border_crop < 0:
+            # Cardconjourer render with CC template-margin bleed, on the cutting flow: scale by
+            # the anisotropic margin so the inner card rect stays at the slot and the bleed
+            # spills into the gap. On positive/zero crop the bleed is already trimmed by
+            # --custom-art-bleed-crop, so fall through to plain slot placement.
+            place_size = size * _CC_MARGIN_SCALE
+        else:
+            place_size = None
+
+        if place_size is not None:
+            place_pos = lower - (place_size - size) / 2.0
             pdf.image(card_image, x=place_pos[0], y=place_pos[1], w=place_size[0], h=place_size[1])
         else:
             pdf.image(card_image, x=lower[0], y=lower[1], w=size[0], h=size[1])

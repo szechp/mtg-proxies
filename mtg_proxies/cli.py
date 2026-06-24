@@ -1985,6 +1985,7 @@ def main() -> None:
     match args.command:
         case "print":
             images = []
+            custom_images: list[str] = []
             custom_art_dir: tempfile.TemporaryDirectory[str] | None = None
             # Per-card modeline opt-out skip sets — populated by ``_apply_per_card_modelines``
             # when modelines exist on the decklist. Initialized empty so the bulk-pass union
@@ -2311,6 +2312,7 @@ def main() -> None:
                         background_color=background_color,
                         cropmarks=args.cropmarks,
                         split_pages=args.split_pages,
+                        bleed_images=set(custom_images),
                     )
                 else:
                     print_cards_matplotlib(
