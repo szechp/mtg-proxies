@@ -1337,10 +1337,33 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         // no crown); the title plate's own art carries the look.
         const blName = getFrameNameForFace(face);
         await addFrameByName([blName, 'Colorless Frame', 'Artifact Frame']);
+        // Two-color cards keep the gold Multicolored base frame, but get the two colors in the
+        // pinlines (left = earlier in WUBRG, right = later). Each colored frame is masked to the
+        // Pinline region intersected with the left/right half, so only its half of the pinline
+        // shows over the gold frame. (3+ colors stay full gold.)
+        const blColors = (face && Array.isArray(face.colors)) ? face.colors : [];
+        if (blColors.length === 2) {
+            const wubrg = ['W', 'U', 'B', 'R', 'G'];
+            const [c1, c2] = blColors.slice().sort((a, b) => wubrg.indexOf(a) - wubrg.indexOf(b));
+            const colorFrame = { W: 'White Frame', U: 'Blue Frame', B: 'Black Frame', R: 'Red Frame', G: 'Green Frame' };
+            // selectedMaskIndex 1 = the frame's own first mask ('Pinline') — so the geometry matches
+            // whichever borderless pack is loaded (promo vs IkoShort). The half mask is added on top,
+            // so each colored frame shows only in its half of the pinline over the gold base.
+            global.selectedMaskIndex = 1;
+            await addFrameByName([colorFrame[c1]], [{ name: 'Left Half', src: '/img/frames/maskLeftHalf.png' }]);
+            global.selectedMaskIndex = 1;
+            await addFrameByName([colorFrame[c2]], [{ name: 'Right Half', src: '/img/frames/maskRightHalf.png' }]);
+            global.selectedMaskIndex = 0;  // reset so the index can't leak into later frames/cards
+        }
         if (face.power != null && face.power !== '') {
             await addFrameByName([blName.replace(' Frame', ' Power/Toughness'),
                                   'Colorless Power/Toughness', 'Artifact Power/Toughness']);
         }
+        // The regular-promo color frames bake a glossy beveled rim into their art (the IkoShort
+        // pack doesn't). Erase that rim and draw the clean flat outline instead — 'Outline (Solid)'
+        // rather than the ugly 'Outline (Bevel)'. Both layers no-op on IkoShort (not in its pack).
+        await addFrameByName(['Outline Cutout']);
+        await addFrameByName(['Outline (Solid)']);
     } else if (faceColors && scry.layout !== 'flip') {
         await global.autoFrameUnified(frameTypeLiteral,
             faceColors,
