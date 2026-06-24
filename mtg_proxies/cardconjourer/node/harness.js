@@ -1549,11 +1549,25 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     global.bottomInfoEdited = async () => {};
     global.watermarkEdited = () => {};
     global.drawNewGuidelines = () => {};
+    // Snapshot the art window as fit during the build (before loadMarginVersion mutates it).
+    const _origArtBounds = { ...global.card.artBounds };
     try {
         await ensurePackLoaded('packMargin-1.js');
         await addFrameByName([frame === 'borderless' ? 'Borderless Extension' : 'Black Extension']);
     } finally {
         Object.assign(global, _marginStash);
+    }
+
+    // loadMarginVersion widens "full-art" bounds and re-autoFitArts. On the promo-borderless
+    // window (height 0.9224, not 1) only the TOP gets extended (the height==1 branch is skipped),
+    // so the re-fit zooms the art up ~8.8% and shifts it up — clipping the character's head under
+    // the title. Bordered frames aren't re-fit by loadMarginVersion (their window isn't full), so
+    // they're untouched. For borderless ONLY, restore the pack's original art window and re-fit:
+    // the visible-card framing then matches the no-bleed render exactly (same zoom, just shifted
+    // down with the frame), while the cover-fit overflow still bleeds the art past the card edge.
+    if (frame === 'borderless') {
+        global.card.artBounds = _origArtBounds;
+        global.autoFitArt();
     }
 
     await global.drawText();
