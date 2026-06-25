@@ -1733,7 +1733,8 @@ def test_normalize_custom_art_images_without_crop_returns_original_paths(tmp_pat
     assert normalized == [str(first), str(second)]
 
 
-def test_main_print_custom_art_bleed_crop_too_large_errors(tmp_path, capsys: pytest.CaptureFixture) -> None:
+def test_main_print_custom_art_bleed_crop_ignored_with_warning(tmp_path, capsys: pytest.CaptureFixture) -> None:
+    """--custom-art-bleed-crop is now ignored (print owns the bleed); a non-zero value warns, no error."""
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "custom.pdf"
@@ -1742,25 +1743,17 @@ def test_main_print_custom_art_bleed_crop_too_large_errors(tmp_path, capsys: pyt
     image_path = custom_dir / "art.png"
     plt.imsave(image_path, np.zeros((4, 4, 4), dtype=np.uint8))
 
-    with (
-        patch(
-            "sys.argv",
-            [
-                "mtg-proxies",
-                "print",
-                "--custom-art",
-                str(custom_dir),
-                "--custom-art-bleed-crop",
-                "50",
-                str(out_file),
-            ],
-        ),
-        pytest.raises(SystemExit),
+    # A previously-illegal value (50) no longer errors — it's just ignored with a warning, so the
+    # custom art is passed to print untouched (no double-counted bleed / zoomed card).
+    with patch(
+        "sys.argv",
+        ["mtg-proxies", "print", "--custom-art", str(custom_dir), "--custom-art-bleed-crop", "50", str(out_file)],
     ):
         main()
 
     captured = capsys.readouterr()
-    assert "Error: Custom art bleed crop too large" in captured.err
+    assert "ignoring --custom-art-bleed-crop" in captured.err
+    assert out_file.exists()
 
 
 def test_generate_basic_lands_decklist_standard_excludes_borderless_basics() -> None:

@@ -24,7 +24,12 @@ from mtg_proxies.tokens import get_tokens
 
 _mpcfill_log = logging.getLogger("mtg_proxies.mpcfill.cli")
 
-DEFAULT_CUSTOM_ART_BLEED_CROP_PERCENT = 4.0
+# 0 by default: cardconjourer / MPCFill custom-art renders carry a known bleed margin that the
+# print step itself handles (placed exactly at 63x88, bleed into the gap on negative crop / the
+# margin stripped on positive crop). Pre-trimming here as well double-counts the bleed and zooms
+# the card, so custom art is passed to print untouched. The flag is kept for the rare hand-made
+# image but is otherwise unused — a non-zero value is ignored with a warning.
+DEFAULT_CUSTOM_ART_BLEED_CROP_PERCENT = 0.0
 BASIC_LAND_NAMES = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
 ArtPreference = Literal["standard", "wild", "premium"]
 EXCLUDED_BASIC_LAND_PRINTS = {
@@ -2092,16 +2097,18 @@ def main() -> None:
                     print(f"Error: custom art folder '{args.custom_art}' does not exist", file=sys.stderr)
                     raise SystemExit(1)
 
+                # Custom art (cardconjourer / MPCFill renders) carries a known bleed that the print
+                # step places exactly (63x88 + bleed into the gap). Pass it raw — pre-trimming here
+                # would double-count the bleed and zoom the card into the cut area.
+                if args.custom_art_bleed_crop != 0:
+                    print(
+                        f"Note: ignoring --custom-art-bleed-crop {args.custom_art_bleed_crop}; the print "
+                        "step now handles the bleed automatically (card placed at 63x88, bleed into the "
+                        "inter-card gap). Trimming it here too would zoom the card past the cut marks.",
+                        file=sys.stderr,
+                    )
                 try:
-                    if args.custom_art_bleed_crop != 0:
-                        custom_art_dir = tempfile.TemporaryDirectory()
-                        custom_images = _normalize_custom_art_images(
-                            custom_folder,
-                            bleed_crop_percent=args.custom_art_bleed_crop,
-                            output_dir=Path(custom_art_dir.name),
-                        )
-                    else:
-                        custom_images = _normalize_custom_art_images(custom_folder)
+                    custom_images = _normalize_custom_art_images(custom_folder)
                 except ValueError as exc:
                     print(f"Error: {exc}", file=sys.stderr)
                     raise SystemExit(1) from exc
