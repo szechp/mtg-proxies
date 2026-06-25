@@ -1247,6 +1247,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     slot_skip: set[int] = set()
     slot_set_symbol: dict[int, str] = {}
     slot_font_size: dict[int, int] = {}
+    slot_custom_art: dict[int, str] = {}
     slot_dfc_split_request: set[int] = set()
     slot_dfc_flip_request: set[int] = set()
     for slot_int, card in slot_to_card.items():
@@ -1269,6 +1270,18 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                 fs_val = d.flags.get("--font-size")
                 if fs_val is not None:
                     slot_font_size[slot_int] = fs_val
+                art_val = d.flags.get("--custom-art")
+                if art_val:
+                    art_p = Path(art_val).expanduser().resolve()
+                    if not art_p.is_file():
+                        print(f"[cardconjourer] --custom-art on slot {slot_int}: file not found at {art_p}; ignoring.")
+                    elif art_p.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
+                        print(
+                            f"[cardconjourer] --custom-art on slot {slot_int}: "
+                            f"unsupported extension {art_p.suffix}; ignoring."
+                        )
+                    else:
+                        slot_custom_art[slot_int] = str(art_p)
 
     # Splittable layouts (transform / modal_dfc — reversible_card has two fronts
     # and stays on the flip path) render as two separate faces BY DEFAULT.
@@ -1320,6 +1333,13 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         fs_delta = slot_font_size.get(slot_int)
         if fs_delta is not None:
             extras["font_size"] = fs_delta
+
+        # Per-card ``#cardconjourer --custom-art PATH`` wins over every art source below. This is
+        # the escape hatch for borderless cards with no full-bleed MTGPics art: supply your own
+        # full-art image and the card renders borderless from it instead of skipping to fallback.txt.
+        custom_art = slot_custom_art.get(slot_int)
+        if custom_art:
+            return {**extras, "art_path": custom_art}
 
         # Borderless render needs full-bleed art, which only MTGPics provides (for genuine
         # borderless / full-art printings). Resolve it here or signal a skip → fallback.txt
