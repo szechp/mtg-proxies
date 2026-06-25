@@ -1337,14 +1337,19 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         // no crown); the title plate's own art carries the look.
         const blName = getFrameNameForFace(face);
         await addFrameByName([blName, 'Colorless Frame', 'Artifact Frame']);
-        // Two-color cards keep the gold Multicolored base frame, but get the two colors in the
-        // pinlines (left = earlier in WUBRG, right = later). Each colored frame is masked to the
-        // Pinline region intersected with the left/right half, so only its half of the pinline
-        // shows over the gold frame. (3+ colors stay full gold.)
-        const blColors = (face && Array.isArray(face.colors)) ? face.colors : [];
+        // Two-color cards keep their base frame (gold for spells, Land for lands) but get the two
+        // colors in the pinlines (left = earlier in WUBRG, right = later). Each colored frame is
+        // masked to the Pinline region intersected with the left/right half, so only its half of
+        // the pinline shows over the base. (3+ colors / mono stay un-split.)
+        const wubrg = ['W', 'U', 'B', 'R', 'G'];
+        let blColors = (face && Array.isArray(face.colors) && face.colors.length === 2) ? face.colors.slice() : [];
+        if (!blColors.length && (face.type_line || '').toLowerCase().includes('land')) {
+            // Dual lands have no card colors but tap for two — use their produced mana.
+            const produced = (face && face.produced_mana) || scry.produced_mana || [];
+            blColors = [...new Set(produced.filter(c => wubrg.includes(c)))];
+        }
         if (blColors.length === 2) {
-            const wubrg = ['W', 'U', 'B', 'R', 'G'];
-            const [c1, c2] = blColors.slice().sort((a, b) => wubrg.indexOf(a) - wubrg.indexOf(b));
+            const [c1, c2] = blColors.sort((a, b) => wubrg.indexOf(a) - wubrg.indexOf(b));
             const colorFrame = { W: 'White Frame', U: 'Blue Frame', B: 'Black Frame', R: 'Red Frame', G: 'Green Frame' };
             // selectedMaskIndex 1 = the frame's own first mask ('Pinline') — so the geometry matches
             // whichever borderless pack is loaded (promo vs IkoShort). The half mask is added on top,
