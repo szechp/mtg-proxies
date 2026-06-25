@@ -1145,6 +1145,23 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     else if (frame === 'retro') frameTypeLiteral = 'Seventh';
     else if (frame === 'borderless') frameTypeLiteral = 'Borderless';
 
+    // De-overlap paired oneLine regions (left-aligned name vs right-aligned mana/type). The engine
+    // auto-shrinks each oneLine text to fit ITS OWN width, but two regions sharing a band can still
+    // collide — a long title runs under the mana symbols. Reserve the right-aligned region's
+    // estimated width on the left-aligned one so the auto-shrink kicks in. Width units are
+    // card-width fractions; `size` is a card-height fraction, so ×(2100/1500)=1.4 converts a square
+    // glyph height to width. Mana symbols are ~1 glyph each; plain text ~0.55 per char.
+    const estimateWidth = (text, size) => {
+        const symbols = (text.match(/\{[^}]*\}/g) || []).length;
+        const plain = text.replace(/\{[^}]*\}/g, '').length;
+        return (symbols * 1.1 + plain * 0.55) * size * 1.4;
+    };
+    const reserveRight = (leftRegion, rightRegion) => {
+        if (!leftRegion || !rightRegion || !rightRegion.text) return;
+        const reserve = estimateWidth(rightRegion.text, rightRegion.size) + 0.01;
+        leftRegion.width = Math.max(0.2, leftRegion.width - reserve);
+    };
+
     if (dfcFace) {
         // dfc_split: build the whole-card frame from the loaded DFC pack's
         // availableFrames. autoFrameUnified can't do this — its 8th/M15 frame
@@ -1310,24 +1327,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             }
         }
 
-        // De-overlap paired oneLine regions. The engine auto-shrinks each
-        // oneLine text to fit ITS OWN width, but two regions sharing a band
-        // (left-aligned name + right-aligned mana/type) can still collide —
-        // long DFC names run under the symbols. Reserve the right-aligned
-        // region's estimated width on the left-aligned one so the auto-shrink
-        // kicks in. Width units are card-width fractions; `size` is a card-
-        // height fraction, so ×(2100/1500)=1.4 converts a square glyph height
-        // to width. Mana symbols are ~1 glyph each; plain text ~0.55 per char.
-        const estimateWidth = (text, size) => {
-            const symbols = (text.match(/\{[^}]*\}/g) || []).length;
-            const plain = text.replace(/\{[^}]*\}/g, '').length;
-            return (symbols * 1.1 + plain * 0.55) * size * 1.4;
-        };
-        const reserveRight = (leftRegion, rightRegion) => {
-            if (!leftRegion || !rightRegion || !rightRegion.text) return;
-            const reserve = estimateWidth(rightRegion.text, rightRegion.size) + 0.01;
-            leftRegion.width = Math.max(0.2, leftRegion.width - reserve);
-        };
+        // De-overlap the DFC name/mana and flipside type/reminder bands (helpers hoisted above).
         reserveRight(global.card.text.title, global.card.text.mana);
         reserveRight(global.card.text.flipsideType, global.card.text.flipSideReminder);
     } else if (frame === 'borderless' && scry.layout !== 'flip') {
@@ -1337,6 +1337,9 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         // no crown); the title plate's own art carries the look.
         const blName = getFrameNameForFace(face);
         await addFrameByName([blName, 'Colorless Frame', 'Artifact Frame']);
+        // The promo title region spans most of the card width and doesn't reserve room for the mana
+        // cost, so long titles (e.g. Doomsday Excruciator) run under the symbols — reserve it.
+        reserveRight(global.card.text.title, global.card.text.mana);
         // Two-color cards keep their base frame (gold for spells, Land for lands) but get the two
         // colors in the pinlines (left = earlier in WUBRG, right = later). Each colored frame is
         // masked to the Pinline region intersected with the left/right half, so only its half of
