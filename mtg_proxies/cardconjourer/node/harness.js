@@ -1154,7 +1154,8 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     const estimateWidth = (text, size) => {
         const symbols = (text.match(/\{[^}]*\}/g) || []).length;
         const plain = text.replace(/\{[^}]*\}/g, '').length;
-        return (symbols * 1.1 + plain * 0.55) * size * 1.4;
+        // Mana symbols are ~1 square glyph each (manaSpacing 0); 1.4 converts glyph height→width.
+        return (symbols * 1.0 + plain * 0.55) * size * 1.4;
     };
     const reserveRight = (leftRegion, rightRegion) => {
         if (!leftRegion || !rightRegion || !rightRegion.text) return;
