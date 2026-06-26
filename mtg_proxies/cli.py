@@ -479,6 +479,7 @@ def _apply_per_card_modelines(
     skip_normalize: set[str] | None = None,
     skip_shadow_lift: set[str] | None = None,
     skip_upscale: set[str] | None = None,
+    bleed_renders: set[str] | None = None,
     global_upscale: bool = False,
     global_normalize: bool = False,
     global_shadow_lift: bool = False,
@@ -533,6 +534,18 @@ def _apply_per_card_modelines(
     def _write(key: SlotKey, value: str) -> None:
         target_lists[key[0]][key[1]] = value
 
+    def _mark_bleed_render(path: str) -> None:
+        """Flag an mpcfill/cardconjourer render as a final bleed-carrying image.
+
+        It carries the same MPC bleed as ``--custom-art`` renders, so it must be scaled the same
+        way at print time (recorded in ``bleed_renders`` → print's ``bleed_images``). It's also a
+        finished render, so it skips every bulk transform — that keeps its path stable so the
+        ``bleed_renders`` entry still matches the image handed to print.
+        """
+        for s in (bleed_renders, skip_normalize, skip_shadow_lift, skip_upscale):
+            if s is not None:
+                s.add(path)
+
     # Pass 1: #mpcfill swaps (identifier-only path; auto-matcher / picker / retro
     # classifier were cut in MR8). The directive must carry ``--identifier <drive_id>``;
     # without it the directive is a no-op and the slot keeps its Scryfall scan.
@@ -578,10 +591,10 @@ def _apply_per_card_modelines(
                     continue
                 for slot in front_slots:
                     _write(slot, str(out_front))
-                # MPCFill renders ship at print resolution; running ESRGAN on them is wasteful
-                # and on CPU often hangs (the model's 4x intermediate is huge). Implicit opt-out.
-                if skip_upscale is not None:
-                    skip_upscale.add(str(out_front))
+                # MPCFill renders ship at print resolution with the MPC bleed baked in: scale them
+                # like --custom-art (bleed into the gap) and skip the bulk transforms (also avoids
+                # the slow/often-hanging ESRGAN 4x pass).
+                _mark_bleed_render(str(out_front))
 
     # Pass 1b: #cardconjourer swaps. All flagged cards go through the headless CC
     # harness in a single batched subprocess (~1-2s engine boot amortizes across
@@ -673,10 +686,9 @@ def _apply_per_card_modelines(
             for slot_id, png_path in rendered.items():
                 for slot in cc_slots_by_id.get(slot_id, []):
                     _write(slot, str(png_path))
-                # CC output is already at print resolution — implicit no-upscale, same
-                # rationale as #mpcfill above.
-                if skip_upscale is not None:
-                    skip_upscale.add(str(png_path))
+                # CC output carries the MPC bleed at print resolution: scale it like --custom-art
+                # and skip the bulk transforms (same rationale as #mpcfill above).
+                _mark_bleed_render(str(png_path))
 
     # Pass 2: per-card transforms.
     def _slots_for_verb(verb: str) -> list[SlotKey]:
@@ -2018,6 +2030,10 @@ def main() -> None:
             modeline_skip_normalize: set[str] = set()
             modeline_skip_shadow_lift: set[str] = set()
             modeline_skip_upscale: set[str] = set()
+            # Paths of mpcfill/cardconjourer modeline renders — they carry the MPC bleed and must be
+            # placed like --custom-art (scaled, bleed into the gap), so they're unioned into both
+            # ``user_supplied`` (skip composite/transforms) and the print step's ``bleed_images``.
+            modeline_bleed_renders: set[str] = set()
             has_modelines = False
             upscale_scope = resolve_upscale_scope(args)
 
@@ -2089,6 +2105,7 @@ def main() -> None:
                             skip_normalize=modeline_skip_normalize,
                             skip_shadow_lift=modeline_skip_shadow_lift,
                             skip_upscale=modeline_skip_upscale,
+                            bleed_renders=modeline_bleed_renders,
                             global_upscale=upscale_scope is not None,
                             global_normalize=bool(args.normalize),
                             global_shadow_lift=bool(args.shadow_lift),
@@ -2104,6 +2121,7 @@ def main() -> None:
                             skip_normalize=modeline_skip_normalize,
                             skip_shadow_lift=modeline_skip_shadow_lift,
                             skip_upscale=modeline_skip_upscale,
+                            bleed_renders=modeline_bleed_renders,
                             global_upscale=upscale_scope is not None,
                             global_normalize=bool(args.normalize),
                             global_shadow_lift=bool(args.shadow_lift),
@@ -2191,6 +2209,9 @@ def main() -> None:
                 user_supplied.update(custom_images)
             if args.card_back is not None:
                 user_supplied.add(args.card_back)
+            # mpcfill/cardconjourer modeline renders are final, bleed-carrying images: skip the
+            # bulk transforms + the background composite so their paths stay stable for bleed_images.
+            user_supplied |= modeline_bleed_renders
 
             # Order: upscale → normalize → shadow-lift → black-vignette → composite.
             # Upscale runs first so iterative tuning of normalize / shadow-lift /
@@ -2339,7 +2360,7 @@ def main() -> None:
                         background_color=background_color,
                         cropmarks=args.cropmarks,
                         split_pages=args.split_pages,
-                        bleed_images=set(custom_images),
+                        bleed_images=set(custom_images) | modeline_bleed_renders,
                     )
                 else:
                     print_cards_matplotlib(

@@ -19,11 +19,12 @@ from mtg_proxies.mpcfill.drive import fetch_thumbnail
 from mtg_proxies.mpcfill.errors import ThumbnailFetchError
 
 DEFAULT_OUTPUT_SIZE = 1500
-# MPCFill renders ship with more bleed than Scryfall scans by default. 4 % matches
-# the long-standing ``--custom-art-bleed-crop`` value so a swapped MPCFill image
-# lays out the same as a Scryfall scan. Wired up at the CLI boundary as the
-# fallback when ``--bleed-crop`` is not supplied on a #mpcfill modeline.
-DEFAULT_BLEED_CROP_PERCENT = 4.0
+# 0 by default: MPCFill renders carry the standard MPC bleed (card content 0.919 x 0.946 of the
+# render — identical to CardConjurer's template margin). The print step now scales these modeline
+# renders the same as --custom-art (card at the slot, bleed into the gap), so we keep the full bleed
+# here and let the placement own it. ``--bleed-crop`` stays as a per-card dial for non-standard
+# renders (trim excess bleed). Wired at the CLI boundary as the fallback when --bleed-crop is absent.
+DEFAULT_BLEED_CROP_PERCENT = 0.0
 # Bounds for ``bleed_crop_percent`` — matches the long-standing range on the
 # CLI's ``--custom-art-bleed-crop`` flag. Values above ~50 % would crop the
 # entire image away; the bleed package would raise ValueError anyway, but
