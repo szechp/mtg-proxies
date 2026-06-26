@@ -22,11 +22,12 @@ DEFAULT_OUTPUT_SIZE = 1500
 # MPCFill renders are MPC's 2.72x3.7" print sheet (3264x4440 @ 1200 dpi) with the real 63x88 mm card
 # inside -> card content is 0.912 x 0.937 of the render. CardConjurer's template margin is tighter
 # (content 0.919 x 0.946), so the print step's CC-based bleed scale leaves an MPCFill card ~0.4 mm
-# small, hence centred ~0.2 mm low next to a CC render. Trimming 0.5 %/edge brings the MPCFill content
-# fraction up to CC's (0.937/(1-0.01) = 0.946), so both sources land the card on the 63x88 slot.
-# This is sub-millimetre and below reliable pixel measurement; ``--bleed-crop`` overrides it per card
-# for fine-tuning by eye/ruler. Wired at the CLI boundary as the fallback when --bleed-crop is absent.
-DEFAULT_BLEED_CROP_PERCENT = 0.5
+# small, hence centred ~0.2 mm low next to a CC render. Trimming this excess bleed lifts the MPCFill
+# content fraction up to CC's so both sources land the card on the same 63x88 slot. Geometry put this
+# near 0.5 %/edge, but it's sub-millimetre and below reliable pixel measurement -- ruler-verified to
+# 0.7 %/edge on a real print. ``--bleed-crop`` overrides it per card for further fine-tuning by eye.
+# Wired at the CLI boundary as the fallback when --bleed-crop is absent.
+DEFAULT_BLEED_CROP_PERCENT = 0.7
 # Bounds for ``bleed_crop_percent`` — matches the long-standing range on the
 # CLI's ``--custom-art-bleed-crop`` flag. Values above ~50 % would crop the
 # entire image away; the bleed package would raise ValueError anyway, but
