@@ -25,6 +25,7 @@ import csv
 import re
 import sys
 from collections import Counter
+from functools import cache
 from operator import itemgetter
 from pathlib import Path
 
@@ -316,13 +317,22 @@ def _text_similarities(target_text: str, candidate_texts: list[str], *, semantic
     return cosine_similarity(matrix[0:1], matrix[1:]).ravel().tolist()
 
 
+@cache
+def _semantic_model() -> object:
+    """Load the sentence-transformer model once per process (it's expensive to construct)."""
+    from sentence_transformers import SentenceTransformer
+
+    return SentenceTransformer("all-MiniLM-L6-v2")
+
+
 def _semantic_similarities(target_text: str, candidate_texts: list[str]) -> list[float]:
     """Embedding cosine via sentence-transformers; exits with a hint if it isn't installed."""
     try:
-        from sentence_transformers import SentenceTransformer, util
+        from sentence_transformers import util
+
+        model = _semantic_model()
     except ImportError:
-        sys.exit("--semantic needs sentence-transformers: uv pip install sentence-transformers")
-    model = SentenceTransformer("all-MiniLM-L6-v2")
+        sys.exit("--semantic needs sentence-transformers: uv sync --extra swaps")
     emb = model.encode([target_text, *candidate_texts], convert_to_tensor=True, normalize_embeddings=True)
     return util.cos_sim(emb[0:1], emb[1:]).cpu().numpy().ravel().tolist()
 
