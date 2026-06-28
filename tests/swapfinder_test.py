@@ -160,13 +160,18 @@ def test_preprocess_concatenates_faces() -> None:
     assert swapfinder.preprocess_oracle(card) == "draw a card. gain 2 life."
 
 
-def test_preprocess_removes_keyword_boilerplate() -> None:
-    # "Flashback" is shared by every flashback card; it must not inflate text similarity.
-    card = _card("Faithless Looting", oracle_text="Draw two cards, then discard two cards.\nFlashback {2}{R}",
-                 keywords=["Flashback"])
-    out = swapfinder.preprocess_oracle(card)
+def test_preprocess_strips_cast_keywords_keeps_ability_keywords() -> None:
+    # "Flashback" is a casting keyword (boilerplate) -> stripped; "Surveil" is the function -> kept.
+    looting = _card("Faithless Looting", oracle_text="Draw two cards, then discard two cards.\nFlashback {2}{R}",
+                    keywords=["Flashback"])
+    out = swapfinder.preprocess_oracle(looting)
     assert "flashback" not in out
     assert "discard two cards" in out
+
+    surveiller = _card("Fear", oracle_text="Vigilance\nWhenever this creature attacks, surveil 1.",
+                       keywords=["Surveil", "Vigilance"])
+    kept = swapfinder.preprocess_oracle(surveiller)
+    assert "surveil" in kept  # ability keyword kept — it's the shared function with other surveil cards
 
 
 def test_keyword_jaccard() -> None:

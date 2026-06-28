@@ -173,12 +173,25 @@ def passes_hard_filter(target: dict, candidate: dict, pt_delta: int, *, cmc_delt
     return True
 
 
+# Alternative-/additional-cost and recast keywords: how you *cast* a card, not what it *does*. Their
+# text ("Flashback {2}{R}") is boilerplate shared across unrelated effects, so it pollutes the text
+# similarity (Faithless Looting matching random red flashback spells). Ability keywords (Flying,
+# Surveil, Vigilance, Deathtouch, ...) are the function itself and stay in the text. Keyword overlap
+# of every kind is still scored separately via keyword_jaccard.
+_CAST_KEYWORDS = frozenset({
+    "flashback", "retrace", "jump-start", "aftermath", "escape", "madness", "overload", "buyback",
+    "replicate", "conspire", "miracle", "surge", "spectacle", "awaken", "entwine", "kicker",
+    "multikicker", "cycling", "foretell", "blitz", "dash",
+})
+
+
 def preprocess_oracle(card: dict) -> str:
     """Normalize oracle text for similarity: faces joined, name -> ``~``, reminders stripped, lower.
 
-    Also removes the card's own keyword words (e.g. "Flashback", "Flying"): keyword text is
-    boilerplate shared by every card with that ability, so leaving it in makes unrelated cards that
-    merely share a keyword look similar. Keyword overlap is scored separately via ``keyword_jaccard``.
+    Strips only *casting* keywords (``_CAST_KEYWORDS``) — boilerplate like "Flashback {2}{R}" that
+    would otherwise make unrelated cards sharing that mechanic look alike. Ability keywords (Surveil,
+    Flying, ...) are kept because they are the card's function. All keyword overlap is still scored
+    separately via ``keyword_jaccard``.
     """
     faces = card.get("card_faces") or []
     text = " ".join(face.get("oracle_text", "") for face in faces) if faces else card.get("oracle_text", "") or ""
@@ -187,7 +200,8 @@ def preprocess_oracle(card: dict) -> str:
             text = text.replace(name, "~")
     text = re.sub(r"\([^)]*\)", "", text).lower()
     for keyword in card.get("keywords", []):
-        text = re.sub(rf"\b{re.escape(keyword.lower())}\b", " ", text)
+        if keyword.lower() in _CAST_KEYWORDS:
+            text = re.sub(rf"\b{re.escape(keyword.lower())}\b", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
