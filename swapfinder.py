@@ -98,6 +98,18 @@ def card_types(card: dict) -> frozenset[str]:
     return frozenset(out)
 
 
+# Functional precedence: a card's primary type is what it mainly *does*. Artifact/Enchantment rank
+# last so "Enchantment Creature" / "Artifact Creature" bucket with plain "Creature" (the supertype
+# rarely changes the card's role), while a noncreature Artifact stays distinct from an Enchantment.
+_TYPE_PRIORITY = ("Creature", "Planeswalker", "Battle", "Land", "Instant", "Sorcery", "Artifact", "Enchantment")
+
+
+def primary_type(card: dict) -> str:
+    """Return the card's main functional type, e.g. ``Enchantment Creature`` -> ``Creature``."""
+    types = card_types(card)
+    return next((t for t in _TYPE_PRIORITY if t in types), "")
+
+
 def card_colors(card: dict) -> frozenset[str]:
     """Color identity-agnostic color set: card-level ``colors``, or union of face colors."""
     if "colors" in card:
@@ -142,8 +154,9 @@ def _value_within(a: str | None, b: str | None, delta: int) -> bool:
 def passes_hard_filter(target: dict, candidate: dict, pt_delta: int, *, cmc_delta: int = 0) -> bool:
     """Whether ``candidate`` is in the same functional bucket as ``target`` (spec stage 1).
 
-    Colors, colored-pip multiset and card-type set must match exactly (the real balance guard);
-    ``cmc_delta`` allows the mana value to differ by that much (0 = exact, as the spec defaults).
+    Colors, colored-pip multiset and primary card type must match exactly (the real balance guard);
+    secondary Artifact/Enchantment supertypes on a creature are ignored. ``cmc_delta`` allows the
+    mana value to differ by that much (0 = exact, as the spec defaults).
     """
     if abs(card_cmc(target) - card_cmc(candidate)) > cmc_delta:
         return False
@@ -151,10 +164,9 @@ def passes_hard_filter(target: dict, candidate: dict, pt_delta: int, *, cmc_delt
         return False
     if colored_pips_for(target) != colored_pips_for(candidate):
         return False
-    types = card_types(target)
-    if types != card_types(candidate):
+    if primary_type(target) != primary_type(candidate):
         return False
-    if "Creature" in types:
+    if primary_type(target) == "Creature":
         (tp, tt), (cp, ct) = card_pt(target), card_pt(candidate)
         if not (_value_within(tp, cp, pt_delta) and _value_within(tt, ct, pt_delta)):
             return False

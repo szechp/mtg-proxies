@@ -111,6 +111,24 @@ def test_hard_filter_rejects_on_type_set() -> None:
     assert not swapfinder.passes_hard_filter(t, c, pt_delta=1)
 
 
+def test_hard_filter_matches_enchantment_creature_to_plain_creature() -> None:
+    # Fear of Surveillance (Enchantment Creature) should bucket with a plain 2/2 white creature.
+    ench = _card(
+        "Fear of Surveillance", mana_cost="{1}{W}", cmc=2.0, colors=["W"],
+        type_line="Enchantment Creature — Nightmare", power="2", toughness="2",
+    )
+    plain = _card(
+        "Starfighter Pilot", mana_cost="{1}{W}", cmc=2.0, colors=["W"],
+        type_line="Creature — Human Pilot", power="2", toughness="2",
+    )
+    assert swapfinder.primary_type(ench) == "Creature"
+    assert swapfinder.passes_hard_filter(ench, plain, pt_delta=1)
+    # but a noncreature artifact and a noncreature enchantment stay distinct
+    art = _card("x", mana_cost="{2}", cmc=2.0, colors=[], type_line="Artifact")
+    enc = _card("y", mana_cost="{2}", cmc=2.0, colors=[], type_line="Enchantment")
+    assert not swapfinder.passes_hard_filter(art, enc, pt_delta=1)
+
+
 def _bear(name: str, power: str, toughness: str) -> dict:
     return _card(
         name, mana_cost="{1}{G}", cmc=2.0, colors=["G"], type_line="Creature — Bear",
