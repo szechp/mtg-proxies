@@ -19,6 +19,11 @@ dependencies = [
 dev = [
     "pytest",
 ]
+# Standalone `swapfinder.py` side tool only (not part of the proxy CLI). Install with
+# `uv sync --extra swaps`. `sentence-transformers` for `--semantic` stays unlisted (lazy import).
+swaps = [
+    "scikit-learn",
+]
 
 [project.scripts]
 mtg-proxies = "mtg_proxies.cli:main"
@@ -121,6 +126,7 @@ future-annotations = true
 "tokens.py" = ["T20"]
 "upscale.py" = ["T20"]
 "picker.py" = ["T20"]
+"swapfinder.py" = ["T20"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 banned-module-level-imports = ["mtg_proxies"]
