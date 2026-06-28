@@ -160,6 +160,15 @@ def test_preprocess_concatenates_faces() -> None:
     assert swapfinder.preprocess_oracle(card) == "draw a card. gain 2 life."
 
 
+def test_preprocess_removes_keyword_boilerplate() -> None:
+    # "Flashback" is shared by every flashback card; it must not inflate text similarity.
+    card = _card("Faithless Looting", oracle_text="Draw two cards, then discard two cards.\nFlashback {2}{R}",
+                 keywords=["Flashback"])
+    out = swapfinder.preprocess_oracle(card)
+    assert "flashback" not in out
+    assert "discard two cards" in out
+
+
 def test_keyword_jaccard() -> None:
     a = _card("a", keywords=["Flying", "Haste"])
     b = _card("b", keywords=["Flying"])

@@ -174,13 +174,20 @@ def passes_hard_filter(target: dict, candidate: dict, pt_delta: int, *, cmc_delt
 
 
 def preprocess_oracle(card: dict) -> str:
-    """Normalize oracle text for similarity: faces joined, name -> ``~``, reminders stripped, lower."""
+    """Normalize oracle text for similarity: faces joined, name -> ``~``, reminders stripped, lower.
+
+    Also removes the card's own keyword words (e.g. "Flashback", "Flying"): keyword text is
+    boilerplate shared by every card with that ability, so leaving it in makes unrelated cards that
+    merely share a keyword look similar. Keyword overlap is scored separately via ``keyword_jaccard``.
+    """
     faces = card.get("card_faces") or []
     text = " ".join(face.get("oracle_text", "") for face in faces) if faces else card.get("oracle_text", "") or ""
     for name in [card.get("name", ""), *(face.get("name", "") for face in faces)]:
         if name:
             text = text.replace(name, "~")
     text = re.sub(r"\([^)]*\)", "", text).lower()
+    for keyword in card.get("keywords", []):
+        text = re.sub(rf"\b{re.escape(keyword.lower())}\b", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
