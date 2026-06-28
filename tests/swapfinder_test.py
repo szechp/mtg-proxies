@@ -275,6 +275,18 @@ def test_load_all_cards_excludes_non_deck_layouts(monkeypatch: pytest.MonkeyPatc
     assert [c["name"] for c in swapfinder.load_all_cards()] == ["Doom Blade"]
 
 
+def test_score_candidates_excludes_other_cube_cards() -> None:
+    # A card already in the cube must not be offered as a replacement for another cube card.
+    target = _removal("Faerie Dreamthief")
+    other_cube_card = _removal("Unwilling Ingredient")  # same bucket, but it's also a cube target
+    outside = _removal("Cast Down")
+    names = [r["candidate"] for r in swapfinder.score_candidates(
+        target, [other_cube_card, outside], pt_delta=1, w_text=0.6, w_kw=0.2, w_type=0.2,
+        exclude_names=frozenset({swapfinder._canonic("Unwilling Ingredient")}),
+    )]
+    assert names == ["Cast Down"]
+
+
 def test_load_cards_uses_parse_decklist(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from mtg_proxies.decklists.decklist import Card, Comment, Decklist
 

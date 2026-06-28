@@ -316,6 +316,7 @@ def score_candidates(
     w_type: float,
     cmc_delta: int = 0,
     semantic: bool = False,
+    exclude_names: frozenset[str] = frozenset(),
 ) -> list[dict]:
     """Filter ``pool`` to ``target``'s bucket and rank survivors by blended functional similarity.
 
@@ -328,16 +329,18 @@ def score_candidates(
         w_type: Weight on card-type Jaccard (carries vanilla/textless cards).
         cmc_delta: Allowed mana-value difference (0 = exact).
         semantic: Use sentence-transformer embeddings instead of TF-IDF for text similarity.
+        exclude_names: Canonical names never to suggest (e.g. the other cube cards, so a card
+            already in the list isn't offered as a replacement for another).
 
     Returns:
         Rows (candidate/score/text_sim/keyword_sim/type_sim/same_role), sorted by score desc.
         Empty when no owned card shares the target's bucket.
     """
-    target_name = _canonic(target.get("name", ""))
+    skip = {_canonic(target.get("name", ""))} | exclude_names
     candidates = [
         c
         for c in pool
-        if _canonic(c.get("name", "")) != target_name and passes_hard_filter(target, c, pt_delta, cmc_delta=cmc_delta)
+        if _canonic(c.get("name", "")) not in skip and passes_hard_filter(target, c, pt_delta, cmc_delta=cmc_delta)
     ]
     if not candidates:
         return []
@@ -432,6 +435,9 @@ def main() -> None:
             if passes_restrictions(c, restrict=args.restrict, max_rarity=args.max_rarity, exclude_text=exclude_text)
         ]
 
+    # Don't offer a card that's already in the cube as a replacement for another cube card.
+    cube_names = frozenset(_canonic(c.get("name", "")) for c in cube)
+
     results: list[tuple[str, dict, list[dict]]] = []
     for target in cube:
         name = target.get("name", "")
@@ -451,6 +457,7 @@ def main() -> None:
             w_type=args.w_type,
             cmc_delta=args.cmc_delta,
             semantic=args.semantic,
+            exclude_names=cube_names,
         )[: args.top]
         results.append((name, common, rows))
 
