@@ -172,11 +172,29 @@ def test_role_of_clear_cases() -> None:
     assert swapfinder.role_of(_card("x", oracle_text="Draw two cards.")) == "draw"
 
 
+def test_type_jaccard_supertype_overlap() -> None:
+    arti = _card("a", type_line="Artifact Creature — Construct")
+    plain = _card("b", type_line="Creature — Beast")
+    assert swapfinder.type_jaccard(arti, arti) == pytest.approx(1.0)
+    assert swapfinder.type_jaccard(arti, plain) == pytest.approx(0.5)  # {Artifact,Creature} vs {Creature}
+
+
+def test_vanilla_card_ranks_same_supertype_first() -> None:
+    # An artifact creature with no oracle text should pull other artifact creatures above plain ones.
+    base = {"mana_cost": "{4}", "cmc": 4.0, "power": "4", "toughness": "4"}
+    tyrant = _card("Tyrant", type_line="Artifact Creature — Dragon", **base)
+    arti = _card("Construct", type_line="Artifact Creature — Construct", **base)
+    plain = _card("Beast", type_line="Creature — Beast", **base)
+    rows = swapfinder.score_candidates(tyrant, [plain, arti], pt_delta=1, w_text=0.6, w_kw=0.2, w_type=0.2)
+    assert rows[0]["candidate"] == "Construct"  # artifact creature beats plain creature
+    assert rows[0]["score"] > rows[1]["score"]
+
+
 def test_score_candidates_ranks_functional_twin_first() -> None:
     target = _removal("Murder-ish", oracle="Destroy target creature.")
     twin = _removal("Doom Blade", oracle="Destroy target creature.")
     filler = _removal("Sign in Blood-ish", oracle="Target player draws two cards and loses two life.")
-    rows = swapfinder.score_candidates(target, [twin, filler], pt_delta=1, w_text=0.7, w_kw=0.3)
+    rows = swapfinder.score_candidates(target, [twin, filler], pt_delta=1, w_text=0.6, w_kw=0.2, w_type=0.2)
     assert [r["candidate"] for r in rows] == ["Doom Blade", "Sign in Blood-ish"]
     assert rows[0]["score"] > rows[1]["score"]
     assert rows[0]["text_sim"] > rows[1]["text_sim"]
@@ -187,7 +205,9 @@ def test_score_candidates_excludes_self_and_out_of_bucket() -> None:
     same_name = _removal("Doom Blade")  # the owned copy of the target itself
     wrong_cmc = _card("Murder", mana_cost="{1}{B}{B}", cmc=3.0, colors=["B"], type_line="Instant",
                       oracle_text="Destroy target creature.")
-    assert swapfinder.score_candidates(target, [same_name, wrong_cmc], pt_delta=1, w_text=0.7, w_kw=0.3) == []
+    assert swapfinder.score_candidates(
+        target, [same_name, wrong_cmc], pt_delta=1, w_text=0.6, w_kw=0.2, w_type=0.2
+    ) == []
 
 
 def test_archidekt_lines_groups_candidates_by_target() -> None:

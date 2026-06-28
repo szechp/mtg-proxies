@@ -193,6 +193,20 @@ def keyword_jaccard(a: dict, b: dict) -> float:
     return len(ka & kb) / len(ka | kb)
 
 
+def type_jaccard(a: dict, b: dict) -> float:
+    """Jaccard over the two cards' card-type sets (incl. Artifact/Enchantment supertypes).
+
+    This is the signal that carries vanilla / textless cards: an artifact creature scores 1.0 with
+    another artifact creature but only 0.5 with a plain creature, so "what it is" ranks substitutes
+    when there's little or no oracle text to compare. For texty cards it's a small nudge next to the
+    dominant text-similarity weight.
+    """
+    ta, tb = card_types(a), card_types(b)
+    if not ta and not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
 def _full_text(card: dict) -> str:
     """Lowercased full oracle text (all faces, reminder text kept) — mirrors Scryfall ``fo:``."""
     faces = card.get("card_faces") or []
@@ -299,6 +313,7 @@ def score_candidates(
     pt_delta: int,
     w_text: float,
     w_kw: float,
+    w_type: float,
     cmc_delta: int = 0,
     semantic: bool = False,
 ) -> list[dict]:
@@ -310,11 +325,12 @@ def score_candidates(
         pt_delta: Allowed power/toughness difference for creatures.
         w_text: Weight on oracle-text cosine similarity.
         w_kw: Weight on keyword Jaccard similarity.
+        w_type: Weight on card-type Jaccard (carries vanilla/textless cards).
         cmc_delta: Allowed mana-value difference (0 = exact).
         semantic: Use sentence-transformer embeddings instead of TF-IDF for text similarity.
 
     Returns:
-        Rows (dicts with candidate/score/text_sim/keyword_sim/same_role), sorted by score desc.
+        Rows (candidate/score/text_sim/keyword_sim/type_sim/same_role), sorted by score desc.
         Empty when no owned card shares the target's bucket.
     """
     target_name = _canonic(target.get("name", ""))
@@ -327,21 +343,27 @@ def score_candidates(
         return []
     sims = _text_similarities(preprocess_oracle(target), [preprocess_oracle(c) for c in candidates], semantic=semantic)
     target_role = role_of(target)
-    rows = [
-        {
-            "candidate": c.get("name", ""),
-            "score": round(w_text * text_sim + w_kw * (kw := keyword_jaccard(target, c)), 4),
-            "text_sim": round(text_sim, 4),
-            "keyword_sim": round(kw, 4),
-            "same_role": role_of(c) == target_role,
-        }
-        for c, text_sim in zip(candidates, sims)
-    ]
+    rows = []
+    for c, text_sim in zip(candidates, sims):
+        kw = keyword_jaccard(target, c)
+        ty = type_jaccard(target, c)
+        rows.append(
+            {
+                "candidate": c.get("name", ""),
+                "score": round(w_text * text_sim + w_kw * kw + w_type * ty, 4),
+                "text_sim": round(text_sim, 4),
+                "keyword_sim": round(kw, 4),
+                "type_sim": round(ty, 4),
+                "same_role": role_of(c) == target_role,
+            }
+        )
     rows.sort(key=itemgetter("score"), reverse=True)
     return rows
 
 
-_FIELDNAMES = ["target", "candidate", "score", "text_sim", "keyword_sim", "same_role", "target_cmc", "target_type"]
+_FIELDNAMES = [
+    "target", "candidate", "score", "text_sim", "keyword_sim", "type_sim", "same_role", "target_cmc", "target_type",
+]
 
 
 _MAX_CATEGORY = 30  # Archidekt rejects long category names; front face + cap keeps them valid
@@ -388,8 +410,9 @@ def main() -> None:
                         help="Drop candidates above this rarity (e.g. uncommon for an r<r cube)")
     parser.add_argument("--exclude-text", default="", help='Extra banned oracle substrings, e.g. "dice,stun counter"')
     parser.add_argument("--semantic", action="store_true", help="Use sentence-transformer embeddings for text sim")
-    parser.add_argument("--w-text", type=float, default=0.7, help="Weight on text similarity (default 0.7)")
-    parser.add_argument("--w-kw", type=float, default=0.3, help="Weight on keyword similarity (default 0.3)")
+    parser.add_argument("--w-text", type=float, default=0.6, help="Weight on text similarity (default 0.6)")
+    parser.add_argument("--w-kw", type=float, default=0.2, help="Weight on keyword similarity (default 0.2)")
+    parser.add_argument("--w-type", type=float, default=0.2, help="Weight on card-type similarity (default 0.2)")
     args = parser.parse_args()
 
     cube = load_cards(args.cube)
@@ -425,6 +448,7 @@ def main() -> None:
             pt_delta=args.pt_delta,
             w_text=args.w_text,
             w_kw=args.w_kw,
+            w_type=args.w_type,
             cmc_delta=args.cmc_delta,
             semantic=args.semantic,
         )[: args.top]
