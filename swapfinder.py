@@ -29,6 +29,8 @@ from functools import cache
 from operator import itemgetter
 from pathlib import Path
 
+import numpy as np
+
 SUPERTYPES = frozenset(
     {"Creature", "Instant", "Sorcery", "Artifact", "Enchantment", "Land", "Planeswalker", "Battle"}
 )
@@ -319,22 +321,49 @@ def _text_similarities(target_text: str, candidate_texts: list[str], *, semantic
 
 @cache
 def _semantic_model() -> object:
-    """Load the sentence-transformer model once per process (it's expensive to construct)."""
+    """Load the sentence-transformer model once per process, on the fastest available device.
+
+    sentence-transformers auto-selects CUDA but not Apple MPS, so pick the device explicitly:
+    CUDA (e.g. a 3060) > MPS (Apple Silicon) > CPU.
+    """
+    import torch
     from sentence_transformers import SentenceTransformer
 
-    return SentenceTransformer("all-MiniLM-L6-v2")
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
+    return SentenceTransformer("all-MiniLM-L6-v2", device=device)
+
+
+_embed_cache: dict[str, np.ndarray] = {}
+
+
+def _embed(texts: list[str], *, progress: bool = False) -> np.ndarray:
+    """Return normalized embeddings for ``texts``, encoding only the ones not seen before.
+
+    The cache (keyed by preprocessed text) is what makes a whole-cube run feasible: every unique
+    card is embedded once, so a card appearing in many targets' candidate pools costs nothing after
+    the first time. Without it each target re-encodes its entire pool from scratch.
+    """
+    missing = [t for t in dict.fromkeys(texts) if t not in _embed_cache]
+    if missing:
+        vectors = _semantic_model().encode(
+            missing, normalize_embeddings=True, convert_to_numpy=True, batch_size=256, show_progress_bar=progress
+        )
+        _embed_cache.update(zip(missing, vectors))
+    return np.array([_embed_cache[t] for t in texts])
 
 
 def _semantic_similarities(target_text: str, candidate_texts: list[str]) -> list[float]:
     """Embedding cosine via sentence-transformers; exits with a hint if it isn't installed."""
     try:
-        from sentence_transformers import util
-
-        model = _semantic_model()
+        matrix = _embed([target_text, *candidate_texts])
     except ImportError:
         sys.exit("--semantic needs sentence-transformers: uv sync --extra swaps")
-    emb = model.encode([target_text, *candidate_texts], convert_to_tensor=True, normalize_embeddings=True)
-    return util.cos_sim(emb[0:1], emb[1:]).cpu().numpy().ravel().tolist()
+    return (matrix[1:] @ matrix[0]).tolist()  # normalized rows -> dot product is cosine
 
 
 def score_candidates(
@@ -468,6 +497,12 @@ def main() -> None:
 
     # Don't offer a card that's already in the cube as a replacement for another cube card.
     cube_names = frozenset(_canonic(c.get("name", "")) for c in cube)
+
+    # Semantic mode: embed the whole pool once up front (one big GPU batch + visible progress) so
+    # each target is a cache lookup instead of re-encoding its candidates.
+    if args.semantic:
+        print(f"Embedding {len(pool)} candidate cards (one-time)...")
+        _embed([preprocess_oracle(c) for c in pool], progress=True)
 
     results: list[tuple[str, dict, list[dict]]] = []
     for target in cube:
