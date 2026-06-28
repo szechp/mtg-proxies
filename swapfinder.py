@@ -193,6 +193,55 @@ def keyword_jaccard(a: dict, b: dict) -> float:
     return len(ka & kb) / len(ka | kb)
 
 
+def _full_text(card: dict) -> str:
+    """Lowercased full oracle text (all faces, reminder text kept) — mirrors Scryfall ``fo:``."""
+    faces = card.get("card_faces") or []
+    text = " ".join(f.get("oracle_text", "") for f in faces) if faces else card.get("oracle_text", "") or ""
+    return text.lower()
+
+
+# Mechanics banned by the cube's Scryfall filter (substrings of full oracle text). Truncated forms
+# like "energy counter" also catch the plural. "+1/+1 counter" is the real wording (Scryfall's
+# fo:"+1 counter" normalizes the slash; plain substring needs the full form).
+_DEFAULT_EXCLUDE_TEXT = (
+    "token", "shuffle", "search", "transform",
+    "+1/+1 counter", "-1/-1 counter", "counter on", "counters on", "energy counter", "lore counter",
+)
+_DFC_LAYOUTS = frozenset({"transform", "modal_dfc", "double_faced_token", "meld", "reversible_card"})
+_RARITY_ORDER = {"common": 0, "uncommon": 1, "rare": 2, "mythic": 3, "special": 3, "bonus": 3}
+
+
+def passes_restrictions(card: dict, *, restrict: bool, max_rarity: str | None, exclude_text: tuple[str, ...]) -> bool:
+    """Whether a candidate card is legal for the cube's Scryfall-style restriction.
+
+    Args:
+        card: Scryfall card dict.
+        restrict: Apply the default cube bans (no tokens/shuffle/search/transform/counters, no
+            counterspell unless it has ward, no double-faced/digital/basic cards).
+        max_rarity: Drop anything above this rarity (e.g. ``uncommon`` for an ``r<r`` cube).
+        exclude_text: Extra oracle-text substrings to ban (e.g. ``("dice", "stun counter")``).
+
+    Returns:
+        True if the card survives every active restriction.
+    """
+    text = _full_text(card)
+    terms = list(exclude_text)
+    if restrict:
+        terms += _DEFAULT_EXCLUDE_TEXT
+        if card.get("digital"):
+            return False
+        if "Basic" in card.get("type_line", ""):
+            return False
+        if card.get("layout") in _DFC_LAYOUTS:
+            return False
+        keywords = {k.lower() for k in card.get("keywords", [])}
+        if "counter target" in text and "ward" not in text and "ward" not in keywords:
+            return False
+    if any(term.lower() in text for term in terms):
+        return False
+    return max_rarity is None or _RARITY_ORDER.get(card.get("rarity", ""), 99) <= _RARITY_ORDER[max_rarity]
+
+
 _ROLE_RULES = [
     ("ramp", r"search your library for .*\bland\b|add \{[wubrgc]"),
     ("removal", r"\bdestroy\b|\bexile\b target"),
@@ -333,6 +382,11 @@ def main() -> None:
     parser.add_argument("--top", type=int, default=3, help="Max candidates per target (default 3)")
     parser.add_argument("--pt-delta", type=int, default=1, help="Allowed P/T difference for creatures (default 1)")
     parser.add_argument("--cmc-delta", type=int, default=0, help="Allowed mana-value difference (default 0; try 1)")
+    parser.add_argument("--restrict", action="store_true", help="Apply cube bans: tokens/shuffle/search/"
+                        "transform/counters, counterspells w/o ward, DFC/digital/basic")
+    parser.add_argument("--max-rarity", choices=["common", "uncommon", "rare", "mythic"],
+                        help="Drop candidates above this rarity (e.g. uncommon for an r<r cube)")
+    parser.add_argument("--exclude-text", default="", help='Extra banned oracle substrings, e.g. "dice,stun counter"')
     parser.add_argument("--semantic", action="store_true", help="Use sentence-transformer embeddings for text sim")
     parser.add_argument("--w-text", type=float, default=0.7, help="Weight on text similarity (default 0.7)")
     parser.add_argument("--w-kw", type=float, default=0.3, help="Weight on keyword similarity (default 0.3)")
@@ -347,6 +401,13 @@ def main() -> None:
         pool = load_all_cards()
         owned_names = set()
         no_match_note = "(no functional match found)"
+
+    exclude_text = tuple(t.strip() for t in args.exclude_text.split(",") if t.strip())
+    if args.restrict or args.max_rarity or exclude_text:
+        pool = [
+            c for c in pool
+            if passes_restrictions(c, restrict=args.restrict, max_rarity=args.max_rarity, exclude_text=exclude_text)
+        ]
 
     results: list[tuple[str, dict, list[dict]]] = []
     for target in cube:

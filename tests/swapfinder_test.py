@@ -213,6 +213,38 @@ def test_archidekt_category_uses_short_front_face_name() -> None:
     assert "1x Fervent Champion [Embereth Shieldbreaker]" in lines
 
 
+def _passes(**kw: object) -> dict:
+    return swapfinder.passes_restrictions(kw, restrict=True, max_rarity=None, exclude_text=())  # type: ignore[arg-type]
+
+
+def test_restrictions_ban_default_mechanics() -> None:
+    assert not _passes(oracle_text="Create a 1/1 white Soldier token.", rarity="common")
+    assert not _passes(oracle_text="Search your library for a basic land.", rarity="common")
+    assert not _passes(oracle_text="Put a +1/+1 counter on target creature.", rarity="common")
+    assert not _passes(oracle_text="You get {E}{E} (two energy counters).", rarity="common")
+    assert _passes(oracle_text="Destroy target creature.", rarity="common")  # clean removal passes
+
+
+def test_restrictions_counterspell_only_with_ward() -> None:
+    assert not _passes(oracle_text="Counter target spell.", rarity="uncommon")
+    assert _passes(oracle_text="Counter target spell.", keywords=["Ward"], rarity="uncommon")  # ward carve-out
+
+
+def test_restrictions_layout_digital_basic() -> None:
+    assert not _passes(oracle_text="x", layout="transform", rarity="rare")
+    assert not _passes(oracle_text="x", digital=True, rarity="common")
+    assert not _passes(oracle_text="x", type_line="Basic Land — Forest", rarity="common")
+
+
+def test_restrictions_max_rarity_and_custom_exclude() -> None:
+    card = {"oracle_text": "Destroy target creature.", "rarity": "mythic"}
+    assert swapfinder.passes_restrictions(card, restrict=False, max_rarity="uncommon", exclude_text=()) is False
+    assert swapfinder.passes_restrictions(card | {"rarity": "common"}, restrict=False, max_rarity="uncommon",
+                                          exclude_text=()) is True
+    dice = {"oracle_text": "Roll a six-sided dice.", "rarity": "common"}
+    assert swapfinder.passes_restrictions(dice, restrict=False, max_rarity=None, exclude_text=("dice",)) is False
+
+
 def test_load_all_cards_excludes_non_deck_layouts(monkeypatch: pytest.MonkeyPatch) -> None:
     db = [
         _card("Doom Blade") | {"layout": "normal"},
