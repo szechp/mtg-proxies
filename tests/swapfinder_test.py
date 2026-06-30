@@ -194,19 +194,41 @@ def test_is_meta_tag_filters_structural_noise() -> None:
         assert not swapfinder._is_meta_tag(functional), functional
 
 
-def test_tag_jaccard_uses_function_tags(monkeypatch: pytest.MonkeyPatch) -> None:
+def _flat_idf(monkeypatch: pytest.MonkeyPatch, index: dict) -> None:
+    """Make every tag weigh 1.0 so tag_similarity reduces to plain Jaccard for assertions."""
+    monkeypatch.setattr(swapfinder, "_oracle_tag_index", lambda: index)
+    all_tags = {t for tags in index.values() for t in tags}
+    monkeypatch.setattr(swapfinder, "_tag_idf", lambda: dict.fromkeys(all_tags, 1.0))
+
+
+def test_tag_similarity_reduces_to_jaccard_with_flat_idf(monkeypatch: pytest.MonkeyPatch) -> None:
     index = {
         "oid-konrad": frozenset({"death-trigger", "mill", "burn-player"}),
         "oid-geth": frozenset({"reanimate-creature", "mill", "theft-creature"}),
         "oid-castdown": frozenset({"removal", "spot-removal"}),
         "oid-doomblade": frozenset({"removal", "spot-removal", "doom-blade"}),
     }
+    _flat_idf(monkeypatch, index)
+    assert swapfinder.tag_similarity({"oracle_id": "oid-konrad"}, {"oracle_id": "oid-geth"}) == pytest.approx(1 / 5)
+    assert swapfinder.tag_similarity(
+        {"oracle_id": "oid-doomblade"}, {"oracle_id": "oid-castdown"}
+    ) == pytest.approx(2 / 3)
+    assert swapfinder.tag_similarity({"name": "untagged"}, {"oracle_id": "oid-konrad"}) == pytest.approx(0.0)
+
+
+def test_tag_similarity_discounts_broad_tags(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Sharing only a broad/common tag (low IDF) should score far below sharing a rare, specific one.
+    index = {
+        "a": frozenset({"card-advantage", "doom-blade"}),
+        "broad": frozenset({"card-advantage", "mill"}),     # shares only the common tag
+        "rare": frozenset({"doom-blade", "burn"}),          # shares the rare tag
+    }
     monkeypatch.setattr(swapfinder, "_oracle_tag_index", lambda: index)
-    konrad = {"oracle_id": "oid-konrad"}
-    geth = {"oracle_id": "oid-geth"}
-    assert swapfinder.tag_jaccard(konrad, geth) == pytest.approx(1 / 5)  # share only "mill"
-    assert swapfinder.tag_jaccard({"oracle_id": "oid-doomblade"}, {"oracle_id": "oid-castdown"}) == pytest.approx(2 / 3)
-    assert swapfinder.tag_jaccard({"name": "untagged"}, konrad) == pytest.approx(0.0)  # no oracle_id
+    monkeypatch.setattr(swapfinder, "_tag_idf", lambda: {"card-advantage": 0.1, "doom-blade": 5.0,
+                                                         "mill": 5.0, "burn": 5.0})
+    broad = swapfinder.tag_similarity({"oracle_id": "a"}, {"oracle_id": "broad"})
+    rare = swapfinder.tag_similarity({"oracle_id": "a"}, {"oracle_id": "rare"})
+    assert broad < 0.05 < rare
 
 
 def test_type_jaccard_supertype_overlap() -> None:
@@ -331,7 +353,7 @@ def test_fallback_same_color_shared_tag_within_cmc(monkeypatch: pytest.MonkeyPat
         "offcolor": frozenset({"removal"}),    # shares a tag but wrong color
         "notag": frozenset({"ramp"}),          # right color/cmc but no shared tag
     }
-    monkeypatch.setattr(swapfinder, "_oracle_tag_index", lambda: index)
+    _flat_idf(monkeypatch, index)
     target = _card("T", mana_cost="{1}{B}", cmc=2.0, colors=["B"], type_line="Instant") | {"oracle_id": "t"}
     ok = _card("OK", mana_cost="{1}{B}{B}", cmc=3.0, colors=["B"], type_line="Creature — Bear",
                power="2", toughness="2") | {"oracle_id": "ok"}           # cmc 3, within delta 1

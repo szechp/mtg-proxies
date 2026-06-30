@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import re
 import sys
 from collections import Counter, defaultdict
@@ -298,16 +299,41 @@ def card_tags(card: dict) -> frozenset[str]:
     return _oracle_tag_index().get(oracle_id, frozenset()) if oracle_id else frozenset()
 
 
-def tag_jaccard(a: dict, b: dict) -> float:
-    """Jaccard over the two cards' Scryfall function tags — the sharpest "does the same thing" signal.
+@cache
+def _tag_idf() -> dict[str, float]:
+    """IDF weight per tag: rare tags (``doom-blade``) high, broad ones (``card-advantage``) low.
 
-    Konrad (death-trigger/mill) vs Geth (reanimator) barely overlap; Doom Blade vs Cast Down nearly
-    coincide. 0 if either card is untagged (Tagger coverage is partial), so it only ever adds signal.
+    This is what stops "matched on a generic tag" noise without a hand-maintained denylist — a tag
+    that's on thousands of cards carries almost no weight, one on a handful carries a lot.
+    """
+    index = _oracle_tag_index()
+    n = len(index) or 1
+    df: Counter[str] = Counter()
+    for tags in index.values():
+        df.update(tags)
+    return {tag: math.log((1 + n) / (1 + count)) for tag, count in df.items()}
+
+
+def tag_similarity(a: dict, b: dict) -> float:
+    """IDF-weighted Jaccard over function tags — the sharpest "does the same thing" signal.
+
+    Weighting by rarity means sharing a specific function (``doom-blade``, ``flicker``) scores high
+    while sharing only broad tags (``card-advantage``, ``synergy-instant``) scores near zero, even
+    though both are "a shared tag". 0 if either card is untagged (Tagger coverage is partial).
     """
     ta, tb = card_tags(a), card_tags(b)
     if not ta and not tb:
         return 0.0
-    return len(ta & tb) / len(ta | tb)
+    idf = _tag_idf()
+    denom = sum(idf.get(t, 0.0) for t in ta | tb)
+    if denom == 0:
+        return 0.0
+    return sum(idf.get(t, 0.0) for t in ta & tb) / denom
+
+
+# Minimum IDF-weighted tag similarity for a loose fallback to be offered. Below this the two cards
+# only share broad/generic function, so the target goes to the print list instead of a junk match.
+_FALLBACK_TAG_FLOOR = 0.12
 
 
 def _full_text(card: dict) -> str:
@@ -517,7 +543,7 @@ def fallback_candidates(
         if _canonic(c.get("name", "")) not in skip
         and card_colors(c) == target_colors
         and abs(card_cmc(c) - target_cmc) <= cmc_delta
-        and (card_tags(c) & target_tags)
+        and tag_similarity(target, c) >= _FALLBACK_TAG_FLOOR
     ]
     return _rank(target, candidates, w_text=w_text, w_kw=w_kw, w_type=w_type, w_tag=w_tag, semantic=semantic,
                  match="loose")
@@ -536,7 +562,7 @@ def _rank(
     for c, text_sim in zip(candidates, sims):
         kw = keyword_jaccard(target, c)
         ty = type_jaccard(target, c)
-        tg = tag_jaccard(target, c)
+        tg = tag_similarity(target, c)
         rows.append(
             {
                 "candidate": c.get("name", ""),
