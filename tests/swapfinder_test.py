@@ -271,20 +271,22 @@ def test_score_candidates_excludes_self_and_out_of_bucket() -> None:
 
 def test_archidekt_lines_groups_candidates_by_target() -> None:
     results = [
-        ("Doom Blade", {}, [{"candidate": "Go for the Throat"}, {"candidate": "Terror"}]),
-        ("Cast Down", {}, [{"candidate": "Go for the Throat"}]),
-        ("Murder", {}, [{"candidate": ""}]),  # no-match row is skipped
+        ("Doom Blade", {}, [{"candidate": "Go for the Throat", "match": "strict"},
+                            {"candidate": "Terror", "match": "strict"}], "swap"),
+        ("Cast Down", {}, [{"candidate": "Go for the Throat", "match": "strict"}], "swap"),
+        ("Counterspell", {}, [], "owned"),
+        ("Murder", {}, [], "print"),
     ]
     lines = swapfinder.archidekt_lines(results)
     assert "1x Doom Blade [Doom Blade]" in lines  # the target itself is included to compare against
-    assert "1x Cast Down [Cast Down]" in lines
     assert "1x Go for the Throat [Doom Blade,Cast Down]" in lines  # shared sub gets both categories
     assert "1x Terror [Doom Blade]" in lines
-    assert not any("Murder" in line for line in lines)  # no candidates -> skipped entirely
+    assert "1x Counterspell [Owned]" in lines  # owned cube cards stay visible
+    assert "1x Murder [Print]" in lines  # no match -> Print category, not dropped
 
 
 def test_archidekt_category_uses_short_front_face_name() -> None:
-    results = [("Embereth Shieldbreaker // Battle Display", {}, [{"candidate": "Fervent Champion"}])]
+    results = [("Embereth Shieldbreaker // Battle Display", {}, [{"candidate": "Fervent Champion"}], "swap")]
     lines = swapfinder.archidekt_lines(results)
     # category is the short front-face name (Archidekt rejects the long //-joined name)...
     assert "1x Embereth Shieldbreaker // Battle Display [Embereth Shieldbreaker]" in lines
@@ -406,9 +408,10 @@ def test_quality_gate_off_by_default_keeps_all(monkeypatch: pytest.MonkeyPatch) 
 
 def test_print_list_lines_lists_unmatched_targets() -> None:
     results = [
-        ("Matched Card", {}, [{"candidate": "X", "score": 0.5}]),
-        ("Unmatched One", {}, []),   # nothing survived bucket/fallback/min-score
-        ("Unmatched Two", {}, []),
+        ("Matched Card", {}, [{"candidate": "X", "score": 0.5}], "swap"),
+        ("Owned Card", {}, [], "owned"),          # owned -> not printed
+        ("Unmatched One", {}, [], "print"),
+        ("Unmatched Two", {}, [], "print"),
     ]
     assert swapfinder.print_list_lines(results) == ["1 Unmatched One", "1 Unmatched Two"]
 

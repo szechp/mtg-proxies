@@ -612,36 +612,46 @@ def _category_label(name: str) -> str:
     return name.split(" // ")[0].replace(",", "")[:_MAX_CATEGORY]
 
 
-def archidekt_lines(results: list[tuple[str, dict, list[dict]]]) -> list[str]:
-    """Render results as Archidekt text-import lines, grouping each card by the target(s) it replaces.
+def archidekt_lines(results: list[tuple[str, dict, list[dict], str]]) -> list[str]:
+    """Render results as Archidekt text-import lines so the whole cube stays visible after import.
 
-    Each card becomes ``1x <name> [<target>,<target2>]``; Archidekt turns the bracketed categories
-    into visual groups, so importing into a scratch deck shows each target card sitting next to its
-    suggested replacements (with images). The target itself is included in its own group so there's
-    something to compare against. Targets with no candidate are skipped.
+    Every cube card lands in a category: ``Owned`` (you already have it), ``Print`` (no good
+    substitute — proxy it), or its own group (a target sitting next to its suggested replacement(s),
+    with the replacements also tagged ``loose`` when they came from the fallback tier). Importing
+    into a scratch deck and grouping by Category shows the complete plan, nothing dropped.
     """
     categories: dict[str, list[str]] = {}
-    for target_name, _common, rows in results:
+
+    def add(card: str, cat: str) -> None:
+        buckets = categories.setdefault(card, [])
+        if cat not in buckets:
+            buckets.append(cat)
+
+    for target_name, _common, rows, status in results:
+        if status == "owned":
+            add(target_name, "Owned")
+            continue
         suggestions = [row for row in rows if row["candidate"]]
-        if not suggestions:
+        if status == "print" or not suggestions:
+            add(target_name, "Print")
             continue
         category = _category_label(target_name)
         loose = all(row.get("match") == "loose" for row in suggestions)  # fallback-only target
-        for card in [target_name, *(row["candidate"] for row in suggestions)]:
-            buckets = categories.setdefault(card, [])
-            for cat in ([category, "loose"] if loose and card != target_name else [category]):
-                if cat not in buckets:
-                    buckets.append(cat)
+        add(target_name, category)  # the target itself, to compare against
+        for row in suggestions:
+            add(row["candidate"], category)
+            if loose:
+                add(row["candidate"], "loose")
     return [f"1x {card} [{','.join(cats)}]" for card, cats in categories.items()]
 
 
-def print_list_lines(results: list[tuple[str, dict, list[dict]]]) -> list[str]:
-    """Decklist lines (``1 Name``) for targets with no acceptable match — the cards to proxy/print.
+def print_list_lines(results: list[tuple[str, dict, list[dict], str]]) -> list[str]:
+    """Decklist lines (``1 Name``) for targets with no acceptable owned match — the cards to proxy.
 
-    A target is unmatched when its row list is empty (nothing survived the bucket/fallback and the
-    ``--min-score`` floor). The output is a plain decklist ready for ``mtg-proxies print``.
+    The ``print`` status means nothing survived the bucket/fallback, the quality gate and the
+    ``--min-score`` floor. The output is a plain decklist ready for ``mtg-proxies print``.
     """
-    return [f"1 {name}" for name, _common, rows in results if not rows]
+    return [f"1 {name}" for name, _common, _rows, status in results if status == "print"]
 
 
 def main() -> None:
@@ -698,16 +708,19 @@ def main() -> None:
         print(f"Embedding {len(pool)} candidate cards (one-time)...")
         _embed([preprocess_oracle(c) for c in pool], progress=True)
 
-    results: list[tuple[str, dict, list[dict]]] = []
+    # Every cube card gets a status so nothing silently vanishes:
+    #   owned = you already have it · swap = covered by a suggestion · print = nothing good -> proxy.
+    results: list[tuple[str, dict, list[dict], str]] = []
     for target in cube:
         name = target.get("name", "")
-        if _canonic(name) in owned_names:
-            continue
         common = {
             "target": name,
             "target_cmc": card_cmc(target),
             "target_type": "+".join(sorted(card_types(target))),
         }
+        if _canonic(name) in owned_names:
+            results.append((name, common, [], "owned"))
+            continue
         weights = {"w_text": args.w_text, "w_kw": args.w_kw, "w_type": args.w_type, "w_tag": args.w_tag}
         rows = score_candidates(
             target, pool, pt_delta=args.pt_delta, cmc_delta=args.cmc_delta, semantic=args.semantic,
@@ -719,7 +732,7 @@ def main() -> None:
                 tag_floor=args.min_tag, **weights,
             )
         rows = [r for r in rows if r["score"] >= args.min_score][: args.top]  # drop junk below the floor
-        results.append((name, common, rows))
+        results.append((name, common, rows, "swap" if rows else "print"))
 
     if Path(args.out).suffix.lower() == ".txt":
         lines = archidekt_lines(results)
@@ -728,12 +741,14 @@ def main() -> None:
         with open(args.out, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=_FIELDNAMES)
             writer.writeheader()
-            for _name, common, rows in results:
-                if not rows:
-                    writer.writerow({**common, "candidate": "", "same_role": no_match_note})
-                    continue
-                for row in rows:
-                    writer.writerow({**common, **row})
+            for _name, common, rows, status in results:
+                if status == "owned":
+                    writer.writerow({**common, "candidate": "", "match": "owned", "same_role": "(already owned)"})
+                elif status == "print":
+                    writer.writerow({**common, "candidate": "", "match": "print", "same_role": no_match_note})
+                else:
+                    for row in rows:
+                        writer.writerow({**common, **row})
     print(f"Wrote {args.out}")
 
     if args.print_list:
