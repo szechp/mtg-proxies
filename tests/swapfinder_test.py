@@ -316,6 +316,35 @@ def test_score_candidates_excludes_other_cube_cards() -> None:
     assert names == ["Cast Down"]
 
 
+def test_fallback_same_color_shared_tag_within_cmc(monkeypatch: pytest.MonkeyPatch) -> None:
+    index = {
+        "t": frozenset({"removal", "spot-removal"}),
+        "ok": frozenset({"removal"}),          # shares a tag, off-bucket type/pt
+        "offcolor": frozenset({"removal"}),    # shares a tag but wrong color
+        "notag": frozenset({"ramp"}),          # right color/cmc but no shared tag
+    }
+    monkeypatch.setattr(swapfinder, "_oracle_tag_index", lambda: index)
+    target = _card("T", mana_cost="{1}{B}", cmc=2.0, colors=["B"], type_line="Instant") | {"oracle_id": "t"}
+    ok = _card("OK", mana_cost="{1}{B}{B}", cmc=3.0, colors=["B"], type_line="Creature — Bear",
+               power="2", toughness="2") | {"oracle_id": "ok"}           # cmc 3, within delta 1
+    offcolor = _card("Off", mana_cost="{1}{W}", cmc=2.0, colors=["W"], type_line="Instant") | {"oracle_id": "offcolor"}
+    notag = _card("NoTag", mana_cost="{1}{B}", cmc=2.0, colors=["B"], type_line="Instant") | {"oracle_id": "notag"}
+    rows = swapfinder.fallback_candidates(
+        target, [ok, offcolor, notag], w_text=0.4, w_kw=0.1, w_type=0.1, w_tag=0.4, cmc_delta=1,
+    )
+    assert [r["candidate"] for r in rows] == ["OK"]  # only same-color, shared-tag, in cmc window
+    assert rows[0]["match"] == "loose"
+
+
+def test_fallback_empty_when_target_untagged(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(swapfinder, "_oracle_tag_index", lambda: {"c": frozenset({"removal"})})
+    target = _card("T", mana_cost="{1}{B}", cmc=2.0, colors=["B"])  # no oracle_id -> no tags
+    cand = _card("C", mana_cost="{1}{B}", cmc=2.0, colors=["B"]) | {"oracle_id": "c"}
+    assert swapfinder.fallback_candidates(
+        target, [cand], w_text=0.4, w_kw=0.1, w_type=0.1, w_tag=0.4, cmc_delta=1
+    ) == []
+
+
 def test_load_cards_uses_parse_decklist(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from mtg_proxies.decklists.decklist import Card, Comment, Decklist
 

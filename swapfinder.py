@@ -16,7 +16,9 @@ Run:
 Stage 1 is a hard bucket filter (cmc, color set, colored-pip multiset, primary card type, and — for
 creatures — P/T within a delta). Stage 2 ranks survivors by a blend of: oracle-text similarity
 (TF-IDF cosine, or sentence-transformer embeddings with ``--semantic``), keyword Jaccard, card-type
-Jaccard, and Scryfall function-tag Jaccard (the sharpest "does the same thing" signal).
+Jaccard, and Scryfall function-tag Jaccard (the sharpest "does the same thing" signal). When the
+strict bucket is empty (common against a real collection + ``--restrict``), a loose fallback tier
+suggests same-color cards within ``--cmc-delta`` that share at least one function tag, flagged loose.
 """
 
 from __future__ import annotations
@@ -451,8 +453,8 @@ def score_candidates(
             already in the list isn't offered as a replacement for another).
 
     Returns:
-        Rows (candidate/score/text_sim/keyword_sim/type_sim/same_role), sorted by score desc.
-        Empty when no owned card shares the target's bucket.
+        Rows (candidate/match/score/text_sim/keyword_sim/type_sim/tag_sim/same_role), score desc.
+        Empty when no owned card shares the target's bucket (caller may then fall back).
     """
     skip = {_canonic(target.get("name", ""))} | exclude_names
     candidates = [
@@ -460,6 +462,51 @@ def score_candidates(
         for c in pool
         if _canonic(c.get("name", "")) not in skip and passes_hard_filter(target, c, pt_delta, cmc_delta=cmc_delta)
     ]
+    return _rank(target, candidates, w_text=w_text, w_kw=w_kw, w_type=w_type, w_tag=w_tag, semantic=semantic,
+                 match="strict")
+
+
+def fallback_candidates(
+    target: dict,
+    pool: list[dict],
+    *,
+    w_text: float,
+    w_kw: float,
+    w_type: float,
+    w_tag: float = 0.0,
+    cmc_delta: int = 0,
+    semantic: bool = False,
+    exclude_names: frozenset[str] = frozenset(),
+) -> list[dict]:
+    """Loose tier used only when the strict bucket is empty: same colors, within ``cmc_delta``, shared tag.
+
+    Drops the pip/P-T/exact-type constraints to surface "the closest thing in the pool that does the
+    same job" when no exact-stat twin exists — the common case against a real collection plus
+    ``--restrict``. Returns nothing if the target is untagged. Rows are flagged ``match="loose"``.
+    """
+    skip = {_canonic(target.get("name", ""))} | exclude_names
+    target_colors = card_colors(target)
+    target_cmc = card_cmc(target)
+    target_tags = card_tags(target)
+    if not target_tags:
+        return []
+    candidates = [
+        c
+        for c in pool
+        if _canonic(c.get("name", "")) not in skip
+        and card_colors(c) == target_colors
+        and abs(card_cmc(c) - target_cmc) <= cmc_delta
+        and (card_tags(c) & target_tags)
+    ]
+    return _rank(target, candidates, w_text=w_text, w_kw=w_kw, w_type=w_type, w_tag=w_tag, semantic=semantic,
+                 match="loose")
+
+
+def _rank(
+    target: dict, candidates: list[dict], *, w_text: float, w_kw: float, w_type: float, w_tag: float,
+    semantic: bool, match: str,
+) -> list[dict]:
+    """Score and sort already-filtered candidates by the blended similarity; tag each row's ``match``."""
     if not candidates:
         return []
     sims = _text_similarities(preprocess_oracle(target), [preprocess_oracle(c) for c in candidates], semantic=semantic)
@@ -472,6 +519,7 @@ def score_candidates(
         rows.append(
             {
                 "candidate": c.get("name", ""),
+                "match": match,
                 "score": round(w_text * text_sim + w_kw * kw + w_type * ty + w_tag * tg, 4),
                 "text_sim": round(text_sim, 4),
                 "keyword_sim": round(kw, 4),
@@ -485,7 +533,7 @@ def score_candidates(
 
 
 _FIELDNAMES = [
-    "target", "candidate", "score", "text_sim", "keyword_sim", "type_sim", "tag_sim",
+    "target", "candidate", "match", "score", "text_sim", "keyword_sim", "type_sim", "tag_sim",
     "same_role", "target_cmc", "target_type",
 ]
 
@@ -508,14 +556,16 @@ def archidekt_lines(results: list[tuple[str, dict, list[dict]]]) -> list[str]:
     """
     categories: dict[str, list[str]] = {}
     for target_name, _common, rows in results:
-        candidates = [row["candidate"] for row in rows if row["candidate"]]
-        if not candidates:
+        suggestions = [row for row in rows if row["candidate"]]
+        if not suggestions:
             continue
         category = _category_label(target_name)
-        for card in [target_name, *candidates]:  # target first so it sits in its own group
+        loose = all(row.get("match") == "loose" for row in suggestions)  # fallback-only target
+        for card in [target_name, *(row["candidate"] for row in suggestions)]:
             buckets = categories.setdefault(card, [])
-            if category not in buckets:
-                buckets.append(category)
+            for cat in ([category, "loose"] if loose and card != target_name else [category]):
+                if cat not in buckets:
+                    buckets.append(cat)
     return [f"1x {card} [{','.join(cats)}]" for card, cats in categories.items()]
 
 
@@ -576,19 +626,16 @@ def main() -> None:
             "target_cmc": card_cmc(target),
             "target_type": "+".join(sorted(card_types(target))),
         }
+        weights = {"w_text": args.w_text, "w_kw": args.w_kw, "w_type": args.w_type, "w_tag": args.w_tag}
         rows = score_candidates(
-            target,
-            pool,
-            pt_delta=args.pt_delta,
-            w_text=args.w_text,
-            w_kw=args.w_kw,
-            w_type=args.w_type,
-            w_tag=args.w_tag,
-            cmc_delta=args.cmc_delta,
-            semantic=args.semantic,
-            exclude_names=cube_names,
-        )[: args.top]
-        results.append((name, common, rows))
+            target, pool, pt_delta=args.pt_delta, cmc_delta=args.cmc_delta, semantic=args.semantic,
+            exclude_names=cube_names, **weights,
+        )
+        if not rows:  # strict bucket empty -> loose, same-color + shared-tag fallback
+            rows = fallback_candidates(
+                target, pool, cmc_delta=args.cmc_delta, semantic=args.semantic, exclude_names=cube_names, **weights,
+            )
+        results.append((name, common, rows[: args.top]))
 
     if Path(args.out).suffix.lower() == ".txt":
         lines = archidekt_lines(results)
