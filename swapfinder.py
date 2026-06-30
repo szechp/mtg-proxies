@@ -645,6 +645,22 @@ def archidekt_lines(results: list[tuple[str, dict, list[dict], str]]) -> list[st
     return [f"1x {card} [{','.join(cats)}]" for card, cats in categories.items()]
 
 
+def assign_unique(per_target: list[tuple[str, list[dict]]]) -> dict[str, list[dict]]:
+    """Keep each candidate only under the target where it scores highest (one copy fills one slot).
+
+    For ``--owned`` runs: an owned card that's the best match for two cube cards can't physically cover
+    both, so it's shown only at its better slot; the other target falls to its next-best (or to Print).
+    Ties go to the first target seen. Returns the filtered rows per target name.
+    """
+    best: dict[str, tuple[float, str]] = {}
+    for name, rows in per_target:
+        for row in rows:
+            cand = row["candidate"]
+            if cand not in best or row["score"] > best[cand][0]:
+                best[cand] = (row["score"], name)
+    return {name: [row for row in rows if best[row["candidate"]][1] == name] for name, rows in per_target}
+
+
 def print_list_lines(results: list[tuple[str, dict, list[dict], str]]) -> list[str]:
     """Decklist lines (``1 Name``) for targets with no acceptable owned match — the cards to proxy.
 
@@ -710,7 +726,8 @@ def main() -> None:
 
     # Every cube card gets a status so nothing silently vanishes:
     #   owned = you already have it · swap = covered by a suggestion · print = nothing good -> proxy.
-    results: list[tuple[str, dict, list[dict], str]] = []
+    weights = {"w_text": args.w_text, "w_kw": args.w_kw, "w_type": args.w_type, "w_tag": args.w_tag}
+    raw: list[tuple[str, dict, list[dict], str]] = []  # rows are full (unsliced) for "pending" targets
     for target in cube:
         name = target.get("name", "")
         common = {
@@ -719,9 +736,8 @@ def main() -> None:
             "target_type": "+".join(sorted(card_types(target))),
         }
         if _canonic(name) in owned_names:
-            results.append((name, common, [], "owned"))
+            raw.append((name, common, [], "owned"))
             continue
-        weights = {"w_text": args.w_text, "w_kw": args.w_kw, "w_type": args.w_type, "w_tag": args.w_tag}
         rows = score_candidates(
             target, pool, pt_delta=args.pt_delta, cmc_delta=args.cmc_delta, semantic=args.semantic,
             exclude_names=cube_names, tag_floor=args.min_tag, **weights,
@@ -731,7 +747,19 @@ def main() -> None:
                 target, pool, cmc_delta=args.cmc_delta, semantic=args.semantic, exclude_names=cube_names,
                 tag_floor=args.min_tag, **weights,
             )
-        rows = [r for r in rows if r["score"] >= args.min_score][: args.top]  # drop junk below the floor
+        rows = [r for r in rows if r["score"] >= args.min_score]  # quality floor (not yet top-sliced)
+        raw.append((name, common, rows, "pending"))
+
+    if args.owned:  # one physical copy fills one slot: keep each card only at its best target
+        deduped = assign_unique([(n, rows) for n, _c, rows, st in raw if st == "pending"])
+        raw = [(n, c, deduped[n] if st == "pending" else rows, st) for n, c, rows, st in raw]
+
+    results: list[tuple[str, dict, list[dict], str]] = []
+    for name, common, rows, status in raw:
+        if status == "owned":
+            results.append((name, common, [], "owned"))
+            continue
+        rows = rows[: args.top]
         results.append((name, common, rows, "swap" if rows else "print"))
 
     if Path(args.out).suffix.lower() == ".txt":

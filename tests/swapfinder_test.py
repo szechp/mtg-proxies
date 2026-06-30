@@ -406,6 +406,16 @@ def test_quality_gate_off_by_default_keeps_all(monkeypatch: pytest.MonkeyPatch) 
     assert [r["candidate"] for r in rows] == ["Junk"]  # tag_floor defaults 0 -> no gate
 
 
+def test_assign_unique_keeps_candidate_at_best_target() -> None:
+    per_target = [
+        ("A", [{"candidate": "X", "score": 0.5}, {"candidate": "Y", "score": 0.3}]),
+        ("B", [{"candidate": "X", "score": 0.4}, {"candidate": "Z", "score": 0.2}]),
+    ]
+    out = swapfinder.assign_unique(per_target)
+    assert [r["candidate"] for r in out["A"]] == ["X", "Y"]  # X stays at A (0.5 > 0.4)
+    assert [r["candidate"] for r in out["B"]] == ["Z"]       # X removed from B; Z remains
+
+
 def test_print_list_lines_lists_unmatched_targets() -> None:
     results = [
         ("Matched Card", {}, [{"candidate": "X", "score": 0.5}], "swap"),
