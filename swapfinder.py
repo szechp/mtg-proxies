@@ -334,6 +334,13 @@ def tag_similarity(a: dict, b: dict) -> float:
 # Minimum IDF-weighted tag similarity for a loose fallback to be offered. Below this the two cards
 # only share broad/generic function, so the target goes to the print list instead of a junk match.
 _FALLBACK_TAG_FLOOR = 0.12
+# Quality gate (the OR, so no single signal is the sole judge — tags are crowd-sourced, text is noisy):
+# a candidate is kept if it shares a real function tag (tag_sim >= --min-tag) OR a non-tag signal says
+# it's similar. That non-tag signal is the embedding cosine under --semantic (model-derived, not
+# crowd-sourced) at _SEMANTIC_FLOOR, else a near-duplicate TF-IDF text at the stricter _TEXT_TWIN_FLOOR.
+# Calibrated: real matches clear it, same-stats/shared-boilerplate junk fails both and goes to print.
+_SEMANTIC_FLOOR = 0.58
+_TEXT_TWIN_FLOOR = 0.7
 
 
 def _full_text(card: dict) -> str:
@@ -483,6 +490,7 @@ def score_candidates(
     cmc_delta: int = 0,
     semantic: bool = False,
     exclude_names: frozenset[str] = frozenset(),
+    tag_floor: float = 0.0,
 ) -> list[dict]:
     """Filter ``pool`` to ``target``'s bucket and rank survivors by blended functional similarity.
 
@@ -498,6 +506,8 @@ def score_candidates(
         semantic: Use sentence-transformer embeddings instead of TF-IDF for text similarity.
         exclude_names: Canonical names never to suggest (e.g. the other cube cards, so a card
             already in the list isn't offered as a replacement for another).
+        tag_floor: Quality gate; keep a candidate only if it shares a function tag this strongly or
+            is similar by embedding/text. 0 disables the gate.
 
     Returns:
         Rows (candidate/match/score/text_sim/keyword_sim/type_sim/tag_sim/same_role), score desc.
@@ -510,7 +520,7 @@ def score_candidates(
         if _canonic(c.get("name", "")) not in skip and passes_hard_filter(target, c, pt_delta, cmc_delta=cmc_delta)
     ]
     return _rank(target, candidates, w_text=w_text, w_kw=w_kw, w_type=w_type, w_tag=w_tag, semantic=semantic,
-                 match="strict")
+                 match="strict", tag_floor=tag_floor)
 
 
 def fallback_candidates(
@@ -524,6 +534,7 @@ def fallback_candidates(
     cmc_delta: int = 0,
     semantic: bool = False,
     exclude_names: frozenset[str] = frozenset(),
+    tag_floor: float = 0.0,
 ) -> list[dict]:
     """Loose tier used only when the strict bucket is empty: same colors, within ``cmc_delta``, shared tag.
 
@@ -546,23 +557,31 @@ def fallback_candidates(
         and tag_similarity(target, c) >= _FALLBACK_TAG_FLOOR
     ]
     return _rank(target, candidates, w_text=w_text, w_kw=w_kw, w_type=w_type, w_tag=w_tag, semantic=semantic,
-                 match="loose")
+                 match="loose", tag_floor=tag_floor)
 
 
 def _rank(
     target: dict, candidates: list[dict], *, w_text: float, w_kw: float, w_type: float, w_tag: float,
-    semantic: bool, match: str,
+    semantic: bool, match: str, tag_floor: float = 0.0,
 ) -> list[dict]:
-    """Score and sort already-filtered candidates by the blended similarity; tag each row's ``match``."""
+    """Score and sort already-filtered candidates; drop ones with no real function; tag each ``match``.
+
+    Quality gate (``tag_floor`` > 0): keep a candidate only if it shares a real function tag OR is
+    similar by the non-tag signal (embedding cosine under semantic, else near-duplicate text) — so a
+    same-stats card sharing only boilerplate is dropped, but no single signal is the sole judge.
+    """
     if not candidates:
         return []
     sims = _text_similarities(preprocess_oracle(target), [preprocess_oracle(c) for c in candidates], semantic=semantic)
+    text_floor = _SEMANTIC_FLOOR if semantic else _TEXT_TWIN_FLOOR
     target_role = role_of(target)
     rows = []
     for c, text_sim in zip(candidates, sims):
+        tg = tag_similarity(target, c)
+        if tg < tag_floor and text_sim < text_floor:  # weak on both signals -> not a real match
+            continue
         kw = keyword_jaccard(target, c)
         ty = type_jaccard(target, c)
-        tg = tag_similarity(target, c)
         rows.append(
             {
                 "candidate": c.get("name", ""),
@@ -634,6 +653,9 @@ def main() -> None:
     parser.add_argument("--top", type=int, default=3, help="Max candidates per target (default 3)")
     parser.add_argument("--min-score", type=float, default=0.0,
                         help="Drop matches below this score (e.g. 0.15); a target with none left is unmatched")
+    parser.add_argument("--min-tag", type=float, default=0.12,
+                        help="Quality gate: keep a match only if it shares a function tag this strongly OR is "
+                        "similar by embedding/text; 0 disables (default 0.12)")
     parser.add_argument("--print-list",
                         help="Write unmatched cube cards (no match >= --min-score) as a .txt decklist to proxy/print")
     parser.add_argument("--pt-delta", type=int, default=1, help="Allowed P/T difference for creatures (default 1)")
@@ -689,11 +711,12 @@ def main() -> None:
         weights = {"w_text": args.w_text, "w_kw": args.w_kw, "w_type": args.w_type, "w_tag": args.w_tag}
         rows = score_candidates(
             target, pool, pt_delta=args.pt_delta, cmc_delta=args.cmc_delta, semantic=args.semantic,
-            exclude_names=cube_names, **weights,
+            exclude_names=cube_names, tag_floor=args.min_tag, **weights,
         )
         if not rows:  # strict bucket empty -> loose, same-color + shared-tag fallback
             rows = fallback_candidates(
-                target, pool, cmc_delta=args.cmc_delta, semantic=args.semantic, exclude_names=cube_names, **weights,
+                target, pool, cmc_delta=args.cmc_delta, semantic=args.semantic, exclude_names=cube_names,
+                tag_floor=args.min_tag, **weights,
             )
         rows = [r for r in rows if r["score"] >= args.min_score][: args.top]  # drop junk below the floor
         results.append((name, common, rows))

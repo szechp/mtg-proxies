@@ -375,6 +375,35 @@ def test_fallback_empty_when_target_untagged(monkeypatch: pytest.MonkeyPatch) ->
     ) == []
 
 
+def test_quality_gate_keeps_tag_or_text_drops_junk(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Same bucket (mono-B instants, cmc 2). target shares a tag with one, near-dup text with another,
+    # nothing real with the third -> the third is dropped by the tag-or-text gate.
+    index = {"t": frozenset({"removal"}), "tagmate": frozenset({"removal"}), "other": frozenset({"draw"})}
+    _flat_idf(monkeypatch, index)
+    base = {"mana_cost": "{1}{B}", "cmc": 2.0, "colors": ["B"], "type_line": "Instant"}
+    target = _card("T", oracle_text="destroy target creature", **base) | {"oracle_id": "t"}
+    tagmate = _card("Tagmate", oracle_text="exile target creature", **base) | {"oracle_id": "tagmate"}
+    twin = _card("Twin", oracle_text="destroy target creature", **base) | {"oracle_id": "x"}  # no shared tag
+    junk = _card("Junk", oracle_text="scry then draw a card", **base) | {"oracle_id": "other"}
+    rows = swapfinder.score_candidates(
+        target, [tagmate, twin, junk], pt_delta=1, w_text=0.4, w_kw=0.1, w_type=0.1, w_tag=0.4, tag_floor=0.12,
+    )
+    names = {r["candidate"] for r in rows}
+    assert "Tagmate" in names      # kept via shared tag
+    assert "Twin" in names         # kept via near-duplicate text (text >= 0.7)
+    assert "Junk" not in names     # no shared tag, unrelated text -> dropped
+
+
+def test_quality_gate_off_by_default_keeps_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    index = {"t": frozenset({"removal"}), "other": frozenset({"draw"})}
+    _flat_idf(monkeypatch, index)
+    base = {"mana_cost": "{1}{B}", "cmc": 2.0, "colors": ["B"], "type_line": "Instant"}
+    target = _card("T", oracle_text="destroy target creature", **base) | {"oracle_id": "t"}
+    junk = _card("Junk", oracle_text="scry then draw a card", **base) | {"oracle_id": "other"}
+    rows = swapfinder.score_candidates(target, [junk], pt_delta=1, w_text=0.4, w_kw=0.1, w_type=0.1, w_tag=0.4)
+    assert [r["candidate"] for r in rows] == ["Junk"]  # tag_floor defaults 0 -> no gate
+
+
 def test_print_list_lines_lists_unmatched_targets() -> None:
     results = [
         ("Matched Card", {}, [{"candidate": "X", "score": 0.5}]),
