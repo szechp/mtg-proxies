@@ -12,6 +12,8 @@ Run:
     uv run python swapfinder.py --cube cube.txt --out swaps.csv
     # output format follows the extension: .csv = scored report, .txt = Archidekt import
     # (each suggestion tagged [target] so Archidekt groups them visually on import).
+    # --min-score sets a quality floor; --print-list writes the cube cards your bulk can't cover
+    # as a decklist to feed straight into `mtg-proxies print`.
 
 Stage 1 is a hard bucket filter (cmc, color set, colored-pip multiset, primary card type, and — for
 creatures — P/T within a delta). Stage 2 ranks survivors by a blend of: oracle-text similarity
@@ -569,6 +571,15 @@ def archidekt_lines(results: list[tuple[str, dict, list[dict]]]) -> list[str]:
     return [f"1x {card} [{','.join(cats)}]" for card, cats in categories.items()]
 
 
+def print_list_lines(results: list[tuple[str, dict, list[dict]]]) -> list[str]:
+    """Decklist lines (``1 Name``) for targets with no acceptable match — the cards to proxy/print.
+
+    A target is unmatched when its row list is empty (nothing survived the bucket/fallback and the
+    ``--min-score`` floor). The output is a plain decklist ready for ``mtg-proxies print``.
+    """
+    return [f"1 {name}" for name, _common, rows in results if not rows]
+
+
 def main() -> None:
     """Parse args, find swaps for every un-owned target, and write the report (CSV or Archidekt)."""
     parser = argparse.ArgumentParser("swapfinder", description="Find owned functional substitutes for missing cards.")
@@ -576,6 +587,10 @@ def main() -> None:
     parser.add_argument("--cube", required=True, help="Target/cube list as a .txt decklist")
     parser.add_argument("--out", required=True, help="Output: .csv = scored report, .txt = Archidekt import (grouped)")
     parser.add_argument("--top", type=int, default=3, help="Max candidates per target (default 3)")
+    parser.add_argument("--min-score", type=float, default=0.0,
+                        help="Drop matches below this score (e.g. 0.15); a target with none left is unmatched")
+    parser.add_argument("--print-list",
+                        help="Write unmatched cube cards (no match >= --min-score) as a .txt decklist to proxy/print")
     parser.add_argument("--pt-delta", type=int, default=1, help="Allowed P/T difference for creatures (default 1)")
     parser.add_argument("--cmc-delta", type=int, default=0, help="Allowed mana-value difference (default 0; try 1)")
     parser.add_argument("--restrict", action="store_true", help="Apply cube bans: tokens/shuffle/search/"
@@ -635,7 +650,8 @@ def main() -> None:
             rows = fallback_candidates(
                 target, pool, cmc_delta=args.cmc_delta, semantic=args.semantic, exclude_names=cube_names, **weights,
             )
-        results.append((name, common, rows[: args.top]))
+        rows = [r for r in rows if r["score"] >= args.min_score][: args.top]  # drop junk below the floor
+        results.append((name, common, rows))
 
     if Path(args.out).suffix.lower() == ".txt":
         lines = archidekt_lines(results)
@@ -651,6 +667,11 @@ def main() -> None:
                 for row in rows:
                     writer.writerow({**common, **row})
     print(f"Wrote {args.out}")
+
+    if args.print_list:
+        to_print = print_list_lines(results)
+        Path(args.print_list).write_text("\n".join(to_print) + ("\n" if to_print else ""), encoding="utf-8")
+        print(f"Wrote {len(to_print)} cards with no acceptable owned match to {args.print_list} (proxy these)")
 
 
 if __name__ == "__main__":

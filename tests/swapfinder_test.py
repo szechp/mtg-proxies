@@ -345,6 +345,15 @@ def test_fallback_empty_when_target_untagged(monkeypatch: pytest.MonkeyPatch) ->
     ) == []
 
 
+def test_print_list_lines_lists_unmatched_targets() -> None:
+    results = [
+        ("Matched Card", {}, [{"candidate": "X", "score": 0.5}]),
+        ("Unmatched One", {}, []),   # nothing survived bucket/fallback/min-score
+        ("Unmatched Two", {}, []),
+    ]
+    assert swapfinder.print_list_lines(results) == ["1 Unmatched One", "1 Unmatched Two"]
+
+
 def test_load_cards_uses_parse_decklist(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from mtg_proxies.decklists.decklist import Card, Comment, Decklist
 
