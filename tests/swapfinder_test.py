@@ -186,6 +186,14 @@ def test_role_of_clear_cases() -> None:
     assert swapfinder.role_of(_card("x", oracle_text="Draw two cards.")) == "draw"
 
 
+def test_is_meta_tag_filters_structural_noise() -> None:
+    for meta in ["evasion", "triggered-ability", "flavors-of-vanilla", "virtual-french-vanilla",
+                 "cycle", "cycle-eld-syr-legend"]:
+        assert swapfinder._is_meta_tag(meta), meta
+    for functional in ["removal", "flicker", "bounce", "rescue", "reanimate-creature", "mill"]:
+        assert not swapfinder._is_meta_tag(functional), functional
+
+
 def test_tag_jaccard_uses_function_tags(monkeypatch: pytest.MonkeyPatch) -> None:
     index = {
         "oid-konrad": frozenset({"death-trigger", "mill", "burn-player"}),

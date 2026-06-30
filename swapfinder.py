@@ -236,6 +236,23 @@ def type_jaccard(a: dict, b: dict) -> float:
     return len(ta & tb) / len(ta | tb)
 
 
+# Structural / flavor / too-broad tags that describe *how a card is written* rather than *what it
+# does*. Dropped from every card's tag set so they can't anchor a fallback or inflate tag scoring —
+# e.g. Flickerwisp (flicker) vs Exosuit Savior (bounce) shared only evasion/triggered-ability/vanilla.
+# Keywords like flying are already covered by keyword_jaccard, so "evasion" adds nothing here.
+_META_TAGS = frozenset({
+    "vanilla", "french-vanilla", "virtual-french-vanilla", "flavors-of-vanilla",
+    "triggered-ability", "activated-ability", "static-ability", "mana-ability",
+    "characteristic-defining-ability", "cda-subtype",
+    "evasion", "group-slug", "cycle", "color-break", "more-expensive-than-mv", "color-indicator",
+})
+
+
+def _is_meta_tag(slug: str) -> bool:
+    """Whether a tag is structural/flavor noise rather than a function (excluded from matching)."""
+    return slug in _META_TAGS or slug.startswith("cycle-")
+
+
 @cache
 def _oracle_tag_index() -> dict[str, frozenset[str]]:
     """Map ``oracle_id`` -> Scryfall function tags, each expanded to include its ancestor tags.
@@ -270,7 +287,9 @@ def _oracle_tag_index() -> dict[str, frozenset[str]]:
             oracle_id = tagging.get("oracle_id")
             if oracle_id:
                 index[oracle_id] |= expanded[t["id"]]
-    return {oracle_id: frozenset(slugs) for oracle_id, slugs in index.items()}
+    return {
+        oracle_id: frozenset(s for s in slugs if not _is_meta_tag(s)) for oracle_id, slugs in index.items()
+    }
 
 
 def card_tags(card: dict) -> frozenset[str]:
