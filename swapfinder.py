@@ -13,9 +13,10 @@ Run:
     # output format follows the extension: .csv = scored report, .txt = Archidekt import
     # (each suggestion tagged [target] so Archidekt groups them visually on import).
 
-Stage 1 is a hard bucket filter (cmc, color set, colored-pip multiset, card-type set, and — for
-creatures — P/T within a delta). Stage 2 ranks the survivors by oracle-text similarity (TF-IDF
-cosine, or sentence-transformer embeddings with ``--semantic``) blended with keyword Jaccard.
+Stage 1 is a hard bucket filter (cmc, color set, colored-pip multiset, primary card type, and — for
+creatures — P/T within a delta). Stage 2 ranks survivors by a blend of: oracle-text similarity
+(TF-IDF cosine, or sentence-transformer embeddings with ``--semantic``), keyword Jaccard, card-type
+Jaccard, and Scryfall function-tag Jaccard (the sharpest "does the same thing" signal).
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ import argparse
 import csv
 import re
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from functools import cache
 from operator import itemgetter
 from pathlib import Path
@@ -231,6 +232,61 @@ def type_jaccard(a: dict, b: dict) -> float:
     return len(ta & tb) / len(ta | tb)
 
 
+@cache
+def _oracle_tag_index() -> dict[str, frozenset[str]]:
+    """Map ``oracle_id`` -> Scryfall function tags, each expanded to include its ancestor tags.
+
+    Uses the ``oracle_tags`` bulk (same machinery as the project's art-style tags). Expanding to
+    ancestors (``parent_ids``) merges over-granular siblings — e.g. ``loot``/``rummage`` both roll up
+    to ``card-advantage``/``draw`` — so functionally-equivalent cards still overlap. Degrades to an
+    empty map (tag scoring becomes a no-op) if the bulk can't be fetched.
+    """
+    try:
+        from mtg_proxies.scryfall.scryfall import _get_database
+
+        tags = _get_database("oracle_tags")
+    except Exception as exc:
+        print(f"oracle_tags unavailable ({exc}); tag similarity disabled this run", file=sys.stderr)
+        return {}
+
+    id_to_slug = {t["id"]: t["slug"] for t in tags}
+    id_to_parents = {t["id"]: t.get("parent_ids", []) for t in tags}
+
+    def ancestors(tag_id: str, acc: set[str]) -> set[str]:
+        for parent in id_to_parents.get(tag_id, []):
+            if parent in id_to_slug and parent not in acc:
+                acc.add(parent)
+                ancestors(parent, acc)
+        return acc
+
+    expanded = {t["id"]: frozenset({t["slug"]} | {id_to_slug[a] for a in ancestors(t["id"], set())}) for t in tags}
+    index: dict[str, set[str]] = defaultdict(set)
+    for t in tags:
+        for tagging in t.get("taggings", ()):
+            oracle_id = tagging.get("oracle_id")
+            if oracle_id:
+                index[oracle_id] |= expanded[t["id"]]
+    return {oracle_id: frozenset(slugs) for oracle_id, slugs in index.items()}
+
+
+def card_tags(card: dict) -> frozenset[str]:
+    """Return function tags (with ancestors) for a card; empty if untagged or it has no oracle_id."""
+    oracle_id = card.get("oracle_id")
+    return _oracle_tag_index().get(oracle_id, frozenset()) if oracle_id else frozenset()
+
+
+def tag_jaccard(a: dict, b: dict) -> float:
+    """Jaccard over the two cards' Scryfall function tags — the sharpest "does the same thing" signal.
+
+    Konrad (death-trigger/mill) vs Geth (reanimator) barely overlap; Doom Blade vs Cast Down nearly
+    coincide. 0 if either card is untagged (Tagger coverage is partial), so it only ever adds signal.
+    """
+    ta, tb = card_tags(a), card_tags(b)
+    if not ta and not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
 def _full_text(card: dict) -> str:
     """Lowercased full oracle text (all faces, reminder text kept) — mirrors Scryfall ``fo:``."""
     faces = card.get("card_faces") or []
@@ -374,6 +430,7 @@ def score_candidates(
     w_text: float,
     w_kw: float,
     w_type: float,
+    w_tag: float = 0.0,
     cmc_delta: int = 0,
     semantic: bool = False,
     exclude_names: frozenset[str] = frozenset(),
@@ -387,6 +444,7 @@ def score_candidates(
         w_text: Weight on oracle-text cosine similarity.
         w_kw: Weight on keyword Jaccard similarity.
         w_type: Weight on card-type Jaccard (carries vanilla/textless cards).
+        w_tag: Weight on Scryfall function-tag Jaccard (the sharpest function signal).
         cmc_delta: Allowed mana-value difference (0 = exact).
         semantic: Use sentence-transformer embeddings instead of TF-IDF for text similarity.
         exclude_names: Canonical names never to suggest (e.g. the other cube cards, so a card
@@ -410,13 +468,15 @@ def score_candidates(
     for c, text_sim in zip(candidates, sims):
         kw = keyword_jaccard(target, c)
         ty = type_jaccard(target, c)
+        tg = tag_jaccard(target, c)
         rows.append(
             {
                 "candidate": c.get("name", ""),
-                "score": round(w_text * text_sim + w_kw * kw + w_type * ty, 4),
+                "score": round(w_text * text_sim + w_kw * kw + w_type * ty + w_tag * tg, 4),
                 "text_sim": round(text_sim, 4),
                 "keyword_sim": round(kw, 4),
                 "type_sim": round(ty, 4),
+                "tag_sim": round(tg, 4),
                 "same_role": role_of(c) == target_role,
             }
         )
@@ -425,7 +485,8 @@ def score_candidates(
 
 
 _FIELDNAMES = [
-    "target", "candidate", "score", "text_sim", "keyword_sim", "type_sim", "same_role", "target_cmc", "target_type",
+    "target", "candidate", "score", "text_sim", "keyword_sim", "type_sim", "tag_sim",
+    "same_role", "target_cmc", "target_type",
 ]
 
 
@@ -473,9 +534,10 @@ def main() -> None:
                         help="Drop candidates above this rarity (e.g. uncommon for an r<r cube)")
     parser.add_argument("--exclude-text", default="", help='Extra banned oracle substrings, e.g. "dice,stun counter"')
     parser.add_argument("--semantic", action="store_true", help="Use sentence-transformer embeddings for text sim")
-    parser.add_argument("--w-text", type=float, default=0.6, help="Weight on text similarity (default 0.6)")
-    parser.add_argument("--w-kw", type=float, default=0.2, help="Weight on keyword similarity (default 0.2)")
-    parser.add_argument("--w-type", type=float, default=0.2, help="Weight on card-type similarity (default 0.2)")
+    parser.add_argument("--w-text", type=float, default=0.4, help="Weight on text similarity (default 0.4)")
+    parser.add_argument("--w-kw", type=float, default=0.1, help="Weight on keyword similarity (default 0.1)")
+    parser.add_argument("--w-type", type=float, default=0.1, help="Weight on card-type similarity (default 0.1)")
+    parser.add_argument("--w-tag", type=float, default=0.4, help="Weight on Scryfall function-tag similarity (def 0.4)")
     args = parser.parse_args()
 
     cube = load_cards(args.cube)
@@ -521,6 +583,7 @@ def main() -> None:
             w_text=args.w_text,
             w_kw=args.w_kw,
             w_type=args.w_type,
+            w_tag=args.w_tag,
             cmc_delta=args.cmc_delta,
             semantic=args.semantic,
             exclude_names=cube_names,

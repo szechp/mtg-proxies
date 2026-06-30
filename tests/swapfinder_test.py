@@ -186,6 +186,21 @@ def test_role_of_clear_cases() -> None:
     assert swapfinder.role_of(_card("x", oracle_text="Draw two cards.")) == "draw"
 
 
+def test_tag_jaccard_uses_function_tags(monkeypatch: pytest.MonkeyPatch) -> None:
+    index = {
+        "oid-konrad": frozenset({"death-trigger", "mill", "burn-player"}),
+        "oid-geth": frozenset({"reanimate-creature", "mill", "theft-creature"}),
+        "oid-castdown": frozenset({"removal", "spot-removal"}),
+        "oid-doomblade": frozenset({"removal", "spot-removal", "doom-blade"}),
+    }
+    monkeypatch.setattr(swapfinder, "_oracle_tag_index", lambda: index)
+    konrad = {"oracle_id": "oid-konrad"}
+    geth = {"oracle_id": "oid-geth"}
+    assert swapfinder.tag_jaccard(konrad, geth) == pytest.approx(1 / 5)  # share only "mill"
+    assert swapfinder.tag_jaccard({"oracle_id": "oid-doomblade"}, {"oracle_id": "oid-castdown"}) == pytest.approx(2 / 3)
+    assert swapfinder.tag_jaccard({"name": "untagged"}, konrad) == pytest.approx(0.0)  # no oracle_id
+
+
 def test_type_jaccard_supertype_overlap() -> None:
     arti = _card("a", type_line="Artifact Creature — Construct")
     plain = _card("b", type_line="Creature — Beast")
