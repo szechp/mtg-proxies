@@ -444,12 +444,34 @@ def is_payoff(card: dict, lanes: dict[str, float]) -> bool:
 
 
 def best_lane_label(card: dict, lanes: dict[str, float]) -> str:
-    """Human-readable name of the strongest lane this card serves (for Archidekt grouping)."""
+    """Human-readable name of the strongest lane this card serves (for summaries)."""
     hits = [(w, s) for s in card_signals(card) if (w := lanes.get(s, 0.0)) > 0]
     if not hits:
         return ""
     _w, sig = max(hits)
     return sig.split(":", 1)[-1].replace("-", " ").title()
+
+
+_MAX_MECH_LANES = 3  # cap mechanical lane categories per card so a cantrip doesn't spam 7 near-dupes
+
+
+def card_categories(card: dict, lanes: dict[str, float]) -> list[str]:
+    """Return all lane categories a card belongs to (for Archidekt grouping).
+
+    Every tribe it's in plus its top mechanical lanes, so e.g. a Faerie that also exiles itself shows
+    under both Faerie and Exile Self. Falls back to the card's color when it serves no lane.
+    """
+    hits = [(w, s) for s in card_signals(card) if (w := lanes.get(s, 0.0)) > 0]
+    if not hits:
+        return [_color_key(card)]
+    tribes = [s for _w, s in hits if s.startswith("subtype:")]
+    mech = [s for _w, s in sorted(hits, reverse=True) if not s.startswith("subtype:")][:_MAX_MECH_LANES]
+    out: list[str] = []
+    for sig in tribes + mech:
+        label = sig.split(":", 1)[-1].replace("-", " ").title()
+        if label not in out:
+            out.append(label)
+    return out
 
 
 def _color_key(card: dict) -> str:
@@ -485,7 +507,8 @@ def _entry(card: dict, status: str, lanes: dict[str, float]) -> dict:
     return {
         "name": card.get("name", ""),
         "status": status,  # owned | fill | trim | upgrade-in | upgrade-out
-        "lane": best_lane_label(card, lanes) or (_color_key(card)),
+        "cats": card_categories(card, lanes),  # all lane categories (tribes + top mechanical lanes)
+        "lane": best_lane_label(card, lanes) or _color_key(card),  # single label, for summaries
         "payoff": is_payoff(card, lanes),
     }
 
@@ -538,13 +561,27 @@ def reconcile_cube(
         cands = sorted(pool_by.get(bucket, []), key=fit, reverse=True)
 
         if len(have) >= target:
-            keep = have[:target] if do_trim else have
-            cut = have[target:] if do_trim else []
-            # optional replace: swap the weakest kept card for a much better on-theme pool card
-            if do_replace and in_scope and keep and cands and fit(cands[0]) - fit(keep[-1]) >= replace_margin:
-                entries += [_entry(keep[-1], "upgrade-out", lanes), _entry(cands[0], "upgrade-in", lanes)]
-                keep = keep[:-1]
+            keep = list(have[:target] if do_trim else have)
+            cut = list(have[target:] if do_trim else [])
+            ups_out: list[dict] = []
+            ups_in: list[dict] = []
+            # optional replace (cube-wide, any color you've built): greedily swap the weakest kept
+            # cards for much-better on-theme pool cards. Both lists are fit-sorted, so once the best
+            # remaining pool card can't beat the weakest kept by the margin, none can — stop.
+            if do_replace:
+                ci = 0
+                for ki in range(len(keep) - 1, -1, -1):
+                    if ci < len(cands) and fit(cands[ci]) - fit(keep[ki]) >= replace_margin:
+                        ups_out.append(keep[ki])
+                        ups_in.append(cands[ci])
+                        keep[ki] = None  # type: ignore[call-overload]
+                        ci += 1
+                    else:
+                        break
+                keep = [c for c in keep if c is not None]
             entries += [_entry(c, "owned", lanes) for c in keep]
+            entries += [_entry(c, "upgrade-out", lanes) for c in ups_out]
+            entries += [_entry(c, "upgrade-in", lanes) for c in ups_in]
             entries += [_entry(c, "trim", lanes) for c in cut]
         else:
             entries += [_entry(c, "owned", lanes) for c in have]
@@ -569,7 +606,7 @@ def completion_lines(entries: list[dict]) -> list[str]:
     """
     lines: list[str] = []
     for e in entries:
-        cats = [e["lane"] or "Other"]
+        cats = list(e["cats"])  # all lane categories the card belongs to
         if e["payoff"] and e["status"] in ("owned", "fill", "upgrade-in"):
             cats.append("Payoff")
         if e["status"] == "trim":
@@ -961,7 +998,7 @@ def _run_completion(args: argparse.Namespace) -> None:
     entries, print_names = reconcile_cube(
         extend, pool, blueprint, lanes,
         fill_letters=fill_letters, include_colorless=include_colorless,
-        do_trim=args.trim, do_replace=args.replace,
+        do_trim=args.trim, do_replace=args.replace, replace_margin=args.replace_margin,
     )
     counts = Counter(e["status"] for e in entries)
     print(f"\n{counts.get('fill', 0)} filled · {counts.get('owned', 0)} kept · "
@@ -1012,6 +1049,9 @@ def main() -> None:
                         help="Completion mode: also swap a weak existing card for a much better on-theme one")
     parser.add_argument("--trim", action="store_true",
                         help="Completion mode: cut over-count buckets down to blueprint size (reported)")
+    parser.add_argument("--replace-margin", type=float, default=40.0,
+                        help="How much better (theme-fit) a bulk card must be to replace a kept one "
+                        "(default 40; lower = more churn toward the dominant lane)")
     args = parser.parse_args()
 
     if args.extend:

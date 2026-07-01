@@ -551,3 +551,18 @@ def test_reconcile_trim_cuts_overcount_lowest_fit(monkeypatch: pytest.MonkeyPatc
     trimmed = {e["name"] for e in entries if e["status"] == "trim"}
     assert kept == {"Keeper"}  # highest theme-fit kept
     assert trimmed == {"Cuttable"}  # lowest theme-fit trimmed to hit target
+
+
+def test_reconcile_replace_upgrades_any_color_not_just_fill_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A built color (W) at target: --replace should still swap a weak card for a much better on-theme
+    # one, even though we're only *filling* green. (Regression: replace was gated to fill colors.)
+    _stub_lane_index(monkeypatch, {"weak": frozenset({"burn-player"}), "strong": frozenset({"mill-self"})})
+    lanes = {"mill-self": 40.0}
+    blueprint = [_card("bp", colors=["W"], cmc=2.0, type_line="Creature — Cat")]  # 1 W/2/Creature slot
+    weak = _card("Weak Kept", colors=["W"], cmc=2.0, type_line="Creature — Cat") | {"oracle_id": "weak"}
+    strong = _card("Strong Bulk", colors=["W"], cmc=2.0, type_line="Creature — Cat") | {"oracle_id": "strong"}
+    entries, _ = swapfinder.reconcile_cube(
+        [weak], [strong], blueprint, lanes, fill_letters={"G"}, include_colorless=False,
+        do_replace=True, replace_margin=8.0)
+    assert {e["name"] for e in entries if e["status"] == "upgrade-in"} == {"Strong Bulk"}
+    assert {e["name"] for e in entries if e["status"] == "upgrade-out"} == {"Weak Kept"}
