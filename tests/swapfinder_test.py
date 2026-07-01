@@ -614,3 +614,16 @@ def test_is_changeling_detection_paths() -> None:
     assert swapfinder.is_changeling(_card("A", keywords=["Changeling"]))  # keyword
     assert swapfinder.is_changeling(_card("B", oracle_text="Changeling (This card is every creature type.)"))
     assert not swapfinder.is_changeling(_card("C", oracle_text="Flying", keywords=["Flying"]))
+
+
+def test_reconcile_trim_cuts_themeless_drift_keeps_ontheme_signposts(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Drifted cards (bucket not in blueprint): with --trim, keep ones that serve a lane, cut themeless.
+    _stub_lane_index(monkeypatch, {"good": frozenset({"mill-self"}), "bad": frozenset({"burn-player"})})
+    lanes = {"mill-self": 40.0}  # only mill-self is a lane
+    blueprint = [_card("bp", colors=["R"], cmc=1.0, type_line="Instant")]
+    ontheme = _card("On-Theme Gold", colors=["B", "G"], cmc=3.0, type_line="Creature — Elf") | {"oracle_id": "good"}
+    themeless = _card("Dead Gold", colors=["B", "R"], cmc=4.0, type_line="Creature — Zombie") | {"oracle_id": "bad"}
+    entries, _p = swapfinder.reconcile_cube(
+        [ontheme, themeless], [], blueprint, lanes, fill_letters={"R"}, include_colorless=False, do_trim=True)
+    assert {e["name"] for e in entries if e["status"] == "owned"} == {"On-Theme Gold"}
+    assert {e["name"] for e in entries if e["status"] == "trim"} == {"Dead Gold"}

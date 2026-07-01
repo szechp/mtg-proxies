@@ -676,9 +676,15 @@ def reconcile_cube(
         have = sorted(extend_by.get(bucket, []), key=fit, reverse=True)
         cands = sorted(pool_by.get(bucket, []), key=fit, reverse=True)
 
-        # keep vs trim: only trim a blueprint bucket that's over its target (opt-in). Buckets with no
-        # blueprint slot (target 0) are the cube's own drift — always kept, never trimmed to nothing.
-        if do_trim and target > 0 and len(have) > target:
+        # keep vs trim (opt-in):
+        # - blueprint bucket over target -> trim the lowest-theme-fit excess down to the target;
+        # - drifted bucket (no blueprint slot) -> keep cards that serve a lane, cut the themeless ones
+        #   (a signpost that matches no archetype at all is dead weight);
+        # - otherwise keep everything.
+        if do_trim and target == 0:
+            keep = [c for c in have if fit(c) > 0]
+            cut = [c for c in have if fit(c) <= 0]
+        elif do_trim and target > 0 and len(have) > target:
             keep, cut = list(have[:target]), list(have[target:])
         else:
             keep, cut = list(have), []
