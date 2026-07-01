@@ -120,9 +120,9 @@ def primary_type(card: dict) -> str:
 
 
 def type_class(card: dict) -> str:
-    """Broad role class used to keep the loose tier sane: instants/sorceries are one "spell" class,
-    creatures are one class, other permanents stay by their own type. So a sorcery can loosely match
-    an instant, but never an enchantment or a creature.
+    """Broad role class for the loose tier: instants/sorceries collapse to "spell", else primary type.
+
+    So a sorcery can loosely match an instant, but never an enchantment or a creature.
     """
     pt = primary_type(card)
     return "spell" if pt in {"Instant", "Sorcery"} else pt
@@ -554,13 +554,11 @@ def fallback_candidates(
     exclude_names: frozenset[str] = frozenset(),
     tag_floor: float = 0.0,
 ) -> list[dict]:
-    """Loose tier used only when the strict bucket is empty: same colors + type class, within
-    ``cmc_delta``, shared tag.
+    """Loose tier (strict bucket empty): same colors + type class, within ``cmc_delta``, sharing a tag.
 
-    Drops the pip/P-T constraints and merges instant/sorcery, but keeps the broad type class (a spell
-    never matches a permanent, a creature never matches a noncreature) to surface "the closest thing
-    in the pool that does the same job" when no exact-stat twin exists. Returns nothing if the target
-    is untagged. Rows are flagged ``match="loose"``.
+    Drops pip/P-T and merges instant/sorcery, but keeps the broad type class (a spell never matches a
+    permanent, a creature never a noncreature) to surface "the closest thing that does the same job"
+    when no exact-stat twin exists. Returns nothing if the target is untagged; rows flagged loose.
     """
     skip = {_canonic(target.get("name", ""))} | exclude_names
     target_colors = card_colors(target)

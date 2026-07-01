@@ -363,8 +363,7 @@ def test_fallback_same_color_shared_tag_within_cmc(monkeypatch: pytest.MonkeyPat
     }
     _flat_idf(monkeypatch, index)
     target = _card("T", mana_cost="{1}{B}", cmc=2.0, colors=["B"], type_line="Instant") | {"oracle_id": "t"}
-    ok = _card("OK", mana_cost="{1}{B}{B}", cmc=3.0, colors=["B"], type_line="Creature — Bear",
-               power="2", toughness="2") | {"oracle_id": "ok"}           # cmc 3, within delta 1
+    ok = _card("OK", mana_cost="{2}{B}", cmc=3.0, colors=["B"], type_line="Sorcery") | {"oracle_id": "ok"}  # spell
     offcolor = _card("Off", mana_cost="{1}{W}", cmc=2.0, colors=["W"], type_line="Instant") | {"oracle_id": "offcolor"}
     notag = _card("NoTag", mana_cost="{1}{B}", cmc=2.0, colors=["B"], type_line="Instant") | {"oracle_id": "notag"}
     rows = swapfinder.fallback_candidates(
