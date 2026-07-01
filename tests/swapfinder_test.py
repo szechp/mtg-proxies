@@ -457,10 +457,30 @@ def test_print_list_lines_lists_unmatched_targets() -> None:
 def test_load_cards_uses_parse_decklist(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from mtg_proxies.decklists.decklist import Card, Comment, Decklist
 
+    owned = tmp_path / "owned.txt"
+    owned.write_text("1 Doom Blade\n# a comment\n2 Cancel\n")
     dl = Decklist([Card(1, {"name": "Doom Blade"}), Comment("# a comment"), Card(2, {"name": "Cancel"})])
     monkeypatch.setattr("mtg_proxies.decklists.parse_decklist", lambda _p: (dl, True, []))
-    cards = swapfinder.load_cards(tmp_path / "owned.txt")
+    cards = swapfinder.load_cards(owned)
     assert [c["name"] for c in cards] == ["Doom Blade", "Cancel"]
+
+
+def test_load_cards_strips_incomplete_set_trailer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # "(ECL)" with no collector number must not drop the card — the trailer is stripped before parsing.
+    from mtg_proxies.decklists.decklist import Card, Decklist
+
+    seen: dict[str, str] = {}
+
+    def fake_parse(p: str) -> tuple:
+        seen["text"] = Path(p).read_text()
+        return Decklist([Card(1, {"name": "Chomping Changeling"})]), True, []
+
+    owned = tmp_path / "bulk.txt"
+    owned.write_text("1 Chomping Changeling (ECL)\n")
+    monkeypatch.setattr("mtg_proxies.decklists.parse_decklist", fake_parse)
+    swapfinder.load_cards(owned)
+    assert "(ECL)" not in seen["text"]  # the incomplete set trailer was stripped before parsing
+    assert "Chomping Changeling" in seen["text"]
 
 
 # --- completion mode -------------------------------------------------------------------------------

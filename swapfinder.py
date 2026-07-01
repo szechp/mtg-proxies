@@ -59,8 +59,17 @@ def _canonic(name: str) -> str:
     return canonic_card_name(name)
 
 
+# A trailing set code with NO collector number, e.g. "1 Chomping Changeling (ECL)". parse_decklist
+# expects "(SET) collector" and drops the card otherwise. swapfinder only needs card identity (not the
+# printing), so we strip such incomplete trailers and resolve by name.
+_INCOMPLETE_SET_RE = re.compile(r"\s*\([A-Za-z0-9]{2,6}\)\s*(\*[A-Za-z]+\*)?\s*$")
+
+
 def load_cards(path: str | Path) -> list[dict]:
     """Load a ``.txt`` decklist and return the resolved Scryfall card dicts.
+
+    Robust to bulk-export lines that carry a set code but no collector number (which parse_decklist
+    would otherwise drop): those trailers are stripped so the card resolves by name.
 
     Args:
         path: Path to a text/Arena decklist (counts and comments are ignored here).
@@ -68,10 +77,20 @@ def load_cards(path: str | Path) -> list[dict]:
     Returns:
         One Scryfall card dict per card line, in file order.
     """
+    import tempfile
+
     from mtg_proxies.decklists import parse_decklist
 
-    decklist, _ok, _warnings = parse_decklist(path)
-    return [c.card for c in decklist.cards]
+    with open(path, encoding="utf-8-sig") as f:
+        cleaned = [_INCOMPLETE_SET_RE.sub("", line.rstrip("\n")) for line in f]
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as tf:
+        tf.write("\n".join(cleaned))
+        tmp = tf.name
+    try:
+        decklist, _ok, _warnings = parse_decklist(tmp)
+        return [c.card for c in decklist.cards]
+    finally:
+        Path(tmp).unlink(missing_ok=True)
 
 
 # Scryfall layouts that aren't real deck cards — excluded from the all-cards candidate pool.
