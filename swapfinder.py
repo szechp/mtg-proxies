@@ -16,12 +16,14 @@ Run:
     # as a decklist to feed straight into `mtg-proxies print`.
 
     # Completion mode (fast, tag-based, no GPU/--semantic needed): finish a half-built cube from bulk
-    # by its own emergent lanes, using another cube only as a balance blueprint:
+    # by its own emergent lanes, matching another cube's color distribution as a blueprint:
     #   uv run python swapfinder.py --extend mycube.txt --cube blueprint.txt --owned bulk.txt \
-    #       --fill-colors R,G,C --restrict --max-rarity uncommon --out done.txt --print-list toproof.txt
-    # It auto-derives the cube's lanes (tags/tribes/keywords), fills the missing colors' blueprint
-    # slots with the best on-theme bulk cards (payoffs surfaced), and optionally --trim over-count
-    # buckets / --replace weak cards. It PROPOSES a shortlist; final cube-design taste is still yours.
+    #       --restrict --out done.txt --print-list toproxy.txt
+    # One operation, no knobs: it auto-derives the cube's lanes (tags/tribes/keywords) and, for every
+    # blueprint bucket, picks the best-theme-fit cards from your cube + bulk combined (ties keep cards
+    # you own; better bulk cards replace weak ones; excess is trimmed) so the result has the
+    # blueprint's exact per-color counts. Gold signposts = best on-theme multis up to the gold count.
+    # Changelings reinforce any tribe. --restrict applies cube bans. It PROPOSES a cube; taste is yours.
 
 Stage 1 is a hard bucket filter (cmc, color set, colored-pip multiset, primary card type, and — for
 creatures — P/T within a delta). Stage 2 ranks survivors by a blend of: oracle-text similarity
@@ -609,18 +611,11 @@ def blueprint_buckets(blueprint: list[dict]) -> Counter[tuple[str, str, str]]:
     return Counter(card_bucket(c) for c in blueprint)
 
 
-def _in_fill_scope(color_key: str, fill_letters: set[str], include_colorless: bool) -> bool:
-    """Whether a color bucket is one we're filling (all its colors requested, or colorless if asked)."""
-    if color_key == "C":
-        return include_colorless
-    return set(color_key) <= fill_letters
-
-
 def _entry(card: dict, status: str, lanes: dict[str, float]) -> dict:
     """Build a completion result row for one card."""
     return {
         "name": card.get("name", ""),
-        "status": status,  # owned | fill | trim | upgrade-in | upgrade-out
+        "status": status,  # owned | fill | trim | signpost
         "cats": card_categories(card, lanes),  # all lane categories (tribes + top mechanical lanes)
         "lane": best_lane_label(card, lanes) or _color_key(card),  # single label, for summaries
         "payoff": is_payoff(card, lanes),
@@ -632,149 +627,104 @@ def reconcile_cube(
     pool: list[dict],
     blueprint: list[dict],
     lanes: dict[str, float],
-    *,
-    fill_letters: set[str],
-    include_colorless: bool,
-    do_trim: bool = False,
-    do_replace: bool = False,
-    replace_margin: float = 8.0,
 ) -> tuple[list[dict], list[str]]:
-    """Reconcile the half-built cube to the blueprint's balance skeleton, choosing cards by theme-fit.
+    """Build the best cube that matches the blueprint's color distribution, from cube + bulk.
 
-    Per (color, cmc-band, role) bucket: fill under-count from the pool (best theme-fit), trim over-count
-    (lowest theme-fit, opt-in), and optionally replace a weak kept card with a materially better pool
-    card. Unfillable in-scope slots fall back to the blueprint's own card for that slot (proxy it).
+    One operation, no flags. For each MONO/colorless blueprint bucket (color, cmc-band, role) the
+    ``target`` best-theme-fit cards are chosen from your cube and bulk combined (ties prefer cards you
+    already own); cube cards not chosen are removed. GOLD (multicolor) signposts are chosen as the best
+    on-theme multis up to the blueprint's total gold count. The result therefore has exactly the
+    blueprint's per-color counts — no color can overshoot up or down.
 
-    Returns (entries, print_names) — entries are result rows; print_names are cards to proxy.
+    Statuses: ``owned`` (kept from your cube), ``fill`` (added from bulk), ``signpost`` (added gold),
+    ``trim`` (removed from your cube). Returns (entries, print_names) — print_names are mono/colorless
+    slots no card could fill, to proxy from the blueprint.
     """
     def fit(c: dict) -> float:
         return theme_fit(c, lanes)
 
+    def canon(c: dict) -> str:
+        return _canonic(c.get("name", ""))
+
     targets = blueprint_buckets(blueprint)
-    extend_by: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
-    for c in extend:
-        extend_by[card_bucket(c)].append(c)
+    exclude = {canon(c) for c in extend}
     bp_by: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
     for c in blueprint:
         bp_by[card_bucket(c)].append(c)
-    exclude = {_canonic(c.get("name", "")) for c in extend}
+    extend_by: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+    for c in extend:
+        extend_by[card_bucket(c)].append(c)
     pool_by: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
-    seen: set[str] = set()  # dedupe the pool by name — singleton cube, one copy per card
+    pseen: set[str] = set()
     for c in pool:
-        key = _canonic(c.get("name", ""))
-        if key not in exclude and key not in seen:
-            seen.add(key)
+        k = canon(c)
+        if k not in exclude and k not in pseen:  # dedupe bulk; never re-add a card you own
+            pseen.add(k)
             pool_by[card_bucket(c)].append(c)
+
+    def pick_best(cands: list[dict], target: int) -> list[dict]:
+        # stable sort by fit desc; cands are passed extend-first so ties keep cards you already own
+        return sorted(cands, key=fit, reverse=True)[:target]
 
     entries: list[dict] = []
     print_names: list[str] = []
-    # Iterate every bucket the cube OR the blueprint touches — so a drifted card in a bucket the
-    # blueprint lacks (your gold signposts) is kept, never silently dropped.
-    for bucket in set(targets) | set(extend_by):
-        target = targets.get(bucket, 0)
-        in_scope = _in_fill_scope(bucket[0], fill_letters, include_colorless)
-        have = sorted(extend_by.get(bucket, []), key=fit, reverse=True)
-        cands = sorted(pool_by.get(bucket, []), key=fit, reverse=True)
+    mono_targets = {b: t for b, t in targets.items() if len(b[0]) <= 1}  # mono + colorless (gold done below)
 
-        # keep vs trim (opt-in):
-        # - blueprint bucket over target -> trim the lowest-theme-fit excess down to the target;
-        # - drifted bucket (no blueprint slot) -> keep cards that serve a lane, cut the themeless ones
-        #   (a signpost that matches no archetype at all is dead weight);
-        # - otherwise keep everything.
-        if do_trim and target == 0:
-            keep = [c for c in have if fit(c) > 0]
-            cut = [c for c in have if fit(c) <= 0]
-        elif do_trim and target > 0 and len(have) > target:
-            keep, cut = list(have[:target]), list(have[target:])
-        else:
-            keep, cut = list(have), []
+    for bucket, target in mono_targets.items():
+        have = extend_by.get(bucket, [])
+        picked = pick_best(have + pool_by.get(bucket, []), target)
+        pickset = {canon(c) for c in picked}
+        havenames = {canon(c) for c in have}
+        entries += [_entry(c, "owned" if canon(c) in havenames else "fill", lanes) for c in picked]
+        entries += [_entry(c, "trim", lanes) for c in have if canon(c) not in pickset]
+        short = target - len(picked)
+        print_names.extend(bp_card.get("name", "") for bp_card in bp_by.get(bucket, [])[:short])
 
-        # optional replace (cube-wide): greedily swap the weakest kept cards for much-better on-theme
-        # pool cards. Both lists are fit-sorted, so once the best remaining can't beat the weakest, stop.
-        ups_out: list[dict] = []
-        ups_in: list[dict] = []
-        ci = 0
-        if do_replace:
-            for ki in range(len(keep) - 1, -1, -1):
-                if ci < len(cands) and fit(cands[ci]) - fit(keep[ki]) >= replace_margin:
-                    ups_out.append(keep[ki])
-                    ups_in.append(cands[ci])
-                    keep[ki] = None  # type: ignore[call-overload]
-                    ci += 1
-                else:
-                    break
-            keep = [c for c in keep if c is not None]
+    # cube cards in mono/colorless buckets the blueprint doesn't have are off-shape -> removed
+    for c in extend:
+        if len(_color_key(c)) <= 1 and card_bucket(c) not in targets:
+            entries.append(_entry(c, "trim", lanes))
 
-        entries += [_entry(c, "owned", lanes) for c in keep]
-        entries += [_entry(c, "upgrade-out", lanes) for c in ups_out]
-        entries += [_entry(c, "upgrade-in", lanes) for c in ups_in]
-        entries += [_entry(c, "trim", lanes) for c in cut]
-
-        # fill an under-count blueprint bucket in a color we're filling
-        need = target - len(have)
-        if need > 0 and in_scope:
-            on_theme = [c for c in cands[ci:] if fit(c) > 0]  # skip cands consumed by replace; on-theme only
-            fills = on_theme[:need]
-            entries += [_entry(c, "fill", lanes) for c in fills]
-            short = need - len(fills)
-            # unfilled MONO/colorless slots fall back to proxying the blueprint card (you need those).
-            # unfilled MULTICOLOR (gold) slots are signposts — don't proxy an off-theme blueprint gold
-            # card; a signpost with no on-theme option is simply skipped.
-            if len(bucket[0]) <= 1:
-                print_names.extend(bp_card.get("name", "") for bp_card in bp_by.get(bucket, [])[:short])
-    return entries, print_names
-
-
-def signpost_candidates(
-    pool: list[dict], lanes: dict[str, float], exclude_names: set[str], *, count: int
-) -> list[dict]:
-    """Pick the top multicolor bulk cards that match the cube's lanes/tribes — archetype signposts.
-
-    A signpost is a gold card (2+ colors, 3+ fine) that actually carries a lane or tribe (theme_fit > 0),
-    so it glues two archetypes together. Ranked by theme-fit, deduped by name, excluding cards already
-    in the cube/output. Returns up to ``count`` cards.
-    """
-    seen: set[str] = set()
-    out: list[dict] = []
-    ranked = sorted(
-        (c for c in pool if len(card_colors(c)) >= 2 and theme_fit(c, lanes) > 0),
-        key=lambda c: theme_fit(c, lanes),
-        reverse=True,
+    # GOLD signposts: best on-theme multis (from cube + bulk) up to the blueprint's gold total.
+    gold_target = sum(t for b, t in targets.items() if len(b[0]) >= 2)
+    gold_have = [c for c in extend if len(card_colors(c)) >= 2]
+    gold_pool = list(
+        {canon(c): c for c in pool if len(card_colors(c)) >= 2 and canon(c) not in exclude}.values()
     )
-    for c in ranked:
-        key = _canonic(c.get("name", ""))
-        if key in exclude_names or key in seen:
-            continue
-        seen.add(key)
-        out.append(c)
-        if len(out) >= count:
-            break
-    return out
+    gold_cands = [c for c in gold_have + gold_pool if fit(c) > 0]  # off-theme gold is dropped
+    gold_picked = pick_best(gold_cands, gold_target)
+    goldset = {canon(c) for c in gold_picked}
+    gold_havenames = {canon(c) for c in gold_have}
+    entries += [_entry(c, "owned" if canon(c) in gold_havenames else "signpost", lanes) for c in gold_picked]
+    entries += [_entry(c, "trim", lanes) for c in gold_have if canon(c) not in goldset]
+    return entries, print_names
 
 
 def completion_lines(entries: list[dict]) -> list[str]:
     """Archidekt import lines for a completed cube: each card grouped by its lane (+ status flags).
 
-    Categories: the card's lane (or color), plus ``Payoff`` for payoffs, ``Cut`` for trims, and
-    ``Upgrade`` for replacement in/out — so grouping by Category in Archidekt shows the whole plan.
+    Only the FINAL cube is emitted (kept + fills + signposts + upgrade-ins); trimmed and upgraded-out
+    cards are removals, not part of the cube, so they're excluded (see ``removed_lines``). Categories
+    tag Payoff / Upgrade / Signpost so grouping by Category in Archidekt shows the plan.
     """
     lines: list[str] = []
     for e in entries:
-        cats = list(e["cats"])  # all lane categories the card belongs to
-        if e["payoff"] and e["status"] in ("owned", "fill", "upgrade-in", "signpost"):
-            cats.append("Payoff")
         if e["status"] == "trim":
-            cats = ["Cut"]
-        elif e["status"] == "upgrade-out":
-            cats = ["Cut", "Upgrade"]
-        elif e["status"] == "upgrade-in":
-            cats.append("Upgrade")
-        elif e["status"] == "signpost":
+            continue  # a removal, not part of the finished cube
+        cats = list(e["cats"])  # all lane categories the card belongs to
+        if e["payoff"]:
+            cats.append("Payoff")
+        if e["status"] == "signpost":
             cats.append("Signpost")
         # keep the card name verbatim (commas in names like "Sephara, Sky's Blade" are valid); only
         # the category labels must be comma-free, and they already are (title-cased slugs).
         lines.append(f"1x {e['name']} [{','.join(cats)}]")
     return lines
+
+
+def removed_lines(entries: list[dict]) -> list[str]:
+    """Names of cards to pull from the existing cube (not chosen for any blueprint slot)."""
+    return [e["name"] for e in entries if e["status"] == "trim"]
 
 
 # Minimum IDF-weighted tag similarity to be considered a function match at all. Kept low (0.12) on
@@ -1136,42 +1086,24 @@ def _run_completion(args: argparse.Namespace) -> None:
         ]
 
     lanes = derive_lanes(extend)
-    print("Derived lanes (sanity-check before trusting fills):")
+    print("Derived lanes (sanity-check):")
     for sig, w in sorted(lanes.items(), key=itemgetter(1), reverse=True)[:15]:
         print(f"  {sig:28} weight {w:.0f}")
 
-    # fill scope: explicit --fill-colors, else auto = blueprint colors absent/thin in the extend cube
-    if args.fill_colors:
-        toks = {t.strip().upper() for t in args.fill_colors.split(",") if t.strip()}
-        fill_letters = {t for t in toks if t in "WUBRG"}
-        include_colorless = "C" in toks
-    else:
-        have_colors = Counter(_color_key(c) for c in extend)
-        bp_colors = {_color_key(c) for c in blueprint}
-        fill_letters = {ch for k in bp_colors for ch in k if k != "C" and have_colors[k] == 0}
-        include_colorless = "C" in bp_colors and have_colors["C"] == 0
-    print(f"\nFilling colors: {sorted(fill_letters) or '(none)'}{' +colorless' if include_colorless else ''}")
-
-    entries, print_names = reconcile_cube(
-        extend, pool, blueprint, lanes,
-        fill_letters=fill_letters, include_colorless=include_colorless,
-        do_trim=args.trim, do_replace=args.replace, replace_margin=args.replace_margin,
-    )
-    # signposts: auto (default) = as many on-theme multis as the blueprint has gold slots; 0 disables.
-    sign_count = args.signposts
-    if sign_count < 0:
-        sign_count = sum(1 for c in blueprint if len(card_colors(c)) >= 2)
-    if sign_count > 0:
-        placed = {_canonic(e["name"]) for e in entries}
-        signs = signpost_candidates(pool, lanes, placed, count=sign_count)
-        entries += [_entry(c, "signpost", lanes) for c in signs]
+    entries, print_names = reconcile_cube(extend, pool, blueprint, lanes)
 
     counts = Counter(e["status"] for e in entries)
-    print(f"\n{counts.get('fill', 0)} filled · {counts.get('owned', 0)} kept · {counts.get('trim', 0)} trimmed"
-          f" · {counts.get('upgrade-in', 0)} upgraded · {counts.get('signpost', 0)} signposts · {len(print_names)} to proxy")
+    cube = completion_lines(entries)
+    removed = removed_lines(entries)
+    print(f"\nFinal cube: {len(cube)} cards  ({counts.get('owned', 0)} kept · {counts.get('fill', 0)} added · "
+          f"{counts.get('signpost', 0)} signposts) — matches the blueprint's color distribution")
+    print(f"Removed {len(removed)} from your cube · {len(print_names)} slots to proxy")
 
-    Path(args.out).write_text("\n".join(completion_lines(entries)) + "\n", encoding="utf-8")
-    print(f"Wrote {args.out}")
+    Path(args.out).write_text("\n".join(cube) + "\n", encoding="utf-8")
+    print(f"Wrote the {len(cube)}-card cube to {args.out}")
+    if removed:
+        print(f"Pull these {len(removed)} from your current cube: {', '.join(removed[:12])}"
+              + (" …" if len(removed) > 12 else ""))
     if args.print_list:
         Path(args.print_list).write_text("\n".join(f"1 {n}" for n in print_names) + ("\n" if print_names else ""),
                                          encoding="utf-8")
@@ -1206,21 +1138,16 @@ def main() -> None:
     parser.add_argument("--w-kw", type=float, default=0.1, help="Weight on keyword similarity (default 0.1)")
     parser.add_argument("--w-type", type=float, default=0.1, help="Weight on card-type similarity (default 0.1)")
     parser.add_argument("--w-tag", type=float, default=0.4, help="Weight on Scryfall function-tag similarity (def 0.4)")
-    # Cube-completion mode (fill/strengthen a drifted cube from bulk, by its emergent lanes)
-    parser.add_argument("--extend", help="Completion mode: half-built cube (.txt) to finish from --owned "
-                        "by its emergent lanes, using --cube only as a balance blueprint")
-    parser.add_argument("--fill-colors", default="",
-                        help="Colors to fill in completion mode, e.g. 'R,G,C' (C=colorless); default auto")
-    parser.add_argument("--replace", action="store_true",
-                        help="Completion mode: also swap a weak existing card for a much better on-theme one")
-    parser.add_argument("--trim", action="store_true",
-                        help="Completion mode: cut over-count buckets down to blueprint size (reported)")
-    parser.add_argument("--replace-margin", type=float, default=8.0,
-                        help="How much better (theme-fit) a bulk card must be to replace a kept one "
-                        "(default 8; lower = more churn)")
-    parser.add_argument("--signposts", type=int, default=-1,
-                        help="Completion mode: add on-theme multicolor (2+) signpost cards from bulk. "
-                        "Default auto (=blueprint's gold-slot count); N to force, 0 to disable")
+    # Cube-completion mode: one operation, no knobs — builds the best cube matching the blueprint's
+    # color distribution from your cube + bulk (fill/trim/replace/signposts all automatic).
+    parser.add_argument("--extend", help="Completion mode: half-built cube (.txt) to finish from --owned, "
+                        "reconciled to --cube's color distribution using your emergent lanes")
+    # Deprecated completion flags — accepted but ignored (the behavior is automatic now).
+    parser.add_argument("--fill-colors", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--replace-margin", type=float, default=0.0, help=argparse.SUPPRESS)
+    parser.add_argument("--signposts", type=int, default=0, help=argparse.SUPPRESS)
+    parser.add_argument("--replace", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--trim", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     if args.extend:

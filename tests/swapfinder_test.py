@@ -529,117 +529,89 @@ def test_blueprint_buckets_counts_by_color_cmc_role() -> None:
     assert buckets["C", "2", "Artifact"] == 1
 
 
-def test_reconcile_fills_missing_color_on_theme(monkeypatch: pytest.MonkeyPatch) -> None:
-    _stub_lane_index(monkeypatch, {
-        "ontheme": frozenset({"mill-self"}), "offtheme": frozenset({"burn-player"}),
-    })
+def test_reconcile_fills_bucket_best_from_bulk(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Empty green slot -> filled from bulk, on-theme picked over off-theme.
+    _stub_lane_index(monkeypatch, {"on": frozenset({"mill-self"}), "off": frozenset({"burn-player"})})
     lanes = {"mill-self": 40.0}
     blueprint = [_card("bp", colors=["G"], cmc=2.0, type_line="Creature — Elf")]
-    extend: list[dict] = []  # nothing green built yet
-    on = _card("Green On-Theme", colors=["G"], cmc=2.0, type_line="Creature — Elf") | {"oracle_id": "ontheme"}
-    off = _card("Green Off-Theme", colors=["G"], cmc=2.0, type_line="Creature — Elf") | {"oracle_id": "offtheme"}
-    entries, to_print = swapfinder.reconcile_cube(
-        extend, [off, on], blueprint, lanes, fill_letters={"G"}, include_colorless=False)
-    fills = [e for e in entries if e["status"] == "fill"]
-    assert [e["name"] for e in fills] == ["Green On-Theme"]  # on-theme picked over off-theme
+    on = _card("Green On-Theme", colors=["G"], cmc=2.0, type_line="Creature — Elf") | {"oracle_id": "on"}
+    off = _card("Green Off-Theme", colors=["G"], cmc=2.0, type_line="Creature — Elf") | {"oracle_id": "off"}
+    entries, to_print = swapfinder.reconcile_cube([], [off, on], blueprint, lanes)
+    assert [e["name"] for e in entries if e["status"] == "fill"] == ["Green On-Theme"]
     assert to_print == []
 
 
-def test_reconcile_in_scope_unfillable_slot_goes_to_print(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Filling green, a green blueprint slot, but no on-theme green card in the pool -> proxy blueprint.
-    _stub_lane_index(monkeypatch, {"off": frozenset({"burn-player"})})
-    lanes = {"mill-self": 40.0}  # nothing in the pool carries this lane
-    blueprint = [_card("Blueprint Green", colors=["G"], cmc=2.0, type_line="Creature — Elf")]
-    off = _card("Off Green", colors=["G"], cmc=2.0, type_line="Creature — Elf") | {"oracle_id": "off"}
-    entries, to_print = swapfinder.reconcile_cube(
-        [], [off], blueprint, lanes, fill_letters={"G"}, include_colorless=False)
-    assert to_print == ["Blueprint Green"]  # no on-theme fill available -> print the blueprint card
-    assert not [e for e in entries if e["status"] == "fill"]
-
-
-def test_reconcile_out_of_scope_slot_is_silent(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A color we're NOT filling (e.g. already-built WUB) with no extend card is left alone, not printed.
-    _stub_lane_index(monkeypatch, {"x": frozenset({"mill-self"})})
-    lanes = {"mill-self": 40.0}
-    blueprint = [_card("Blueprint Red", colors=["R"], cmc=1.0, type_line="Instant")]
-    on = _card("Red Card", colors=["R"], cmc=1.0, type_line="Instant") | {"oracle_id": "x"}
-    entries, to_print = swapfinder.reconcile_cube(
-        [], [on], blueprint, lanes, fill_letters={"G"}, include_colorless=False)
-    assert to_print == []
-    assert not [e for e in entries if e["status"] == "fill"]
-
-
-def test_reconcile_trim_cuts_overcount_lowest_fit(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_reconcile_exact_count_trims_worst(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Blueprint wants 1 in the bucket, cube has 2 -> keep best-fit, trim the other (exact count).
     _stub_lane_index(monkeypatch, {"hi": frozenset({"mill-self"}), "lo": frozenset({"burn-player"})})
     lanes = {"mill-self": 40.0}
-    blueprint = [_card("bp", colors=["U"], cmc=1.0, type_line="Instant")]  # target: 1 U/1/Instant
+    blueprint = [_card("bp", colors=["U"], cmc=1.0, type_line="Instant")]
     keep = _card("Keeper", colors=["U"], cmc=1.0, type_line="Instant") | {"oracle_id": "hi"}
     cut = _card("Cuttable", colors=["U"], cmc=1.0, type_line="Instant") | {"oracle_id": "lo"}
-    entries, _ = swapfinder.reconcile_cube(
-        [keep, cut], [], blueprint, lanes, fill_letters=set(), include_colorless=False, do_trim=True)
-    kept = {e["name"] for e in entries if e["status"] == "owned"}
-    trimmed = {e["name"] for e in entries if e["status"] == "trim"}
-    assert kept == {"Keeper"}  # highest theme-fit kept
-    assert trimmed == {"Cuttable"}  # lowest theme-fit trimmed to hit target
+    entries, _ = swapfinder.reconcile_cube([keep, cut], [], blueprint, lanes)
+    assert {e["name"] for e in entries if e["status"] == "owned"} == {"Keeper"}
+    assert {e["name"] for e in entries if e["status"] == "trim"} == {"Cuttable"}
 
 
-def test_reconcile_replace_upgrades_any_color_not_just_fill_scope(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A built color (W) at target: --replace should still swap a weak card for a much better on-theme
-    # one, even though we're only *filling* green. (Regression: replace was gated to fill colors.)
+def test_reconcile_bulk_card_beats_owned_is_picked(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Replace is implicit: a better on-theme bulk card wins the slot; the weak owned card is trimmed.
     _stub_lane_index(monkeypatch, {"weak": frozenset({"burn-player"}), "strong": frozenset({"mill-self"})})
     lanes = {"mill-self": 40.0}
-    blueprint = [_card("bp", colors=["W"], cmc=2.0, type_line="Creature — Cat")]  # 1 W/2/Creature slot
-    weak = _card("Weak Kept", colors=["W"], cmc=2.0, type_line="Creature — Cat") | {"oracle_id": "weak"}
+    blueprint = [_card("bp", colors=["W"], cmc=2.0, type_line="Creature — Cat")]
+    weak = _card("Weak Owned", colors=["W"], cmc=2.0, type_line="Creature — Cat") | {"oracle_id": "weak"}
     strong = _card("Strong Bulk", colors=["W"], cmc=2.0, type_line="Creature — Cat") | {"oracle_id": "strong"}
-    entries, _ = swapfinder.reconcile_cube(
-        [weak], [strong], blueprint, lanes, fill_letters={"G"}, include_colorless=False,
-        do_replace=True, replace_margin=8.0)
-    assert {e["name"] for e in entries if e["status"] == "upgrade-in"} == {"Strong Bulk"}
-    assert {e["name"] for e in entries if e["status"] == "upgrade-out"} == {"Weak Kept"}
+    entries, _ = swapfinder.reconcile_cube([weak], [strong], blueprint, lanes)
+    assert {e["name"] for e in entries if e["status"] == "fill"} == {"Strong Bulk"}
+    assert {e["name"] for e in entries if e["status"] == "trim"} == {"Weak Owned"}
 
 
-def test_reconcile_keeps_extend_cards_outside_blueprint_buckets(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A cube card in a (color,cmc,role) bucket the blueprint lacks (e.g. a gold signpost) must be
-    # KEPT, not silently dropped. Regression for the "all my multis are gone" bug.
-    _stub_lane_index(monkeypatch, {"g": frozenset({"mill-self"})})
+def test_reconcile_tie_prefers_owned(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Equal theme-fit: keep the card you already own rather than churn to a bulk one.
+    _stub_lane_index(monkeypatch, {"a": frozenset({"mill-self"}), "b": frozenset({"mill-self"})})
     lanes = {"mill-self": 40.0}
-    blueprint = [_card("bp", colors=["R"], cmc=1.0, type_line="Instant")]  # only an R/1/Instant slot
-    gold = _card("Gold Signpost", colors=["B", "G"], cmc=3.0, type_line="Creature — Elf") | {"oracle_id": "g"}
-    entries, _p = swapfinder.reconcile_cube(
-        [gold], [], blueprint, lanes, fill_letters={"R"}, include_colorless=False, do_trim=True)
-    assert {e["name"] for e in entries if e["status"] == "owned"} == {"Gold Signpost"}  # kept, not dropped
+    blueprint = [_card("bp", colors=["U"], cmc=1.0, type_line="Instant")]
+    owned = _card("Owned", colors=["U"], cmc=1.0, type_line="Instant") | {"oracle_id": "a"}
+    bulk = _card("Bulk", colors=["U"], cmc=1.0, type_line="Instant") | {"oracle_id": "b"}
+    entries, _ = swapfinder.reconcile_cube([owned], [bulk], blueprint, lanes)
+    assert {e["name"] for e in entries if e["status"] == "owned"} == {"Owned"}
+
+
+def test_reconcile_mono_shortfall_proxies_blueprint(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_lane_index(monkeypatch, {"x": frozenset({"mill-self"})})
+    lanes = {"mill-self": 40.0}
+    blueprint = [_card("Blueprint Green", colors=["G"], cmc=2.0, type_line="Creature — Elf")]
+    entries, to_print = swapfinder.reconcile_cube([], [], blueprint, lanes)  # nothing to fill it
+    assert to_print == ["Blueprint Green"]
+    assert not [e for e in entries if e["status"] == "fill"]
+
+
+def test_reconcile_off_shape_extend_card_removed(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A cube card in a mono bucket the blueprint doesn't have is off-shape -> removed (exact distribution).
+    _stub_lane_index(monkeypatch, {"x": frozenset({"mill-self"})})
+    lanes = {"mill-self": 40.0}
+    blueprint = [_card("bp", colors=["R"], cmc=1.0, type_line="Instant")]
+    off = _card("Off Shape", colors=["W"], cmc=5.0, type_line="Enchantment") | {"oracle_id": "x"}
+    entries, _p = swapfinder.reconcile_cube([off], [], blueprint, lanes)
+    assert {e["name"] for e in entries if e["status"] == "trim"} == {"Off Shape"}
+
+
+def test_reconcile_gold_signposts_on_theme_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Gold total from the blueprint; on-theme multis chosen (owned kept, bulk added as signpost),
+    # off-theme gold dropped.
+    _stub_lane_index(monkeypatch, {"good": frozenset({"mill-self"}), "bad": frozenset({"burn-player"})})
+    lanes = {"mill-self": 40.0}
+    blueprint = [_card("gbp", colors=["B", "G"], cmc=3.0, type_line="Creature — Elf")]  # 1 gold slot
+    owned_gold = _card("Owned Gold", colors=["B", "G"], cmc=3.0, type_line="Creature — Elf") | {"oracle_id": "good"}
+    dead_gold = _card("Dead Gold", colors=["B", "R"], cmc=4.0, type_line="Creature") | {"oracle_id": "bad"}
+    bulk_gold = _card("Bulk Gold", colors=["G", "U"], cmc=2.0, type_line="Creature") | {"oracle_id": "good"}
+    entries, _p = swapfinder.reconcile_cube([owned_gold, dead_gold], [bulk_gold], blueprint, lanes)
+    kept = {e["name"] for e in entries if e["status"] == "owned"}
+    trimmed = {e["name"] for e in entries if e["status"] == "trim"}
+    assert "Owned Gold" in kept          # on-theme owned gold kept (fills the 1 gold slot)
+    assert "Dead Gold" in trimmed        # off-theme gold dropped
 
 
 def test_is_changeling_detection_paths() -> None:
     assert swapfinder.is_changeling(_card("A", keywords=["Changeling"]))  # keyword
     assert swapfinder.is_changeling(_card("B", oracle_text="Changeling (This card is every creature type.)"))
     assert not swapfinder.is_changeling(_card("C", oracle_text="Flying", keywords=["Flying"]))
-
-
-def test_reconcile_trim_cuts_themeless_drift_keeps_ontheme_signposts(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Drifted cards (bucket not in blueprint): with --trim, keep ones that serve a lane, cut themeless.
-    _stub_lane_index(monkeypatch, {"good": frozenset({"mill-self"}), "bad": frozenset({"burn-player"})})
-    lanes = {"mill-self": 40.0}  # only mill-self is a lane
-    blueprint = [_card("bp", colors=["R"], cmc=1.0, type_line="Instant")]
-    ontheme = _card("On-Theme Gold", colors=["B", "G"], cmc=3.0, type_line="Creature — Elf") | {"oracle_id": "good"}
-    themeless = _card("Dead Gold", colors=["B", "R"], cmc=4.0, type_line="Creature — Zombie") | {"oracle_id": "bad"}
-    entries, _p = swapfinder.reconcile_cube(
-        [ontheme, themeless], [], blueprint, lanes, fill_letters={"R"}, include_colorless=False, do_trim=True)
-    assert {e["name"] for e in entries if e["status"] == "owned"} == {"On-Theme Gold"}
-    assert {e["name"] for e in entries if e["status"] == "trim"} == {"Dead Gold"}
-
-
-def test_signpost_candidates_multicolor_on_theme(monkeypatch: pytest.MonkeyPatch) -> None:
-    _stub_lane_index(monkeypatch, {
-        "good": frozenset({"mill-self"}), "off": frozenset({"burn-player"}),
-    })
-    lanes = {"mill-self": 40.0}
-    ontheme_gold = _card("Gold On-Theme", colors=["B", "G"], type_line="Creature — Elf") | {"oracle_id": "good"}
-    tricolor = _card("Tricolor On-Theme", colors=["B", "G", "U"], type_line="Creature") | {"oracle_id": "good"}
-    offtheme_gold = _card("Gold Off-Theme", colors=["R", "W"], type_line="Creature") | {"oracle_id": "off"}
-    mono = _card("Mono On-Theme", colors=["B"], type_line="Creature") | {"oracle_id": "good"}
-    out = swapfinder.signpost_candidates([offtheme_gold, mono, ontheme_gold, tricolor], lanes, set(), count=5)
-    names = {c["name"] for c in out}
-    assert "Gold On-Theme" in names and "Tricolor On-Theme" in names  # multicolor + on-theme (3+ ok)
-    assert "Gold Off-Theme" not in names  # multicolor but no lane
-    assert "Mono On-Theme" not in names   # on-theme but not multicolor
