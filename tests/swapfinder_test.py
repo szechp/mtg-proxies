@@ -627,3 +627,19 @@ def test_reconcile_trim_cuts_themeless_drift_keeps_ontheme_signposts(monkeypatch
         [ontheme, themeless], [], blueprint, lanes, fill_letters={"R"}, include_colorless=False, do_trim=True)
     assert {e["name"] for e in entries if e["status"] == "owned"} == {"On-Theme Gold"}
     assert {e["name"] for e in entries if e["status"] == "trim"} == {"Dead Gold"}
+
+
+def test_signpost_candidates_multicolor_on_theme(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_lane_index(monkeypatch, {
+        "good": frozenset({"mill-self"}), "off": frozenset({"burn-player"}),
+    })
+    lanes = {"mill-self": 40.0}
+    ontheme_gold = _card("Gold On-Theme", colors=["B", "G"], type_line="Creature — Elf") | {"oracle_id": "good"}
+    tricolor = _card("Tricolor On-Theme", colors=["B", "G", "U"], type_line="Creature") | {"oracle_id": "good"}
+    offtheme_gold = _card("Gold Off-Theme", colors=["R", "W"], type_line="Creature") | {"oracle_id": "off"}
+    mono = _card("Mono On-Theme", colors=["B"], type_line="Creature") | {"oracle_id": "good"}
+    out = swapfinder.signpost_candidates([offtheme_gold, mono, ontheme_gold, tricolor], lanes, set(), count=5)
+    names = {c["name"] for c in out}
+    assert "Gold On-Theme" in names and "Tricolor On-Theme" in names  # multicolor + on-theme (3+ ok)
+    assert "Gold Off-Theme" not in names  # multicolor but no lane
+    assert "Mono On-Theme" not in names   # on-theme but not multicolor

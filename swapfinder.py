@@ -717,9 +717,39 @@ def reconcile_cube(
             fills = on_theme[:need]
             entries += [_entry(c, "fill", lanes) for c in fills]
             short = need - len(fills)
-            # unfilled in-scope slots: fall back to proxying the blueprint's own card for the slot
-            print_names.extend(bp_card.get("name", "") for bp_card in bp_by.get(bucket, [])[:short])
+            # unfilled MONO/colorless slots fall back to proxying the blueprint card (you need those).
+            # unfilled MULTICOLOR (gold) slots are signposts — don't proxy an off-theme blueprint gold
+            # card; a signpost with no on-theme option is simply skipped.
+            if len(bucket[0]) <= 1:
+                print_names.extend(bp_card.get("name", "") for bp_card in bp_by.get(bucket, [])[:short])
     return entries, print_names
+
+
+def signpost_candidates(
+    pool: list[dict], lanes: dict[str, float], exclude_names: set[str], *, count: int
+) -> list[dict]:
+    """Pick the top multicolor bulk cards that match the cube's lanes/tribes — archetype signposts.
+
+    A signpost is a gold card (2+ colors, 3+ fine) that actually carries a lane or tribe (theme_fit > 0),
+    so it glues two archetypes together. Ranked by theme-fit, deduped by name, excluding cards already
+    in the cube/output. Returns up to ``count`` cards.
+    """
+    seen: set[str] = set()
+    out: list[dict] = []
+    ranked = sorted(
+        (c for c in pool if len(card_colors(c)) >= 2 and theme_fit(c, lanes) > 0),
+        key=lambda c: theme_fit(c, lanes),
+        reverse=True,
+    )
+    for c in ranked:
+        key = _canonic(c.get("name", ""))
+        if key in exclude_names or key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+        if len(out) >= count:
+            break
+    return out
 
 
 def completion_lines(entries: list[dict]) -> list[str]:
@@ -731,7 +761,7 @@ def completion_lines(entries: list[dict]) -> list[str]:
     lines: list[str] = []
     for e in entries:
         cats = list(e["cats"])  # all lane categories the card belongs to
-        if e["payoff"] and e["status"] in ("owned", "fill", "upgrade-in"):
+        if e["payoff"] and e["status"] in ("owned", "fill", "upgrade-in", "signpost"):
             cats.append("Payoff")
         if e["status"] == "trim":
             cats = ["Cut"]
@@ -739,6 +769,8 @@ def completion_lines(entries: list[dict]) -> list[str]:
             cats = ["Cut", "Upgrade"]
         elif e["status"] == "upgrade-in":
             cats.append("Upgrade")
+        elif e["status"] == "signpost":
+            cats.append("Signpost")
         # keep the card name verbatim (commas in names like "Sephara, Sky's Blade" are valid); only
         # the category labels must be comma-free, and they already are (title-cased slugs).
         lines.append(f"1x {e['name']} [{','.join(cats)}]")
@@ -1125,9 +1157,18 @@ def _run_completion(args: argparse.Namespace) -> None:
         fill_letters=fill_letters, include_colorless=include_colorless,
         do_trim=args.trim, do_replace=args.replace, replace_margin=args.replace_margin,
     )
+    # signposts: auto (default) = as many on-theme multis as the blueprint has gold slots; 0 disables.
+    sign_count = args.signposts
+    if sign_count < 0:
+        sign_count = sum(1 for c in blueprint if len(card_colors(c)) >= 2)
+    if sign_count > 0:
+        placed = {_canonic(e["name"]) for e in entries}
+        signs = signpost_candidates(pool, lanes, placed, count=sign_count)
+        entries += [_entry(c, "signpost", lanes) for c in signs]
+
     counts = Counter(e["status"] for e in entries)
-    print(f"\n{counts.get('fill', 0)} filled · {counts.get('owned', 0)} kept · "
-          f"{counts.get('trim', 0)} trimmed · {counts.get('upgrade-in', 0)} upgraded · {len(print_names)} to proxy")
+    print(f"\n{counts.get('fill', 0)} filled · {counts.get('owned', 0)} kept · {counts.get('trim', 0)} trimmed"
+          f" · {counts.get('upgrade-in', 0)} upgraded · {counts.get('signpost', 0)} signposts · {len(print_names)} to proxy")
 
     Path(args.out).write_text("\n".join(completion_lines(entries)) + "\n", encoding="utf-8")
     print(f"Wrote {args.out}")
@@ -1177,6 +1218,9 @@ def main() -> None:
     parser.add_argument("--replace-margin", type=float, default=8.0,
                         help="How much better (theme-fit) a bulk card must be to replace a kept one "
                         "(default 8; lower = more churn)")
+    parser.add_argument("--signposts", type=int, default=-1,
+                        help="Completion mode: add on-theme multicolor (2+) signpost cards from bulk. "
+                        "Default auto (=blueprint's gold-slot count); N to force, 0 to disable")
     args = parser.parse_args()
 
     if args.extend:
