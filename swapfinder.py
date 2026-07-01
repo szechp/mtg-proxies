@@ -629,6 +629,7 @@ def reconcile_cube(
     pool: list[dict],
     blueprint: list[dict],
     lanes: dict[str, float],
+    gold_share: float = _GOLD_SHARE,
 ) -> tuple[list[dict], list[str]]:
     """Build the best cube that matches the blueprint's color distribution, from cube + bulk.
 
@@ -699,7 +700,7 @@ def reconcile_cube(
     # Gold is bounded two ways so it can't eat the cube: by each color's presence budget, and by an
     # overall share (~_GOLD_SHARE of the blueprint) — much more than the blueprint's own gold count,
     # so every real signpost gets in, but the cube stays mostly mono.
-    gold_cap = max(round(len(blueprint) * _GOLD_SHARE), sum(1 for c in blueprint if len(card_colors(c)) >= 2))
+    gold_cap = max(round(len(blueprint) * gold_share), sum(1 for c in blueprint if len(card_colors(c)) >= 2))
     gold_used: Counter[str] = Counter()
     gold_n = 0
     for c in sorted(gold_have + gold_pool, key=fit, reverse=True):
@@ -1127,7 +1128,7 @@ def _run_completion(args: argparse.Namespace) -> None:
     for sig, w in sorted(lanes.items(), key=itemgetter(1), reverse=True)[:15]:
         print(f"  {sig:28} weight {w:.0f}")
 
-    entries, print_names = reconcile_cube(extend, pool, blueprint, lanes)
+    entries, print_names = reconcile_cube(extend, pool, blueprint, lanes, gold_share=args.gold_share)
 
     counts = Counter(e["status"] for e in entries)
     cube = completion_lines(entries)
@@ -1179,6 +1180,9 @@ def main() -> None:
     # color distribution from your cube + bulk (fill/trim/replace/signposts all automatic).
     parser.add_argument("--extend", help="Completion mode: half-built cube (.txt) to finish from --owned, "
                         "reconciled to --cube's color distribution using your emergent lanes")
+    parser.add_argument("--gold-share", type=float, default=_GOLD_SHARE,
+                        help=f"Fraction of the cube allowed to be multicolor signposts (default {_GOLD_SHARE}; "
+                        "e.g. 0.2 for more gold, 0.05 for fewer)")
     # Deprecated completion flags — accepted but ignored (the behavior is automatic now).
     parser.add_argument("--fill-colors", default="", help=argparse.SUPPRESS)
     parser.add_argument("--replace-margin", type=float, default=0.0, help=argparse.SUPPRESS)

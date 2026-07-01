@@ -617,3 +617,19 @@ def test_is_changeling_detection_paths() -> None:
     assert swapfinder.is_changeling(_card("A", keywords=["Changeling"]))  # keyword
     assert swapfinder.is_changeling(_card("B", oracle_text="Changeling (This card is every creature type.)"))
     assert not swapfinder.is_changeling(_card("C", oracle_text="Flying", keywords=["Flying"]))
+
+
+def test_gold_share_dial(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_lane_index(monkeypatch, {f"o{i}": frozenset({"mill-self"}) for i in range(6)})
+    lanes = {"mill-self": 40.0}
+    # blueprint: lots of mono B and G (0 gold) so per-color presence isn't the binding limit; the
+    # gold_share cap is. Low share -> few signposts, high share -> more.
+    blueprint = ([_card(f"b{i}", colors=["B"], cmc=2.0, type_line="Creature") for i in range(10)]
+                 + [_card(f"g{i}", colors=["G"], cmc=2.0, type_line="Creature") for i in range(10)])
+    golds = [_card(f"Gold{i}", colors=["B", "G"], cmc=2.0, type_line="Creature") | {"oracle_id": f"o{i}"}
+             for i in range(6)]
+    few, _ = swapfinder.reconcile_cube([], golds, blueprint, lanes, gold_share=0.0)
+    many, _ = swapfinder.reconcile_cube([], golds, blueprint, lanes, gold_share=0.5)
+    n_few = sum(1 for e in few if e["status"] == "signpost")
+    n_many = sum(1 for e in many if e["status"] == "signpost")
+    assert n_many > n_few  # a higher gold-share admits more multicolor signposts
