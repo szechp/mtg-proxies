@@ -692,6 +692,8 @@ def main() -> None:
                         "similar by embedding/text; 0 disables (default 0.12)")
     parser.add_argument("--print-list",
                         help="Write unmatched cube cards (no match >= --min-score) as a .txt decklist to proxy/print")
+    parser.add_argument("--no-loose", action="store_true",
+                        help="Skip the loose fallback tier; a card with no exact-bucket match goes straight to Print")
     parser.add_argument("--pt-delta", type=int, default=1, help="Allowed P/T difference for creatures (default 1)")
     parser.add_argument("--cmc-delta", type=int, default=0, help="Allowed mana-value difference (default 0; try 1)")
     parser.add_argument("--restrict", action="store_true", help="Apply cube bans: tokens/shuffle/search/"
@@ -750,7 +752,7 @@ def main() -> None:
             target, pool, pt_delta=args.pt_delta, cmc_delta=args.cmc_delta, semantic=args.semantic,
             exclude_names=cube_names, tag_floor=args.min_tag, **weights,
         )
-        if not rows:  # strict bucket empty -> loose, same-color + shared-tag fallback
+        if not rows and not args.no_loose:  # strict bucket empty -> loose, same-color + shared-tag fallback
             rows = fallback_candidates(
                 target, pool, cmc_delta=args.cmc_delta, semantic=args.semantic, exclude_names=cube_names,
                 tag_floor=args.min_tag, **weights,
