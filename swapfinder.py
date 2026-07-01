@@ -392,6 +392,8 @@ _LANE_MIN_IDF = 3.0           # ...and this much global specificity (drops card-
 _TRIBE_MIN_BODIES = 4         # a subtype needs this many creatures to count as a tribe
 _KEYWORD_MIN = 4              # a keyword needs this many cards to be a (weak) lane signal
 _LANE_BASE = 100.0           # base weight; a lane's weight is BASE/representation (thin lanes score more)
+_GOLD_JUNK_FLOOR = 10.0      # a multicolor card below this theme-fit is "actual shit" — never a signpost
+_GOLD_SHARE = 0.12           # cap gold signposts at ~this fraction of the cube (more than blueprint gold)
 _SUBTYPE_MULT = 1.5          # tribes are strong intent markers -> favored
 _KEYWORD_MULT = 0.5          # keywords are weak on their own (flying is mostly incidental)
 
@@ -666,37 +668,69 @@ def reconcile_cube(
         # stable sort by fit desc; cands are passed extend-first so ties keep cards you already own
         return sorted(cands, key=fit, reverse=True)[:target]
 
-    entries: list[dict] = []
+    def colors_of(c: dict) -> set[str]:
+        return set(card_colors(c)) or {"C"}
+
+    # per-color PRESENCE budget from the blueprint: how many cards contain each color (mono + gold),
+    # plus colorless. Gold flexes against these, so keeping more multis pushes the mono count down
+    # while each color's total stays ~blueprint ("switch the colors around").
+    presence: Counter[str] = Counter()
+    for c in blueprint:
+        presence.update(colors_of(c))
+
     print_names: list[str] = []
-    mono_targets = {b: t for b, t in targets.items() if len(b[0]) <= 1}  # mono + colorless (gold done below)
+    havenames = {canon(c) for c in extend}
+    chosen_names: set[str] = set()
+    chosen: list[tuple[dict, str]] = []
 
-    for bucket, target in mono_targets.items():
-        have = extend_by.get(bucket, [])
-        picked = pick_best(have + pool_by.get(bucket, []), target)
-        pickset = {canon(c) for c in picked}
-        havenames = {canon(c) for c in have}
-        entries += [_entry(c, "owned" if canon(c) in havenames else "fill", lanes) for c in picked]
-        entries += [_entry(c, "trim", lanes) for c in have if canon(c) not in pickset]
-        short = target - len(picked)
-        print_names.extend(bp_card.get("name", "") for bp_card in bp_by.get(bucket, [])[:short])
+    def add(card: dict, status: str) -> None:
+        chosen.append((card, status))
+        chosen_names.add(canon(card))
 
-    # cube cards in mono/colorless buckets the blueprint doesn't have are off-shape -> removed
-    for c in extend:
-        if len(_color_key(c)) <= 1 and card_bucket(c) not in targets:
-            entries.append(_entry(c, "trim", lanes))
-
-    # GOLD signposts: best on-theme multis (from cube + bulk) up to the blueprint's gold total.
-    gold_target = sum(t for b, t in targets.items() if len(b[0]) >= 2)
-    gold_have = [c for c in extend if len(card_colors(c)) >= 2]
+    # 1) GOLD first: keep every non-junk on-theme multi (dual AND 3+), best-fit, but only while each of
+    # its colors still has room in the presence budget. No blueprint cap and no add-then-cut churn —
+    # gold is bounded by the budget, so keeping more multis just leaves less room for mono ("switch
+    # the colors around"). Cube gold you own is tried first (ties keep it).
+    gold_have = [c for c in extend if len(card_colors(c)) >= 2 and fit(c) >= _GOLD_JUNK_FLOOR]
     gold_pool = list(
-        {canon(c): c for c in pool if len(card_colors(c)) >= 2 and canon(c) not in exclude}.values()
+        {canon(c): c for c in pool
+         if len(card_colors(c)) >= 2 and canon(c) not in exclude and fit(c) >= _GOLD_JUNK_FLOOR}.values()
     )
-    gold_cands = [c for c in gold_have + gold_pool if fit(c) > 0]  # off-theme gold is dropped
-    gold_picked = pick_best(gold_cands, gold_target)
-    goldset = {canon(c) for c in gold_picked}
-    gold_havenames = {canon(c) for c in gold_have}
-    entries += [_entry(c, "owned" if canon(c) in gold_havenames else "signpost", lanes) for c in gold_picked]
-    entries += [_entry(c, "trim", lanes) for c in gold_have if canon(c) not in goldset]
+    # Gold is bounded two ways so it can't eat the cube: by each color's presence budget, and by an
+    # overall share (~_GOLD_SHARE of the blueprint) — much more than the blueprint's own gold count,
+    # so every real signpost gets in, but the cube stays mostly mono.
+    gold_cap = max(round(len(blueprint) * _GOLD_SHARE), sum(1 for c in blueprint if len(card_colors(c)) >= 2))
+    gold_used: Counter[str] = Counter()
+    gold_n = 0
+    for c in sorted(gold_have + gold_pool, key=fit, reverse=True):
+        cols = colors_of(c)
+        if gold_n < gold_cap and canon(c) not in chosen_names and all(gold_used[x] < presence.get(x, 0) for x in cols):
+            add(c, "owned" if canon(c) in havenames else "signpost")
+            gold_used.update(cols)
+            gold_n += 1
+
+    # 2) MONO + colorless: fill each color to its remaining budget (presence - gold already there),
+    # bucket by bucket in curve order (low cmc first) so the curve/roles come from the blueprint.
+    mono_targets = {b: t for b, t in targets.items() if len(b[0]) <= 1}
+    for color in [*"WUBRG", "C"]:
+        remaining = presence.get(color, 0) - gold_used.get(color, 0)
+        if remaining <= 0:
+            continue
+        col_buckets = sorted((bt for bt in mono_targets.items() if bt[0][0] == color), key=lambda bt: bt[0][1])
+        filled = 0
+        for bucket, target in col_buckets:
+            if filled >= remaining:
+                break
+            take = min(target, remaining - filled)
+            have = [c for c in extend_by.get(bucket, []) if canon(c) not in chosen_names]
+            picked = pick_best(have + pool_by.get(bucket, []), take)
+            for c in picked:
+                add(c, "owned" if canon(c) in havenames else "fill")
+            filled += len(picked)
+            print_names.extend(bp_card.get("name", "") for bp_card in bp_by.get(bucket, [])[: take - len(picked)])
+
+    removed = [c for c in extend if canon(c) not in chosen_names]  # your cards not chosen -> pull them
+    entries = [_entry(c, st, lanes) for c, st in chosen] + [_entry(c, "trim", lanes) for c in removed]
     return entries, print_names
 
 
