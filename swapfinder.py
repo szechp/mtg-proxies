@@ -364,6 +364,7 @@ def _full_text(card: dict) -> str:
 _DEFAULT_EXCLUDE_TEXT = (
     "token", "shuffle", "search", "transform",
     "+1/+1 counter", "-1/-1 counter", "counter on", "counters on", "energy counter", "lore counter",
+    "the ring tempts you", "your ring-bearer",
 )
 _DFC_LAYOUTS = frozenset({"transform", "modal_dfc", "double_faced_token", "meld", "reversible_card"})
 _RARITY_ORDER = {"common": 0, "uncommon": 1, "rare": 2, "mythic": 3, "special": 3, "bonus": 3}
