@@ -215,9 +215,14 @@ def preprocess_oracle(card: dict) -> str:
 
 
 def keyword_jaccard(a: dict, b: dict) -> float:
-    """Jaccard similarity over the two cards' keyword sets (0 if both are empty)."""
-    ka = {k.lower() for k in a.get("keywords", [])}
-    kb = {k.lower() for k in b.get("keywords", [])}
+    """Jaccard over the two cards' *ability* keywords (0 if both empty).
+
+    Casting/cost mechanics (``_CAST_KEYWORDS``: cycling, flashback, madness, kicker, ...) are dropped
+    — they describe how you cast a card, not what it does, so sharing "Cycling" shouldn't make a bounce
+    spell look like a draw spell. Ability keywords (ward, flying, deathtouch, ...) still count.
+    """
+    ka = {k.lower() for k in a.get("keywords", [])} - _CAST_KEYWORDS
+    kb = {k.lower() for k in b.get("keywords", [])} - _CAST_KEYWORDS
     if not ka and not kb:
         return 0.0
     return len(ka & kb) / len(ka | kb)
@@ -246,6 +251,9 @@ _META_TAGS = frozenset({
     "triggered-ability", "activated-ability", "static-ability", "mana-ability",
     "characteristic-defining-ability", "cda-subtype",
     "evasion", "group-slug", "cycle", "color-break", "more-expensive-than-mv", "color-indicator",
+    # cycling/alternative-use structure ("how you cast", like _CAST_KEYWORDS): shared by any two
+    # cycling cards regardless of what they actually do.
+    "activate-from-hand", "cheaper-than-mv", "hand-neutral",
 })
 
 

@@ -179,6 +179,11 @@ def test_keyword_jaccard() -> None:
     b = _card("b", keywords=["Flying"])
     assert swapfinder.keyword_jaccard(a, b) == pytest.approx(0.5)
     assert swapfinder.keyword_jaccard(_card("a"), _card("b")) == pytest.approx(0.0)
+    # casting mechanics (cycling/flashback/...) don't count; ability keywords (ward/...) do
+    cyc = _card("x", keywords=["Cycling"])
+    assert swapfinder.keyword_jaccard(cyc, _card("y", keywords=["Cycling"])) == pytest.approx(0.0)
+    ward = _card("x", keywords=["Ward", "Cycling"])
+    assert swapfinder.keyword_jaccard(ward, _card("y", keywords=["Ward"])) == pytest.approx(1.0)
 
 
 def test_role_of_clear_cases() -> None:
@@ -188,7 +193,7 @@ def test_role_of_clear_cases() -> None:
 
 def test_is_meta_tag_filters_structural_noise() -> None:
     for meta in ["evasion", "triggered-ability", "flavors-of-vanilla", "virtual-french-vanilla",
-                 "cycle", "cycle-eld-syr-legend"]:
+                 "cycle", "cycle-eld-syr-legend", "activate-from-hand", "cheaper-than-mv"]:
         assert swapfinder._is_meta_tag(meta), meta
     for functional in ["removal", "flicker", "bounce", "rescue", "reanimate-creature", "mill"]:
         assert not swapfinder._is_meta_tag(functional), functional
