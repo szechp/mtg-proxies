@@ -274,6 +274,7 @@ _META_TAGS = frozenset({
     # flavor / naming / color-marker noise that clustered as fake "lanes" in the cube analysis.
     "virtual-vanilla", "alliteration", "card-names", "single-english-word-name", "draft-signpost",
     "blue-effect", "red-effect", "green-effect", "white-effect", "black-effect", "colorless-effect",
+    "staple-with-set-s-mechanic", "set-staple", "limited-staple", "staple",
 })
 
 
