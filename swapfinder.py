@@ -348,12 +348,12 @@ def tag_similarity(a: dict, b: dict) -> float:
     return sum(idf.get(t, 0.0) for t in ta & tb) / denom
 
 
-# Minimum IDF-weighted tag similarity to count as a real function match. Calibrated: genuine matches
-# score >=0.30 (Doom Blade/Cast Down 0.75, Divination-family 0.35-0.52), while cards that only share
-# cycling-induced or otherwise generic draw tags sit <=0.14 (Boon/Floodwaters 0.138, Konrad/Geth
-# 0.13) -- a clear gap, so 0.2 keeps the real ones and drops the junk. Paired with the semantic floor
-# in the OR gate, so a moderate-tag match can still qualify on embeddings.
-_FALLBACK_TAG_FLOOR = 0.2
+# Minimum IDF-weighted tag similarity to be considered a function match at all. Kept low (0.12) on
+# purpose: against a real collection most legit substitutes are only moderately tag-similar, so a
+# higher floor sends nearly everything to the print list. Strong specific matches score much higher;
+# the semantic floor in the OR gate is what separates a real moderate match from a cycling-tag
+# coincidence -- so run --semantic for the clean result.
+_FALLBACK_TAG_FLOOR = 0.12
 # Quality gate (the OR, so no single signal is the sole judge — tags are crowd-sourced, text is noisy):
 # a candidate is kept if it shares a real function tag (tag_sim >= --min-tag) OR a non-tag signal says
 # it's similar. That non-tag signal is the embedding cosine under --semantic (model-derived, not
@@ -702,9 +702,9 @@ def main() -> None:
     parser.add_argument("--top", type=int, default=3, help="Max candidates per target (default 3)")
     parser.add_argument("--min-score", type=float, default=0.0,
                         help="Drop matches below this score (e.g. 0.15); a target with none left is unmatched")
-    parser.add_argument("--min-tag", type=float, default=0.2,
+    parser.add_argument("--min-tag", type=float, default=0.12,
                         help="Quality gate: keep a match only if it shares a function tag this strongly OR is "
-                        "similar by embedding/text; 0 disables (default 0.2)")
+                        "similar by embedding/text; 0 disables (default 0.12)")
     parser.add_argument("--print-list",
                         help="Write unmatched cube cards (no match >= --min-score) as a .txt decklist to proxy/print")
     parser.add_argument("--no-loose", action="store_true",
