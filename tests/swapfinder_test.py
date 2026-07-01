@@ -317,6 +317,7 @@ def test_restrictions_ban_default_mechanics() -> None:
     assert not _passes(oracle_text="Put a +1/+1 counter on target creature.", rarity="common")
     assert not _passes(oracle_text="You get {E}{E} (two energy counters).", rarity="common")
     assert not _passes(oracle_text="Draw a card. The Ring tempts you.", rarity="common")  # Ring mechanic
+    assert not _passes(oracle_text="Create two tapped Lander tokens.", rarity="common")  # EOE lander ramp
     assert _passes(oracle_text="Destroy target creature.", rarity="common")  # clean removal passes
 
 
