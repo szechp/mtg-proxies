@@ -522,8 +522,11 @@ def reconcile_cube(
         bp_by[card_bucket(c)].append(c)
     exclude = {_canonic(c.get("name", "")) for c in extend}
     pool_by: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+    seen: set[str] = set()  # dedupe the pool by name — singleton cube, one copy per card
     for c in pool:
-        if _canonic(c.get("name", "")) not in exclude:
+        key = _canonic(c.get("name", ""))
+        if key not in exclude and key not in seen:
+            seen.add(key)
             pool_by[card_bucket(c)].append(c)
 
     entries: list[dict] = []
@@ -575,8 +578,9 @@ def completion_lines(entries: list[dict]) -> list[str]:
             cats = ["Cut", "Upgrade"]
         elif e["status"] == "upgrade-in":
             cats.append("Upgrade")
-        name = e["name"].replace(",", "")
-        lines.append(f"1x {name} [{','.join(cats)}]")
+        # keep the card name verbatim (commas in names like "Sephara, Sky's Blade" are valid); only
+        # the category labels must be comma-free, and they already are (title-cased slugs).
+        lines.append(f"1x {e['name']} [{','.join(cats)}]")
     return lines
 
 
