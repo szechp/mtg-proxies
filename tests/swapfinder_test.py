@@ -374,6 +374,20 @@ def test_fallback_same_color_shared_tag_within_cmc(monkeypatch: pytest.MonkeyPat
     assert rows[0]["match"] == "loose"
 
 
+def test_fallback_keeps_type_class(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A sorcery's loose matches stay spells (instant/sorcery), never an enchantment or creature.
+    index = {"t": frozenset({"draw"}), "spell": frozenset({"draw"}), "ench": frozenset({"draw"})}
+    _flat_idf(monkeypatch, index)
+    base = {"mana_cost": "{1}{U}", "cmc": 2.0, "colors": ["U"]}
+    target = _card("Splashy", type_line="Sorcery", **base) | {"oracle_id": "t"}
+    a_spell = _card("Some Instant", type_line="Instant", **base) | {"oracle_id": "spell"}
+    an_ench = _card("Some Aura", type_line="Enchantment — Aura", **base) | {"oracle_id": "ench"}
+    rows = swapfinder.fallback_candidates(
+        target, [a_spell, an_ench], w_text=0.4, w_kw=0.1, w_type=0.1, w_tag=0.4, cmc_delta=1,
+    )
+    assert [r["candidate"] for r in rows] == ["Some Instant"]  # instant ok (same "spell" class); enchantment dropped
+
+
 def test_fallback_empty_when_target_untagged(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(swapfinder, "_oracle_tag_index", lambda: {"c": frozenset({"removal"})})
     target = _card("T", mana_cost="{1}{B}", cmc=2.0, colors=["B"])  # no oracle_id -> no tags

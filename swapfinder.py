@@ -119,6 +119,15 @@ def primary_type(card: dict) -> str:
     return next((t for t in _TYPE_PRIORITY if t in types), "")
 
 
+def type_class(card: dict) -> str:
+    """Broad role class used to keep the loose tier sane: instants/sorceries are one "spell" class,
+    creatures are one class, other permanents stay by their own type. So a sorcery can loosely match
+    an instant, but never an enchantment or a creature.
+    """
+    pt = primary_type(card)
+    return "spell" if pt in {"Instant", "Sorcery"} else pt
+
+
 def card_colors(card: dict) -> frozenset[str]:
     """Color identity-agnostic color set: card-level ``colors``, or union of face colors."""
     if "colors" in card:
@@ -545,15 +554,18 @@ def fallback_candidates(
     exclude_names: frozenset[str] = frozenset(),
     tag_floor: float = 0.0,
 ) -> list[dict]:
-    """Loose tier used only when the strict bucket is empty: same colors, within ``cmc_delta``, shared tag.
+    """Loose tier used only when the strict bucket is empty: same colors + type class, within
+    ``cmc_delta``, shared tag.
 
-    Drops the pip/P-T/exact-type constraints to surface "the closest thing in the pool that does the
-    same job" when no exact-stat twin exists — the common case against a real collection plus
-    ``--restrict``. Returns nothing if the target is untagged. Rows are flagged ``match="loose"``.
+    Drops the pip/P-T constraints and merges instant/sorcery, but keeps the broad type class (a spell
+    never matches a permanent, a creature never matches a noncreature) to surface "the closest thing
+    in the pool that does the same job" when no exact-stat twin exists. Returns nothing if the target
+    is untagged. Rows are flagged ``match="loose"``.
     """
     skip = {_canonic(target.get("name", ""))} | exclude_names
     target_colors = card_colors(target)
     target_cmc = card_cmc(target)
+    target_class = type_class(target)
     target_tags = card_tags(target)
     if not target_tags:
         return []
@@ -562,6 +574,7 @@ def fallback_candidates(
         for c in pool
         if _canonic(c.get("name", "")) not in skip
         and card_colors(c) == target_colors
+        and type_class(c) == target_class
         and abs(card_cmc(c) - target_cmc) <= cmc_delta
         and tag_similarity(target, c) >= _FALLBACK_TAG_FLOOR
     ]
