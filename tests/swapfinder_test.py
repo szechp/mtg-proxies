@@ -452,3 +452,102 @@ def test_load_cards_uses_parse_decklist(monkeypatch: pytest.MonkeyPatch, tmp_pat
     monkeypatch.setattr("mtg_proxies.decklists.parse_decklist", lambda _p: (dl, True, []))
     cards = swapfinder.load_cards(tmp_path / "owned.txt")
     assert [c["name"] for c in cards] == ["Doom Blade", "Cancel"]
+
+
+# --- completion mode -------------------------------------------------------------------------------
+
+def _stub_lane_index(monkeypatch: pytest.MonkeyPatch, index: dict) -> None:
+    """Stub the oracle-tag index + a flat IDF so lane/theme math is deterministic in tests."""
+    monkeypatch.setattr(swapfinder, "_oracle_tag_index", lambda: index)
+    all_tags = {t for tags in index.values() for t in tags}
+    monkeypatch.setattr(swapfinder, "_tag_idf", lambda: dict.fromkeys(all_tags, 5.0))
+
+
+def test_derive_lanes_finds_tag_tribe_filters_junk(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 5 cards share a specific tag (a lane); 5 are Faeries (a tribe); Humans are generic (filtered).
+    index = {f"o{i}": frozenset({"mill-self"}) for i in range(5)}
+    _stub_lane_index(monkeypatch, index)
+    cube = [
+        _card(f"m{i}", type_line="Creature — Faerie", oracle_text="") | {"oracle_id": f"o{i}"}
+        for i in range(5)
+    ]
+    lanes = swapfinder.derive_lanes(cube)
+    assert "mill-self" in lanes            # tag lane
+    assert "subtype:Faerie" in lanes       # tribe lane
+    assert "subtype:Human" not in lanes    # generic subtype filtered
+
+
+def test_theme_fit_rewards_shared_lane(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_lane_index(monkeypatch, {"a": frozenset({"mill-self"}), "b": frozenset({"burn-player"})})
+    lanes = {"mill-self": 40.0, "subtype:Faerie": 20.0}
+    on = _card("On", type_line="Creature — Faerie") | {"oracle_id": "a"}
+    off = _card("Off", type_line="Creature — Goblin") | {"oracle_id": "b"}
+    assert swapfinder.theme_fit(on, lanes) > swapfinder.theme_fit(off, lanes)
+    assert swapfinder.theme_fit(off, lanes) == pytest.approx(0.0)  # shares no lane
+
+
+def test_blueprint_buckets_counts_by_color_cmc_role() -> None:
+    bp = [
+        _card("a", colors=["R"], cmc=1.0, type_line="Creature — Goblin"),
+        _card("b", colors=["R"], cmc=1.0, type_line="Creature — Goblin"),
+        _card("c", colors=["R"], cmc=3.0, type_line="Instant"),
+        _card("d", colors=[], cmc=2.0, type_line="Artifact"),
+    ]
+    buckets = swapfinder.blueprint_buckets(bp)
+    assert buckets["R", "1", "Creature"] == 2
+    assert buckets["R", "3", "Instant"] == 1
+    assert buckets["C", "2", "Artifact"] == 1
+
+
+def test_reconcile_fills_missing_color_on_theme(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_lane_index(monkeypatch, {
+        "ontheme": frozenset({"mill-self"}), "offtheme": frozenset({"burn-player"}),
+    })
+    lanes = {"mill-self": 40.0}
+    blueprint = [_card("bp", colors=["G"], cmc=2.0, type_line="Creature — Elf")]
+    extend: list[dict] = []  # nothing green built yet
+    on = _card("Green On-Theme", colors=["G"], cmc=2.0, type_line="Creature — Elf") | {"oracle_id": "ontheme"}
+    off = _card("Green Off-Theme", colors=["G"], cmc=2.0, type_line="Creature — Elf") | {"oracle_id": "offtheme"}
+    entries, to_print = swapfinder.reconcile_cube(
+        extend, [off, on], blueprint, lanes, fill_letters={"G"}, include_colorless=False)
+    fills = [e for e in entries if e["status"] == "fill"]
+    assert [e["name"] for e in fills] == ["Green On-Theme"]  # on-theme picked over off-theme
+    assert to_print == []
+
+
+def test_reconcile_in_scope_unfillable_slot_goes_to_print(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Filling green, a green blueprint slot, but no on-theme green card in the pool -> proxy blueprint.
+    _stub_lane_index(monkeypatch, {"off": frozenset({"burn-player"})})
+    lanes = {"mill-self": 40.0}  # nothing in the pool carries this lane
+    blueprint = [_card("Blueprint Green", colors=["G"], cmc=2.0, type_line="Creature — Elf")]
+    off = _card("Off Green", colors=["G"], cmc=2.0, type_line="Creature — Elf") | {"oracle_id": "off"}
+    entries, to_print = swapfinder.reconcile_cube(
+        [], [off], blueprint, lanes, fill_letters={"G"}, include_colorless=False)
+    assert to_print == ["Blueprint Green"]  # no on-theme fill available -> print the blueprint card
+    assert not [e for e in entries if e["status"] == "fill"]
+
+
+def test_reconcile_out_of_scope_slot_is_silent(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A color we're NOT filling (e.g. already-built WUB) with no extend card is left alone, not printed.
+    _stub_lane_index(monkeypatch, {"x": frozenset({"mill-self"})})
+    lanes = {"mill-self": 40.0}
+    blueprint = [_card("Blueprint Red", colors=["R"], cmc=1.0, type_line="Instant")]
+    on = _card("Red Card", colors=["R"], cmc=1.0, type_line="Instant") | {"oracle_id": "x"}
+    entries, to_print = swapfinder.reconcile_cube(
+        [], [on], blueprint, lanes, fill_letters={"G"}, include_colorless=False)
+    assert to_print == []
+    assert not [e for e in entries if e["status"] == "fill"]
+
+
+def test_reconcile_trim_cuts_overcount_lowest_fit(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_lane_index(monkeypatch, {"hi": frozenset({"mill-self"}), "lo": frozenset({"burn-player"})})
+    lanes = {"mill-self": 40.0}
+    blueprint = [_card("bp", colors=["U"], cmc=1.0, type_line="Instant")]  # target: 1 U/1/Instant
+    keep = _card("Keeper", colors=["U"], cmc=1.0, type_line="Instant") | {"oracle_id": "hi"}
+    cut = _card("Cuttable", colors=["U"], cmc=1.0, type_line="Instant") | {"oracle_id": "lo"}
+    entries, _ = swapfinder.reconcile_cube(
+        [keep, cut], [], blueprint, lanes, fill_letters=set(), include_colorless=False, do_trim=True)
+    kept = {e["name"] for e in entries if e["status"] == "owned"}
+    trimmed = {e["name"] for e in entries if e["status"] == "trim"}
+    assert kept == {"Keeper"}  # highest theme-fit kept
+    assert trimmed == {"Cuttable"}  # lowest theme-fit trimmed to hit target

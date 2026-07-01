@@ -15,6 +15,14 @@ Run:
     # --min-score sets a quality floor; --print-list writes the cube cards your bulk can't cover
     # as a decklist to feed straight into `mtg-proxies print`.
 
+    # Completion mode (fast, tag-based, no GPU/--semantic needed): finish a half-built cube from bulk
+    # by its own emergent lanes, using another cube only as a balance blueprint:
+    #   uv run python swapfinder.py --extend mycube.txt --cube blueprint.txt --owned bulk.txt \
+    #       --fill-colors R,G,C --restrict --max-rarity uncommon --out done.txt --print-list toproof.txt
+    # It auto-derives the cube's lanes (tags/tribes/keywords), fills the missing colors' blueprint
+    # slots with the best on-theme bulk cards (payoffs surfaced), and optionally --trim over-count
+    # buckets / --replace weak cards. It PROPOSES a shortlist; final cube-design taste is still yours.
+
 Stage 1 is a hard bucket filter (cmc, color set, colored-pip multiset, primary card type, and — for
 creatures — P/T within a delta). Stage 2 ranks survivors by a blend of: oracle-text similarity
 (TF-IDF cosine, or sentence-transformer embeddings with ``--semantic``), keyword Jaccard, card-type
@@ -263,6 +271,9 @@ _META_TAGS = frozenset({
     # cycling/alternative-use structure ("how you cast", like _CAST_KEYWORDS): shared by any two
     # cycling cards regardless of what they actually do.
     "activate-from-hand", "cheaper-than-mv", "hand-neutral",
+    # flavor / naming / color-marker noise that clustered as fake "lanes" in the cube analysis.
+    "virtual-vanilla", "alliteration", "card-names", "single-english-word-name", "draft-signpost",
+    "blue-effect", "red-effect", "green-effect", "white-effect", "black-effect", "colorless-effect",
 })
 
 
@@ -346,6 +357,227 @@ def tag_similarity(a: dict, b: dict) -> float:
     if denom == 0:
         return 0.0
     return sum(idf.get(t, 0.0) for t in ta & tb) / denom
+
+
+# Creature subtypes that are near-universal filler rather than a build-around tribe. A subtype only
+# becomes a "tribe" lane if it clusters AND isn't one of these.
+_GENERIC_SUBTYPES = frozenset({
+    "Human", "Wizard", "Warrior", "Soldier", "Rogue", "Cleric", "Scout", "Knight", "Noble",
+    "Peasant", "Advisor", "Citizen", "Spirit", "Beast", "Elemental", "Horror", "Construct",
+})
+_LANE_MIN_CARDS = 5           # a tag lane needs this many cube cards
+_LANE_MIN_IDF = 3.0           # ...and this much global specificity (drops card-advantage/draw noise)
+_TRIBE_MIN_BODIES = 4         # a subtype needs this many creatures to count as a tribe
+_KEYWORD_MIN = 4              # a keyword needs this many cards to be a (weak) lane signal
+_SUBTYPE_WEIGHT = 4.0         # fixed weight for a tribe signal (subtypes are strong intent markers)
+_KEYWORD_WEIGHT = 1.5         # keywords are weak on their own (flying is mostly incidental)
+
+
+def card_subtypes(card: dict) -> frozenset[str]:
+    """Creature subtypes from the type line (both faces); empty for noncreatures."""
+    out: set[str] = set()
+    for part in card.get("type_line", "").split("//"):
+        if "Creature" in part and _EM_DASH in part:
+            out.update(part.split(_EM_DASH)[1].split())
+    return frozenset(out)
+
+
+def card_signals(card: dict) -> frozenset[str]:
+    """All theme signals a card carries: function tags + ``subtype:X`` + ``kw:X`` (namespaced)."""
+    sig = set(card_tags(card))
+    sig |= {f"subtype:{s}" for s in card_subtypes(card)}
+    sig |= {f"kw:{k.lower()}" for k in card.get("keywords", []) if k.lower() not in _CAST_KEYWORDS}
+    return frozenset(sig)
+
+
+def derive_lanes(cube: list[dict]) -> dict[str, float]:
+    """Auto-derive the cube's emergent lanes as a weighted signal map (the cube's identity).
+
+    Combines three sources, all namespaced into one ``signal -> weight`` dict:
+    - tag lanes: IDF-weighted clustering (``count * idf``), kept only if on >= _LANE_MIN_CARDS cards and
+      specific enough (idf >= _LANE_MIN_IDF); meta/junk tags are already excluded by ``card_tags``.
+    - tribes: creature subtypes on >= _TRIBE_MIN_BODIES cards, minus generic filler subtypes.
+    - keyword themes: keywords on >= _KEYWORD_MIN cards (flying, enchant->auras), weighted low.
+
+    Weights let ``theme_fit`` rank a candidate by how much of the cube's identity it carries.
+    """
+    idf = _tag_idf()
+    tag_cnt: Counter[str] = Counter()
+    for c in cube:
+        tag_cnt.update(card_tags(c))
+    lanes: dict[str, float] = {}
+    for tag, n in tag_cnt.items():
+        if n >= _LANE_MIN_CARDS and idf.get(tag, 0.0) >= _LANE_MIN_IDF:
+            lanes[tag] = n * idf[tag]
+    sub_cnt: Counter[str] = Counter()
+    for c in cube:
+        sub_cnt.update(card_subtypes(c))
+    for sub, n in sub_cnt.items():
+        if n >= _TRIBE_MIN_BODIES and sub not in _GENERIC_SUBTYPES:
+            lanes[f"subtype:{sub}"] = _SUBTYPE_WEIGHT * n
+    kw_cnt: Counter[str] = Counter()
+    for c in cube:
+        kw_cnt.update(k.lower() for k in c.get("keywords", []) if k.lower() not in _CAST_KEYWORDS)
+    for kw, n in kw_cnt.items():
+        if n >= _KEYWORD_MIN:
+            lanes[f"kw:{kw}"] = _KEYWORD_WEIGHT * n
+    return lanes
+
+
+def theme_fit(card: dict, lanes: dict[str, float]) -> float:
+    """How much of the cube's identity this card carries: summed weight of its signals that are lanes.
+
+    Higher = more on-theme. 0 if the card shares none of the cube's lanes.
+    """
+    return sum(lanes.get(s, 0.0) for s in card_signals(card))
+
+
+def _is_payoff_signal(sig: str) -> bool:
+    """Whether a signal is an archetype *payoff* (rewards the theme) vs a plain enabler/body."""
+    slug = sig.split(":", 1)[-1]
+    return slug.startswith(("typal-", "synergy-")) or "matters" in slug or slug.endswith("-matters")
+
+
+def is_payoff(card: dict, lanes: dict[str, float]) -> bool:
+    """Whether the card is a payoff for one of the cube's lanes (carries a lane payoff signal)."""
+    return any(s in lanes and _is_payoff_signal(s) for s in card_signals(card))
+
+
+def best_lane_label(card: dict, lanes: dict[str, float]) -> str:
+    """Human-readable name of the strongest lane this card serves (for Archidekt grouping)."""
+    hits = [(w, s) for s in card_signals(card) if (w := lanes.get(s, 0.0)) > 0]
+    if not hits:
+        return ""
+    _w, sig = max(hits)
+    return sig.split(":", 1)[-1].replace("-", " ").title()
+
+
+def _color_key(card: dict) -> str:
+    """Exact color-identity bucket key: ``R``, ``G``, ``BG``, ... or ``C`` for colorless."""
+    return "".join(sorted(card_colors(card))) or "C"
+
+
+def _cmc_band(card: dict) -> str:
+    """Mana-value band for bucketing: 1, 2, 3, 4, or 5+ (0 folds into 1)."""
+    v = int(card_cmc(card))
+    return "5+" if v >= 5 else str(max(v, 1))
+
+
+def card_bucket(card: dict) -> tuple[str, str, str]:
+    """Return the (color-identity, cmc-band, primary-type) balance bucket a card belongs to."""
+    return (_color_key(card), _cmc_band(card), primary_type(card))
+
+
+def blueprint_buckets(blueprint: list[dict]) -> Counter[tuple[str, str, str]]:
+    """Target card counts per balance bucket, taken from the blueprint cube's slots."""
+    return Counter(card_bucket(c) for c in blueprint)
+
+
+def _in_fill_scope(color_key: str, fill_letters: set[str], include_colorless: bool) -> bool:
+    """Whether a color bucket is one we're filling (all its colors requested, or colorless if asked)."""
+    if color_key == "C":
+        return include_colorless
+    return set(color_key) <= fill_letters
+
+
+def _entry(card: dict, status: str, lanes: dict[str, float]) -> dict:
+    """Build a completion result row for one card."""
+    return {
+        "name": card.get("name", ""),
+        "status": status,  # owned | fill | trim | upgrade-in | upgrade-out
+        "lane": best_lane_label(card, lanes) or (_color_key(card)),
+        "payoff": is_payoff(card, lanes),
+    }
+
+
+def reconcile_cube(
+    extend: list[dict],
+    pool: list[dict],
+    blueprint: list[dict],
+    lanes: dict[str, float],
+    *,
+    fill_letters: set[str],
+    include_colorless: bool,
+    do_trim: bool = False,
+    do_replace: bool = False,
+    replace_margin: float = 8.0,
+) -> tuple[list[dict], list[str]]:
+    """Reconcile the half-built cube to the blueprint's balance skeleton, choosing cards by theme-fit.
+
+    Per (color, cmc-band, role) bucket: fill under-count from the pool (best theme-fit), trim over-count
+    (lowest theme-fit, opt-in), and optionally replace a weak kept card with a materially better pool
+    card. Unfillable in-scope slots fall back to the blueprint's own card for that slot (proxy it).
+
+    Returns (entries, print_names) — entries are result rows; print_names are cards to proxy.
+    """
+    def fit(c: dict) -> float:
+        return theme_fit(c, lanes)
+
+    targets = blueprint_buckets(blueprint)
+    extend_by: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+    for c in extend:
+        extend_by[card_bucket(c)].append(c)
+    bp_by: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+    for c in blueprint:
+        bp_by[card_bucket(c)].append(c)
+    exclude = {_canonic(c.get("name", "")) for c in extend}
+    pool_by: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+    for c in pool:
+        if _canonic(c.get("name", "")) not in exclude:
+            pool_by[card_bucket(c)].append(c)
+
+    entries: list[dict] = []
+    print_names: list[str] = []
+    for bucket, target in targets.items():
+        ckey = bucket[0]
+        in_scope = _in_fill_scope(ckey, fill_letters, include_colorless)
+        have = sorted(extend_by.get(bucket, []), key=fit, reverse=True)
+        cands = sorted(pool_by.get(bucket, []), key=fit, reverse=True)
+
+        if len(have) >= target:
+            keep = have[:target] if do_trim else have
+            cut = have[target:] if do_trim else []
+            # optional replace: swap the weakest kept card for a much better on-theme pool card
+            if do_replace and in_scope and keep and cands and fit(cands[0]) - fit(keep[-1]) >= replace_margin:
+                entries += [_entry(keep[-1], "upgrade-out", lanes), _entry(cands[0], "upgrade-in", lanes)]
+                keep = keep[:-1]
+            entries += [_entry(c, "owned", lanes) for c in keep]
+            entries += [_entry(c, "trim", lanes) for c in cut]
+        else:
+            entries += [_entry(c, "owned", lanes) for c in have]
+            need = target - len(have)
+            if in_scope:
+                on_theme = [c for c in cands if fit(c) > 0]  # a fit-0 card carries none of the cube's lanes
+                fills = on_theme[:need]
+                entries += [_entry(c, "fill", lanes) for c in fills]
+                short = need - len(fills)
+            else:
+                short = 0  # not a color we're filling -> leave the gap silently
+            # unfilled in-scope slots: fall back to proxying the blueprint's own card for the slot
+            print_names.extend(bp_card.get("name", "") for bp_card in bp_by.get(bucket, [])[:short])
+    return entries, print_names
+
+
+def completion_lines(entries: list[dict]) -> list[str]:
+    """Archidekt import lines for a completed cube: each card grouped by its lane (+ status flags).
+
+    Categories: the card's lane (or color), plus ``Payoff`` for payoffs, ``Cut`` for trims, and
+    ``Upgrade`` for replacement in/out — so grouping by Category in Archidekt shows the whole plan.
+    """
+    lines: list[str] = []
+    for e in entries:
+        cats = [e["lane"] or "Other"]
+        if e["payoff"] and e["status"] in ("owned", "fill", "upgrade-in"):
+            cats.append("Payoff")
+        if e["status"] == "trim":
+            cats = ["Cut"]
+        elif e["status"] == "upgrade-out":
+            cats = ["Cut", "Upgrade"]
+        elif e["status"] == "upgrade-in":
+            cats.append("Upgrade")
+        name = e["name"].replace(",", "")
+        lines.append(f"1x {name} [{','.join(cats)}]")
+    return lines
 
 
 # Minimum IDF-weighted tag similarity to be considered a function match at all. Kept low (0.12) on
@@ -693,6 +925,52 @@ def print_list_lines(results: list[tuple[str, dict, list[dict], str]]) -> list[s
     return [f"1 {name}" for name, _common, _rows, status in results if status == "print"]
 
 
+def _run_completion(args: argparse.Namespace) -> None:
+    """Completion mode: finish a drifted cube from bulk by its emergent lanes (see plan/README)."""
+    extend = load_cards(args.extend)
+    blueprint = load_cards(args.cube)
+    pool = load_cards(args.owned) if args.owned else load_all_cards()
+    exclude_text = tuple(t.strip() for t in args.exclude_text.split(",") if t.strip())
+    if args.restrict or args.max_rarity or exclude_text:
+        pool = [
+            c for c in pool
+            if passes_restrictions(c, restrict=args.restrict, max_rarity=args.max_rarity, exclude_text=exclude_text)
+        ]
+
+    lanes = derive_lanes(extend)
+    print("Derived lanes (sanity-check before trusting fills):")
+    for sig, w in sorted(lanes.items(), key=itemgetter(1), reverse=True)[:15]:
+        print(f"  {sig:28} weight {w:.0f}")
+
+    # fill scope: explicit --fill-colors, else auto = blueprint colors absent/thin in the extend cube
+    if args.fill_colors:
+        toks = {t.strip().upper() for t in args.fill_colors.split(",") if t.strip()}
+        fill_letters = {t for t in toks if t in "WUBRG"}
+        include_colorless = "C" in toks
+    else:
+        have_colors = Counter(_color_key(c) for c in extend)
+        bp_colors = {_color_key(c) for c in blueprint}
+        fill_letters = {ch for k in bp_colors for ch in k if k != "C" and have_colors[k] == 0}
+        include_colorless = "C" in bp_colors and have_colors["C"] == 0
+    print(f"\nFilling colors: {sorted(fill_letters) or '(none)'}{' +colorless' if include_colorless else ''}")
+
+    entries, print_names = reconcile_cube(
+        extend, pool, blueprint, lanes,
+        fill_letters=fill_letters, include_colorless=include_colorless,
+        do_trim=args.trim, do_replace=args.replace,
+    )
+    counts = Counter(e["status"] for e in entries)
+    print(f"\n{counts.get('fill', 0)} filled · {counts.get('owned', 0)} kept · "
+          f"{counts.get('trim', 0)} trimmed · {counts.get('upgrade-in', 0)} upgraded · {len(print_names)} to proxy")
+
+    Path(args.out).write_text("\n".join(completion_lines(entries)) + "\n", encoding="utf-8")
+    print(f"Wrote {args.out}")
+    if args.print_list:
+        Path(args.print_list).write_text("\n".join(f"1 {n}" for n in print_names) + ("\n" if print_names else ""),
+                                         encoding="utf-8")
+        print(f"Wrote {len(print_names)} unfillable slots (proxy the blueprint card) to {args.print_list}")
+
+
 def main() -> None:
     """Parse args, find swaps for every un-owned target, and write the report (CSV or Archidekt)."""
     parser = argparse.ArgumentParser("swapfinder", description="Find owned functional substitutes for missing cards.")
@@ -721,7 +999,20 @@ def main() -> None:
     parser.add_argument("--w-kw", type=float, default=0.1, help="Weight on keyword similarity (default 0.1)")
     parser.add_argument("--w-type", type=float, default=0.1, help="Weight on card-type similarity (default 0.1)")
     parser.add_argument("--w-tag", type=float, default=0.4, help="Weight on Scryfall function-tag similarity (def 0.4)")
+    # Cube-completion mode (fill/strengthen a drifted cube from bulk, by its emergent lanes)
+    parser.add_argument("--extend", help="Completion mode: half-built cube (.txt) to finish from --owned "
+                        "by its emergent lanes, using --cube only as a balance blueprint")
+    parser.add_argument("--fill-colors", default="",
+                        help="Colors to fill in completion mode, e.g. 'R,G,C' (C=colorless); default auto")
+    parser.add_argument("--replace", action="store_true",
+                        help="Completion mode: also swap a weak existing card for a much better on-theme one")
+    parser.add_argument("--trim", action="store_true",
+                        help="Completion mode: cut over-count buckets down to blueprint size (reported)")
     args = parser.parse_args()
+
+    if args.extend:
+        _run_completion(args)
+        return
 
     cube = load_cards(args.cube)
     if args.owned:
