@@ -588,3 +588,9 @@ def test_reconcile_keeps_extend_cards_outside_blueprint_buckets(monkeypatch: pyt
     entries, _p = swapfinder.reconcile_cube(
         [gold], [], blueprint, lanes, fill_letters={"R"}, include_colorless=False, do_trim=True)
     assert {e["name"] for e in entries if e["status"] == "owned"} == {"Gold Signpost"}  # kept, not dropped
+
+
+def test_is_changeling_detection_paths() -> None:
+    assert swapfinder.is_changeling(_card("A", keywords=["Changeling"]))  # keyword
+    assert swapfinder.is_changeling(_card("B", oracle_text="Changeling (This card is every creature type.)"))
+    assert not swapfinder.is_changeling(_card("C", oracle_text="Flying", keywords=["Flying"]))

@@ -385,8 +385,16 @@ def card_subtypes(card: dict) -> frozenset[str]:
 
 
 def is_changeling(card: dict) -> bool:
-    """Whether a card is a changeling (counts as every creature type) — reinforces any tribe."""
-    return "changeling" in {k.lower() for k in card.get("keywords", [])} or "changeling" in card_tags(card)
+    """Whether a card is a changeling (counts as every creature type) — reinforces any tribe.
+
+    Detected via the keyword, the Scryfall ``changeling`` tag, or the oracle text (the word only
+    appears in the type-line reminder, so all three are checked for robustness).
+    """
+    if "changeling" in {k.lower() for k in card.get("keywords", [])} or "changeling" in card_tags(card):
+        return True
+    faces = card.get("card_faces") or []
+    text = " ".join(f.get("oracle_text", "") for f in faces) if faces else card.get("oracle_text", "") or ""
+    return "changeling" in text.lower()
 
 
 def card_signals(card: dict) -> frozenset[str]:
