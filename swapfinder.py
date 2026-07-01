@@ -369,8 +369,9 @@ _LANE_MIN_CARDS = 5           # a tag lane needs this many cube cards
 _LANE_MIN_IDF = 3.0           # ...and this much global specificity (drops card-advantage/draw noise)
 _TRIBE_MIN_BODIES = 4         # a subtype needs this many creatures to count as a tribe
 _KEYWORD_MIN = 4              # a keyword needs this many cards to be a (weak) lane signal
-_SUBTYPE_WEIGHT = 4.0         # fixed weight for a tribe signal (subtypes are strong intent markers)
-_KEYWORD_WEIGHT = 1.5         # keywords are weak on their own (flying is mostly incidental)
+_LANE_BASE = 100.0           # base weight; a lane's weight is BASE/representation (thin lanes score more)
+_SUBTYPE_MULT = 1.5          # tribes are strong intent markers -> favored
+_KEYWORD_MULT = 0.5          # keywords are weak on their own (flying is mostly incidental)
 
 
 def card_subtypes(card: dict) -> frozenset[str]:
@@ -382,6 +383,11 @@ def card_subtypes(card: dict) -> frozenset[str]:
     return frozenset(out)
 
 
+def is_changeling(card: dict) -> bool:
+    """Whether a card is a changeling (counts as every creature type) — reinforces any tribe."""
+    return "changeling" in {k.lower() for k in card.get("keywords", [])} or "changeling" in card_tags(card)
+
+
 def card_signals(card: dict) -> frozenset[str]:
     """All theme signals a card carries: function tags + ``subtype:X`` + ``kw:X`` (namespaced)."""
     sig = set(card_tags(card))
@@ -390,46 +396,123 @@ def card_signals(card: dict) -> frozenset[str]:
     return frozenset(sig)
 
 
+@cache
+def _tag_ancestry() -> dict[str, frozenset[str]]:
+    """Map each tag slug to its transitive ancestor slugs (from oracle_tags parent links)."""
+    try:
+        from mtg_proxies.scryfall.scryfall import _get_database
+
+        tags = _get_database("oracle_tags")
+    except Exception:
+        return {}
+    id_to_slug = {t["id"]: t["slug"] for t in tags}
+    parents = {t["slug"]: [id_to_slug[p] for p in t.get("parent_ids", []) if p in id_to_slug] for t in tags}
+
+    def ancestors(slug: str, seen: set[str]) -> set[str]:
+        out: set[str] = set()
+        for p in parents.get(slug, []):
+            if p not in seen:
+                seen.add(p)
+                out.add(p)
+                out |= ancestors(p, seen)
+        return out
+
+    return {slug: frozenset(ancestors(slug, set())) for slug in parents}
+
+
+@cache
+def _tag_families(tags: frozenset[str]) -> dict[str, str]:
+    """Group tags into families via ancestry (union-find): redundant same-lane tags share a family id.
+
+    So peek / peek-library / top-deck-manipulation / library-manipulation collapse into one lane
+    instead of being counted seven times. Unlinked tags are their own singleton family.
+    """
+    anc = _tag_ancestry()
+    parent = {t: t for t in tags}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    ordered = sorted(tags)
+    for i, a in enumerate(ordered):
+        for b in ordered[i + 1:]:
+            if b in anc.get(a, frozenset()) or a in anc.get(b, frozenset()):
+                parent[find(a)] = find(b)
+    return {t: find(t) for t in tags}
+
+
 def derive_lanes(cube: list[dict]) -> dict[str, float]:
-    """Auto-derive the cube's emergent lanes as a weighted signal map (the cube's identity).
+    """Auto-derive the cube's emergent lanes as a signal->weight map, weighted for BALANCE.
 
-    Combines three sources, all namespaced into one ``signal -> weight`` dict:
-    - tag lanes: IDF-weighted clustering (``count * idf``), kept only if on >= _LANE_MIN_CARDS cards and
-      specific enough (idf >= _LANE_MIN_IDF); meta/junk tags are already excluded by ``card_tags``.
-    - tribes: creature subtypes on >= _TRIBE_MIN_BODIES cards, minus generic filler subtypes.
-    - keyword themes: keywords on >= _KEYWORD_MIN cards (flying, enchant->auras), weighted low.
+    Sources (all namespaced into one dict): tag lanes (specific, >= _LANE_MIN_CARDS, idf-filtered,
+    then collapsed into families so a mega-lane isn't counted many times), tribes (subtypes >=
+    _TRIBE_MIN_BODIES, minus generic filler), keyword themes (>= _KEYWORD_MIN).
 
-    Weights let ``theme_fit`` rank a candidate by how much of the cube's identity it carries.
+    Each lane's weight is ``BASE / representation`` — INVERSELY proportional to how many cube cards
+    already occupy it. So an under-represented established lane (e.g. faeries) outweighs a saturated
+    one (card-selection), and ``theme_fit`` steers fills toward evening the cube out rather than
+    piling onto the biggest lane.
     """
     idf = _tag_idf()
-    tag_cnt: Counter[str] = Counter()
-    for c in cube:
-        tag_cnt.update(card_tags(c))
+    tag_cards: dict[str, set[int]] = defaultdict(set)
+    for i, c in enumerate(cube):
+        for t in card_tags(c):
+            tag_cards[t].add(i)
+    established = {t for t, cs in tag_cards.items() if len(cs) >= _LANE_MIN_CARDS and idf.get(t, 0.0) >= _LANE_MIN_IDF}
     lanes: dict[str, float] = {}
-    for tag, n in tag_cnt.items():
-        if n >= _LANE_MIN_CARDS and idf.get(tag, 0.0) >= _LANE_MIN_IDF:
-            lanes[tag] = n * idf[tag]
-    sub_cnt: Counter[str] = Counter()
-    for c in cube:
-        sub_cnt.update(card_subtypes(c))
-    for sub, n in sub_cnt.items():
-        if n >= _TRIBE_MIN_BODIES and sub not in _GENERIC_SUBTYPES:
-            lanes[f"subtype:{sub}"] = _SUBTYPE_WEIGHT * n
-    kw_cnt: Counter[str] = Counter()
-    for c in cube:
-        kw_cnt.update(k.lower() for k in c.get("keywords", []) if k.lower() not in _CAST_KEYWORDS)
-    for kw, n in kw_cnt.items():
-        if n >= _KEYWORD_MIN:
-            lanes[f"kw:{kw}"] = _KEYWORD_WEIGHT * n
+    if established:
+        fam = _tag_families(frozenset(established))
+        fam_cards: dict[str, set[int]] = defaultdict(set)
+        for t in established:
+            fam_cards[fam[t]] |= tag_cards[t]
+        for t in established:
+            lanes[t] = _LANE_BASE / len(fam_cards[fam[t]])  # inverse representation (by family)
+
+    sub_cards: dict[str, set[int]] = defaultdict(set)
+    for i, c in enumerate(cube):
+        for s in card_subtypes(c):
+            sub_cards[s].add(i)
+    for s, cs in sub_cards.items():
+        if len(cs) >= _TRIBE_MIN_BODIES and s not in _GENERIC_SUBTYPES:
+            lanes[f"subtype:{s}"] = _SUBTYPE_MULT * _LANE_BASE / len(cs)
+
+    kw_cards: dict[str, set[int]] = defaultdict(set)
+    for i, c in enumerate(cube):
+        for k in c.get("keywords", []):
+            if k.lower() not in _CAST_KEYWORDS:
+                kw_cards[k.lower()].add(i)
+    for k, cs in kw_cards.items():
+        if len(cs) >= _KEYWORD_MIN:
+            lanes[f"kw:{k}"] = _KEYWORD_MULT * _LANE_BASE / len(cs)
     return lanes
 
 
 def theme_fit(card: dict, lanes: dict[str, float]) -> float:
-    """How much of the cube's identity this card carries: summed weight of its signals that are lanes.
+    """How much of the cube's (balance-weighted) identity a card carries; higher = better fill.
 
-    Higher = more on-theme. 0 if the card shares none of the cube's lanes.
+    Tag hits are collapsed by family (one credit per lane family, taking the max), so a card touching
+    seven card-selection tags gets credit for card-selection ONCE. Changelings count for every tribe.
+    0 if the card shares none of the cube's lanes.
     """
-    return sum(lanes.get(s, 0.0) for s in card_signals(card))
+    sigs = set(card_signals(card))
+    if is_changeling(card):
+        sigs |= {s for s in lanes if s.startswith("subtype:")}
+    hits = [s for s in sigs if s in lanes]
+    if not hits:
+        return 0.0
+    total = sum(lanes[s] for s in hits if s.startswith(("subtype:", "kw:")))
+    tag_hits = [s for s in hits if not s.startswith(("subtype:", "kw:"))]
+    if tag_hits:
+        fam = _tag_families(frozenset(s for s in lanes if not s.startswith(("subtype:", "kw:"))))
+        by_family: dict[str, float] = {}
+        for s in tag_hits:
+            fid = fam.get(s, s)
+            by_family[fid] = max(by_family.get(fid, 0.0), lanes[s])
+        total += sum(by_family.values())
+    return total
 
 
 def _is_payoff_signal(sig: str) -> bool:
@@ -461,7 +544,10 @@ def card_categories(card: dict, lanes: dict[str, float]) -> list[str]:
     Every tribe it's in plus its top mechanical lanes, so e.g. a Faerie that also exiles itself shows
     under both Faerie and Exile Self. Falls back to the card's color when it serves no lane.
     """
-    hits = [(w, s) for s in card_signals(card) if (w := lanes.get(s, 0.0)) > 0]
+    sigs = set(card_signals(card))
+    if is_changeling(card):
+        sigs |= {s for s in lanes if s.startswith("subtype:")}
+    hits = [(w, s) for s in sigs if (w := lanes.get(s, 0.0)) > 0]
     if not hits:
         return [_color_key(card)]
     tribes = [s for _w, s in hits if s.startswith("subtype:")]
@@ -1049,9 +1135,9 @@ def main() -> None:
                         help="Completion mode: also swap a weak existing card for a much better on-theme one")
     parser.add_argument("--trim", action="store_true",
                         help="Completion mode: cut over-count buckets down to blueprint size (reported)")
-    parser.add_argument("--replace-margin", type=float, default=40.0,
+    parser.add_argument("--replace-margin", type=float, default=8.0,
                         help="How much better (theme-fit) a bulk card must be to replace a kept one "
-                        "(default 40; lower = more churn toward the dominant lane)")
+                        "(default 8; lower = more churn)")
     args = parser.parse_args()
 
     if args.extend:

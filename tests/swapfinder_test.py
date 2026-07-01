@@ -199,11 +199,19 @@ def test_is_meta_tag_filters_structural_noise() -> None:
         assert not swapfinder._is_meta_tag(functional), functional
 
 
+def _stub_ancestry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub tag ancestry to empty so lane families are singletons (deterministic, offline)."""
+    monkeypatch.setattr(swapfinder, "_tag_ancestry", dict)
+    if hasattr(swapfinder._tag_families, "cache_clear"):
+        swapfinder._tag_families.cache_clear()
+
+
 def _flat_idf(monkeypatch: pytest.MonkeyPatch, index: dict) -> None:
     """Make every tag weigh 1.0 so tag_similarity reduces to plain Jaccard for assertions."""
     monkeypatch.setattr(swapfinder, "_oracle_tag_index", lambda: index)
     all_tags = {t for tags in index.values() for t in tags}
     monkeypatch.setattr(swapfinder, "_tag_idf", lambda: dict.fromkeys(all_tags, 1.0))
+    _stub_ancestry(monkeypatch)
 
 
 def test_tag_similarity_reduces_to_jaccard_with_flat_idf(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -461,6 +469,7 @@ def _stub_lane_index(monkeypatch: pytest.MonkeyPatch, index: dict) -> None:
     monkeypatch.setattr(swapfinder, "_oracle_tag_index", lambda: index)
     all_tags = {t for tags in index.values() for t in tags}
     monkeypatch.setattr(swapfinder, "_tag_idf", lambda: dict.fromkeys(all_tags, 5.0))
+    _stub_ancestry(monkeypatch)
 
 
 def test_derive_lanes_finds_tag_tribe_filters_junk(monkeypatch: pytest.MonkeyPatch) -> None:
