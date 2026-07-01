@@ -641,45 +641,49 @@ def reconcile_cube(
 
     entries: list[dict] = []
     print_names: list[str] = []
-    for bucket, target in targets.items():
-        ckey = bucket[0]
-        in_scope = _in_fill_scope(ckey, fill_letters, include_colorless)
+    # Iterate every bucket the cube OR the blueprint touches — so a drifted card in a bucket the
+    # blueprint lacks (your gold signposts) is kept, never silently dropped.
+    for bucket in set(targets) | set(extend_by):
+        target = targets.get(bucket, 0)
+        in_scope = _in_fill_scope(bucket[0], fill_letters, include_colorless)
         have = sorted(extend_by.get(bucket, []), key=fit, reverse=True)
         cands = sorted(pool_by.get(bucket, []), key=fit, reverse=True)
 
-        if len(have) >= target:
-            keep = list(have[:target] if do_trim else have)
-            cut = list(have[target:] if do_trim else [])
-            ups_out: list[dict] = []
-            ups_in: list[dict] = []
-            # optional replace (cube-wide, any color you've built): greedily swap the weakest kept
-            # cards for much-better on-theme pool cards. Both lists are fit-sorted, so once the best
-            # remaining pool card can't beat the weakest kept by the margin, none can — stop.
-            if do_replace:
-                ci = 0
-                for ki in range(len(keep) - 1, -1, -1):
-                    if ci < len(cands) and fit(cands[ci]) - fit(keep[ki]) >= replace_margin:
-                        ups_out.append(keep[ki])
-                        ups_in.append(cands[ci])
-                        keep[ki] = None  # type: ignore[call-overload]
-                        ci += 1
-                    else:
-                        break
-                keep = [c for c in keep if c is not None]
-            entries += [_entry(c, "owned", lanes) for c in keep]
-            entries += [_entry(c, "upgrade-out", lanes) for c in ups_out]
-            entries += [_entry(c, "upgrade-in", lanes) for c in ups_in]
-            entries += [_entry(c, "trim", lanes) for c in cut]
+        # keep vs trim: only trim a blueprint bucket that's over its target (opt-in). Buckets with no
+        # blueprint slot (target 0) are the cube's own drift — always kept, never trimmed to nothing.
+        if do_trim and target > 0 and len(have) > target:
+            keep, cut = list(have[:target]), list(have[target:])
         else:
-            entries += [_entry(c, "owned", lanes) for c in have]
-            need = target - len(have)
-            if in_scope:
-                on_theme = [c for c in cands if fit(c) > 0]  # a fit-0 card carries none of the cube's lanes
-                fills = on_theme[:need]
-                entries += [_entry(c, "fill", lanes) for c in fills]
-                short = need - len(fills)
-            else:
-                short = 0  # not a color we're filling -> leave the gap silently
+            keep, cut = list(have), []
+
+        # optional replace (cube-wide): greedily swap the weakest kept cards for much-better on-theme
+        # pool cards. Both lists are fit-sorted, so once the best remaining can't beat the weakest, stop.
+        ups_out: list[dict] = []
+        ups_in: list[dict] = []
+        ci = 0
+        if do_replace:
+            for ki in range(len(keep) - 1, -1, -1):
+                if ci < len(cands) and fit(cands[ci]) - fit(keep[ki]) >= replace_margin:
+                    ups_out.append(keep[ki])
+                    ups_in.append(cands[ci])
+                    keep[ki] = None  # type: ignore[call-overload]
+                    ci += 1
+                else:
+                    break
+            keep = [c for c in keep if c is not None]
+
+        entries += [_entry(c, "owned", lanes) for c in keep]
+        entries += [_entry(c, "upgrade-out", lanes) for c in ups_out]
+        entries += [_entry(c, "upgrade-in", lanes) for c in ups_in]
+        entries += [_entry(c, "trim", lanes) for c in cut]
+
+        # fill an under-count blueprint bucket in a color we're filling
+        need = target - len(have)
+        if need > 0 and in_scope:
+            on_theme = [c for c in cands[ci:] if fit(c) > 0]  # skip cands consumed by replace; on-theme only
+            fills = on_theme[:need]
+            entries += [_entry(c, "fill", lanes) for c in fills]
+            short = need - len(fills)
             # unfilled in-scope slots: fall back to proxying the blueprint's own card for the slot
             print_names.extend(bp_card.get("name", "") for bp_card in bp_by.get(bucket, [])[:short])
     return entries, print_names

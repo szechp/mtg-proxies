@@ -576,3 +576,15 @@ def test_reconcile_replace_upgrades_any_color_not_just_fill_scope(monkeypatch: p
         do_replace=True, replace_margin=8.0)
     assert {e["name"] for e in entries if e["status"] == "upgrade-in"} == {"Strong Bulk"}
     assert {e["name"] for e in entries if e["status"] == "upgrade-out"} == {"Weak Kept"}
+
+
+def test_reconcile_keeps_extend_cards_outside_blueprint_buckets(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A cube card in a (color,cmc,role) bucket the blueprint lacks (e.g. a gold signpost) must be
+    # KEPT, not silently dropped. Regression for the "all my multis are gone" bug.
+    _stub_lane_index(monkeypatch, {"g": frozenset({"mill-self"})})
+    lanes = {"mill-self": 40.0}
+    blueprint = [_card("bp", colors=["R"], cmc=1.0, type_line="Instant")]  # only an R/1/Instant slot
+    gold = _card("Gold Signpost", colors=["B", "G"], cmc=3.0, type_line="Creature — Elf") | {"oracle_id": "g"}
+    entries, _p = swapfinder.reconcile_cube(
+        [gold], [], blueprint, lanes, fill_letters={"R"}, include_colorless=False, do_trim=True)
+    assert {e["name"] for e in entries if e["status"] == "owned"} == {"Gold Signpost"}  # kept, not dropped
