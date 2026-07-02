@@ -692,11 +692,17 @@ def reconcile_cube(
     # its colors still has room in the presence budget. No blueprint cap and no add-then-cut churn —
     # gold is bounded by the budget, so keeping more multis just leaves less room for mono ("switch
     # the colors around"). Cube gold you own is tried first (ties keep it).
-    gold_have = [c for c in extend if len(card_colors(c)) >= 2 and fit(c) >= _GOLD_JUNK_FLOOR]
-    gold_pool = list(
-        {canon(c): c for c in pool
-         if len(card_colors(c)) >= 2 and canon(c) not in exclude and fit(c) >= _GOLD_JUNK_FLOOR}.values()
-    )
+    def is_signpost(c: dict) -> bool:
+        # a signpost is a multicolor PERMANENT (archetype anchor) above the junk floor — not a dual
+        # instant/sorcery, which is a one-shot spell, not a signpost (matches blueprint gold: permanents).
+        return (
+            len(card_colors(c)) >= 2
+            and primary_type(c) not in ("Instant", "Sorcery")
+            and fit(c) >= _GOLD_JUNK_FLOOR
+        )
+
+    gold_have = [c for c in extend if is_signpost(c)]
+    gold_pool = list({canon(c): c for c in pool if is_signpost(c) and canon(c) not in exclude}.values())
     # Gold is bounded two ways so it can't eat the cube: by each color's presence budget, and by an
     # overall share (~_GOLD_SHARE of the blueprint) — much more than the blueprint's own gold count,
     # so every real signpost gets in, but the cube stays mostly mono.

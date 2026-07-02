@@ -633,3 +633,16 @@ def test_gold_share_dial(monkeypatch: pytest.MonkeyPatch) -> None:
     n_few = sum(1 for e in few if e["status"] == "signpost")
     n_many = sum(1 for e in many if e["status"] == "signpost")
     assert n_many > n_few  # a higher gold-share admits more multicolor signposts
+
+
+def test_signposts_exclude_dual_spells(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A dual instant/sorcery is a one-shot spell, not an archetype signpost -> not added as gold.
+    _stub_lane_index(monkeypatch, {"c": frozenset({"mill-self"}), "s": frozenset({"mill-self"})})
+    lanes = {"mill-self": 40.0}
+    blueprint = [_card("gbp", colors=["B", "G"], cmc=3.0, type_line="Creature")]
+    dual_creature = _card("Gold Creature", colors=["B", "G"], type_line="Creature — Elf") | {"oracle_id": "c"}
+    dual_spell = _card("Gold Instant", colors=["B", "G"], type_line="Instant") | {"oracle_id": "s"}
+    entries, _p = swapfinder.reconcile_cube([], [dual_creature, dual_spell], blueprint, lanes)
+    signs = {e["name"] for e in entries if e["status"] == "signpost"}
+    assert "Gold Creature" in signs
+    assert "Gold Instant" not in signs  # dual spell is not a signpost
