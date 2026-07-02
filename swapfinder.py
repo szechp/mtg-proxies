@@ -822,6 +822,9 @@ _DEFAULT_EXCLUDE_TEXT = (
     "commander creatures", "your commander", "choose a background",  # Commander-format only
 )
 _DFC_LAYOUTS = frozenset({"transform", "modal_dfc", "double_faced_token", "meld", "reversible_card"})
+# "Sacrifice a/another/two ... : Add {mana}" — a sac-for-mana engine that needs creature fodder, dead
+# in a token-less cube. Excludes "sacrifice this/~" (Lotus Petal-style, sacs itself, fine).
+_SAC_FODDER_RE = re.compile(r"sacrifice (?:a|an|another|two|three|x|\d+)\b[^.:]*:\s*add\b")
 _RARITY_ORDER = {"common": 0, "uncommon": 1, "rare": 2, "mythic": 3, "special": 3, "bonus": 3}
 
 
@@ -850,6 +853,8 @@ def passes_restrictions(card: dict, *, restrict: bool, max_rarity: str | None, e
             return False
         name = (card.get("name") or "").lower()
         if name and f"named {name}" in text:  # needs multiples of itself (Faerie Miscreant) — dead in singleton
+            return False
+        if _SAC_FODDER_RE.search(text):  # sac-a-creature-for-mana engine — needs fodder, dead token-less
             return False
         if card.get("layout") in _DFC_LAYOUTS:
             return False

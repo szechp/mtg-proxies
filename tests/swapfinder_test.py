@@ -656,6 +656,16 @@ def test_restrictions_ban_needs_multiples_of_itself() -> None:
     assert _passes(name="Doom Blade", oracle_text="Destroy target nonblack creature.", rarity="common")
 
 
+def test_restrictions_ban_sac_for_mana_needs_fodder() -> None:
+    # "Sacrifice a <creature>: Add {mana}" is a ramp engine with no fodder in a token-less cube.
+    assert not _passes(name="Skirk Prospector", oracle_text="Sacrifice a Goblin: Add {R}.", rarity="common")
+    assert not _passes(name="Ashnod's Altar", oracle_text="Sacrifice a creature: Add {C}{C}.", rarity="uncommon")
+    # Sacs itself (not fodder) → fine; sac-for-value (not mana) → fine.
+    assert _passes(name="Lotus Petal", oracle_text="{T}, Sacrifice this artifact: Add one mana of any color.",
+                   rarity="common")
+    assert _passes(name="Viscera Seer", oracle_text="Sacrifice a creature: Scry 1.", rarity="common")
+
+
 def test_theme_lanes_forces_tribe() -> None:
     lanes = swapfinder.theme_lanes(["elves", "goblins"])
     assert lanes["subtype:Elf"] > 0 and lanes["typal-elf"] > 0
