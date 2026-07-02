@@ -522,6 +522,27 @@ def derive_lanes(cube: list[dict]) -> dict[str, float]:
     return lanes
 
 
+_PLURAL_TRIBES = {"elves": "Elf", "dwarves": "Dwarf", "wolves": "Wolf", "thieves": "Thief"}
+
+
+def theme_lanes(tokens: list[str], weight: float = 40.0) -> dict[str, float]:
+    """Turn ``--theme`` tokens into lane signals to force lanes the auto-derive can't see yet.
+
+    Each token is treated as a tribe: e.g. ``elves`` -> the ``subtype:Elf`` lane plus its ``typal-elf``
+    payoff tag, weighted so elf bodies and elf payoffs both score. Lets you seed a green elf subtheme
+    even though the half-built (WUB) cube has no elves to derive it from.
+    """
+    lanes: dict[str, float] = {}
+    for tok in tokens:
+        t = tok.strip().lower()
+        if not t:
+            continue
+        sub = _PLURAL_TRIBES.get(t) or (t.removesuffix("s"))
+        lanes[f"subtype:{sub.title()}"] = weight
+        lanes[f"typal-{sub.lower()}"] = weight
+    return lanes
+
+
 def theme_fit(card: dict, lanes: dict[str, float]) -> float:
     """How much of the cube's (balance-weighted) identity a card carries; higher = better fill.
 
@@ -1133,6 +1154,10 @@ def _run_completion(args: argparse.Namespace) -> None:
         ]
 
     lanes = derive_lanes(extend)
+    forced = theme_lanes([t for t in args.theme.split(",") if t.strip()])
+    if forced:
+        lanes.update({sig: max(w, lanes.get(sig, 0.0)) for sig, w in forced.items()})
+        print(f"Forced themes: {sorted({s.split(':', 1)[-1] for s in forced})}")
     print("Derived lanes (sanity-check):")
     for sig, w in sorted(lanes.items(), key=itemgetter(1), reverse=True)[:15]:
         print(f"  {sig:28} weight {w:.0f}")
@@ -1192,6 +1217,8 @@ def main() -> None:
     parser.add_argument("--gold-share", type=float, default=_GOLD_SHARE,
                         help=f"Fraction of the cube allowed to be multicolor signposts (default {_GOLD_SHARE}; "
                         "e.g. 0.2 for more gold, 0.05 for fewer)")
+    parser.add_argument("--theme", default="",
+                        help="Force tribe lanes the half-built cube can't derive yet, e.g. 'elves,goblins'")
     # Deprecated completion flags — accepted but ignored (the behavior is automatic now).
     parser.add_argument("--fill-colors", default="", help=argparse.SUPPRESS)
     parser.add_argument("--replace-margin", type=float, default=0.0, help=argparse.SUPPRESS)

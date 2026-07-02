@@ -654,3 +654,12 @@ def test_restrictions_ban_needs_multiples_of_itself() -> None:
                        oracle_text="Flying\nWhen this creature enters, if you control another creature "
                        "named Faerie Miscreant, draw a card.")
     assert _passes(name="Doom Blade", oracle_text="Destroy target nonblack creature.", rarity="common")
+
+
+def test_theme_lanes_forces_tribe() -> None:
+    lanes = swapfinder.theme_lanes(["elves", "goblins"])
+    assert lanes["subtype:Elf"] > 0 and lanes["typal-elf"] > 0
+    assert lanes["subtype:Goblin"] > 0
+    # an elf now scores via the forced lane even if the cube never derived elves
+    elf = _card("Some Elf", type_line="Creature — Elf")
+    assert swapfinder.theme_fit(elf, lanes) > 0
