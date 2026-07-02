@@ -827,6 +827,9 @@ def passes_restrictions(card: dict, *, restrict: bool, max_rarity: str | None, e
             return False
         if "Background" in card.get("type_line", ""):  # Commander-format card type
             return False
+        name = (card.get("name") or "").lower()
+        if name and f"named {name}" in text:  # needs multiples of itself (Faerie Miscreant) — dead in singleton
+            return False
         if card.get("layout") in _DFC_LAYOUTS:
             return False
         keywords = {k.lower() for k in card.get("keywords", [])}

@@ -646,3 +646,11 @@ def test_signposts_exclude_dual_spells(monkeypatch: pytest.MonkeyPatch) -> None:
     signs = {e["name"] for e in entries if e["status"] == "signpost"}
     assert "Gold Creature" in signs
     assert "Gold Instant" not in signs  # dual spell is not a signpost
+
+
+def test_restrictions_ban_needs_multiples_of_itself() -> None:
+    # Cards that only work with another copy of themselves are dead in a singleton cube.
+    assert not _passes(name="Faerie Miscreant", rarity="common",
+                       oracle_text="Flying\nWhen this creature enters, if you control another creature "
+                       "named Faerie Miscreant, draw a card.")
+    assert _passes(name="Doom Blade", oracle_text="Destroy target nonblack creature.", rarity="common")
