@@ -1154,10 +1154,17 @@ def _run_completion(args: argparse.Namespace) -> None:
         ]
 
     lanes = derive_lanes(extend)
-    forced = theme_lanes([t for t in args.theme.split(",") if t.strip()])
-    if forced:
+    tokens = [t for t in args.theme.split(",") if t.strip()]
+    if tokens:
+        # weight a forced theme at the MEDIAN of the cube's existing tribes (or lanes) so it comes in
+        # as a peer/secondary lane — never above the established main themes.
+        import statistics
+        tribes = [w for k, w in lanes.items() if k.startswith("subtype:")]
+        ref = statistics.median(tribes or list(lanes.values())) if lanes else 20.0
+        forced = theme_lanes(tokens, weight=ref)
         lanes.update({sig: max(w, lanes.get(sig, 0.0)) for sig, w in forced.items()})
-        print(f"Forced themes: {sorted({s.split(':', 1)[-1] for s in forced})}")
+        print(f"Forced themes at weight {ref:.0f} (peer to existing tribes): "
+              f"{sorted({s.split(':', 1)[-1] for s in forced})}")
     print("Derived lanes (sanity-check):")
     for sig, w in sorted(lanes.items(), key=itemgetter(1), reverse=True)[:15]:
         print(f"  {sig:28} weight {w:.0f}")
