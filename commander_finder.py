@@ -269,8 +269,14 @@ def score(commander: dict, recs: dict[str, dict], owned: dict[str, dict]) -> Com
     return CommanderScore(card=commander, owned_recs=owned_recs, missing_recs=missing_recs, total_recs=len(recs))
 
 
-def rank_key(result: CommanderScore) -> tuple:
-    """Sort key: most owned first, high-synergy-owned as tie-break, then name for stability."""
+def rank_key(result: CommanderScore, *, by: str = "owned") -> tuple:
+    """Sort key for a ranking axis: ``owned`` (total, high-syn tie-break) or ``high-synergy`` (inverse).
+
+    ``high-synergy`` surfaces on-theme skeletons over staple piles — useful when the bulk is
+    dominated by one set whose commanders all overlap the same generic cards.
+    """
+    if by == "high-synergy":
+        return (-result.high_synergy_owned, -result.owned_count, result.card["name"])
     return (-result.owned_count, -result.high_synergy_owned, result.card["name"])
 
 
@@ -348,11 +354,18 @@ def main() -> None:
     parser.add_argument("--out", help="Output report path (default: <owned>-commanders.txt next to the input)")
     parser.add_argument("--top", type=int, default=15, help="Commanders to detail with skeleton lists (default 15)")
     parser.add_argument("--min-owned", type=int, default=10, help="Drop commanders below K owned cards (default 10)")
+    parser.add_argument(
+        "--by",
+        choices=["owned", "high-synergy"],
+        default="owned",
+        help="Ranking axis: total owned recs, or owned HIGH-SYNERGY recs (on-theme, resists staple inflation)",
+    )
     parser.add_argument("--no-cache", action="store_true", help="Refetch EDHREC pages, ignoring the disk cache")
     args = parser.parse_args()
 
     owned_path = Path(args.owned).expanduser()
-    out_path = Path(args.out).expanduser() if args.out else owned_path.with_name(f"{owned_path.stem}-commanders.txt")
+    default_stem = f"{owned_path.stem}-commanders" + ("-by-synergy" if args.by == "high-synergy" else "")
+    out_path = Path(args.out).expanduser() if args.out else owned_path.with_name(f"{default_stem}.txt")
 
     print(f"Loading bulk from {owned_path} ...")
     owned = load_owned(owned_path)
@@ -379,11 +392,12 @@ def main() -> None:
         rankings.append(score(commander, recommended_cards(payload, name), owned))
     print()
 
-    rankings = sorted((r for r in rankings if r.owned_count >= args.min_owned), key=rank_key)
+    rankings = sorted((r for r in rankings if r.owned_count >= args.min_owned), key=lambda r: rank_key(r, by=args.by))
     text = report(rankings, top=args.top, no_page=no_page, failed=failed)
     out_path.write_text(text, encoding="utf-8")
 
-    print(f"\nTop commanders by owned EDHREC-recommended cards (full report: {out_path}):")
+    axis = "owned EDHREC-recommended cards" if args.by == "owned" else "owned HIGH-SYNERGY cards"
+    print(f"\nTop commanders by {axis} (full report: {out_path}):")
     for line in text.splitlines()[5 : 6 + min(len(rankings), args.top)]:
         print(line)
     if no_page:

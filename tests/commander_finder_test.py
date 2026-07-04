@@ -179,18 +179,28 @@ def test_score_empty_recs_has_zero_coverage() -> None:
     assert result.coverage == pytest.approx(0.0)
 
 
-def test_rank_key_orders_by_owned_then_high_synergy() -> None:
-    def fake(name: str, owned_count: int, high_syn: int) -> commander_finder.CommanderScore:
-        owned_recs = [{"name": f"c{i}", "inclusion": 0, "high_synergy": i < high_syn} for i in range(owned_count)]
-        return commander_finder.CommanderScore(
-            card=_card(name), owned_recs=owned_recs, missing_recs=[], total_recs=owned_count
-        )
+def _fake_score(name: str, owned_count: int, high_syn: int) -> commander_finder.CommanderScore:
+    owned_recs = [{"name": f"c{i}", "inclusion": 0, "high_synergy": i < high_syn} for i in range(owned_count)]
+    return commander_finder.CommanderScore(
+        card=_card(name), owned_recs=owned_recs, missing_recs=[], total_recs=owned_count
+    )
 
-    a = fake("Alpha", owned_count=5, high_syn=0)
-    b = fake("Beta", owned_count=9, high_syn=1)
-    c = fake("Gamma", owned_count=5, high_syn=3)
+
+def test_rank_key_orders_by_owned_then_high_synergy() -> None:
+    a = _fake_score("Alpha", owned_count=5, high_syn=0)
+    b = _fake_score("Beta", owned_count=9, high_syn=1)
+    c = _fake_score("Gamma", owned_count=5, high_syn=3)
     ranked = sorted([a, b, c], key=commander_finder.rank_key)
     assert [r.card["name"] for r in ranked] == ["Beta", "Gamma", "Alpha"]
+
+
+def test_rank_key_by_high_synergy_inverts_priority() -> None:
+    a = _fake_score("Alpha", owned_count=5, high_syn=0)
+    b = _fake_score("Beta", owned_count=9, high_syn=1)
+    c = _fake_score("Gamma", owned_count=5, high_syn=3)
+    d = _fake_score("Delta", owned_count=7, high_syn=1)  # ties Beta on high-syn, fewer owned
+    ranked = sorted([a, b, c, d], key=lambda r: commander_finder.rank_key(r, by="high-synergy"))
+    assert [r.card["name"] for r in ranked] == ["Gamma", "Beta", "Delta", "Alpha"]
 
 
 # --- load_owned ---
