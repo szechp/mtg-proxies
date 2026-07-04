@@ -95,6 +95,19 @@ def test_dfc_qualifies_on_front_face_only() -> None:
     assert not commander_finder.is_commander(back_legend)
 
 
+def test_find_all_commanders_draws_from_full_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    import swapfinder
+
+    pool = [
+        _card("Niv-Mizzet, Parun", type_line="Legendary Creature — Dragon Wizard"),
+        _card("Goblin Piker", type_line="Creature — Goblin"),
+        _card("Krenko, Mob Boss"),
+    ]
+    monkeypatch.setattr(swapfinder, "load_all_cards", lambda: pool)
+    names = [c["name"] for c in commander_finder.find_all_commanders()]
+    assert names == ["Krenko, Mob Boss", "Niv-Mizzet, Parun"]
+
+
 def test_find_commanders_filters_and_sorts() -> None:
     owned = {
         "krenko, mob boss": _card("Krenko, Mob Boss"),

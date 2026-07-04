@@ -123,6 +123,17 @@ def find_commanders(owned: dict[str, dict]) -> list[dict]:
     return sorted((card for card in owned.values() if is_commander(card)), key=itemgetter("name"))
 
 
+def find_all_commanders() -> list[dict]:
+    """Return every commander-legal design in Magic from Scryfall's Oracle bulk (lazy import).
+
+    Used by ``--all-commanders``: the bulk then only supplies the pool of owned cards to score
+    against, so a commander can surface even when the legend itself isn't owned.
+    """
+    import swapfinder
+
+    return sorted((c for c in swapfinder.load_all_cards() if is_commander(c)), key=itemgetter("name"))
+
+
 def edhrec_slug(name: str) -> str:
     """Derive the EDHREC URL slug for a commander name.
 
@@ -360,17 +371,31 @@ def main() -> None:
         default="owned",
         help="Ranking axis: total owned recs, or owned HIGH-SYNERGY recs (on-theme, resists staple inflation)",
     )
+    parser.add_argument(
+        "--all-commanders",
+        action="store_true",
+        help="Scan EVERY commander in Magic (~3300 EDHREC fetches on first run, disk-cached after), not just "
+        "legends you own — finds decks where you own the 99 but not the general",
+    )
     parser.add_argument("--no-cache", action="store_true", help="Refetch EDHREC pages, ignoring the disk cache")
     args = parser.parse_args()
 
     owned_path = Path(args.owned).expanduser()
-    default_stem = f"{owned_path.stem}-commanders" + ("-by-synergy" if args.by == "high-synergy" else "")
+    default_stem = f"{owned_path.stem}-commanders"
+    if args.all_commanders:
+        default_stem += "-all"
+    if args.by == "high-synergy":
+        default_stem += "-by-synergy"
     out_path = Path(args.out).expanduser() if args.out else owned_path.with_name(f"{default_stem}.txt")
 
     print(f"Loading bulk from {owned_path} ...")
     owned = load_owned(owned_path)
-    commanders = find_commanders(owned)
-    print(f"{len(owned)} distinct cards, {len(commanders)} possible commanders. Fetching EDHREC pages ...")
+    if args.all_commanders:
+        commanders = find_all_commanders()
+        print(f"{len(owned)} distinct cards owned; scanning all {len(commanders)} commanders in Magic ...")
+    else:
+        commanders = find_commanders(owned)
+        print(f"{len(owned)} distinct cards, {len(commanders)} possible commanders. Fetching EDHREC pages ...")
 
     session = requests.Session()
     rankings: list[CommanderScore] = []
