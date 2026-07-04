@@ -130,6 +130,7 @@ future-annotations = true
 "upscale.py" = ["T20"]
 "picker.py" = ["T20"]
 "swapfinder.py" = ["T20"]
+"commander_finder.py" = ["T20"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 banned-module-level-imports = ["mtg_proxies"]
