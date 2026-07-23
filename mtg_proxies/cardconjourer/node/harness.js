@@ -543,6 +543,32 @@ function loadEngineFile(rel) {
             );
         }
     }
+    // Mana-symbol vertical centering is anchor-based: manaSymbolY = canvasMargin +
+    // textSize*0.34 - manaSymbolHeight/2, so the symbol's CENTER always lands at the
+    // fixed point (canvasMargin + textSize*0.34) regardless of manaSymbol.height —
+    // shrinking height only shrinks the symbol's extent around that same center, it
+    // can never move the center itself. That anchor is tuned for full pip-height
+    // icons (height=1, spanning almost the whole cap-height-to-baseline zone), which
+    // makes it LOOK vertically centered in the line simply because the icon is tall
+    // enough to span most of that zone. Our custom {mtgproxiesinf} glyph is
+    // deliberately shorter (cap-height-sized, not pip-sized — see the registration
+    // comment above), so centering on that same anchor reads as top-aligned instead.
+    // Patch in a downward offset for this one symbol name only; every other symbol
+    // (numerals, WUBRG, {t}, {inf}, …) is untouched.
+    if (rel.endsWith('creator-23.js')) {
+        const before2 = code;
+        code = code.replace(
+            /(var manaSymbolY = canvasMargin \+ textSize \* 0\.34 - manaSymbolHeight \/ 2;\s*)/,
+            "$1if (manaSymbol.name === 'mtgproxiesinf') { manaSymbolY += textSize * 0.08; }\n"
+        );
+        if (code === before2) {
+            throw new Error(
+                "mtgproxiesinf vertical-offset patch did not match in creator-23.js — " +
+                "has CC upstream changed writeText's manaSymbolY formula? Update the " +
+                "regex or the ∞ glyph on Infinity Stone cards will render top-aligned."
+            );
+        }
+    }
     // (Hanging-punctuation patch was tried and reverted — see git history.
     // CC's wrap loop doesn't cleanly support retrying for a punctuation-only
     // overflow without leaving stale mana-symbol state from the prior pass,
@@ -609,6 +635,36 @@ for (const key of ['brush', 'whitebrush']) {
     if (vb) sym.height = sym.width * (parseFloat(vb[2]) / parseFloat(vb[1]));
 }
 
+// Custom mana symbol: bare "∞" glyph, no circular mana-pip badge. CC's own
+// bundled {inf} symbol (img/manaSymbols/inf.svg) draws the same lemniscate on
+// a filled circle — styled like an actual mana-cost pip. That's wrong for
+// Marvel Infinity Stone cards (SPM — The Soul Stone, etc.), whose oracle text
+// uses "∞" as a bare ability-word marker matching the printed card. Registered
+// directly on the engine's `mana` Map (exposed on `global` by the const→var
+// rewrite in loadEngineFile above) rather than via loadManaSymbols, so the
+// asset can live in our own repo instead of CC_ROOT's external cache — see
+// fixUnrenderableGlyphs below for where the "∞" -> {mtgproxiesinf} swap happens.
+//
+// Sizing: height=1 (matching every circular pip: numerals, WUBRG, {t}, {inf})
+// renders at exactly manaSymbol.height * textSize * 0.78 — confirmed via a
+// debug render that this box height is IDENTICAL for our symbol and e.g. {t}/
+// {b} at the same textSize. But a circular pip's badge fills that box edge to
+// edge while the meaningful glyph *inside* it (arrow, numeral) sits well
+// within the circle with real margin. Our lemniscate is cropped tight with
+// almost no padding, so at height=1 its ink reads far bulkier than a pip's
+// ink at the "same" box size — and a pip box itself is already ~1.36x a
+// normal capital letter's cap-height (measured on this same card: the {t}
+// badge is 72px across against a 53px cap-height "E"). Since "∞" here is
+// standing in for a single unrenderable text glyph, not a mana-cost icon, it
+// should read at roughly cap-height, not pip-height: height ~= 1/1.36.
+if (global.mana && global.mana.set) {
+    const infinitySymbol = { name: 'mtgproxiesinf', path: 'mtgproxies-infinity.svg', matchColor: false, width: 1.62, height: 0.74 };
+    infinitySymbol.image = new global.Image();
+    infinitySymbol.image.crossOrigin = 'anonymous';
+    infinitySymbol.image.src = 'file://' + path.join(ROOT, 'assets', 'infinity.svg');
+    global.mana.set(infinitySymbol.name, infinitySymbol);
+}
+
 // Trigger pack8th's loadFrameVersion onclick ONCE at startup. This is the
 // engine's own "Load Frame Version" workflow: it calls resetCardIrregularities,
 // sets card.version='8th', card.artBounds, card.setSymbolBounds, card.
@@ -623,6 +679,29 @@ async function loadFrameVersion8thOnce() {
 // ---------------------------------------------------------------------------
 // 6. Per-card render.
 // ---------------------------------------------------------------------------
+
+// Some oracle text embeds Unicode ability-symbols that CC's rules-text body
+// font (mplantin) ships no glyph for. Confirmed via the font's own cmap: U+221E
+// (∞) maps to a glyph literally named "yen" with zero contours — an empty
+// outline, not a missing-glyph tofu box, so it renders as invisible blank
+// space with no visual clue anything is wrong. Where a matching {bracket}
+// mana-symbol icon exists in the engine's `mana` Map, swap the literal glyph
+// for the bracket token so the normal mana-symbol render path draws the icon
+// instead. First case: the "∞" ability-word marker on Marvel Infinity Stone
+// cards (SPM — e.g. The Soul Stone: "∞ — At the beginning of your upkeep,
+// ..."). Uses our own bare-glyph "mtgproxiesinf" symbol (registered above),
+// NOT CC's bundled {inf} — that one is drawn on a filled circle, styled like
+// an actual mana-cost pip, which looks wrong for this bare ability marker.
+const UNICODE_TO_CC_SYMBOL = { '∞': '{mtgproxiesinf}' }; // ∞ (INFINITY) -> {mtgproxiesinf}
+function fixUnrenderableGlyphs(text) {
+    if (!text) return text;
+    let out = text;
+    for (const [glyph, token] of Object.entries(UNICODE_TO_CC_SYMBOL)) {
+        out = out.split(glyph).join(token);
+    }
+    return out;
+}
+
 function slugify(name) {
     return name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
 }
@@ -1047,10 +1126,10 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     }
 
     // 8th-only cosmetic shrinks. Bypass if we're rendering a flip layout.
+    // type.width no longer hardcoded here — the type-vs-set-symbol de-overlap check
+    // (after the pendingImages drain, later in this function) computes a precise
+    // per-card cap from the icon's real resolved position instead of a flat guess.
     if (frame === '8th' && scry.layout !== 'flip') {
-        if (global.card.text && global.card.text.type) {
-            global.card.text.type.width = 0.74;
-        }
         if (global.card.setSymbolBounds) {
             global.card.setSymbolBounds.height = 0.0391 * 0.94;
             global.card.setSymbolBounds.width  = 0.12   * 0.94;
@@ -1059,9 +1138,6 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
 
     // Modern (M15) layout fixes. Bypass for flip layouts.
     if (frame === 'modern' && scry.layout !== 'flip' && global.card.text) {
-        if (global.card.text.type) {
-            global.card.text.type.width = 0.71;
-        }
         if (global.card.text.rules) {
             global.card.text.rules.height = 0.253;
         }
@@ -1150,16 +1226,22 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // collide — a long title runs under the mana symbols. Reserve the right-aligned region's
     // estimated width on the left-aligned one so the auto-shrink kicks in. Width units are
     // card-width fractions; `size` is a card-height fraction, so ×(2100/1500)=1.4 converts a square
-    // glyph height to width. Mana symbols are ~1 glyph each; plain text ~0.55 per char.
+    // glyph height to width.
+    //
+    // Mana-symbol coefficient (0.86) is the real per-symbol geometry from creator-23.js's
+    // writeText, not a guess: manaSymbolWidth = manaSymbol.width(1) * textSize * 0.78, plus
+    // manaSymbolSpacing applied on both sides = textSize * 0.04 * 2 = 0.08 → 0.78 + 0.08 = 0.86.
+    // Originally 1.0 (a ~16% safety pad) plus a flat +0.01 on top — combined that left a very
+    // visible gap (measured ~2-4x a normal word-space) on cards like Razaketh, the Foulblooded.
+    // Plain text stays an estimate (0.55/char, font metrics vary too much to compute exactly).
     const estimateWidth = (text, size) => {
         const symbols = (text.match(/\{[^}]*\}/g) || []).length;
         const plain = text.replace(/\{[^}]*\}/g, '').length;
-        // Mana symbols are ~1 square glyph each (manaSpacing 0); 1.4 converts glyph height→width.
-        return (symbols * 1.0 + plain * 0.55) * size * 1.4;
+        return (symbols * 0.86 + plain * 0.55) * size * 1.4;
     };
     const reserveRight = (leftRegion, rightRegion) => {
         if (!leftRegion || !rightRegion || !rightRegion.text) return;
-        const reserve = estimateWidth(rightRegion.text, rightRegion.size) + 0.01;
+        const reserve = estimateWidth(rightRegion.text, rightRegion.size) + 0.003;
         leftRegion.width = Math.max(0.2, leftRegion.width - reserve);
     };
 
@@ -1379,6 +1461,11 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             (face.mana_cost || global.card.text.mana?.text || ''),
             (face.type_line || global.card.text.type?.text || ''),
             (face.power || global.card.text.pt?.text || ''));
+        // De-overlap the name vs mana cost — see the reserveRight/estimateWidth helpers
+        // above. Was only wired up for the dfc_split and borderless paths; every ordinary
+        // 8th/modern/retro card (the common case, e.g. long names like "Razaketh, the
+        // Foulblooded") went through this branch with no protection at all.
+        reserveRight(global.card.text.title, global.card.text.mana);
     } else if (scry.layout === 'flip') {
         // autoFrame.js does not support 'Flip' layout natively.
         // We must manually pick the correct frame from packFlip.js's availableFrames based on color.
@@ -1529,6 +1616,9 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         // set per-render in the prologue above — so this honors the requested
         // frame even when face.colors is empty (DFC back faces).
         await global.autoFrame();
+        // Same de-overlap as the faceColors branch above (colorless/artifact cards
+        // with a long name, e.g. "Karn, the Great Creator", hit this path instead).
+        reserveRight(global.card.text.title, global.card.text.mana);
     }
 
     // Odyssey-era tombstone icon (flashback / disturb / unearth …): Scryfall
@@ -1558,6 +1648,35 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     await Promise.allSettled(pendingImages.splice(0));
     for (let round = 0; round < 5 && pendingImages.length; round++) {
         await Promise.allSettled(pendingImages.splice(0));
+    }
+
+    // De-overlap the type line vs the set symbol. MUST run here, after the image drain above —
+    // not earlier — because the icon's real on-canvas position (card.setSymbolX) is only known
+    // once the icon image has actually loaded: uploadSetSymbol()/fetchSetSymbol() (creator-23.js)
+    // both set setSymbol.src and register setSymbol.onload = resetSetSymbol, which is what
+    // computes card.setSymbolX from the bounding box AND the icon's real aspect ratio
+    // (creator-23.js:2704-2713). `setSymbol` has no var/let/const at its declaration
+    // (creator-23.js:162), so — like `mana` — it's an implicit global our harness can read.
+    //
+    // First cut of this fix used setSymbolBounds.x - setSymbolBounds.width (the nominal bounding
+    // box) instead, and it was too conservative: card.setSymbolBounds.width (0.12) is a fixed
+    // envelope, but most set-symbol icons are narrower than that envelope once aspect-fit into
+    // it (drawSetSymbol scales to whichever axis is tighter — creator-23.js:2975-2976), leaving
+    // empty space on the LEFT of the box (horizontal:'right' anchors the box's right edge, so any
+    // slack lands on the left, i.e. exactly where our type line would want to grow into). Verified
+    // against the real printed card: Doctor Doom, Unrivaled's type line runs to ~85% of the card
+    // width on Scryfall's own image, well past our old ~80% nominal-box estimate — the nominal
+    // box was reserving space nobody was using. card.setSymbolX is CC's own resolved left edge
+    // for THIS card's actual icon, so it tightens or loosens per-icon automatically; no more
+    // static per-frame guesses (0.74/0.71/0.70) needed at all.
+    if (!dfcFace && !isFlip && global.card.text.type && global.card.setSymbolBounds &&
+        global.card.setSymbolBounds.horizontal === 'right' && typeof global.card.setSymbolX === 'number' &&
+        Number.isFinite(global.card.setSymbolX)) {
+        const margin = 0.012;
+        const maxTypeWidth = global.card.setSymbolX - global.card.text.type.x - margin;
+        if (maxTypeWidth > 0) {
+            global.card.text.type.width = Math.min(global.card.text.type.width, maxTypeWidth);
+        }
     }
 
     // MPC bleed — CardConjurer's own "Include Template Margins". Now that the card's frames
@@ -1663,6 +1782,13 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
     const skipReason = shouldSkip(scry);
     if (skipReason) {
         throw new Error(`${skipReason} not supported on ${frame} frame — fall back to Scryfall image`);
+    }
+
+    // Mutated in place on the (already-cached) scry object, not at fetch time —
+    // keeps the on-disk Scryfall JSON cache byte-identical to the API response.
+    scry.oracle_text = fixUnrenderableGlyphs(scry.oracle_text);
+    if (scry.card_faces) {
+        for (const face of scry.card_faces) face.oracle_text = fixUnrenderableGlyphs(face.oracle_text);
     }
 
     // Pre-process the Scryfall card the same way the GUI does. processScryfallCard
