@@ -227,6 +227,132 @@ def test_main_print_uses_true_card_size(tmp_path) -> None:
     assert np.allclose(cardsize, [63.0, 88.0]), f"expected 63 x 88 mm, got {cardsize}"
 
 
+def _write_order_xml(path: Path, cards: list[tuple[str, str, str]], quantity: int) -> None:
+    """Write a minimal MPC Autofill order.xml. ``cards`` is (drive_id, slots_csv, name)."""
+    fronts = "".join(
+        f"<card><id>{drive_id}</id><slots>{slots}</slots><name>{name}</name><query>q</query></card>"
+        for drive_id, slots, name in cards
+    )
+    path.write_text(
+        f"<order><details><quantity>{quantity}</quantity><bracket>18</bracket></details>"
+        f"<fronts>{fronts}</fronts><cardback>1CardBackId</cardback></order>"
+    )
+
+
+def test_main_print_order_xml_slot_order_dedupe_and_bleed(tmp_path: Path) -> None:
+    """order.xml input: per-slot paths in slot order, one fetch per unique id, all in bleed_images."""
+    from mtg_proxies.cli import main
+
+    xml_file = tmp_path / "cards.xml"
+    # idA covers slots 0 and 2, idB covers slot 1 — exercises dedupe + slot fan-out.
+    _write_order_xml(xml_file, [("idA", "0,2", "A.png"), ("idB", "1", "B.png")], quantity=3)
+    out_file = tmp_path / "out.pdf"
+
+    renders = {}
+    for drive_id in ("idA", "idB"):
+        p = tmp_path / f"{drive_id}.png"
+        p.write_bytes(b"png")
+        renders[drive_id] = p
+
+    calls: list[str] = []
+
+    def fake_resolve(*, scryfall_id, cache_root, session, drive_id_override, bleed_crop_percent, **kwargs):
+        calls.append(drive_id_override)
+        return renders[drive_id_override]
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "print", str(xml_file), str(out_file)]),
+        patch("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", side_effect=fake_resolve),
+        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+    ):
+        main()
+
+    assert calls == ["idA", "idB"]  # deduped: one fetch per unique drive id
+    images = print_cards_fpdf.call_args.args[0]
+    assert images == [str(renders["idA"]), str(renders["idB"]), str(renders["idA"])]
+    bleed_images = print_cards_fpdf.call_args.kwargs["bleed_images"]
+    assert {str(renders["idA"]), str(renders["idB"])} <= bleed_images
+
+
+def test_main_print_order_xml_fetch_failure_exits(tmp_path: Path) -> None:
+    """A failed Drive fetch must abort the whole print (a dropped slot would shift the sheet)."""
+    from mtg_proxies.cli import main
+
+    xml_file = tmp_path / "cards.xml"
+    _write_order_xml(xml_file, [("idA", "0", "A.png")], quantity=1)
+    out_file = tmp_path / "out.pdf"
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "print", str(xml_file), str(out_file)]),
+        patch("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", return_value=None),
+        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+        pytest.raises(SystemExit),
+    ):
+        main()
+
+    print_cards_fpdf.assert_not_called()
+
+
+def test_main_print_order_xml_card_back_duplex(tmp_path: Path) -> None:
+    """--card-back with order.xml input pairs every front with the generic back (duplex sheets)."""
+    from mtg_proxies.cli import main
+
+    xml_file = tmp_path / "cards.xml"
+    _write_order_xml(xml_file, [("idA", "0", "A.png"), ("idB", "1", "B.png")], quantity=2)
+    out_file = tmp_path / "out.pdf"
+    back = tmp_path / "back.png"
+    back.write_bytes(b"png")
+
+    renders = {}
+    for drive_id in ("idA", "idB"):
+        p = tmp_path / f"{drive_id}.png"
+        p.write_bytes(b"png")
+        renders[drive_id] = p
+
+    def fake_resolve(*, drive_id_override, **kwargs):
+        return renders[drive_id_override]
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "print", str(xml_file), str(out_file), "--card-back", str(back)]),
+        patch("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", side_effect=fake_resolve),
+        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+    ):
+        main()
+
+    images = print_cards_fpdf.call_args.args[0]
+    # One sheet of fronts (2 cards + filler) followed by one mirrored sheet of backs.
+    assert images[:2] == [str(renders["idA"]), str(renders["idB"])]
+    assert str(back) in images
+    # Fronts are user-supplied MPC renders → bleed placement.
+    bleed_images = print_cards_fpdf.call_args.kwargs["bleed_images"]
+    assert {str(renders["idA"]), str(renders["idB"])} <= bleed_images
+
+
+def test_main_print_order_xml_ignores_upscale_and_faces(tmp_path: Path, capsys) -> None:
+    """--upscale / --faces are noted-and-ignored for XML input; no upscale pass runs."""
+    from mtg_proxies.cli import main
+
+    xml_file = tmp_path / "cards.xml"
+    _write_order_xml(xml_file, [("idA", "0", "A.png")], quantity=1)
+    out_file = tmp_path / "out.pdf"
+    render = tmp_path / "idA.png"
+    render.write_bytes(b"png")
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "print", str(xml_file), str(out_file), "--upscale", "--faces", "front"]),
+        patch("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", return_value=render),
+        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+        patch("mtg_proxies.upscale.upscale_images") as upscale_images,
+    ):
+        main()
+
+    upscale_images.assert_not_called()
+    assert print_cards_fpdf.call_args.args[0] == [str(render)]
+    err = capsys.readouterr().err
+    assert "--upscale is ignored" in err
+    assert "--faces is ignored" in err
+
+
 def test_main_print_scale_multiplies_card_size(tmp_path) -> None:
     """``--scale`` is a pure multiplier on the true card size (2x -> 126 x 176 mm)."""
     from mtg_proxies.cli import main

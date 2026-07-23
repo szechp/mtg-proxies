@@ -18,6 +18,7 @@ from mtg_proxies.deck_value import show_deck_value
 from mtg_proxies.decklists import archidekt, manastack, parse_decklist
 from mtg_proxies.decklists.decklist import Card, Comment, Decklist
 from mtg_proxies.mpcfill.cache import default_cache_root
+from mtg_proxies.mpcfill.order_xml import is_order_xml
 from mtg_proxies.print_cards import CARD_SIZE_MM
 from mtg_proxies.scans import fetch_scans_paired, fetch_scans_scryfall_flagged
 from mtg_proxies.tokens import get_tokens
@@ -317,6 +318,53 @@ def parse_decklist_spec(
     print(f"Found {decklist.total_count} cards in total with {decklist.total_count_unique} unique cards.")
 
     return decklist
+
+
+def _fetch_mpc_order_images(order_path: str, bleed_renders: set[str]) -> list[str]:
+    """Fetch every front render of an MPC Autofill ``order.xml`` to local PNGs.
+
+    Returns one image path per slot, in slot order. Each Drive id is fetched once
+    (via the same :func:`resolve_per_card_mpcfill` path the ``#mpcfill
+    --identifier`` modeline uses, with the same default bleed crop) and fanned
+    back out to its slots. All returned paths are added to ``bleed_renders`` so
+    they get the --custom-art bleed placement and skip the bulk transforms.
+
+    A failed fetch is a hard exit: silently dropping a slot would shift every
+    card after it on the print sheet.
+    """
+    from mtg_proxies.mpcfill import per_card as mpcfill_per_card
+    from mtg_proxies.mpcfill.errors import MpcfillError
+    from mtg_proxies.mpcfill.order_xml import parse_order_xml
+
+    try:
+        slots = parse_order_xml(order_path)
+    except MpcfillError as exc:
+        _die(str(exc))
+
+    cache_root = default_cache_root()
+    session = requests.Session()
+    unique: dict[str, str] = {}  # drive_id -> name (first occurrence, for messages)
+    for drive_id, name in slots:
+        unique.setdefault(drive_id, name)
+
+    resolved: dict[str, str] = {}
+    for i, (drive_id, name) in enumerate(unique.items(), start=1):
+        print(f"[mpc-xml] {i}/{len(unique)} fetching {name or drive_id}", file=sys.stderr)
+        out = mpcfill_per_card.resolve_per_card_mpcfill(
+            scryfall_id=drive_id,
+            cache_root=cache_root,
+            session=session,
+            drive_id_override=drive_id,
+            bleed_crop_percent=mpcfill_per_card.DEFAULT_BLEED_CROP_PERCENT,
+        )
+        if out is None:
+            failing = [slot for slot, (d, _) in enumerate(slots) if d == drive_id]
+            _die(f"could not fetch {name or '?'!r} (drive id {drive_id}, slot(s) {failing})")
+        resolved[drive_id] = str(out)
+
+    paths = [resolved[drive_id] for drive_id, _ in slots]
+    bleed_renders.update(paths)
+    return paths
 
 
 def papersize(string: str) -> np.ndarray:
@@ -2067,7 +2115,28 @@ def main() -> None:
             front_flags: list[bool] = []
             back_flags: list[bool] = []
 
-            if args.decklist:
+            if args.decklist and is_order_xml(args.decklist):
+                # MPC Autofill order.xml input (auto-detected, no flag): the fronts'
+                # Drive ids go through the same fetch path as ``#mpcfill --identifier``.
+                # Fronts only — <backs>/<cardback> are ignored; duplex stays opt-in via
+                # --card-back, pairing every front with the supplied generic back.
+                if args.faces != "all":
+                    print("Note: --faces is ignored for order.xml input (renders have no faces)", file=sys.stderr)
+                if upscale_scope is not None:
+                    print("Note: --upscale is ignored for order.xml input (MPCFill renders are final)", file=sys.stderr)
+                    # Nulled so the bulk-upscale block below (which reads the decklist-path
+                    # ``highres_flags``) never fires for XML input.
+                    upscale_scope = None
+                xml_paths = _fetch_mpc_order_images(args.decklist, modeline_bleed_renders)
+                print(f"Found {len(xml_paths)} cards in MPC order '{args.decklist}'.")
+                if duplex_mode:
+                    fronts = list(xml_paths)
+                    backs = [args.card_back] * len(xml_paths)
+                    front_flags = [True] * len(xml_paths)
+                    back_flags = [True] * len(xml_paths)
+                else:
+                    images = list(xml_paths)
+            elif args.decklist:
                 # ``print`` is render-only: take whatever the decklist pins, don't second-guess
                 # the art recommendation. ``art_preference`` only matters for unpinned lines,
                 # and the right home for that is ``convert``. Fixed at ``standard`` so any

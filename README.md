@@ -51,6 +51,9 @@ Create a high quality printable PDF from your decklist or a list of cards you wa
 - **MPCFill render fetch by identifier**  
   Use `#mpcfill --identifier <drive_id> [--bleed-crop PCT]` on a decklist line to swap that slot to a specific [MPCFill](https://mpcfill.com) community render. The previous auto-matcher (LightGlue/SuperPoint), interactive picker, retro classifier, and standalone `mpcfill` subcommand were cut — the community catalog has no stable contract, so only the deterministic identifier-fetch path is exposed now.
 
+- **MPC Autofill order.xml input**  
+  `mtg-proxies print cards.xml out.pdf` — pass an [MPC Autofill](https://mpcfill.com) order export straight to `print` in place of a decklist (detected by the `.xml` extension, no flag). Each front's Drive id is fetched through the same path as `#mpcfill --identifier` and laid out with MPC bleed handling. Fronts only: `<backs>`/`<cardback>` are ignored; combine with `--card-back PATH` for duplex sheets.
+
 ## Usage
 
 1. Install `mtg-proxies`.
