@@ -1,0 +1,458 @@
+diff --git a/CLAUDE.md b/CLAUDE.md
+new file mode 100644
+index 0000000..2dca8d7
+--- /dev/null
++++ b/CLAUDE.md
+@@ -0,0 +1,82 @@
++# CLAUDE.md
++
++This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
++
++## Project Overview
++
++**mtg-proxies** is a CLI tool that generates high-quality printable PDFs of Magic: The Gathering card proxies from decklists. It fetches card images from Scryfall's API and lays them out on pages ready for printing.
++
++Entry point: `mtg_proxies/cli.py` → `main()` → dispatches to `print`, `convert`, `tokens`, or `deck_value` subcommands.
++
++## Commands
++
++```bash
++# Install in development mode (requires uv)
++uv sync
++
++# Run the CLI
++uv run mtg-proxies print decklist.txt output.pdf
++
++# Run all tests
++uv run pytest tests/
++
++# Run a single test file
++uv run pytest tests/decklist_test.py
++
++# Run a single test by name
++uv run pytest tests/decklist_test.py::test_parse_decklist
++
++# Lint (auto-fixes in place)
++uv run ruff check mtg_proxies/
++uv run ruff format mtg_proxies/
++```
++
++## Architecture
++
++### Data Flow
++
++```
++Decklist file / ManaStack ID / Archidekt ID
++        ↓
++  decklists/ — parse, validate, merge duplicates
++        ↓
++  scryfall/ — card lookup, print selection, image caching
++        ↓
++  scans.py — download card images from Scryfall CDN
++        ↓
++  print_cards.py — render to PDF/PNG via matplotlib or fpdf2
++```
++
++### Key Modules
++
++**`mtg_proxies/decklists/`** — Decklist parsing and validation
++- `decklist.py`: `Card`, `Comment`, `Decklist` dataclasses; `parse_decklist()` supports both standard and Arena format, and bare card names (count=1)
++- `sanitizing.py`: Validation warnings for resolution, legality, better prints available
++- `cleaning.py`: `merge_duplicates()` consolidates identical cards
++
++**`mtg_proxies/scryfall/`** — Scryfall API integration
++- `scryfall.py`: Card lookup with bulk data caching in `/tmp/scryfall_cache`; `recommend_print()` scores prints by resolution, language, promo status; enforces 100ms rate limiting between API calls
++- `rate_limit.py`: `RateLimiter` context manager
++
++**`mtg_proxies/print_cards.py`** — Two rendering backends:
++- `print_cards_matplotlib()` — default, supports PDF/PNG/JPG
++- `print_cards_fpdf()` — alternative PDF-only backend
++
++**`mtg_proxies/cli.py`** — All user-facing logic: art preference selection (standard/wild/premium), custom art overlays, basic land generation with weighted random art variety, bleed crop normalization.
++
++### Custom Art
++
++Custom art images go in `custom-art/` directory. The CLI normalizes card names (lowercase, remove punctuation) to match filenames and overlays them on the standard card frame. Bleed crop is applied to extend art to card edges.
++
++### Scryfall Caching
++
++Bulk card data and images are cached in `/tmp/scryfall_cache`. The cache is checked before making API requests. Rate limiting (100ms per request) is enforced globally via `RateLimiter`.
++
++## Code Style
++
++- Python 3.12+, type hints required on all public functions (`ANN` rules enforced)
++- Google-style docstrings required on public functions/classes (`D` rules, `pydocstyle` convention = "google")
++- Line length: 120 characters
++- `ruff` handles both linting and formatting; `flake8` adds import-order checks (I900 rule)
++- `T20` (print statements) is ignored in CLI files (`cli.py`, `convert.py`, `deck_value.py`, `tokens.py`) and tests suppress `D103`
++- Banned module-level imports of `mtg_proxies` itself (use lazy imports inside functions)
+diff --git a/README.md b/README.md
+index 0aa1755..7d350b8 100644
+--- a/README.md
++++ b/README.md
+@@ -13,28 +13,34 @@ Create a high quality printable PDF from your decklist or a list of cards you wa
+   This allows to use highest resolution Scryfall scans to create a large, high-dpi PDF file without regard for bandwidth limitations. For example, the generated PDF for a complete Commander decklist has a size of about 140MB.
+ 
+ - **Up-to-date card scans**  
+-  By directly utilizing the Scryfall API, all the latest sets are automatically availble as soon as they're available on Scryfall (which is usually incredibly fast). To not overrun Scryfall with requests, this project makes use of [Scryfall bulk data](https://scryfall.com/docs/api/bulk-data) to reduce API calls as much as possible. As requested by Scryfall, a small delay of 100ms is added between requests. However, as most work is done with a local copy of the bulk data, this is hardly noticeable.
++  By directly utilizing the Scryfall API, all the latest sets are automatically available as soon as they're available on Scryfall. To avoid overrunning Scryfall with requests, this project uses [Scryfall bulk data](https://scryfall.com/docs/api/bulk-data) to reduce API calls as much as possible. A 100ms delay is enforced between requests as requested by Scryfall.
+ 
+-- **Support for both text and Arena format decklists**
+-  `mtg-proxies` can work with both text and Arena format decklists.
+-  The Arena format is recommended, as it allows you to keep the same prints when moving decklists between multiple tools.
+-  There are even cases (i.e. tokens) where the name alone is not sufficient to uniquely specify a card.
+-  The Arena format helps in these case, as set and collector number are unique identifiers.
+-  However, as tools often only work with one of these formats, `mtg-proxies` is a flexible as possible, even supporting mixed mode.
+-  This is especially when you are making quick additions to a decklist and don't want to search for set and collector numbers.
+-  The `mtg-proxies convert` tool can be used to convert decklists between the two formats.
++- **Support for both text and Arena format decklists**  
++  `mtg-proxies` can work with both text and Arena format decklists, as well as bare card names (parsed as count 1). The Arena format is recommended as it allows you to pin specific prints. The `mtg-proxies convert` tool can convert between formats.
+ 
+ - **Sanity checks and recommender engine**  
+-  `mtg-proxies` warns you if you attempt to print a low-resolution scan and is able to offer alternatives.
+-  The `mtg-proxies convert` tool can automatically selects the best print for each card in a decklist with high accuracy, eliminating the need to manually select good prints.
++  `mtg-proxies` warns you if you attempt to print a low-resolution scan and offers alternatives. The `convert` tool automatically selects the best print for each card, and flags or moves remaining low-res cards to the bottom of the output file.
+ 
+-- **Token support**  
+-  The `mtg-proxies tokens` tool appends the tokens created by the cards in a decklist to it, so you don't miss one accidentally. Caveat: This only works when Scryfall has the data on associated tokens. This is the case for cards printed or reprinted since Tenth Edition.
++- **Art preference and preferred sets**  
++  Choose between `standard` (conservative, avoids promos/digital), `wild` (any art including borderless/extended), or `premium` (highest-quality basic land art). Pin preferred sets with `--set` so the recommender stays within those sets when possible.
++
++- **Custom art overlays**  
++  Drop custom art images into a folder and append them to the PDF with `--custom-art`. Supports bleed-crop normalization to extend art to card edges.
++
++- **AI upscaling**  
++  Upscale low-quality scans with Real-ESRGAN or any ESRGAN-compatible model via `--upscale`. Models are loaded with [spandrel](https://github.com/chaiNNer-org/spandrel) and cached locally.
+ 
+-- **ManaStack and Archidekt integration**
+-  Directly use ManaStack and Archidekt deck ids as input for many functions instead of local decklist files.
++- **Card back printing**  
++  Print card backs for double-sided proxy use with `--card-back PATH`. Without `--card-back-count`, automatically matches the number of front images (decklist cards, custom art, or both combined). Supply any PNG/JPG as the back image.
++
++- **Basic land generator**  
++  Generate decklists of random basic land printings with `convert --basic-lands`, with weighted art variety and configurable art style.
++
++- **Token support**  
++  The `mtg-proxies tokens` tool appends the tokens created by the cards in a decklist to it. Requires Scryfall token data (available for cards printed or reprinted since Tenth Edition).
+ 
+-  Decks on Archidekt must be set to public to be read.
++- **ManaStack and Archidekt integration**  
++  Use ManaStack and Archidekt deck IDs directly as input instead of local files. Archidekt decks must be public.
+ 
+ ## Usage
+ 
+@@ -45,7 +51,6 @@ uv tool install git+https://github.com/DiddiZ/mtg-proxies
+ ```
+ 
+ 2. (Optional) Prepare your decklist in MtG Arena format.
+-   This is not required, but recommended as it allows for more control over the process.
+ 
+ ```txt
+ COUNT FULL_NAME (SET) COLLECTOR_NUMBER
+@@ -60,25 +65,137 @@ E.g.:
+ 1 Murderous Rider // Swift End (ELD) 287
+ ```
+ 
+-Or use the `convert` tool to convert a plain decklist to Arena format:
++Or use `convert` to auto-select the best print for each card:
++
++```bash
++mtg-proxies convert decklist_text.txt decklist.txt
++```
++
++3. Create a PDF file.
++
++```bash
++mtg-proxies print decklist.txt output.pdf
++```
++
++## Common workflows
++
++**Pin cards to a specific set, keep lowres versions from that set:**
+ 
+ ```bash
+-mtg-proxies convert tests/data/decklist_text.txt decklist.txt
++mtg-proxies convert deck.txt deck-ltr.txt --set LTR LTC PLTR --allow-low-res
+ ```
+ 
+-4. Create a PDF file.
++With `--allow-low-res`, prints from the preferred sets are kept even if lowres (they appear in a dedicated section at the bottom). Without it, lowres prints are automatically upgraded to a highres alternative from any set.
++
++**Print with AI upscaling for lowres cards:**
+ 
+ ```bash
+-mtg-proxies print tests/data/decklist.txt decklist.pdf
++mtg-proxies print deck-ltr.txt output.pdf --upscale
+ ```
+ 
+-Examples:
++Uses RealESRGAN anime_6B by default (downloaded on first use to `~/.cache/mtg-proxies/`). Use any ESRGAN-compatible `.pth` model from [openmodeldb.info](https://openmodeldb.info):
+ 
+-- Create separate outputs for front and back faces
++```bash
++mtg-proxies print deck-ltr.txt output.pdf --upscale-model ~/models/4x-UltraSharp.pth
++```
++
++**Choose art style:**
+ 
+ ```bash
+-mtg-proxies print tests/data/decklist.txt decklist_fronts.pdf --face front
+-mtg-proxies print tests/data/decklist.txt decklist_backs.pdf --face back
++# Conservative: avoids promos, borderless, and non-standard treatments (default)
++mtg-proxies print deck.txt output.pdf --art-preference standard
++
++# Wild: picks the most visually striking version (borderless, extended art, showcase, etc.)
++mtg-proxies print deck.txt output.pdf --art-preference wild
++```
++
++**Generate random basic lands:**
++
++```bash
++mtg-proxies convert --basic-lands plains=10 island=8 --art-preference premium basics.txt
++```
++
++Art preference options for basic lands: `standard` (regular frame), `wild` (any art), `premium` (highest-quality full art). Then print them:
++
++```bash
++mtg-proxies print basics.txt basics.pdf
++```
++
++**Print only front or back faces of double-faced cards:**
++
++```bash
++# Fronts only (e.g. to print one side at a time)
++mtg-proxies print deck.txt fronts.pdf --faces front
++
++# Back faces only (transform/modal DFC backs, not the generic card back)
++mtg-proxies print deck.txt dfc-backs.pdf --faces back
++```
++
++**Add custom art to a PDF:**
++
++```bash
++mtg-proxies print deck.txt output.pdf --custom-art ./my-art-folder/
++```
++
++Images in the folder are appended after the decklist cards. Use `--custom-art-bleed-crop` to trim edges (default 4%) to extend art to card borders:
++
++```bash
++mtg-proxies print deck.txt output.pdf --custom-art ./my-art-folder/ --custom-art-bleed-crop 5
++```
++
++**Print card backs for double-sided printing:**
++
++```bash
++# Backs matching a full deck (one per card):
++mtg-proxies print decklist.txt backs.pdf --card-back card_back.png
++
++# Backs for custom art only (no decklist needed):
++mtg-proxies print backs.pdf --custom-art ./my-art/ --card-back card_back.png
++
++# Backs covering both decklist and custom art fronts:
++mtg-proxies print decklist.txt output.pdf --custom-art ./my-art/ --card-back card_back.png
++
++# Exact count (for cards you already have fronts for):
++mtg-proxies print backs.pdf --card-back card_back.png --card-back-count 9
++```
++
++`--card-back` takes any PNG/JPG path. Without `--card-back-count`, it automatically matches the total number of front images collected (from decklist, custom art, or both). Download a high-res card back scan from Scryfall's card viewer or use an alternate back design (Arena-style, token backs, etc.).
++
++**Adjust paper size and card scale:**
++
++```bash
++# US Letter paper
++mtg-proxies print deck.txt output.pdf --paper 8.5x11
++
++# Scale cards to 95% (slightly smaller, fits more per page)
++mtg-proxies print deck.txt output.pdf --scale 0.95
++```
++
++**Set background color:**
++
++```bash
++mtg-proxies print deck.txt output.pdf --background black
++mtg-proxies print deck.txt output.pdf --background "#1a1a2e"
++```
++
++**Split output across multiple PDF files (e.g. 9 cards per page, 3 pages per file):**
++
++```bash
++mtg-proxies print deck.txt output.pdf --split-pages 3
++```
++
++**Append tokens created by your deck:**
++
++```bash
++mtg-proxies tokens deck.txt >> deck_with_tokens.txt
++mtg-proxies print deck_with_tokens.txt output.pdf
++```
++
++**Use a ManaStack or Archidekt deck directly:**
++
++```bash
++mtg-proxies print manastack:123456 output.pdf
++mtg-proxies print archidekt:123456 output.pdf
+ ```
+ 
+ ## Updating
+@@ -91,55 +208,103 @@ uv tool upgrade mtg-proxies
+ 
+ ### print
+ 
+-```txt
+-usage: mtg-proxies print [-h] [--dpi DPI] [--paper WIDTHxHEIGHT] [--scale FLOAT] [--border_crop PIXELS] [--background COLOR] [--cropmarks | --no-cropmarks] [--faces {all,front,back}] decklist outfile
++```
++usage: mtg-proxies print [-h] [--dpi DPI] [--paper WIDTHxHEIGHT]
++                         [--scale FLOAT] [--border_crop PIXELS]
++                         [--background COLOR] [--cropmarks | --no-cropmarks]
++                         [--faces {all,front,back}] [--custom-art FOLDER]
++                         [--custom-art-bleed-crop PERCENT] [--split-pages N]
++                         [--art-preference {standard,wild}] [--upscale]
++                         [--upscale-model PATH] [--card-back PATH]
++                         [--card-back-count N]
++                         [decklist] outfile
+ 
+ Prepare a decklist for printing.
+ 
+ positional arguments:
+-  decklist              path to a decklist in text/arena format, or manastack:{manastack_id}, or archidekt:{archidekt_id}
++  decklist              path to a decklist in text/arena format, or
++                        manastack:{manastack_id}, or archidekt:{archidekt_id}
+   outfile               output file. Supports pdf, png and jpg.
+ 
+ options:
+   -h, --help            show this help message and exit
+-  --dpi DPI             dpi of output file for raster formats (png, jpg); ignored for pdf (default: 300)
+-  --paper WIDTHxHEIGHT  paper size in inches or preconfigured format (default: a4)
++  --dpi DPI             dpi of output file for raster formats (png, jpg);
++                        ignored for pdf (default: 300)
++  --paper WIDTHxHEIGHT  paper size in inches or preconfigured format (default:
++                        a4)
+   --scale FLOAT         scaling factor for printed cards (default: 1.0)
+-  --border_crop PIXELS  how much to crop inner borders of printed cards, in source image pixels (default: 14)
+-  --background COLOR    background color, either by name or by hex code (e.g. black or "#ff0000", default: None)
++  --border_crop PIXELS  how much to crop inner borders of printed cards, in
++                        source image pixels (default: 14)
++  --background COLOR    background color, either by name or by hex code (e.g.
++                        black or "#ff0000", default: None)
+   --cropmarks, --no-cropmarks
+                         add crop marks (png, jpg); ignored for pdf
+   --faces {all,front,back}
+                         which faces to print (default: all)
++  --custom-art FOLDER   folder with custom art images to append to the PDF
++  --custom-art-bleed-crop PERCENT
++                        percent to trim from each edge of custom art images
++                        before printing (default: 4.0)
++  --split-pages N       split PDF output into a new file every N pages;
++                        ignored for non-pdf output
++  --art-preference {standard,wild}
++                        art recommendation style (default: standard)
++  --upscale             upscale lowres card images with Real-ESRGAN instead of
++                        replacing them with a different print
++  --upscale-model PATH  path to a local .pth upscaling model (default:
++                        RealESRGAN anime_6B); implies --upscale
++  --card-back PATH      path to a card back image; appends one copy per front
++                        image collected (decklist, custom art, or both);
++                        override count with --card-back-count
++  --card-back-count N   number of card back copies to append instead of
++                        auto-matching the front image count
+ ```
+ 
+ ### convert
+ 
+-```txt
+-usage: mtg-proxies convert [-h] [--format {arena,text}] [--clean] decklist outfile
++```
++usage: mtg-proxies convert [-h] [--format {arena,text}] [--clean]
++                           [--basic-lands NAME=COUNT [NAME=COUNT ...]]
++                           [--art-preference {standard,wild,premium}]
++                           [--set SET [SET ...]] [--allow-low-res]
++                           [decklist] [outfile]
+ 
+ Convert a decklist to text or arena format.
+ 
+ positional arguments:
+-  decklist              path to a decklist in text/arena format, or manastack:{manastack_id}, or archidekt:{archidekt_id}
+-  outfile               output file
++  decklist              path to a decklist in text/arena format, or
++                        manastack:{manastack_id}, or archidekt:{archidekt_id}
++  outfile               output file (stdout if omitted)
+ 
+ options:
+   -h, --help            show this help message and exit
+   --format {arena,text}
+                         output format (default: arena)
+   --clean               remove all non-card lines
++  --basic-lands NAME=COUNT [NAME=COUNT ...]
++                        generate a decklist of random basic land printings,
++                        e.g. mountain=9 forest=7
++  --art-preference {standard,wild,premium}
++                        art recommendation style (default: standard)
++  --set SET [SET ...]   one or more preferred set codes in priority order
++                        (e.g. LTR LTO); quality rules still apply
++  --allow-low-res       when used with --set, keep low-res prints from
++                        preferred sets instead of upgrading to highres
++                        alternatives
+ ```
+ 
++Low-res cards that cannot be upgraded are sorted to the bottom of the output file, under a comment indicating why (not in set, or no highres available).
++
+ ### tokens
+ 
+-```txt
++```
+ usage: mtg-proxies tokens [-h] [--format {arena,text}] decklist
+ 
+ Append the created tokens to a decklist.
+ 
+ positional arguments:
+-  decklist              path to a decklist in text/arena format, or manastack:{manastack_id}, or archidekt:{archidekt_id}
++  decklist              path to a decklist in text/arena format, or
++                        manastack:{manastack_id}, or archidekt:{archidekt_id}
+ 
+ options:
+   -h, --help            show this help message and exit
+@@ -147,21 +312,16 @@ options:
+                         output format (default: arena)
+ ```
+ 
+-Example:
++### deck_value
+ 
+-```bash
+-tokens.py tests/data/token_generators.txt
+ ```
+-
+-### Deck Value Decomposition
+-
+-```txt
+ usage: mtg-proxies deck_value [-h] [--lump-threshold FLOAT] decklist
+ 
+ Show deck value decomposition.
+ 
+ positional arguments:
+-  decklist              path to a decklist in text/arena format, or manastack:{manastack_id}, or archidekt:{archidekt_id}
++  decklist              path to a decklist in text/arena format, or
++                        manastack:{manastack_id}, or archidekt:{archidekt_id}
+ 
+ options:
+   -h, --help            show this help message and exit
+@@ -169,16 +329,11 @@ options:
+                         lump together cards with lesser proportional value (default: 0.03)
+ ```
+ 
+-Example:
+-
+-```bash
+-mtg-proxies deck_value manastack:1234536
+-mtg-proxies deck_value archidekt:365563
+-```
+-
+ ![](examples/deck_value.png)
+ 
+ ## Acknowledgements
+ 
+ - [MTG Press](http://www.mtgpress.net/) for being a very handy online tool, which inspired this project.
+ - [Scryfall](https://scryfall.com/) for their [excellent API](https://scryfall.com/docs/api).
++- [spandrel](https://github.com/chaiNNer-org/spandrel) for ESRGAN model loading.
++- [openmodeldb.info](https://openmodeldb.info) for community upscaling models.

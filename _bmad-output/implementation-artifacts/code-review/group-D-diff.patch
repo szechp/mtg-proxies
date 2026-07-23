@@ -1,0 +1,219 @@
+diff --git a/mtg_proxies/print_cards.py b/mtg_proxies/print_cards.py
+index 0d4b69f..c413929 100644
+--- a/mtg_proxies/print_cards.py
++++ b/mtg_proxies/print_cards.py
+@@ -68,9 +68,10 @@ def print_cards_matplotlib(
+                         img = plt.imread(images[idx])
+                         idx += 1
+ 
+-                        # Crop left and top if not on border of sheet
+-                        left = border_crop if x > 0 else 0
+-                        top = border_crop if y > 0 else 0
++                        # Crop left and top if not on border of sheet.
++                        # Negative border_crop means gap between cards — no pixels to crop.
++                        left = max(border_crop, 0) if x > 0 else 0
++                        top = max(border_crop, 0) if y > 0 else 0
+                         img = img[top:, left:]
+ 
+                         # Compute extent
+@@ -108,6 +109,7 @@ def print_cards_fpdf(
+     border_crop: int = 14,
+     background_color: tuple[int, int, int] | None = None,
+     cropmarks: bool = True,
++    split_pages: int | None = None,
+ ) -> None:
+     """Print a list of cards to a pdf file.
+ 
+@@ -127,16 +129,30 @@ def print_cards_fpdf(
+     if N[0] == 0 or N[1] == 0:
+         raise ValueError(f"Paper size too small: {papersize}")
+     cards_per_sheet = np.prod(N)
++    cards_per_file = None if split_pages is None else cards_per_sheet * split_pages
+     offset = (papersize - _occupied_space(cardsize, N, border_crop, closed=True)) / 2
+ 
+     # Ensure directory exists
+     filepath = Path(filepath)
+     filepath.parent.mkdir(parents=True, exist_ok=True)
+ 
+-    # Initialize PDF
+-    pdf = FPDF(orientation="P", unit="mm", format="A4")
++    def output_filepath(file_index: int) -> Path:
++        if split_pages is None:
++            return filepath
++        return filepath.with_name(f"{filepath.stem}_{file_index + 1}{filepath.suffix}")
++
++    def init_pdf() -> FPDF:
++        return FPDF(orientation="P", unit="mm", format="A4")
++
++    pdf = init_pdf()
+ 
+     for i, image in enumerate(tqdm(images, desc="Plotting cards")):
++        if cards_per_file is not None and i > 0 and i % cards_per_file == 0:
++            current_path = output_filepath(i // cards_per_file - 1)
++            tqdm.write(f"Writing to {current_path}")
++            pdf.output(current_path)
++            pdf = init_pdf()
++
+         if i % cards_per_sheet == 0:  # Startign a new sheet
+             pdf.add_page()
+             if background_color is not None:
+@@ -146,9 +162,10 @@ def print_cards_fpdf(
+         x = (i % cards_per_sheet) % N[0]
+         y = (i % cards_per_sheet) // N[0]
+ 
+-        # Crop left and top if not on border of sheet
+-        left = border_crop if x > 0 else 0
+-        top = border_crop if y > 0 else 0
++        # Crop left and top if not on border of sheet.
++        # Negative border_crop means gap between cards — no pixels to crop.
++        left = max(border_crop, 0) if x > 0 else 0
++        top = max(border_crop, 0) if y > 0 else 0
+ 
+         if left == 0 and top == 0:
+             cropped_image = image
+@@ -178,5 +195,8 @@ def print_cards_fpdf(
+                     pdf.line(mark[0] - 0.5, mark[1], mark[0] + 0.5, mark[1])
+                     pdf.line(mark[0], mark[1] - 0.5, mark[0], mark[1] + 0.5)
+ 
+-    tqdm.write(f"Writing to {filepath}")
+-    pdf.output(filepath)
++    current_path = filepath
++    if cards_per_file is not None and len(images) > 0:
++        current_path = output_filepath((len(images) - 1) // cards_per_file)
++    tqdm.write(f"Writing to {current_path}")
++    pdf.output(current_path)
+diff --git a/tests/print_test.py b/tests/print_test.py
+index b134b09..a2f4f5f 100644
+--- a/tests/print_test.py
++++ b/tests/print_test.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+ 
+ from pathlib import Path
+ 
++import numpy as np
+ import pytest
+ from matplotlib.pylab import TYPE_CHECKING
+ 
+@@ -9,6 +10,101 @@ if TYPE_CHECKING:
+     from mtg_proxies.decklists import Decklist
+ 
+ 
++@pytest.mark.parametrize("border_crop", [0, 14])
++def test_occupied_space_positive_border_crop_creates_overlap(border_crop: int) -> None:
++    """With border_crop >= 0, card 1 starts at or before where card 0 ends (no gap)."""
++    from mtg_proxies.print_cards import _occupied_space
++
++    cardsize = np.array([2.5, 3.5])
++    card1_start = _occupied_space(cardsize, np.array([1, 0]), border_crop=border_crop)
++
++    assert float(card1_start[0]) <= float(cardsize[0]) + 1e-9
++
++
++@pytest.mark.parametrize("border_crop", [-1, -5, -14])
++def test_occupied_space_negative_border_crop_creates_gap(border_crop: int) -> None:
++    """With border_crop < 0, card 1 should start past where card 0 ends (gap between cards)."""
++    from mtg_proxies.print_cards import _occupied_space
++
++    cardsize = np.array([2.5, 3.5])
++    card1_start = _occupied_space(cardsize, np.array([1, 0]), border_crop=border_crop)
++
++    assert card1_start[0] > cardsize[0]
++
++
++@pytest.mark.parametrize("border_crop", [-1, -5, -14])
++def test_print_cards_matplotlib_negative_border_crop_does_not_slice_from_end(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++    border_crop: int,
++) -> None:
++    """With border_crop < 0, all cards must receive the full unsliced image, not a negative-index slice."""
++    import matplotlib
++    import matplotlib.pyplot as plt
++
++    matplotlib.use("Agg")
++
++    import mtg_proxies.print_cards as print_cards_module
++    from mtg_proxies.print_cards import print_cards_matplotlib
++
++    full_image = np.zeros((1040, 745, 3), dtype=np.float32)
++    imshow_shapes: list[tuple[int, ...]] = []
++
++    monkeypatch.setattr(print_cards_module.plt, "imread", lambda _path: full_image.copy())
++    monkeypatch.setattr(print_cards_module.plt, "imshow", lambda img, **kw: imshow_shapes.append(img.shape))
++
++    images = [str(tmp_path / f"card{i}.png") for i in range(3)]
++
++    print_cards_matplotlib(images, tmp_path / "out.pdf", border_crop=border_crop)
++
++    assert len(imshow_shapes) == 3, "All 3 cards should be rendered"
++    for i, shape in enumerate(imshow_shapes):
++        # Height must be the full 1040 rows — negative border_crop must NOT use img[-n:, :]
++        assert shape[0] == 1040, f"Card {i}: expected 1040 rows, got {shape[0]} (negative index slicing bug)"
++        assert shape[1] == 745, f"Card {i}: expected 745 cols, got {shape[1]} (negative index slicing bug)"
++
++
++@pytest.mark.parametrize("border_crop", [-1, -5, -14])
++def test_print_cards_fpdf_negative_border_crop_does_not_slice_from_end(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++    border_crop: int,
++) -> None:
++    """With border_crop < 0, fpdf renderer must not create intermediate images with negative crop indices."""
++    import matplotlib
++    import matplotlib.pyplot as plt
++
++    matplotlib.use("Agg")
++
++    import mtg_proxies.print_cards as print_cards_module
++    from mtg_proxies.print_cards import print_cards_fpdf
++
++    full_image = np.zeros((1040, 745, 3), dtype=np.float32)
++
++    # Create real image files (FPDF.image needs them on disk)
++    img_paths = [tmp_path / f"card{i}.png" for i in range(3)]
++    for p in img_paths:
++        plt.imsave(str(p), full_image)
++
++    saved_slices: list[tuple[int, ...]] = []
++
++    def capturing_imsave(path: str, img: np.ndarray, **kw: object) -> None:
++        saved_slices.append(img.shape)
++
++    monkeypatch.setattr(print_cards_module.plt, "imread", lambda _path: full_image.copy())
++    monkeypatch.setattr(print_cards_module.plt, "imsave", capturing_imsave)
++
++    print_cards_fpdf([str(p) for p in img_paths], tmp_path / "out.pdf", border_crop=border_crop)
++
++    # After the fix: no intermediate files are written at all when border_crop < 0
++    # (because left=0, top=0 for all cards, so the original image is used directly).
++    # Before the fix: imsave would be called with img[-n:, :] or img[:, -n:], producing
++    # tiny slivers with shape[0] << 1040 or shape[1] << 745.
++    for i, shape in enumerate(saved_slices):
++        assert shape[0] == 1040, f"Intermediate crop {i}: expected 1040 rows, got {shape[0]}"
++        assert shape[1] == 745, f"Intermediate crop {i}: expected 745 cols, got {shape[1]}"
++
++
+ @pytest.fixture(scope="module")
+ def example_images(example_decklist: Decklist) -> list[str]:
+     from mtg_proxies import fetch_scans_scryfall
+@@ -25,6 +121,20 @@ def test_print_cards_fpdf(example_images: list[str], tmp_path: Path) -> None:
+     print_cards_fpdf(example_images, out_file)
+ 
+     assert out_file.is_file()
++    assert not (tmp_path / "decklist_1.pdf").exists()
++    assert not (tmp_path / "decklist_2.pdf").exists()
++
++
++def test_print_cards_fpdf_split_pages(example_images: list[str], tmp_path: Path) -> None:
++    from mtg_proxies import print_cards_fpdf
++
++    out_file = tmp_path / "decklist.pdf"
++    images = example_images * 6
++    print_cards_fpdf(images, out_file, split_pages=1)
++
++    assert not out_file.exists()
++    assert (tmp_path / "decklist_1.pdf").is_file()
++    assert (tmp_path / "decklist_2.pdf").is_file()
+ 
+ 
+ def test_print_cards_matplotlib_pdf(example_images: list[str], tmp_path: Path) -> None:

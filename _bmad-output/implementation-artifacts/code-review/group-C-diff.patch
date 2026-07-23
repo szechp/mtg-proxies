@@ -1,0 +1,552 @@
+diff --git a/mtg_proxies/decklists/archidekt/archidekt.py b/mtg_proxies/decklists/archidekt/archidekt.py
+index 2d2d3d5..f7613da 100644
+--- a/mtg_proxies/decklists/archidekt/archidekt.py
++++ b/mtg_proxies/decklists/archidekt/archidekt.py
+@@ -1,12 +1,19 @@
+ from __future__ import annotations
+ 
++from typing import Literal
++
+ import requests
+ 
+ from mtg_proxies.decklists import Decklist, ParseWarning
+ from mtg_proxies.decklists.sanitizing import validate_card_name, validate_print
+ 
+ 
+-def parse_decklist(archidekt_id: str) -> tuple[Decklist, bool, list[ParseWarning]]:
++def parse_decklist(
++    archidekt_id: str,
++    art_preference: Literal["standard", "wild"] = "standard",
++    preferred_sets: list[str] | None = None,
++    allow_low_res: bool = False,
++) -> tuple[Decklist, bool, list[ParseWarning]]:
+     """Parse a decklist from manastack.
+ 
+     Args:
+@@ -19,7 +26,7 @@ def parse_decklist(archidekt_id: str) -> tuple[Decklist, bool, list[ParseWarning
+ 
+     r = requests.get(f"https://archidekt.com/api/decks/{archidekt_id}/")
+     if r.status_code != 200:
+-        raise (ValueError(f"Archidekt returned statuscode {r.status_code}"))
++        raise ValueError(f"Archidekt returned statuscode {r.status_code}")
+ 
+     data = r.json()
+ 
+@@ -43,7 +50,14 @@ def parse_decklist(archidekt_id: str) -> tuple[Decklist, bool, list[ParseWarning
+             continue
+ 
+         # Validate card print
+-        card, warnings_print = validate_print(card_name, set_id, collector_number)
++        card, warnings_print = validate_print(
++            card_name,
++            set_id,
++            collector_number,
++            art_preference=art_preference,
++            preferred_sets=preferred_sets,
++            allow_low_res=allow_low_res,
++        )
+ 
+         decklist.append_card(count, card)
+         warnings.extend(warnings_name + warnings_print)
+diff --git a/mtg_proxies/decklists/decklist.py b/mtg_proxies/decklists/decklist.py
+index 3ae5ee1..41e1e21 100644
+--- a/mtg_proxies/decklists/decklist.py
++++ b/mtg_proxies/decklists/decklist.py
+@@ -116,7 +116,12 @@ class Decklist:
+         return decklist
+ 
+ 
+-def parse_decklist(filepath: str | Path) -> tuple[Decklist, bool, list[ParseWarning]]:
++def parse_decklist(
++    filepath: str | Path,
++    art_preference: Literal["standard", "wild"] = "standard",
++    preferred_sets: list[str] | None = None,
++    allow_low_res: bool = False,
++) -> tuple[Decklist, bool, list[ParseWarning]]:
+     """Parse card information from a decklist in text or MtG Arena (or mixed) format.
+ 
+     E.g.:
+@@ -133,7 +138,7 @@ def parse_decklist(filepath: str | Path) -> tuple[Decklist, bool, list[ParseWarn
+         warnings: List of warnings and error encountered during parsing
+     """
+     with open(filepath, encoding="utf-8") as f:
+-        decklist, ok, warnings = parse_decklist_stream(f)
++        decklist, ok, warnings = parse_decklist_stream(f, art_preference=art_preference, preferred_sets=preferred_sets, allow_low_res=allow_low_res)
+ 
+     # Use file name without extension as name
+     decklist.name = Path(filepath).stem
+@@ -141,7 +146,12 @@ def parse_decklist(filepath: str | Path) -> tuple[Decklist, bool, list[ParseWarn
+     return decklist, ok, warnings
+ 
+ 
+-def parse_decklist_stream(stream: TextIO) -> tuple[Decklist, bool, list[ParseWarning]]:
++def parse_decklist_stream(
++    stream: TextIO,
++    art_preference: Literal["standard", "wild"] = "standard",
++    preferred_sets: list[str] | None = None,
++    allow_low_res: bool = False,
++) -> tuple[Decklist, bool, list[ParseWarning]]:
+     """Parse card information from a decklist in text or MtG Arena (or mixed) format from a stream.
+ 
+     See:
+@@ -151,10 +161,17 @@ def parse_decklist_stream(stream: TextIO) -> tuple[Decklist, bool, list[ParseWar
+     warnings = []
+     ok = True
+     for line in stream:
+-        m = re.search(r"([0-9]+)x?\s+(.+?)(?:\s+\((\S*)\)\s+(\S+))?\s*$", line)
+-        if m:
++        stripped = line.strip()
++        if not stripped or stripped.startswith("#"):
++            decklist.append_comment(line.rstrip())
++            continue
++
++        stripped = re.sub(r"\s+\*[A-Za-z]+\*\s*$", "", stripped)  # Strip foil markers e.g. *F*, *E*
++        m = re.search(r"(?:([0-9]{1,3})x?\s+)?(.+?)(?:\s+\((\S*)\)\s+(\S+))?\s*$", stripped)
++        if m and m.group(2) and m.group(2).strip():
+             # Extract relevant data
+-            count = int(m.group(1))
++            has_count = m.group(1) is not None
++            count = int(m.group(1)) if has_count else 1
+             card_name = m.group(2)
+             set_id = m.group(3)  # May be None
+             collector_number = m.group(4)  # May be None
+@@ -163,12 +180,21 @@ def parse_decklist_stream(stream: TextIO) -> tuple[Decklist, bool, list[ParseWar
+             card_name, warnings_name = validate_card_name(card_name)
+             if card_name is None:
+                 decklist.append_comment(line.rstrip())
+-                warnings.extend(warnings_name)
+-                ok = False
++                if has_count:
++                    # Explicit count prefix means user intended a card — report as error
++                    warnings.extend(warnings_name)
++                    ok = False
+                 continue
+ 
+             # Validate card print
+-            card, warnings_print = validate_print(card_name, set_id, collector_number)
++            card, warnings_print = validate_print(
++                card_name,
++                set_id,
++                collector_number,
++                art_preference=art_preference,
++                preferred_sets=preferred_sets,
++                allow_low_res=allow_low_res,
++            )
+ 
+             decklist.append_card(count, card)
+             warnings.extend(warnings_name + warnings_print)
+diff --git a/mtg_proxies/decklists/manastack/manastack.py b/mtg_proxies/decklists/manastack/manastack.py
+index fdc6a43..987bb79 100644
+--- a/mtg_proxies/decklists/manastack/manastack.py
++++ b/mtg_proxies/decklists/manastack/manastack.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ from collections.abc import Sequence
++from typing import Literal
+ 
+ import requests
+ 
+@@ -9,7 +10,11 @@ from mtg_proxies.decklists.sanitizing import validate_card_name, validate_print
+ 
+ 
+ def parse_decklist(
+-    manastack_id: str, zones: Sequence[str] = ("commander", "mainboard")
++    manastack_id: str,
++    zones: Sequence[str] = ("commander", "mainboard"),
++    art_preference: Literal["standard", "wild"] = "standard",
++    preferred_sets: list[str] | None = None,
++    allow_low_res: bool = False,
+ ) -> tuple[Decklist, bool, list[ParseWarning]]:
+     """Parse a decklist from manastack.
+ 
+@@ -23,7 +28,7 @@ def parse_decklist(
+ 
+     r = requests.get(f"https://manastack.com/api/decklist?format=json&id={manastack_id}")
+     if r.status_code != 200:
+-        raise (ValueError(f"Manastack returned statuscode {r.status_code}"))
++        raise ValueError(f"Manastack returned statuscode {r.status_code}")
+ 
+     data = r.json()
+     for zone in zones:
+@@ -45,7 +50,14 @@ def parse_decklist(
+                     continue
+ 
+                 # Validate card print
+-                card, warnings_print = validate_print(card_name, set_id, collector_number)
++                card, warnings_print = validate_print(
++                    card_name,
++                    set_id,
++                    collector_number,
++                    art_preference=art_preference,
++                    preferred_sets=preferred_sets,
++                    allow_low_res=allow_low_res,
++                )
+ 
+                 decklist.append_card(count, card)
+                 warnings.extend(warnings_name + warnings_print)
+diff --git a/mtg_proxies/decklists/sanitizing.py b/mtg_proxies/decklists/sanitizing.py
+index 8b8eef6..151f54f 100644
+--- a/mtg_proxies/decklists/sanitizing.py
++++ b/mtg_proxies/decklists/sanitizing.py
+@@ -18,7 +18,7 @@ class ParseWarning:
+ 
+ 
+ @cache
+-def card_names() -> tuple[dict[str, str], dict[str, str]]:
++def card_names() -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+     """Return sets of valid card names.
+ 
+     Cached for performance.
+@@ -29,7 +29,14 @@ def card_names() -> tuple[dict[str, str], dict[str, str]]:
+     double_faced_by_front = {
+         name.split("//")[0].strip().lower(): name for name in cards_by_name.values() if "//" in name
+     }
+-    return cards_by_name, double_faced_by_front
++    # Flavor names are printed names used in themed sets (e.g. "Henneth Annûn" for Reflecting Pool in LTC).
++    # Map lowercased flavor_name → oracle name so users can reference cards by their printed name.
++    flavor_name_to_oracle: dict[str, str] = {}
++    for card in scryfall.get_cards():
++        fn = card.get("flavor_name")
++        if fn:
++            flavor_name_to_oracle[fn.lower()] = card["name"]
++    return cards_by_name, double_faced_by_front, flavor_name_to_oracle
+ 
+ 
+ def validate_card_name(card_name: str) -> tuple[str | None, list[ParseWarning]]:
+@@ -41,7 +48,7 @@ def validate_card_name(card_name: str) -> tuple[str | None, list[ParseWarning]]:
+         ok: whether the card could be found.
+     """
+     # Unique names of all cards
+-    cards_by_name, double_faced_by_front = card_names()
++    cards_by_name, double_faced_by_front, flavor_name_to_oracle = card_names()
+ 
+     validated_name = None
+     sanizized_name = scryfall.canonic_card_name(card_name)
+@@ -53,6 +60,8 @@ def validate_card_name(card_name: str) -> tuple[str | None, list[ParseWarning]]:
+         warnings.append(
+             ParseWarning("WARNING", f"Misspelled card name {card_name!r}. Assuming you mean {validated_name!r}.")
+         )
++    elif sanizized_name in flavor_name_to_oracle:  # Flavor name used in themed sets (e.g. LTC)
++        validated_name = flavor_name_to_oracle[sanizized_name]
+     else:  # No exact match
+         # Try partial matching
+         candidates = [
+@@ -76,8 +85,10 @@ def validate_card_name(card_name: str) -> tuple[str | None, list[ParseWarning]]:
+ def get_print_warnings(card: dict) -> list[str]:
+     """Return warnings for low-resolution scans."""
+     warnings = []
+-    if not card["highres_image"] or card["digital"]:
++    if not card["highres_image"]:
+         warnings.append("low resolution scan")
++    if card["digital"]:
++        warnings.append("digital print")
+     if card["collector_number"][-1] in ["p", "s"]:
+         warnings.append("promo")
+     if card["lang"] != "en":
+@@ -87,7 +98,14 @@ def get_print_warnings(card: dict) -> list[str]:
+     return warnings
+ 
+ 
+-def validate_print(card_name: str, set_id: str, collector_number: str) -> tuple[dict, list[ParseWarning]]:
++def validate_print(
++    card_name: str,
++    set_id: str,
++    collector_number: str,
++    art_preference: Literal["standard", "wild"] = "standard",
++    preferred_sets: list[str] | None = None,
++    allow_low_res: bool = False,
++) -> tuple[dict, list[ParseWarning]]:
+     """Validate a print against the Scryfall database.
+ 
+     Assumes card name is valid.
+@@ -97,9 +115,11 @@ def validate_print(card_name: str, set_id: str, collector_number: str) -> tuple[
+         warnings: list of warnings.
+     """
+     warnings: list[ParseWarning] = []
++    lowres_upgraded = False
++    preferred_swapped = False
+ 
+     if set_id is None:
+-        card = scryfall.recommend_print(card_name=card_name)
++        card = scryfall.recommend_print(card_name=card_name, art_preference=art_preference, preferred_sets=preferred_sets)
+         # Warn for tokens, as they are not unique by name
+         if card["layout"] in ["token", "double_faced_token"]:
+             warnings.append(
+@@ -111,7 +131,7 @@ def validate_print(card_name: str, set_id: str, collector_number: str) -> tuple[
+         card = scryfall.get_card(card_name, set_id, collector_number)
+         if card is None:  # No exact match
+             # Find alternative print
+-            card = scryfall.recommend_print(card_name=card_name)
++            card = scryfall.recommend_print(card_name=card_name, art_preference=art_preference, preferred_sets=preferred_sets)
+             warnings.append(
+                 ParseWarning(
+                     "WARNING",
+@@ -119,20 +139,94 @@ def validate_print(card_name: str, set_id: str, collector_number: str) -> tuple[
+                     + f" Using {format_print(card)!r} instead.",
+                 )
+             )
++        elif not card["highres_image"]:  # Found but low resolution — check if a better print exists
++            in_preferred_set = preferred_sets is None or card["set"] in {ps.lower() for ps in preferred_sets}
++            if allow_low_res and in_preferred_set and preferred_sets is not None:
++                # --allow-low-res with explicit preferred sets: still upgrade if a highres standard-art
++                # version exists within the same preferred sets (e.g. LTR 192 lowres → LTR 741 highres).
++                # In standard mode, skip the upgrade if the only highres option is wild/flashy art.
++                preferred_set_codes = {ps.lower() for ps in preferred_sets}
++                better = scryfall.recommend_print(card_name=card_name, art_preference=art_preference, preferred_sets=preferred_sets)
++                flashy_effects = {"extendedart", "showcase", "shatteredglass", "upside_down", "inverted", "borderless"}
++                better_is_flashy = bool(flashy_effects & set(better.get("frame_effects", [])))
++                if (
++                    better != card
++                    and better["highres_image"]
++                    and better["set"] in preferred_set_codes
++                    and not (art_preference == "standard" and better_is_flashy)
++                ):
++                    warnings.append(
++                        ParseWarning(
++                            "WARNING",
++                            f"Low resolution scan for {format_print(card)!r}. Upgrading to {format_print(better)!r}.",
++                        )
++                    )
++                    card = better
++                    lowres_upgraded = True
++                # else: no suitable highres in preferred sets — keep the lowres preferred-set print as requested
++            elif allow_low_res and in_preferred_set:
++                pass  # print mode (preferred_sets=None): honor whatever print was requested, no upgrade
++            else:
++                better = scryfall.recommend_print(card_name=card_name, art_preference=art_preference, preferred_sets=preferred_sets)
++                if better != card:
++                    warnings.append(
++                        ParseWarning(
++                            "WARNING",
++                            f"Low resolution scan for {format_print(card)!r}. Upgrading to {format_print(better)!r}.",
++                        )
++                    )
++                    card = better
++                    lowres_upgraded = True
++    # If the card is from a non-preferred set, try to swap to a preferred-set version when one exists.
++    # Without this, a highres explicit print (e.g. "Turtle Tracks (TMC) 129") is accepted as-is even
++    # when --set=SLD asked for the SLD print.
++    if preferred_sets and card["set"] not in {ps.lower() for ps in preferred_sets}:
++        preferred_set_codes = {ps.lower() for ps in preferred_sets}
++        better = scryfall.recommend_print(card, art_preference=art_preference, preferred_sets=preferred_sets)
++        if better != card and better["set"] in preferred_set_codes:
++            warnings.append(
++                ParseWarning(
++                    "WARNING",
++                    f"Swapping {format_print(card)!r} for preferred-set print {format_print(better)!r}.",
++                )
++            )
++            card = better
++            preferred_swapped = True
++
++    # Warn if none of the preferred sets could be used (skip if lowres upgrade or preferred-set swap already explained the substitution)
++    if (
++        preferred_sets
++        and card["set"] not in {ps.lower() for ps in preferred_sets}
++        and not lowres_upgraded
++        and not preferred_swapped
++    ):
++        sets_str = ", ".join(s.upper() for s in preferred_sets)
++        warnings.append(
++            ParseWarning(
++                "WARNING",
++                f"No high-quality print of {card_name!r} found in preferred set(s) ({sets_str})."
++                + f" Using {format_print(card)!r} instead.",
++            )
++        )
+ 
+     # Warnings for low-quality scans
+     quality_warnings = get_print_warnings(card)
+     if len(quality_warnings) > 0:
+         # Get recommendation
+-        recommendation = scryfall.recommend_print(card)
++        recommendation = scryfall.recommend_print(card, art_preference=art_preference, preferred_sets=preferred_sets)
+ 
+         # Format warnings string
+-        quality_warnings = listing(quality_warnings, ", ", " and ").capitalize()
++        if quality_warnings == ["digital print"]:
++            quality_warning_text = "To avoid low resolution scans, a digital print was chosen"
++        elif quality_warnings == ["low resolution scan", "digital print"]:
++            quality_warning_text = "Low resolution scan and digital print"
++        else:
++            quality_warning_text = listing(quality_warnings, ", ", " and ").capitalize()
+ 
+         warnings.append(
+             ParseWarning(
+                 "COSMETIC",
+-                f"{quality_warnings} for {format_print(card)!r}."
++                f"{quality_warning_text} for {format_print(card)!r}."
+                 + (f" Maybe you want {format_print(recommendation)!r}?" if recommendation != card else ""),
+             )
+         )
+diff --git a/tests/decklist_test.py b/tests/decklist_test.py
+index 36f56fe..348ca28 100644
+--- a/tests/decklist_test.py
++++ b/tests/decklist_test.py
+@@ -55,9 +55,9 @@ def test_parsing(data_dir: Path) -> None:
+         ),
+         (  # Wrong collector number
+             "1 Forbidden Friendship (IKO) 120",
+-            "1 Forbidden Friendship (IKO) 367",
++            "1 Forbidden Friendship (IKO) 119",
+             [
+-                "WARNING: Unable to find scan of 'Forbidden Friendship (IKO) 120'. Using 'Forbidden Friendship (IKO) 367' instead."  # noqa: E501
++                "WARNING: Unable to find scan of 'Forbidden Friendship (IKO) 120'. Using 'Forbidden Friendship (IKO) 119' instead."  # noqa: E501
+             ],
+         ),
+         (  # Incomplete name (but unique)
+@@ -99,9 +99,9 @@ def test_parsing(data_dir: Path) -> None:
+         ),
+         (  # Token without set and collector number
+             "1 Saproling",
+-            "1 Saproling (TC16) 16",
++            "1 Saproling (TCMR) 22",
+             [
+-                "WARNING: Tokens are not unique by name. Assuming 'Saproling' is a '1/1 green Token Creature — Saproling'.",  # noqa: E501
++                "WARNING: Tokens are not unique by name. Assuming 'Saproling' is a '1/1 green Token Creature — Saproling'."  # noqa: E501
+             ],
+         ),
+         (  # Token with same name as the front of a double faced card (with set and collector number)
+@@ -149,6 +149,141 @@ def test_parse_decklist_warnings(line: str, expected_card_name: str | None, expe
+     assert [str(w) for w in warnings] == expected_warnings
+ 
+ 
++def test_bare_card_name_defaults_to_count_one() -> None:
++    from mtg_proxies.decklists import Card, parse_decklist_stream
++
++    decklist, ok, _ = parse_decklist_stream(StringIO("Esper Sentinel\n"))
++
++    assert ok
++    assert len(decklist.cards) == 1
++    assert type(decklist.entries[0]) is Card
++    assert decklist.entries[0].count == 1
++
++
++def test_count_prefixed_line_still_works() -> None:
++    from mtg_proxies.decklists import Card, parse_decklist_stream
++
++    decklist, ok, _ = parse_decklist_stream(StringIO("4 Lightning Bolt\n"))
++
++    assert ok
++    assert len(decklist.cards) == 1
++    assert type(decklist.entries[0]) is Card
++    assert decklist.entries[0].count == 4
++
++
++def test_bare_name_with_set_and_collector() -> None:
++    from mtg_proxies.decklists import Card, parse_decklist_stream
++
++    decklist, ok, _ = parse_decklist_stream(StringIO("Esper Sentinel (MH2) 12\n"))
++
++    assert ok
++    assert len(decklist.cards) == 1
++    assert type(decklist.entries[0]) is Card
++    assert decklist.entries[0].count == 1
++    assert decklist.entries[0].card["set"] == "mh2"
++    assert decklist.entries[0].card["collector_number"] == "12"
++
++
++def test_bare_name_blank_lines_remain_comments() -> None:
++    from mtg_proxies.decklists import Comment, parse_decklist_stream
++
++    decklist, _, _ = parse_decklist_stream(StringIO("\n"))
++
++    assert len(decklist.entries) == 1
++    assert type(decklist.entries[0]) is Comment
++
++
++def test_bare_invalid_card_name_becomes_silent_comment() -> None:
++    from mtg_proxies.decklists import Comment, parse_decklist_stream
++
++    decklist, ok, warnings = parse_decklist_stream(StringIO("NotARealCardName\n"))
++
++    assert ok
++    assert len(warnings) == 0
++    assert len(decklist.entries) == 1
++    assert type(decklist.entries[0]) is Comment
++
++
++def test_bare_name_hash_comments_remain_comments() -> None:
++    from mtg_proxies.decklists import Comment, parse_decklist_stream
++
++    decklist, _, _ = parse_decklist_stream(StringIO("# Sideboard\n"))
++
++    assert len(decklist.entries) == 1
++    assert type(decklist.entries[0]) is Comment
++    assert decklist.entries[0].text == "# Sideboard"
++
++
++@pytest.mark.parametrize("marker", ["*F*", "*E*"])
++def test_foil_marker_stripped_from_collector_number(marker: str) -> None:
++    """Foil markers like *F* and *E* should be stripped so the correct collector number reaches validate_print."""
++    import mtg_proxies.decklists.decklist as decklist_module
++
++    fake_card = {"id": "x", "set": "ltr", "collector_number": "288", "layout": "normal", "image_uris": {}}
++    captured: list[tuple] = []
++
++    def mock_validate_print(card_name: str, set_id: str, collector_number: str, **kwargs: object) -> tuple:
++        captured.append((set_id, collector_number))
++        return fake_card, []
++
++    decklist_module.validate_card_name = lambda name: ("Sauron, the Lidless Eye", [])  # type: ignore[assignment]
++    decklist_module.validate_print = mock_validate_print  # type: ignore[assignment]
++
++    try:
++        from mtg_proxies.decklists import parse_decklist_stream
++
++        parse_decklist_stream(StringIO(f"1 Sauron, the Lidless Eye (LTR) 288 {marker}\n"))
++    finally:
++        # Restore originals so other tests are unaffected
++        from mtg_proxies.decklists.sanitizing import validate_card_name as _vcn, validate_print as _vp
++
++        decklist_module.validate_card_name = _vcn  # type: ignore[assignment]
++        decklist_module.validate_print = _vp  # type: ignore[assignment]
++
++    assert len(captured) == 1
++    assert captured[0] == ("LTR", "288")  # marker was stripped before reaching validate_print
++
++
++def test_flavor_name_resolves_to_oracle_name(monkeypatch: pytest.MonkeyPatch) -> None:
++    """'Henneth Annûn' is the LTC flavor name for Reflecting Pool and should resolve without a warning."""
++    import mtg_proxies.decklists.sanitizing as sanitizing
++    from mtg_proxies.decklists.sanitizing import card_names, validate_card_name
++
++    fake_cards = [
++        {"name": "Reflecting Pool", "layout": "normal", "flavor_name": "Henneth Annûn"},
++    ]
++    monkeypatch.setattr(sanitizing.scryfall, "get_cards", lambda **kwargs: fake_cards)
++    card_names.cache_clear()
++
++    try:
++        validated_name, warnings = validate_card_name("Henneth Annûn")
++    finally:
++        card_names.cache_clear()
++
++    assert validated_name == "Reflecting Pool"
++    assert len(warnings) == 0
++
++
++def test_flavor_name_paths_of_the_dead_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
++    """'Paths of the Dead' is the LTC flavor name for Cavern of Souls and should resolve without a warning."""
++    import mtg_proxies.decklists.sanitizing as sanitizing
++    from mtg_proxies.decklists.sanitizing import card_names, validate_card_name
++
++    fake_cards = [
++        {"name": "Cavern of Souls", "layout": "normal", "flavor_name": "Paths of the Dead"},
++    ]
++    monkeypatch.setattr(sanitizing.scryfall, "get_cards", lambda **kwargs: fake_cards)
++    card_names.cache_clear()
++
++    try:
++        validated_name, warnings = validate_card_name("Paths of the Dead")
++    finally:
++        card_names.cache_clear()
++
++    assert validated_name == "Cavern of Souls"
++    assert len(warnings) == 0
++
++
+ @pytest.mark.parametrize(
+     ("archidekt_id", "expected_first_card"),
+     [

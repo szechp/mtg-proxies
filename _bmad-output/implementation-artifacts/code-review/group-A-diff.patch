@@ -1,0 +1,1023 @@
+diff --git a/mtg_proxies/scans.py b/mtg_proxies/scans.py
+index 69c7d5b..27a2437 100644
+--- a/mtg_proxies/scans.py
++++ b/mtg_proxies/scans.py
+@@ -8,7 +8,10 @@ import mtg_proxies.scryfall as scryfall
+ from mtg_proxies.decklists.decklist import Decklist
+ 
+ 
+-def fetch_scans_scryfall(decklist: Decklist, faces: Literal["all", "front", "back"] = "all") -> list[str]:
++def fetch_scans_scryfall(
++    decklist: Decklist,
++    faces: Literal["all", "front", "back"] = "all",
++) -> list[str]:
+     """Search Scryfall for scans of a decklist.
+ 
+     Args:
+@@ -16,10 +19,38 @@ def fetch_scans_scryfall(decklist: Decklist, faces: Literal["all", "front", "bac
+         faces: Which faces to fetch ("all", "front", "back")
+ 
+     Returns:
+-        List: List of image files
++        List of image file paths.
+     """
++    return [path for path, _ in _fetch_scans_with_flags(decklist, faces)]
++
++
++def fetch_scans_scryfall_flagged(
++    decklist: Decklist,
++    faces: Literal["all", "front", "back"] = "all",
++) -> tuple[list[str], list[bool]]:
++    """Like fetch_scans_scryfall, but also returns per-image highres flags.
++
++    Args:
++        decklist: The decklist to fetch scans for
++        faces: Which faces to fetch ("all", "front", "back")
++
++    Returns:
++        Tuple of (image paths, highres flags). A False flag means the source
++        scan is marked lowres by Scryfall (poor quality, even if the file
++        dimensions are full size).
++    """
++    pairs = _fetch_scans_with_flags(decklist, faces)
++    paths = [p for p, _ in pairs]
++    highres_flags = [h for _, h in pairs]
++    return paths, highres_flags
++
++
++def _fetch_scans_with_flags(
++    decklist: Decklist,
++    faces: Literal["all", "front", "back"],
++) -> list[tuple[str, bool]]:
+     return [
+-        scan
++        (scan, card.card.get("highres_image", True))
+         for card in tqdm(decklist.cards, desc="Fetching artwork")
+         for i, image_uri in enumerate(card.image_uris)
+         for scan in [scryfall.get_image(image_uri["png"], silent=True)] * card.count
+diff --git a/mtg_proxies/scryfall/scryfall.py b/mtg_proxies/scryfall/scryfall.py
+index 2711b7a..d96a7e8 100644
+--- a/mtg_proxies/scryfall/scryfall.py
++++ b/mtg_proxies/scryfall/scryfall.py
+@@ -27,7 +27,6 @@ _cache_folder.mkdir(parents=True, exist_ok=True)  # Create cache folder
+ scryfall_rate_limiter = RateLimiter(delay=0.1)
+ _download_lock = threading.Lock()
+ 
+-
+ def get_image(image_uri: str, *, silent: bool = False) -> str:
+     """Download card artwork and return the path to a local copy.
+ 
+@@ -41,6 +40,7 @@ def get_image(image_uri: str, *, silent: bool = False) -> str:
+     return get_file(file_name, image_uri, silent=silent)
+ 
+ 
++
+ def get_file(file_name: str, url: str, *, silent: bool = False) -> str:
+     """Download a file and return the path to a local copy.
+ 
+@@ -202,12 +202,131 @@ def get_faces(card: dict) -> list[dict]:
+     raise ValueError(f"Unknown layout {card['layout']}")
+ 
+ 
++def _standard_art_penalty(card: dict) -> int:
++    """Penalty for printings that are less likely to use standard in-universe art."""
++    penalty = 0
++
++    set_name = card.get("set_name", "").lower()
++    frame_effects = set(card.get("frame_effects", []))
++    promo_types = set(card.get("promo_types", []))
++    lang = card.get("lang", "en")
++    keywords = {
++        "fallout",
++        "doctor who",
++        "transformers",
++        "fortnite",
++        "jurassic",
++        "jurassic world",
++        "street fighter",
++        "walking dead",
++        "stranger things",
++        "warhammer",
++        "warhammer 40,000",
++        "assassin's creed",
++        "final fantasy",
++        "ninja turtles",
++        "teenage mutant ninja turtles",
++    }
++    if any(keyword in set_name for keyword in keywords):
++        penalty += 256
++    if card.get("set") == "sld" or "secret lair" in set_name:
++        penalty += 256
++    if card.get("set") == "plst" or set_name == "the list":
++        penalty += 24
++
++    # Scryfall marks many crossover releases as funny sets.
++    if card.get("set_type") == "funny":
++        penalty += 64
++    if card.get("set_type") == "promo":
++        penalty += 40
++    if card.get("digital"):
++        penalty += 80
++
++    # Prefer regular card treatments over obvious alternates. Penalty is large enough that a
++    # lowres standard print from a preferred set scores higher than a highres borderless one.
++    if {"extendedart", "showcase", "shatteredglass", "upside_down", "inverted", "borderless"} & frame_effects:
++        penalty += 32
++    if card.get("artist") == "Canata Katana" and card.get("set") == "j22":
++        penalty += 128
++
++    if "universesbeyond" in promo_types:
++        penalty += 64 if not _has_flashy_treatment(card) and card.get("set_type") != "promo" else 256
++    if {"boosterfun", "bundle", "concept", "galaxyfoil", "halofoil", "poster", "serialized", "surgefoil"} & promo_types:
++        penalty += 16
++    if {"datestamped", "prerelease", "promopack", "setpromo", "stamped"} & promo_types:
++        penalty += 40
++
++    return penalty
++
++
++def _has_flashy_treatment(card: dict) -> bool:
++    frame_effects = set(card.get("frame_effects", []))
++    promo_types = set(card.get("promo_types", []))
++    return bool(
++        {"extendedart", "showcase", "shatteredglass", "upside_down", "inverted", "borderless"} & frame_effects
++        or "boosterfun" in promo_types
++    )
++
++
++def _is_stamped_promo(card: dict) -> bool:
++    promo_types = set(card.get("promo_types", []))
++    return bool({"datestamped", "prerelease", "promopack", "setpromo", "stamped"} & promo_types)
++
++
++def _select_standard_fallback(alternatives: list[dict], scores: list[int]) -> dict:
++    highres_candidates = [card for card in alternatives if card["highres_image"]]
++    if not highres_candidates:
++        return alternatives[int(np.argmax(scores))]
++
++    standard_best = alternatives[int(np.argmax(scores))]
++    indexed_scores = {card["id"]: score for card, score in zip(alternatives, scores, strict=True)}
++
++    def rank(card: dict) -> tuple[int, int]:
++        promo_types = set(card.get("promo_types", []))
++        universes_beyond = "universesbeyond" in promo_types
++        is_promo = card.get("set_type") == "promo" or _is_stamped_promo(card)
++        clean_fallback = not card.get("digital") and not is_promo and not universes_beyond
++        return (
++            0 if clean_fallback and _has_flashy_treatment(card) else 1,
++            -indexed_scores[card["id"]],
++        )
++
++    clean_candidates = [
++        card
++        for card in highres_candidates
++        if not card.get("digital")
++        and card.get("set_type") != "promo"
++        and not _is_stamped_promo(card)
++        and "universesbeyond" not in set(card.get("promo_types", []))
++    ]
++    if clean_candidates:
++        return min(clean_candidates, key=rank)
++
++    digital_candidates = [
++        card
++        for card in highres_candidates
++        if card.get("digital") and card.get("set_type") != "promo" and not _is_stamped_promo(card)
++    ]
++    if digital_candidates:
++        return min(digital_candidates, key=lambda card: -indexed_scores[card["id"]])
++
++    promo_candidates = [
++        card for card in highres_candidates if card.get("set_type") == "promo" or _is_stamped_promo(card)
++    ]
++    if promo_candidates:
++        return min(promo_candidates, key=lambda card: -indexed_scores[card["id"]])
++
++    return standard_best
++
++
+ @overload
+ def recommend_print(
+     current: dict | None = None,
+     *,
+     card_name: str | None = None,
+     oracle_id: str | None = None,
++    art_preference: Literal["standard", "wild"] = "standard",
++    preferred_sets: list[str] | None = None,
+     mode: Literal["best"] = "best",
+ ) -> dict: ...
+ 
+@@ -218,6 +337,8 @@ def recommend_print(
+     *,
+     card_name: str | None = None,
+     oracle_id: str | None = None,
++    art_preference: Literal["standard", "wild"] = "standard",
++    preferred_sets: list[str] | None = None,
+     mode: Literal["all", "choices"],
+ ) -> list[dict]: ...
+ 
+@@ -227,9 +348,22 @@ def recommend_print(
+     *,
+     card_name: str | None = None,
+     oracle_id: str | None = None,
++    art_preference: Literal["standard", "wild"] = "standard",
++    preferred_sets: list[str] | None = None,
+     mode: Literal["best", "all", "choices"] = "best",
+ ) -> dict | list[dict]:
+-    """Recommend a (better) print of a card."""
++    """Recommend a (better) print of a card.
++
++    Args:
++        current: Current card print to compare against.
++        card_name: Card name to look up.
++        oracle_id: Oracle id to look up.
++        art_preference: Art recommendation style.
++        preferred_sets: Ordered list of Scryfall set codes to prefer (e.g. ["ltr", "lto"]).
++            High-res prints from earlier sets receive a larger score bonus. The bonus is only
++            applied when the print has a high-res image so that quality remains the top priority.
++        mode: Recommendation mode.
++    """
+     if current is not None and oracle_id is None:  # Use oracle id of current
+         if current.get("layout") == "reversible_card":
+             # Reversible cards have the same oracle id for both faces
+@@ -241,15 +375,23 @@ def recommend_print(
+ 
+     def score(card: dict) -> int:
+         points = 0
++        frame_effects = set(card.get("frame_effects", []))
++        promo_types = set(card.get("promo_types", []))
++        flashy_effects = {
++            "extendedart",
++            "showcase",
++            "shatteredglass",
++            "upside_down",
++            "inverted",
++            "borderless",
++        }
+         if card["set"] != "mb1" and card["border_color"] != "gold":
+             points += 1
+         if card["frame"] == "2015":
+             points += 2
+         if not card["digital"]:
+             points += 4
+-        if card["border_color"] == "black" and (
+-            mode != "best" or "frame_effects" not in card or "extendedart" not in card["frame_effects"]
+-        ):
++        if card["border_color"] == "black" and (mode != "best" or "extendedart" not in frame_effects):
+             points += 8
+         if card["collector_number"][-1] not in ["p", "s"] and card["nonfoil"]:
+             points += 16
+@@ -258,16 +400,56 @@ def recommend_print(
+         if card["lang"] == "en":
+             points += 64
+ 
++        if preferred_sets and card["set"] in {ps.lower() for ps in preferred_sets}:
++            if art_preference == "standard":
++                # In standard mode: bonus only for highres standard-art cards. Borderless/flashy
++                # prints in the preferred set do not get the bonus, so a highres standard card from
++                # any set beats them (and a lowres standard preferred card may too via fallback).
++                if card["highres_image"] and not _has_flashy_treatment(card):
++                    points += 200
++            elif card["highres_image"]:
++                # In wild mode: bonus for all highres preferred prints.
++                points += 200
++
++        if art_preference == "standard":
++            return points - _standard_art_penalty(card)
++
++        if _has_flashy_treatment(card):
++            points += 48
++        if {"boosterfun", "concept", "galaxyfoil", "halofoil", "poster", "serialized", "surgefoil"} & promo_types:
++            points += 24
++        if card.get("set") == "sld":
++            points += 12
++        if card.get("set") == "plst":
++            points -= 24
++        if card.get("set_type") == "funny":
++            points -= 16
++
+         return points
+ 
+     scores = [score(card) for card in alternatives]
+ 
+     if mode == "best":
+-        if current is not None and scores[alternatives.index(current)] == np.max(scores):
++        best_index = int(np.argmax(scores))
++        best_card = alternatives[best_index]
++
++        if art_preference == "standard" and not best_card["highres_image"]:
++            # Skip the fallback when the lowres winner is a standard-art preferred-set card —
++            # it scored higher than available highres alternatives (e.g. borderless), so the
++            # lowres win is intentional.
++            preferred_set_winner = (
++                preferred_sets is not None
++                and best_card["set"] in {ps.lower() for ps in preferred_sets}
++                and not _has_flashy_treatment(best_card)
++            )
++            if not preferred_set_winner:
++                best_card = _select_standard_fallback(alternatives, scores)
++
++        if current is not None and current["id"] == best_card["id"]:
+             return current  # No better recommendation
+ 
+         # Return print with highest score
+-        return alternatives[np.argmax(scores)]
++        return best_card
+     if mode == "all":
+         recommendations = list(np.array(alternatives)[np.argsort(scores)][::-1])
+ 
+diff --git a/mtg_proxies/upscale.py b/mtg_proxies/upscale.py
+new file mode 100644
+index 0000000..c7845bd
+--- /dev/null
++++ b/mtg_proxies/upscale.py
+@@ -0,0 +1,96 @@
++from __future__ import annotations
++
++import urllib.request
++from pathlib import Path
++
++from tqdm import tqdm
++
++_MODEL_URL = (
++    "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth"
++)
++_MODEL_CACHE = Path.home() / ".cache" / "mtg-proxies" / "RealESRGAN_x4plus_anime_6B.pth"
++
++# Target width after upscaling: matches Scryfall highres PNG width.
++# AI sharpening survives the downscale while keeping PDF sizes consistent with normal highres cards.
++_TARGET_WIDTH = 745
++
++
++def _download_model() -> Path:
++    if _MODEL_CACHE.exists():
++        return _MODEL_CACHE
++    _MODEL_CACHE.parent.mkdir(parents=True, exist_ok=True)
++    print(f"Downloading Real-ESRGAN model to {_MODEL_CACHE} …")
++    urllib.request.urlretrieve(_MODEL_URL, _MODEL_CACHE)
++    return _MODEL_CACHE
++
++
++def _upscaled_path(image_path: str | Path) -> Path:
++    p = Path(image_path)
++    return p.parent / (p.stem + "_4x" + p.suffix)
++
++
++def upscale_images(
++    image_paths: list[str],
++    highres_flags: list[bool] | None = None,
++    model_path: str | Path | None = None,
++) -> list[str]:
++    """Upscale lowres card images using a Real-ESRGAN model via spandrel.
++
++    Lowres images are identified by ``highres_flags`` (False = needs upscaling).
++    Upscaled results are cached next to the originals with a ``_4x`` suffix so
++    that subsequent runs skip reprocessing.
++
++    Args:
++        image_paths: List of absolute paths to card image files.
++        highres_flags: Per-image boolean flags from Scryfall metadata. If None,
++            all images are treated as needing upscaling.
++        model_path: Path to a local ``.pth`` model file. Defaults to
++            RealESRGAN anime_6B (downloaded on first use).
++
++    Returns:
++        List of image paths with lowres entries replaced by their upscaled versions.
++    """
++    try:
++        import numpy as np
++        import torch
++        from PIL import Image
++        from spandrel import ModelLoader
++    except ImportError as exc:
++        raise ImportError(
++            "spandrel, torch, pillow, and numpy are required for --upscale.\n"
++            "Install with: pip install spandrel torch pillow numpy"
++        ) from exc
++
++    if highres_flags is None:
++        highres_flags = [False] * len(image_paths)
++
++    needs_upscale: list[str] = [
++        path
++        for path, is_highres in zip(image_paths, highres_flags)
++        if not is_highres and not _upscaled_path(path).exists()
++    ]
++
++    if needs_upscale:
++        resolved_model = Path(model_path) if model_path else _download_model()
++        model = ModelLoader().load_from_file(str(resolved_model))
++        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
++        model = model.eval().to(device)
++
++        for path in tqdm(needs_upscale, desc="Upscaling lowres images"):
++            img = Image.open(path).convert("RGB")
++            tensor = torch.from_numpy(np.array(img)).permute(2, 0, 1).float() / 255.0
++            tensor = tensor.unsqueeze(0).to(device)
++            with torch.no_grad():
++                output = model(tensor)
++            result = (output.squeeze(0).permute(1, 2, 0).clamp(0, 1) * 255).byte().cpu().numpy()
++            upscaled = Image.fromarray(result)
++            # Downscale to Scryfall highres width so PDF sizes stay consistent with normal highres scans.
++            # The AI sharpening is preserved through the resize (upscale-then-downscale technique).
++            if upscaled.width > _TARGET_WIDTH:
++                ratio = _TARGET_WIDTH / upscaled.width
++                upscaled = upscaled.resize((_TARGET_WIDTH, round(upscaled.height * ratio)), Image.LANCZOS)
++            upscaled.save(str(_upscaled_path(path)))
++    else:
++        print("All lowres images already upscaled (cached).")
++
++    return [str(_upscaled_path(p)) if _upscaled_path(p).exists() else p for p in image_paths]
+diff --git a/pyproject.toml b/pyproject.toml
+index ee4281f..d948dba 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -125,3 +125,9 @@ version_scheme = "pep440"
+ version_provider = "pep621"
+ update_changelog_on_bump = true
+ major_version_zero = true
++
++[dependency-groups]
++dev = [
++    "pytest>=9.0.2",
++    "ruff>=0.15.7",
++]
+diff --git a/tests/scans_test.py b/tests/scans_test.py
+index 0aef6d4..aae1e9a 100644
+--- a/tests/scans_test.py
++++ b/tests/scans_test.py
+@@ -22,3 +22,24 @@ def test_fetch_scans_scryfall(example_decklist: Decklist, faces: str, expected_i
+     images = fetch_scans_scryfall(example_decklist, faces=faces)
+ 
+     assert len(images) == expected_images
++
++
++def test_fetch_scans_scryfall_flagged_same_paths_as_unflagged(example_decklist: Decklist) -> None:
++    """flagged variant must return the same paths as the plain variant."""
++    from mtg_proxies import fetch_scans_scryfall
++    from mtg_proxies.scans import fetch_scans_scryfall_flagged
++
++    images = fetch_scans_scryfall(example_decklist)
++    flagged_images, highres_flags = fetch_scans_scryfall_flagged(example_decklist)
++
++    assert flagged_images == images
++
++
++def test_fetch_scans_scryfall_flagged_flag_count_matches_image_count(example_decklist: Decklist) -> None:
++    """One highres flag per returned image path."""
++    from mtg_proxies.scans import fetch_scans_scryfall_flagged
++
++    images, highres_flags = fetch_scans_scryfall_flagged(example_decklist)
++
++    assert len(highres_flags) == len(images)
++    assert all(isinstance(f, bool) for f in highres_flags)
+diff --git a/tests/scryfall_test.py b/tests/scryfall_test.py
+index fc7d476..30a811a 100644
+--- a/tests/scryfall_test.py
++++ b/tests/scryfall_test.py
+@@ -1,6 +1,46 @@
+ import pytest
+ 
+ 
++def _test_card(
++    card_id: str,
++    *,
++    highres_image: bool,
++    name: str = "Test Card",
++    artist: str = "Test Artist",
++    digital: bool = False,
++    set_type: str = "expansion",
++    border_color: str = "black",
++    frame: str = "2015",
++    collector_number: str = "1",
++    nonfoil: bool = True,
++    lang: str = "en",
++    promo_types: list[str] | None = None,
++    frame_effects: list[str] | None = None,
++    set_code: str = "tst",
++    set_name: str = "Test Set",
++    layout: str = "normal",
++) -> dict:
++    return {
++        "id": card_id,
++        "name": name,
++        "layout": layout,
++        "artist": artist,
++        "oracle_id": "oracle",
++        "set": set_code,
++        "set_name": set_name,
++        "set_type": set_type,
++        "border_color": border_color,
++        "frame": frame,
++        "digital": digital,
++        "collector_number": collector_number,
++        "nonfoil": nonfoil,
++        "highres_image": highres_image,
++        "lang": lang,
++        "promo_types": promo_types or [],
++        "frame_effects": frame_effects or [],
++    }
++
++
+ @pytest.mark.parametrize(
+     ("id", "n_faces"),
+     [
+@@ -37,3 +77,498 @@ def test_canonic_card_name(name: str, expected_id: str) -> None:
+     card = scryfall.get_card(name)
+ 
+     assert card["id"] == expected_id
++
++
++@pytest.mark.parametrize("name", ["Swords to Plowshares", "Path to Exile"])
++def test_recommend_print_avoids_universes_beyond(name: str) -> None:
++    from mtg_proxies import scryfall
++
++    card = scryfall.recommend_print(card_name=name)
++    promo_types = set(card.get("promo_types", []))
++
++    assert "universesbeyond" not in promo_types
++    assert card.get("set") != "sld"
++
++
++def test_recommend_print_prefers_standard_lightning_bolt() -> None:
++    from mtg_proxies import scryfall
++
++    card = scryfall.recommend_print(card_name="Lightning Bolt")
++
++    assert card.get("set") != "plst"
++    assert "inverted" not in set(card.get("frame_effects", []))
++
++
++def test_recommend_print_prefers_wild_lightning_bolt() -> None:
++    from mtg_proxies import scryfall
++
++    card = scryfall.recommend_print(card_name="Lightning Bolt", art_preference="wild")
++    frame_effects = set(card.get("frame_effects", []))
++
++    assert card.get("highres_image")
++    assert frame_effects & {"showcase", "borderless", "extendedart", "inverted", "shatteredglass"}
++
++
++@pytest.mark.parametrize(
++    "name", ["Voice of Victory", "Rot-Curse Rakshasa", "Cori-Steel Cutter", "Surrak, Elusive Hunter"]
++)
++def test_recommend_print_falls_back_to_highres_when_standard_is_lowres(name: str) -> None:
++    from mtg_proxies import scryfall
++
++    card = scryfall.recommend_print(card_name=name)
++
++    assert card.get("highres_image")
++    assert not card.get("digital")
++
++
++@pytest.mark.parametrize(
++    ("name", "forbidden_sets", "forbidden_promo_types"),
++    [
++        ("Ragavan, Nimble Pilferer", {"prm"}, set()),
++        ("Esika's Chariot", {"prm"}, set()),
++        ("Magda, Brazen Outlaw", {"prm"}, set()),
++    ],
++)
++def test_recommend_print_prefers_clean_standard_prints(
++    name: str,
++    forbidden_sets: set[str],
++    forbidden_promo_types: set[str],
++) -> None:
++    from mtg_proxies import scryfall
++
++    card = scryfall.recommend_print(card_name=name)
++
++    assert card.get("set") not in forbidden_sets
++    assert not (set(card.get("promo_types", [])) & forbidden_promo_types)
++    assert not card.get("digital")
++
++
++def test_recommend_print_standard_fallback_prefers_clean_alternate_before_promo(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    from mtg_proxies.scryfall import scryfall
++
++    lowres_standard = _test_card("lowres-standard", highres_image=False)
++    clean_alternate = _test_card(
++        "clean-alternate",
++        highres_image=True,
++        promo_types=["boosterfun"],
++        frame_effects=["showcase"],
++    )
++    stamped_promo = _test_card(
++        "stamped-promo",
++        highres_image=True,
++        set_type="promo",
++        promo_types=["prerelease", "datestamped"],
++        set_code="ptst",
++        set_name="Test Promos",
++    )
++
++    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [lowres_standard, clean_alternate, stamped_promo])
++
++    card = scryfall.recommend_print(card_name="Test Card")
++
++    assert card["id"] == "clean-alternate"
++
++
++def test_recommend_print_standard_fallback_uses_promo_when_no_clean_alternate_exists(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    from mtg_proxies.scryfall import scryfall
++
++    lowres_standard = _test_card("lowres-standard", highres_image=False)
++    stamped_promo = _test_card(
++        "stamped-promo",
++        highres_image=True,
++        set_type="promo",
++        promo_types=["prerelease", "datestamped"],
++        set_code="ptst",
++        set_name="Test Promos",
++    )
++    digital_highres = _test_card(
++        "digital-highres",
++        highres_image=True,
++        digital=True,
++        set_code="prm",
++        set_name="MTGO Promos",
++    )
++
++    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [lowres_standard, stamped_promo, digital_highres])
++
++    card = scryfall.recommend_print(card_name="Test Card")
++
++    assert card["id"] == "digital-highres"
++
++
++def test_recommend_print_standard_fallback_keeps_lowres_standard_when_only_promo_highres_exists(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    from mtg_proxies.scryfall import scryfall
++
++    lowres_standard = _test_card("lowres-standard", highres_image=False)
++    stamped_promo = _test_card(
++        "stamped-promo",
++        highres_image=True,
++        set_type="promo",
++        promo_types=["prerelease", "datestamped"],
++        set_code="ptst",
++        set_name="Test Promos",
++    )
++
++    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [lowres_standard, stamped_promo])
++
++    card = scryfall.recommend_print(card_name="Test Card")
++
++    assert card["id"] == "stamped-promo"
++
++
++def test_recommend_print_standard_devalues_flashy_anime_variants(monkeypatch: pytest.MonkeyPatch) -> None:
++    from mtg_proxies.scryfall import scryfall
++
++    plain_english_print = _test_card(
++        "plain-english-print",
++        highres_image=True,
++        artist="Chris Seaman",
++        set_type="expansion",
++        promo_types=[],
++        set_code="m21",
++        set_name="Core Set 2021",
++    )
++    flashy_anime_variant = _test_card(
++        "flashy-anime-variant",
++        highres_image=True,
++        artist="Canata Katana",
++        set_code="j22",
++        set_name="Jumpstart 2022",
++    )
++
++    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [plain_english_print, flashy_anime_variant])
++
++    card = scryfall.recommend_print(card_name="Test Card")
++
++    assert card["id"] == "plain-english-print"
++
++
++def test_recommend_print_standard_accepts_plain_ub_mainset_over_ub_promo(monkeypatch: pytest.MonkeyPatch) -> None:
++    from mtg_proxies.scryfall import scryfall
++
++    plain_ub_mainset = _test_card(
++        "plain-ub-mainset",
++        highres_image=False,
++        set_type="draft_innovation",
++        promo_types=["universesbeyond"],
++        set_code="ltr",
++        set_name="The Lord of the Rings: Tales of Middle-earth",
++    )
++    ub_promo = _test_card(
++        "ub-promo",
++        highres_image=True,
++        set_type="promo",
++        promo_types=["universesbeyond", "prerelease", "datestamped"],
++        set_code="pltr",
++        set_name="Tales of Middle-earth Promos",
++    )
++
++    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [plain_ub_mainset, ub_promo])
++
++    card = scryfall.recommend_print(card_name="Test Card")
++
++    assert card["id"] == "ub-promo"
++
++
++def test_get_print_warnings_distinguishes_digital_from_lowres() -> None:
++    from mtg_proxies.decklists.sanitizing import get_print_warnings
++
++    digital_highres = _test_card("digital-highres", highres_image=True, digital=True)
++    lowres_paper = _test_card("lowres-paper", highres_image=False)
++
++    assert get_print_warnings(digital_highres) == ["digital print"]
++    assert get_print_warnings(lowres_paper) == ["low resolution scan"]
++
++
++def test_recommend_print_preferred_set_highres_wins(monkeypatch: pytest.MonkeyPatch) -> None:
++    """A highres print from a preferred set should beat a highres print from any other set."""
++    from mtg_proxies.scryfall import scryfall
++
++    non_preferred = _test_card("non-preferred", highres_image=True, set_code="abc")
++    preferred = _test_card("preferred", highres_image=True, set_code="ltr", set_name="LTR Set")
++
++    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [non_preferred, preferred])
++
++    card = scryfall.recommend_print(card_name="Test Card", preferred_sets=["ltr"])
++
++    assert card["id"] == "preferred"
++
++
++def test_recommend_print_preferred_set_lowres_does_not_beat_highres(monkeypatch: pytest.MonkeyPatch) -> None:
++    """A lowres print from a preferred set must NOT beat a highres print from another set."""
++    from mtg_proxies.scryfall import scryfall
++
++    non_preferred_highres = _test_card("non-preferred-highres", highres_image=True, set_code="abc")
++    preferred_lowres = _test_card("preferred-lowres", highres_image=False, set_code="ltr", set_name="LTR Set")
++
++    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [non_preferred_highres, preferred_lowres])
++
++    card = scryfall.recommend_print(card_name="Test Card", preferred_sets=["ltr"])
++
++    assert card["id"] == "non-preferred-highres"
++
++
++def test_recommend_print_all_preferred_sets_get_equal_bonus(monkeypatch: pytest.MonkeyPatch) -> None:
++    """All preferred sets get the same +200 bonus — order in the list does not create ranking."""
++    from mtg_proxies.scryfall import scryfall
++
++    ltr_card = _test_card("ltr", highres_image=True, set_code="ltr", set_name="LTR Set")
++    ltc_card = _test_card("ltc", highres_image=True, set_code="ltc", set_name="LTC Set")
++    pltr_card = _test_card("pltr", highres_image=True, set_code="pltr", set_name="PLTR Set")
++
++    # All three are from preferred sets and highres — the regular scorer breaks the tie,
++    # so just verify all three beat a non-preferred highres card.
++    non_preferred = _test_card("other", highres_image=True, set_code="abc")
++    for preferred_card in [ltr_card, ltc_card, pltr_card]:
++        monkeypatch.setattr(scryfall, "get_cards", lambda name=None, pc=preferred_card: [non_preferred, pc])
++        card = scryfall.recommend_print(card_name="Test Card", preferred_sets=["ltr", "ltc", "pltr"])
++        assert card["id"] == preferred_card["id"], f"{preferred_card['set']} should beat non-preferred"
++
++
++def test_recommend_print_lowres_preferred_set_loses_to_highres_non_preferred(monkeypatch: pytest.MonkeyPatch) -> None:
++    """A lowres print from a preferred set must not beat a highres print from another set."""
++    from mtg_proxies.scryfall import scryfall
++
++    lowres_ltr = _test_card("lowres-ltr", highres_image=False, set_code="ltr", set_name="LTR Set")
++    highres_ltc = _test_card("highres-ltc", highres_image=True, set_code="ltc", set_name="LTC Set")
++
++    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [lowres_ltr, highres_ltc])
++
++    card = scryfall.recommend_print(card_name="Test Card", preferred_sets=["ltr", "ltc"])
++
++    assert card["id"] == "highres-ltc"
++
++
++def test_recommend_print_standard_mode_prefers_lowres_standard_over_highres_borderless_in_preferred_set(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """In standard mode with --set, a lowres standard card should beat a highres borderless one from the same set.
++
++    Real Scryfall borderless cards have border_color='borderless' (not 'black'), so they miss the +8 black-border
++    bonus. Combined with the borderless penalty, the lowres standard card ends up scoring higher.
++    """
++    from mtg_proxies.scryfall import scryfall
++
++    highres_borderless = _test_card(
++        "highres-borderless",
++        highres_image=True,
++        set_code="ltr",
++        set_name="LTR Set",
++        frame_effects=["borderless"],
++        border_color="borderless",  # real Scryfall borderless cards don't have black border
++    )
++    lowres_standard = _test_card("lowres-standard", highres_image=False, set_code="ltr", set_name="LTR Set")
++
++    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [highres_borderless, lowres_standard])
++
++    card = scryfall.recommend_print(card_name="Test Card", preferred_sets=["ltr"], art_preference="standard")
++
++    assert card["id"] == "lowres-standard"
++
++
++def test_recommend_print_wild_mode_still_prefers_highres_borderless_in_preferred_set(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """In wild mode with --set, a highres borderless card should still beat a lowres standard one."""
++    from mtg_proxies.scryfall import scryfall
++
++    highres_borderless = _test_card(
++        "highres-borderless",
++        highres_image=True,
++        set_code="ltr",
++        set_name="LTR Set",
++        frame_effects=["borderless"],
++        border_color="borderless",
++    )
++    lowres_standard = _test_card("lowres-standard", highres_image=False, set_code="ltr", set_name="LTR Set")
++
++    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [highres_borderless, lowres_standard])
++
++    card = scryfall.recommend_print(card_name="Test Card", preferred_sets=["ltr"], art_preference="wild")
++
++    assert card["id"] == "highres-borderless"
++
++
++def test_recommend_print_standard_preferred_set_highres_beats_lowres(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """In standard mode with --set, a highres standard card from the preferred set beats a lowres one."""
++    from mtg_proxies.scryfall import scryfall
++
++    highres_standard = _test_card("highres-standard", highres_image=True, set_code="ltr", set_name="LTR Set")
++    lowres_standard = _test_card("lowres-standard", highres_image=False, set_code="ltr", set_name="LTR Set")
++
++    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [highres_standard, lowres_standard])
++
++    card = scryfall.recommend_print(card_name="Test Card", preferred_sets=["ltr"], art_preference="standard")
++
++    assert card["id"] == "highres-standard"
++
++
++def test_validate_print_warns_when_no_preferred_set_has_highres(monkeypatch: pytest.MonkeyPatch) -> None:
++    """validate_print should emit a WARNING when the recommended card is not from any preferred set."""
++    import mtg_proxies.decklists.sanitizing as sanitizing
++    from mtg_proxies.decklists.sanitizing import validate_print
++
++    fallback_card = _test_card("fallback", highres_image=True, set_code="abc")
++
++    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: fallback_card)
++
++    _, warnings = validate_print("Test Card", None, None, preferred_sets=["ltr", "ltc"])
++
++    assert any(w.level == "WARNING" and "LTR, LTC" in w.message for w in warnings)
++
++
++def test_validate_print_no_preferred_set_warning_when_card_is_in_preferred_set(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """No preferred-set warning should appear when the recommended card IS from a preferred set."""
++    import mtg_proxies.decklists.sanitizing as sanitizing
++    from mtg_proxies.decklists.sanitizing import validate_print
++
++    ltr_card = _test_card("ltr-card", highres_image=True, set_code="ltr", set_name="LTR Set")
++
++    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: ltr_card)
++
++    _, warnings = validate_print("Test Card", None, None, preferred_sets=["ltr"])
++
++    assert not any("preferred set" in w.message for w in warnings)
++
++
++def test_validate_print_lowres_upgrade_suppresses_preferred_set_warning(monkeypatch: pytest.MonkeyPatch) -> None:
++    """When lowres upgrade already explains the substitution, the preferred-set warning is not also emitted."""
++    import mtg_proxies.decklists.sanitizing as sanitizing
++    from mtg_proxies.decklists.sanitizing import validate_print
++
++    lowres_ltr = _test_card("lowres-ltr", highres_image=False, set_code="ltr", collector_number="224")
++    highres_non_ltr = _test_card("highres-woc", highres_image=True, set_code="woc", collector_number="84")
++
++    monkeypatch.setattr(sanitizing.scryfall, "get_card", lambda *args, **kwargs: lowres_ltr)
++    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: highres_non_ltr)
++
++    _, warnings = validate_print("Test Card", "LTR", "224", preferred_sets=["ltr"])
++
++    warning_messages = [w.message for w in warnings if w.level == "WARNING"]
++    # Only one WARNING: the upgrade. No duplicate preferred-set warning.
++    assert len(warning_messages) == 1
++    assert "Upgrading to" in warning_messages[0]
++
++
++def test_validate_print_auto_upgrades_explicit_lowres_to_highres(monkeypatch: pytest.MonkeyPatch) -> None:
++    """When an explicitly specified print is lowres and a highres alternative exists, auto-upgrade it."""
++    import mtg_proxies.decklists.sanitizing as sanitizing
++    from mtg_proxies.decklists.sanitizing import validate_print
++
++    lowres = _test_card("lowres", highres_image=False, set_code="ltr", collector_number="224")
++    highres = _test_card("highres", highres_image=True, set_code="ltr", collector_number="301")
++
++    monkeypatch.setattr(sanitizing.scryfall, "get_card", lambda *args, **kwargs: lowres)
++    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: highres)
++
++    card, warnings = validate_print("Test Card", "LTR", "224")
++
++    assert card["id"] == "highres"
++    assert any(w.level == "WARNING" and "Upgrading to" in w.message for w in warnings)
++
++
++def test_validate_print_keeps_lowres_when_no_better_option_exists(monkeypatch: pytest.MonkeyPatch) -> None:
++    """When an explicitly specified lowres print is already the best available, keep it (COSMETIC only)."""
++    import mtg_proxies.decklists.sanitizing as sanitizing
++    from mtg_proxies.decklists.sanitizing import validate_print
++
++    lowres = _test_card("lowres", highres_image=False, set_code="ltr", collector_number="224")
++
++    monkeypatch.setattr(sanitizing.scryfall, "get_card", lambda *args, **kwargs: lowres)
++    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: lowres)
++
++    card, warnings = validate_print("Test Card", "LTR", "224")
++
++    assert card["id"] == "lowres"
++    assert not any(w.level == "WARNING" and "Upgrading" in w.message for w in warnings)
++    assert any(w.level == "COSMETIC" for w in warnings)
++
++
++def test_validate_print_allow_low_res_does_not_upgrade_lowres_standard_to_highres_borderless(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """--allow-low-res should NOT upgrade lowres standard to highres borderless in standard mode."""
++    import mtg_proxies.decklists.sanitizing as sanitizing
++    from mtg_proxies.decklists.sanitizing import validate_print
++
++    lowres_standard = _test_card("lowres-standard", highres_image=False, set_code="ltr", collector_number="192")
++    highres_borderless = _test_card(
++        "highres-borderless",
++        highres_image=True,
++        set_code="ltr",
++        collector_number="741",
++        frame_effects=["borderless"],
++        border_color="borderless",
++    )
++
++    monkeypatch.setattr(sanitizing.scryfall, "get_card", lambda *args, **kwargs: lowres_standard)
++    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: highres_borderless)
++
++    card, warnings = validate_print(
++        "Test Card", "LTR", "192", allow_low_res=True, preferred_sets=["LTR"], art_preference="standard"
++    )
++
++    assert card["id"] == "lowres-standard"
++    assert not any(w.level == "WARNING" and "Upgrading" in w.message for w in warnings)
++
++
++def test_validate_print_allow_low_res_upgrades_within_preferred_set(monkeypatch: pytest.MonkeyPatch) -> None:
++    """--allow-low-res should still upgrade lowres→highres when highres exists in the same preferred set."""
++    import mtg_proxies.decklists.sanitizing as sanitizing
++    from mtg_proxies.decklists.sanitizing import validate_print
++
++    lowres = _test_card("lowres", highres_image=False, set_code="ltr", collector_number="192")
++    highres = _test_card("highres", highres_image=True, set_code="ltr", collector_number="741")
++
++    monkeypatch.setattr(sanitizing.scryfall, "get_card", lambda *args, **kwargs: lowres)
++    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: highres)
++
++    card, warnings = validate_print("Test Card", "LTR", "192", allow_low_res=True, preferred_sets=["LTR"])
++
++    assert card["id"] == "highres"
++    assert any(w.level == "WARNING" and "Upgrading to" in w.message for w in warnings)
++
++
++def test_validate_print_allow_low_res_keeps_lowres_when_highres_only_outside_preferred_set(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """--allow-low-res should NOT upgrade when the only highres is outside the preferred sets."""
++    import mtg_proxies.decklists.sanitizing as sanitizing
++    from mtg_proxies.decklists.sanitizing import validate_print
++
++    lowres_ltr = _test_card("lowres-ltr", highres_image=False, set_code="ltr", collector_number="192")
++    highres_woc = _test_card("highres-woc", highres_image=True, set_code="woc", collector_number="1")
++
++    monkeypatch.setattr(sanitizing.scryfall, "get_card", lambda *args, **kwargs: lowres_ltr)
++    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: highres_woc)
++
++    card, warnings = validate_print("Test Card", "LTR", "192", allow_low_res=True, preferred_sets=["LTR"])
++
++    # Should keep the lowres LTR print, not upgrade to WOC
++    assert card["id"] == "lowres-ltr"
++    assert not any(w.level == "WARNING" and "Upgrading" in w.message for w in warnings)
++
++
++def test_validate_print_explains_digital_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
++    import mtg_proxies.decklists.sanitizing as sanitizing
++    from mtg_proxies.decklists.sanitizing import validate_print
++
++    digital_highres = _test_card("digital-highres", highres_image=True, digital=True)
++
++    monkeypatch.setattr(sanitizing.scryfall, "get_card", lambda *args, **kwargs: digital_highres)
++    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: digital_highres)
++
++    _, warnings = validate_print("Test Card", "TST", "1")
++
++    assert len(warnings) == 1
++    assert warnings[0].message == "To avoid low resolution scans, a digital print was chosen for 'Test Card (TST) 1'."
