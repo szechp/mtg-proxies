@@ -983,7 +983,7 @@ def test_print_cards_fpdf_places_cards_at_true_physical_size(example_images: lis
 
     data = out_file.read_bytes()
     sizes = []
-    for m in re.finditer(rb"stream\r?\n(.*?)endstream", data, re.S):
+    for m in re.finditer(rb"stream\r?\n(.*?)endstream", data, re.DOTALL):
         try:
             content = zlib.decompress(m.group(1))
         except zlib.error:

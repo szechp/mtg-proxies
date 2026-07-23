@@ -60,8 +60,6 @@ def test_resolve_fetch_failure_returns_none(monkeypatch: pytest.MonkeyPatch, tmp
 
 def test_resolve_bleed_crop_default_is_off(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Library-level default applies no crop — `_bc` suffix only present when requested."""
-    from PIL import Image
-
     img_bytes = _png_bytes((40, 56), (200, 200, 200))
     monkeypatch.setattr(per_card, "fetch_thumbnail", MagicMock(return_value=img_bytes))
 

@@ -84,7 +84,7 @@ def fetch_mtgpics_art(
     url = _art_url(set_code, collector_number)
     try:
         resp = requests.get(url, timeout=timeout, headers={"User-Agent": "mtg-proxies"})
-    except Exception as exc:  # noqa: BLE001 — network errors are a soft miss
+    except Exception as exc:
         _log.debug("mtgpics fetch failed for %s/%s: %s", set_code, collector_number, exc)
         return None
     if resp.status_code != 200:
