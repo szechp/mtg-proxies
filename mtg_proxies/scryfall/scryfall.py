@@ -65,8 +65,24 @@ def get_image(image_uri: str, *, silent: bool = False) -> str:
 
     Returns:
         string: Path to local file.
+
+    Raises:
+        ValueError: ``image_uri`` is Scryfall's "not yet scanned" placeholder
+            (``errors.scryfall.com/soon.jpg``) — e.g. a spoiled-but-unreleased
+            card, or a local bulk-data cache (``_BULK_CACHE_TTL`` = 24h) that
+            predates the real scan landing on Scryfall. There is no real
+            artwork to fetch; callers should fall back to their own default
+            (the cardconjourer harness's raw Scryfall art fetch, etc.) rather
+            than downloading and captioning a "coming soon" placeholder image.
     """
+    if "errors.scryfall.com" in image_uri:
+        raise ValueError(f"no real scan available yet for {image_uri!r} (Scryfall placeholder image)")
     split = image_uri.split("/")
+    # A real Scryfall CDN URL always has >=5 path segments (scheme, host, size,
+    # face, two hash-prefix dirs, filename); anything shorter is a URL shape we
+    # don't recognize — fail with a clear message instead of a raw IndexError.
+    if len(split) < 5:
+        raise ValueError(f"unrecognized Scryfall image URL shape (too few path segments): {image_uri!r}")
     file_name = split[-5] + "_" + split[-4] + "_" + split[-1].split("?")[0]
     return get_file(file_name, image_uri, silent=silent)
 
@@ -165,12 +181,12 @@ def _load_pickle_safe(path: Path) -> list[dict] | None:
 
 
 def _write_pickle_atomic(path: Path, data: list[dict]) -> None:
-    """tempfile + os.replace so a SIGKILL mid-write doesn't poison the cache."""
+    """Tempfile + os.replace so a SIGKILL mid-write doesn't poison the cache."""
     tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
     try:
         with tmp.open("wb") as f:
             pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
-        os.replace(tmp, path)
+        Path(tmp).replace(path)
     except OSError:
         # Clean up the tempfile on failure, then re-raise.
         try:

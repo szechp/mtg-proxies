@@ -1433,19 +1433,26 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
 
                 if f_url and b_url:
                     from mtg_proxies import scryfall as _scryfall
-                    f_local = _scryfall.get_image(f_url)
-                    b_local = _scryfall.get_image(b_url)
+                    try:
+                        f_local = _scryfall.get_image(f_url)
+                        b_local = _scryfall.get_image(b_url)
+                    except ValueError as exc:
+                        # Spoiled-but-unreleased card (or a stale <24h bulk-data cache):
+                        # Scryfall has no real scan yet, only the "soon.jpg" placeholder.
+                        # Fall through to the harness's own default Scryfall fetch instead
+                        # of crashing the whole batch.
+                        _warn(f"Note: {card['name']!r} DFC art unavailable ({exc}); using harness default.")
+                    else:
+                        if args.upscale:
+                            from mtg_proxies import upscale as _upscale_mod
+                            [f_local, b_local] = _upscale_mod.upscale_images(
+                                [_ensure_png(f_local), _ensure_png(b_local)], progress=False, **upscale_kwargs
+                            )
 
-                    if args.upscale:
-                        from mtg_proxies import upscale as _upscale_mod
-                        [f_local, b_local] = _upscale_mod.upscale_images(
-                            [_ensure_png(f_local), _ensure_png(b_local)], progress=False, **upscale_kwargs
-                        )
-
-                    if slot_int in dfc_split_slots:
-                        return {**extras, "art_path": str(f_local), "art_path_back": str(b_local)}
-                    composite = _composite_dfc_art(Path(f_local), Path(b_local))
-                    return {**extras, "art_path": str(composite)}
+                        if slot_int in dfc_split_slots:
+                            return {**extras, "art_path": str(f_local), "art_path_back": str(b_local)}
+                        composite = _composite_dfc_art(Path(f_local), Path(b_local))
+                        return {**extras, "art_path": str(composite)}
 
         # 1) MTGPics by set+collector (Normal cards / fallback for DFCs with missing faces).
         skip_mtgpics = args.scryfall or slot_scryfall_override.get(slot_int, False)
@@ -1471,7 +1478,14 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
             return extras
 
         from mtg_proxies import scryfall as _scryfall
-        local = _scryfall.get_image(art_url)
+        try:
+            local = _scryfall.get_image(art_url)
+        except ValueError as exc:
+            # Spoiled-but-unreleased card (or a stale <24h bulk-data cache): Scryfall has
+            # no real scan yet, only the "soon.jpg" placeholder. Fall through to the
+            # harness's own default Scryfall fetch instead of crashing the whole batch.
+            _warn(f"Note: {card['name']!r} art unavailable ({exc}); using harness default.")
+            return extras
         if args.upscale:
             local_png = _ensure_png(local)
             from mtg_proxies import upscale as _upscale_mod
