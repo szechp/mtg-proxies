@@ -415,6 +415,61 @@ def test_main_cardconjourer_modern_and_8th_mutex(capsys: pytest.CaptureFixture, 
     assert "not allowed" in err or "argument" in err
 
 
+# ---------------------------------------------------------------------------
+# --m15-8th frame (M15Eighth hybrid: modern M15 body, 8th-Edition styling)
+# ---------------------------------------------------------------------------
+
+
+def test_main_cardconjourer_m15_8th_propagates_frame(tmp_path: Path) -> None:
+    """`cardconjourer --m15-8th deck.txt OUTDIR` reaches render_deck with frame='m15-8th'."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder\n")
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--m15-8th", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
+        main()
+
+    assert mock_render.call_args.kwargs.get("frame") == "m15-8th"
+
+
+def test_main_cardconjourer_m15_8th_and_modern_mutex(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
+    """`--m15-8th` and `--modern` are mutually exclusive at the argparse level."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder\n")
+    argv = ["mtg-proxies", "cardconjourer", "--m15-8th", "--modern", str(deck), str(tmp_path / "out")]
+
+    with patch("sys.argv", argv), pytest.raises(SystemExit):
+        main()
+
+    err = capsys.readouterr().err
+    assert "not allowed" in err or "argument" in err
+
+
+def test_main_cardconjourer_help_mentions_m15_8th(capsys: pytest.CaptureFixture) -> None:
+    """`cardconjourer --help` documents the --m15-8th frame flag."""
+    from mtg_proxies.cli import main
+
+    with patch("sys.argv", ["mtg-proxies", "cardconjourer", "--help"]), pytest.raises(SystemExit):
+        main()
+
+    assert "--m15-8th" in capsys.readouterr().out
+
+
+def test_resolve_cc_frame_m15_8th_modeline() -> None:
+    """A per-card `#cardconjourer --m15-8th` modeline resolves to 'm15-8th'."""
+    from mtg_proxies.cli import _resolve_cc_frame
+
+    assert _resolve_cc_frame({"--m15-8th": True}) == "m15-8th"
+    assert _resolve_cc_frame({}) == "auto"  # bare #cardconjourer never resolves to m15-8th
+
+
 def _make_cc_root_with_ltc(tmp_path: Path) -> Path:
     """Build a CC cache root with the LTC set-symbol assets across all rarities.
 

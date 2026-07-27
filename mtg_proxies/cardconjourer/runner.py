@@ -103,7 +103,7 @@ def build_job(
     zero-padded string so the harness's output filename (``<NNNN>-<slug>.png``)
     sorts correctly in shells and matches the ``mpcfill`` convention.
 
-    ``frame`` is the frame-flag string (``"8th"`` or ``"modern"``); the harness
+    ``frame`` is the frame-flag string (``"8th"``, ``"modern"``, or ``"m15-8th"``); the harness
     dispatches its frame-pack selection on this.
 
     ``art_path`` (optional) is an absolute local path. When set, the harness

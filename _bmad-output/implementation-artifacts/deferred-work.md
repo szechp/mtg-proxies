@@ -60,3 +60,22 @@ Findings from the second (extension-only) review pass, deferred:
 - **E13 — Per-card MPCFill cache filename now carries `_front` / `_back`
   suffix.** Legacy `<scryfall_id>__<hash>.png` files from the first iteration
   won't be reused. Cold cache, not corruption.
+
+## `--m15-8th` frame flag — deferred finding
+
+Surfaced during manual visual QA of `spec-cardconjourer-m15-8th-frame.md`
+(2026-07-23), but not scoped to that flag — confirmed cross-frame, pre-existing.
+
+- **MDFC land back faces have illegible low-contrast bottom-info text across
+  ALL frame styles, not just m15-8th.** Rendering an MDFC land's back face
+  (e.g. Bala Ged Sanctuary, back of Bala Ged Recovery) with `--modern` shows
+  the same washed-out/low-contrast bottom-info text as `--m15-8th` did before
+  investigation — confirmed by testing the identical card with `--modern` and
+  reproducing the exact same symptom, and separately by disabling all
+  `--m15-8th`-specific harness code and still reproducing it. Root cause not
+  isolated to a specific engine call, but consistently reproducible on any
+  frame's MDFC land back face. Needs a dedicated investigation session (this
+  one triaged it and stopped once it was confirmed out of scope) — likely
+  another `conditionalcolor`-vs-actual-background mismatch similar to the one
+  fixed for m15-8th's colored-artifact case, but on the land-back layout/pack
+  path instead of the artifact-frame path.

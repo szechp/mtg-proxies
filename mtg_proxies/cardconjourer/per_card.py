@@ -32,7 +32,7 @@ class CardConjourerRequest:
 
     slot_id: str
     name: str
-    frame: str  # "8th" | "modern"
+    frame: str  # "8th" | "modern" | "m15-8th"
     upscale: bool = False
     set_symbol_path: str | None = None
     art_path: str | None = None

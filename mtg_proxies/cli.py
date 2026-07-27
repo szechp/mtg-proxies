@@ -124,7 +124,7 @@ def resolve_upscale_scope(args: argparse.Namespace) -> Literal["auto", "all"] | 
 def _resolve_cc_frame(flags: dict) -> str:
     """Map a ``#cardconjourer`` directive's flags to the harness's frame string.
 
-    Mirrors the CLI's ``--modern`` / ``--retro`` / ``--8th`` precedence. Bare
+    Mirrors the CLI's ``--modern`` / ``--retro`` / ``--8th`` / ``--m15-8th`` precedence. Bare
     ``#cardconjourer`` (no frame flag) resolves to ``"auto"``, matching the
     subcommand's no-flag default: the harness then derives each card's frame from
     its Scryfall ``frame`` value. The modeline parser's mutex already drops
@@ -132,6 +132,8 @@ def _resolve_cc_frame(flags: dict) -> str:
     """
     if flags.get("--modern"):
         return "modern"
+    if flags.get("--m15-8th"):
+        return "m15-8th"
     if flags.get("--retro"):
         return "retro"
     if flags.get("--borderless"):
@@ -1219,6 +1221,8 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     # Scryfall ``frame`` value, skipping frames with no CC equivalent to fallback.txt.
     if args.frame_modern:
         frame = "modern"
+    elif args.frame_m15_8th:
+        frame = "m15-8th"
     elif args.frame_retro:
         frame = "retro"
     elif args.frame_borderless:
@@ -1975,11 +1979,11 @@ def main() -> None:
 
     cardconjourer_parser = subparsers.add_parser(
         "cardconjourer",
-        help="Render an 8th-edition, modern, or retro frame for each card via headless Card Conjurer",
+        help="Render an 8th-edition, modern, M15Eighth, or retro frame for each card via headless Card Conjurer",
         description=(
             "For each card in DECKLIST, render a fresh PNG via the headless Card Conjurer engine"
             " and write it to OUTDIR as <NNNN>-<slug>.png. The frame style is --8th / --modern /"
-            " --retro, or — with no flag — chosen automatically per card from its Scryfall frame"
+            " --m15-8th / --retro, or — with no flag — chosen automatically per card from its Scryfall frame"
             " (2015→modern, 2003→8th, 1997/1993→retro; frames with no CC equivalent skip to the"
             " scan). Cards the engine can't render (saga / transform / planeswalker / 404) are"
             " listed in OUTDIR/fallback.txt (decklist format) so you can pipe them into a normal"
@@ -2005,6 +2009,15 @@ def main() -> None:
     frame_group.add_argument(
         "--modern", dest="frame_modern", action="store_true",
         help="render every card in the modern (M15, 2014) frame style — Nyx enchantments and per-set icons preserved"
+    )
+    frame_group.add_argument(
+        "--m15-8th", dest="frame_m15_8th", action="store_true",
+        help=(
+            "render every card in the M15Eighth hybrid frame style — a modern (M15) card body"
+            " restyled with 8th-Edition trim. Shares modern's size, legend-crown, and P/T-box"
+            " geometry; legend crowns render via Card Conjurer's native M15Eighth crown builder."
+            " Transform / MDFC split faces use the packM15Eighth* DFC frame packs."
+        ),
     )
     frame_group.add_argument(
         "--retro", dest="frame_retro", action="store_true",

@@ -160,6 +160,35 @@ def test_build_job_with_frame_borderless() -> None:
     assert build_job(slot=1, name="Murder", frame="borderless")["frame"] == "borderless"
 
 
+def test_build_job_with_frame_m15_8th_single_face() -> None:
+    """``frame="m15-8th"`` rides through the same channel as 8th/modern/retro for a single-faced card."""
+    from mtg_proxies.cardconjourer.runner import build_job
+
+    assert build_job(slot=1, name="Murder", frame="m15-8th")["frame"] == "m15-8th"
+
+
+def test_build_job_with_frame_m15_8th_transform_dfc_split() -> None:
+    """``frame="m15-8th"`` with ``dfc_split=True`` on a transform card carries both through unchanged."""
+    from mtg_proxies.cardconjourer.runner import build_job
+
+    job = build_job(slot=1, name="Jacob Hauken, Inspector // Res Hauken",
+                    frame="m15-8th", dfc_split=True)
+
+    assert job["frame"] == "m15-8th"
+    assert job["dfc_split"] is True
+
+
+def test_build_job_with_frame_m15_8th_modal_dfc_split() -> None:
+    """``frame="m15-8th"`` with ``dfc_split=True`` on a modal_dfc card carries both through unchanged."""
+    from mtg_proxies.cardconjourer.runner import build_job
+
+    job = build_job(slot=1, name="Growing Rites of Itlimoc // Itlimoc, Cradle of the Sun",
+                    frame="m15-8th", dfc_split=True)
+
+    assert job["frame"] == "m15-8th"
+    assert job["dfc_split"] is True
+
+
 def test_build_job_with_set_symbol_path() -> None:
     """``set_symbol_path`` is emitted into the job dict for the harness to upload."""
     from mtg_proxies.cardconjourer.runner import build_job
