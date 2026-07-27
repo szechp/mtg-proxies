@@ -141,6 +141,12 @@ class HarnessImage {
         this.width = 0; this.height = 0;
     }
     get src() { return this._src; }
+    // Real browsers maintain these automatically; a vendored script that checks
+    // them before drawing (versionStation.js's drawStationElement) would otherwise
+    // always see `undefined` here and silently skip the draw, load or no load.
+    get complete() { return this._inner !== null; }
+    get naturalWidth() { return this._inner ? this._inner.width : 0; }
+    get naturalHeight() { return this._inner ? this._inner.height : 0; }
     set src(v) {
         this._src = v;
         const resolved = resolveSrc(v);
@@ -395,6 +401,13 @@ const SELECTOR_OVERRIDES = {
 const fakeElements = new Map();
 function querySelector(sel) {
     if (fakeElements.has(sel)) return fakeElements.get(sel);
+    // Attribute-selector queries (e.g. versionStation.js's `img[data-station-cache="…"]`,
+    // used to detect a previously-cached Image element) mean "does this exist", and must
+    // return null when it doesn't — unlike our #id-style form-field stubs below, which
+    // always fabricate a fake element on first access. Returning a fake element here would
+    // make callers treat a cache miss as a hit and skip real initialization (e.g. Station's
+    // setupStationImage never creating its actual Image, leaving `.src` undefined).
+    if (sel.includes('[') && sel.includes(']')) return null;
     // Canvas-backed selectors need real node-canvas instances.
     if (sel === '#previewCanvas') {
         const c = wrapCanvas(createCanvas(1, 1));
@@ -769,7 +782,7 @@ const SKIP_LAYOUTS = new Set([
 ]);
 // Keyword-based skips for layouts Scryfall still marks 'normal'. Mutate and
 // Prototype each need an extra cost/text region the 8th frame doesn't have.
-const SKIP_KEYWORDS = new Set(['Mutate', 'Prototype']);
+const SKIP_KEYWORDS = new Set(['Mutate', 'Prototype', 'Station']);
 function shouldSkip(scry) {
     if (SKIP_LAYOUTS.has(scry.layout)) return `layout '${scry.layout}'`;
     // Planeswalker isn't a Scryfall layout (Ashiok's layout is 'normal') — gate on type_line.
@@ -782,6 +795,370 @@ function shouldSkip(scry) {
         if (SKIP_KEYWORDS.has(kw)) return `keyword '${kw}'`;
     }
     return null;
+}
+
+// Station (Edge of Eternities) cards need their own dedicated pack
+// (packStationRegular.js) — tiered ability badges/PT that no 8th/modern/retro/
+// m15-8th pack has any equivalent for. Real Station printings are all modern-
+// era, so this always wins regardless of the requested --frame; there's no
+// "Station styled as 8th" to render.
+function isStationCard(scry) {
+    return (scry.keywords || []).includes('Station');
+}
+
+// The vendored engine has a real, dedicated Station-aware import path
+// (creator-23.js's changeCardIndex, gated on card.version.includes('station'))
+// that's supposed to split oracle_text into ability0/ability1/ability2 + tier
+// badge numbers automatically — no customization should be needed here. But its
+// parseStationCard() has a real bug: it splits on the literal token "STATION 8+"
+// (uppercase, no line break) via `oracleText.split(/STATION \d+\+/)`, and real
+// Scryfall text never contains that — Scryfall always writes "Station" (or
+// "Station (reminder)") on its own line, then each tier as a separate
+// "N+ | ability text" line below it. Since that split pattern never matches,
+// the entire oracle_text falls into a single field. Confirmed this is not a
+// stale-vendor-cache issue: diffed against current upstream master, byte-
+// identical. So we do the split ourselves, correctly, and overwrite whatever
+// the vendored path (wrongly) already populated.
+function parseStationAbilities(oracleText) {
+    if (!oracleText) return null;
+    const tierRegex = /(\d+\+)\s*\|\s*([^\n]+)/g;
+    const tiers = [];
+    let match, firstIndex = -1, lastEnd = -1;
+    while ((match = tierRegex.exec(oracleText)) !== null) {
+        if (firstIndex === -1) firstIndex = match.index;
+        lastEnd = match.index + match[0].length;
+        tiers.push({ number: match[1], text: match[2].trim() });
+    }
+    if (!tiers.length) return null;
+    // A rare trailing untiered paragraph after the last "N+ | ..." line (e.g.
+    // Entropic Battlecruiser's "Whenever this Spacecraft attacks...") reads as a
+    // continuation of the last tier on the real card, not its own tier.
+    const trailing = oracleText.slice(lastEnd).trim();
+    if (trailing) tiers[tiers.length - 1].text += '\n' + trailing;
+
+    const beforeTiers = oracleText.slice(0, firstIndex).trim();
+    // Split into "everything before the Station line" and the Station reminder
+    // line itself (present in full on a card's first printing of the keyword,
+    // e.g. "Station (Tap another creature...)"; bare "Station" on reprints).
+    const reminderMatch = beforeTiers.match(/(.*?)(Station(?: \([^)]+\))?)\s*$/s);
+    let preText = beforeTiers, reminderText = '';
+    if (reminderMatch) {
+        preText = reminderMatch[1].trim();
+        reminderText = reminderMatch[2].replace(/Station \(([^)]+)\)/, 'Station {i}($1){/i}');
+    }
+    return { preText, reminderText, tiers };
+}
+
+// Populate card.text.ability0/1/2 and card.station.badgeValues[1]/[2] from a
+// correct parseStationAbilities() result, mirroring the vendored changeCardIndex
+// branch's own scenario table (single-tier cards give the Station reminder its
+// own ability slot and disable the first badge/square entirely, since there's
+// nothing to show there; 2+-tier cards combine pre-text+reminder into ability0
+// so both tiers get their own slot).
+function applyStationAbilities(scry) {
+    const data = parseStationAbilities(scry.oracle_text || '');
+    if (!data || !global.card.text) return;
+    const { preText, reminderText, tiers } = data;
+    const hasPre = !!preText;
+    let ability0 = '', ability1 = '', ability2 = '', badge1 = '', badge2 = '';
+    if (tiers.length === 1) {
+        ability0 = hasPre ? preText : '';
+        ability1 = reminderText;
+        ability2 = tiers[0].text;
+        badge2 = tiers[0].number;
+    } else {
+        ability0 = hasPre ? (preText + (reminderText ? '\n' + reminderText : '')) : reminderText;
+        ability1 = tiers[0].text;
+        ability2 = tiers[1] ? tiers[1].text : '';
+        if (tiers.length > 2) {
+            ability2 += tiers.slice(2).map(t => `\n${t.number} | ${t.text}`).join('');
+        }
+        badge1 = tiers[0].number;
+        badge2 = tiers[1] ? tiers[1].number : '';
+    }
+    // A bare '\n' becomes CC's {line} markup token at render time -- the engine's
+    // own normal paragraph break (extra ~0.35*fontsize gap on top of the line),
+    // which is what a Scryfall paragraph break (e.g. Candela's "Flash\nWhen
+    // Candela enters..." or a tier's "Flying\nWhenever...") should read as: a
+    // distinct new paragraph, not a run-on wrapped line. An earlier pass here
+    // swapped this for {lns} (tight break, no gap) on the theory that {line}'s
+    // gap was itself the cause of a "massive blank line" report -- wrong
+    // diagnosis; the real cause was card.station.squares[1/2].height getting
+    // silently reset by stationEdited()'s DOM-input resync (see below), now
+    // fixed at the source. Left as plain '\n' so CC's native paragraph spacing
+    // applies normally.
+    if (global.card.text.ability0) global.card.text.ability0.text = ability0;
+    if (global.card.text.ability1) global.card.text.ability1.text = ability1;
+    if (global.card.text.ability2) global.card.text.ability2.text = ability2;
+    if (global.card.station) {
+        global.card.station.badgeValues[1] = badge1;
+        global.card.station.badgeValues[2] = badge2;
+        global.card.station.disableFirstAbility = (tiers.length === 1);
+        // stationEdited() (called again later, after the image-drain, so the
+        // badge/PT images it draws have actually finished loading) unconditionally
+        // re-syncs these three fields FROM fake DOM inputs
+        // (#station-badge-value-1/2, #station-disable-first-ability) every time it
+        // runs -- the same "read from a form field" pattern this harness already
+        // uses elsewhere (e.g. #info-artist), except nothing else ever sets these
+        // particular fields, so they silently wipe the assignments above back to
+        // their fake-element defaults (empty string / unchecked) on that later call.
+        // Set the DOM elements themselves so the resync reads the right values
+        // instead of fighting it.
+        querySelector('#station-badge-value-1').value = badge1;
+        querySelector('#station-badge-value-2').value = badge2;
+        querySelector('#station-disable-first-ability').checked = (tiers.length === 1);
+    }
+    layoutStationAbilities(ability0, ability1, ability2);
+}
+
+// Actually measure how many lines `text` wraps to at this box's real pixel
+// width/font size, via a scratch canvas — a first attempt estimated this from
+// raw character count (~55 chars/line), which badly underestimated real
+// wrapped height for long paragraphs; the resulting boxes were too short and
+// the last section's text overflowed past the card's bottom edge into the
+// P/T box and bottom-info. Real measurement replaces the guess. `{...}` CC
+// markup tokens (italics, conditional-color, etc.) are stripped first since
+// they don't occupy visible width.
+const stationMeasureCtx = createCanvas(10, 10).getContext('2d');
+function countWrappedLines(text, boxWidthPx, fontPx) {
+    if (!text) return 1;
+    stationMeasureCtx.font = `${Math.round(fontPx)}px mplantin`;
+    let totalLines = 0;
+    for (const paragraph of text.replace(/\{[^}]*\}/g, '').split('\n')) {
+        if (!paragraph.trim()) { totalLines += 1; continue; }
+        let lineWidth = 0;
+        let linesInParagraph = 1;
+        for (const word of paragraph.split(' ')) {
+            const wordWidth = stationMeasureCtx.measureText(word + ' ').width;
+            if (lineWidth + wordWidth > boxWidthPx && lineWidth > 0) {
+                linesInParagraph++;
+                lineWidth = wordWidth;
+            } else {
+                lineWidth += wordWidth;
+            }
+        }
+        totalLines += linesInParagraph;
+    }
+    return Math.max(1, totalLines);
+}
+function estimateStationLines(text, boxWidthFraction, fontSizeFraction) {
+    const cardWidth = global.card.width || 1500;
+    const cardHeight = global.card.height || 2100;
+    return countWrappedLines(text, boxWidthFraction * cardWidth, fontSizeFraction * cardHeight);
+}
+
+// The pack's own ability0/1/2 heights are fixed regardless of content (e.g.
+// ability2 is always 0.0972 tall) — fine for the pack's own placeholder text,
+// but a real card's tier ability can be much longer (Candela's absorbs a
+// trailing untiered sentence per parseStationAbilities' comment) or much
+// shorter ("Flying" alone) than what the fixed box assumes, so the engine's
+// oneLine/auto-shrink either force-shrinks long text into too little room or
+// leaves a short section with mostly empty space.
+//
+// Sizing by a fixed per-line-count budget (each section's box = its own line
+// count times one shared "line height" constant) looks fair but isn't: the
+// engine's auto-shrink (writeText, creator-23.js) re-wraps on every 1px font
+// reduction, so a multi-line paragraph gets shorter AND fewer lines as it
+// shrinks, while a section already down to one line (e.g. Candela's "Station"
+// alone) can only ever get shorter. Under the same nominal per-line
+// allowance, that forces the one-line section to shrink much further to fit
+// -- confirmed by directly measuring both texts across a range of font
+// sizes: a 4-line paragraph already reflows to 3 lines by font size 60, while
+// a lone single word only reaches that same total height at a noticeably
+// smaller font, since it has no lines to shed.
+//
+// Instead: find the single largest font size at which every section's REAL
+// measured line count at THAT size, plus a fixed inter-section gap, fits the
+// available span -- then size each box from its own real line count at that
+// one shared size. Every section ends up rendered at the same font size,
+// which a fixed-line-height budget can't guarantee.
+function layoutStationAbilities(ability0Text, ability1Text, ability2Text) {
+    const text = global.card.text;
+    const station = global.card.station;
+    if (!text?.ability0 || !text?.ability1 || !text?.ability2) return;
+
+    const yStart = text.ability0.y;
+    // The round badge is drawn centered on its square's vertical midpoint and extends
+    // roughly badgeSettings.height/2 (81px, badgeSettings.height=162 -- versionStation.js)
+    // below it (drawStationElement: elementY = squareY + square.height/2, image drawn
+    // from elementY - height/2) -- so the pack's own original ability2.y + height
+    // boundary (which assumes only text, not also a badge circle poking out below the
+    // square) isn't actually safe if square2 ends up short. Worst case (square2 height
+    // -> 0) the badge's own center sits at the square's top edge and it pokes 81px below
+    // that -- so 81/cardHeight is the true worst-case reserve needed, not an arbitrary
+    // guess. A first attempt used a flat 0.05 (140px) "to be safe", which reserved far
+    // more than the badge could ever actually need and left a large, clearly visible
+    // strip of plain unused card between the last tinted section and the real bottom
+    // border -- confirmed by scanning actual rendered pixels: tinted content ended well
+    // before the frame's own black border did. Use the real worst-case number instead.
+    const BADGE_MARGIN = 81 / global.card.height;
+    const yEnd = (text.ability2.y + text.ability2.height) - BADGE_MARGIN;
+    const totalSpan = yEnd - yStart;
+    if (totalSpan <= 0) return;
+
+    const cardWidth = global.card.width;
+    const cardHeight = global.card.height;
+    const texts = [ability0Text, ability1Text, ability2Text];
+    // ability1's width still holds whatever updateStationTextPositions() computed on the
+    // FIRST (auto, pre-badge-values) stationEdited() call during importCard -- the normal
+    // square-derived width (disableFirstAbility was still false then). But when the 1-tier
+    // scenario disables ability1's square, that function switches to a fixed, WIDER
+    // disabledTextWidth (0.825 default) on its next call instead. Estimating against the
+    // narrower stale width overcounts wrapped lines, over-allocating this box's height and
+    // leaving a visible blank gap at its bottom once the real (wider) box needs fewer lines.
+    const ability1Width = station?.disableFirstAbility
+        ? (station.disabledTextWidth || 0.825)
+        : text.ability1.width;
+    const boxWidthsPx = [text.ability0.width, ability1Width, text.ability2.width].map((w) => w * cardWidth);
+
+    const SECTION_GAP = 0.02;
+    const gapAfterIndex = station?.disableFirstAbility ? 1 : 0;
+    const LINE_HEIGHT_RATIO = 0.04 / 0.0295; // pack's own size-to-line-height convention
+
+    // Search every font size from the pack's default down to a floor, and pick
+    // whichever comes CLOSEST to exactly filling totalSpan -- not just the largest one
+    // that fits. Line-wrapping only changes in whole-line jumps as font size changes
+    // (a paragraph re-wraps to fewer lines at some size, then stays there for several
+    // sizes in a row before jumping again), so "largest that fits" can land well short
+    // of the available space if the next size up would add a whole extra line. Allow a
+    // small overflow (OVERFLOW_TOLERANCE, borrowed from BADGE_MARGIN's own reserve) if
+    // that actually lands closer to a full fill than any strictly-fitting size does.
+    const defaultFontPx = Math.round((text.ability0.size || 0.0295) * cardHeight);
+    const OVERFLOW_TOLERANCE = totalSpan * 0.03;
+    let fontPx = 12;
+    let lineCounts = texts.map((t, i) => countWrappedLines(t, boxWidthsPx[i], 12));
+    let bestDiff = Infinity;
+    for (let candidatePx = defaultFontPx; candidatePx >= 12; candidatePx--) {
+        const candidateLines = texts.map((t, i) => countWrappedLines(t, boxWidthsPx[i], candidatePx));
+        const totalNeeded = candidateLines.reduce((a, n, i) => {
+            const bare = (n * candidatePx * LINE_HEIGHT_RATIO) / cardHeight;
+            return a + (i === 0 ? bare : bare / 0.9);
+        }, 0) + SECTION_GAP;
+        const diff = totalNeeded - totalSpan;
+        if (diff <= OVERFLOW_TOLERANCE && Math.abs(diff) < bestDiff) {
+            bestDiff = Math.abs(diff);
+            fontPx = candidatePx;
+            lineCounts = candidateLines;
+        }
+    }
+
+    const fontSizeFraction = fontPx / cardHeight;
+    if (text.ability0) text.ability0.size = fontSizeFraction;
+    if (text.ability1) text.ability1.size = fontSizeFraction;
+    if (text.ability2) text.ability2.size = fontSizeFraction;
+
+    // Bare content height at the chosen shared font size, with ability1/ability2 (which
+    // only get 90% of their square's height as usable text space, per
+    // updateStationTextPositions in versionStation.js) pre-compensated so the USABLE
+    // area matches bare content exactly rather than falling short of it.
+    const bareHeights = lineCounts.map((n, i) => {
+        const bare = (n * fontPx * LINE_HEIGHT_RATIO) / cardHeight;
+        return i === 0 ? bare : bare / 0.9;
+    });
+
+    // Even the closest-fitting font size can leave real slack: line-wrapping only
+    // changes in whole-line jumps, and sometimes TWO sections drop a line at the same
+    // font step (confirmed on Dawnsire: font 70 overflows badly, font 69 drops both
+    // ability0 and ability1 a line at once, undershooting by ~80px -- there's no size
+    // in between). Rather than leave that as a dead gap at the very bottom of the whole
+    // block (below the last section, past where a real card's text would end), spread
+    // it into the gaps BETWEEN a paragraph's own wrapped lines (textObject.lineSpacing,
+    // creator-23.js's writeText: newLineSpacing = (textObject.lineSpacing||0)*textSize,
+    // added after every line) -- same font size throughout, multi-line sections just
+    // read a little more spaced out. Single-line sections have no internal gap to
+    // stretch and are left at their bare height.
+    const totalLineGaps = lineCounts.reduce((a, n) => a + Math.max(0, n - 1), 0);
+    const leftover = Math.max(0, totalSpan - SECTION_GAP - bareHeights.reduce((a, b) => a + b, 0));
+    const lineSpacingFraction = totalLineGaps > 0 ? (leftover * cardHeight) / totalLineGaps / fontPx : 0;
+    if (lineSpacingFraction > 0) {
+        if (text.ability0) text.ability0.lineSpacing = lineSpacingFraction;
+        if (text.ability1) text.ability1.lineSpacing = lineSpacingFraction;
+        if (text.ability2) text.ability2.lineSpacing = lineSpacingFraction;
+    }
+    const heights = bareHeights.map((h, i) => {
+        const gaps = Math.max(0, lineCounts[i] - 1);
+        const stretch = (gaps * lineSpacingFraction * fontPx) / cardHeight;
+        return h + (i === 0 ? stretch : stretch / 0.9);
+    });
+
+    // A fixed breathing-room gap between each pair of stacked sections
+    // (ability0->ability1, ability1->ability2) -- without it, sections butt
+    // directly against each other and read as one continuous paragraph even
+    // though ability1/ability2 are visually tinted underneath. Which ability slot
+    // "Station" ends up in depends on tier count (applyStationAbilities): a
+    // single-tier card (Candela, Greenhouse) puts the bare reminder in ability1
+    // (ability0 is its own separate pre-text paragraph, e.g. Candela's "Flash /
+    // When Candela enters..."), so the gap goes after ability1. A 2+-tier card
+    // (Dawnsire) has no separate pre-text -- the reminder itself IS ability0 --
+    // so the gap goes after ability0 instead (computed above as gapAfterIndex).
+    if (process.env.DEBUG_STATION) {
+        console.error('[DEBUG station layout] yStart=' + yStart + ' yEnd=' + yEnd + ' totalSpan=' + totalSpan +
+            ' sectionGap=' + SECTION_GAP + ' fontPx=' + fontPx + ' lineCounts=' + JSON.stringify(lineCounts) +
+            ' heights=' + JSON.stringify(heights) + ' finalY=' + (yStart + heights.reduce((a,b)=>a+b,0) + SECTION_GAP));
+        console.error('[DEBUG station squares] square1=' + JSON.stringify(station?.squares?.[1]) +
+            ' square2=' + JSON.stringify(station?.squares?.[2]) +
+            ' textOffsets=' + JSON.stringify(station?.textOffsets) +
+            ' disableFirstAbility=' + station?.disableFirstAbility +
+            ' cardHeight=' + global.card.height);
+    }
+
+    let y = yStart;
+    for (const [i, key] of ['ability0', 'ability1', 'ability2'].entries()) {
+        text[key].y = y;
+        text[key].height = heights[i];
+        y += heights[i] + (i === gapAfterIndex ? SECTION_GAP : 0);
+    }
+
+    // Keep the tinted squares (ability1/ability2 only -- ability0 isn't tinted)
+    // in sync with the new geometry. square.height/width here are real pixels
+    // in the SAME (possibly high-res-scaled, e.g. 2814 tall, not the bare 2100
+    // "crown/PT bounds" reference used elsewhere in this file) coordinate
+    // space as card.height itself — confirmed by tracing
+    // updateStationTextPositions(), which derives ability1/ability2's actual
+    // rendered height as (square.height * 0.9) / card.height. A first attempt
+    // used a hardcoded 2100 divisor (that unrelated convention), silently
+    // corrupting the height by the ratio between the two on this later
+    // re-derivation — the actual symptom report ("still too small/cramped")
+    // that led here. Use the real card.height.
+    //
+    // updateStationTextPositions() (called again by the post-image-drain
+    // stationEdited()) recomputes the FINAL rendered y as
+    // ``basePos.y + (square.y + textOffsets[n].y) / card.height`` -- an extra
+    // downward offset on top of baseTextPositions that's still baked in from
+    // the pack's original static layout (square.y) plus a one-time 5%-of-
+    // square-height top padding cached the first time stationEdited() ever
+    // ran (textOffsets), before this dynamic sizing existed. Left unaccounted
+    // for, that offset silently pushes ability1/ability2's actual text start
+    // below the y we compute here, opening a visible gap between ability0 and
+    // ability1 -- confirmed by a pixel-density scan of a rendered card
+    // showing a blank band roughly matching this offset, straddling exactly
+    // the ability0/ability1 boundary. Pre-subtract it so the final resolved y
+    // lands exactly where we intend.
+    const off1 = ((station?.squares?.[1]?.y || 0) + (station?.textOffsets?.[1]?.y || 0)) / global.card.height;
+    const off2 = ((station?.squares?.[2]?.y || 0) + (station?.textOffsets?.[2]?.y || 0)) / global.card.height;
+    if (station?.baseTextPositions?.ability1) station.baseTextPositions.ability1.y = text.ability1.y - off1;
+    if (station?.baseTextPositions?.ability2) station.baseTextPositions.ability2.y = text.ability2.y - off2;
+    const square1Height = Math.round(heights[1] * global.card.height);
+    const square2Height = Math.round(heights[2] * global.card.height);
+    if (station?.squares?.[1]) station.squares[1].height = square1Height;
+    if (station?.squares?.[2]) station.squares[2].height = square2Height;
+    // Same trap as badgeValues/disableFirstAbility above: stationEdited() (called
+    // again after the image-drain) unconditionally resyncs card.station.squares[1]
+    // .height FROM #station-square-height-1 -- silently overwriting the value just
+    // set above back to its stale fake-element default (300) on that later call.
+    // Set the DOM element itself so the resync reads the right value.
+    //
+    // square2 does NOT have this problem -- it has a WORSE one. stationEdited()'s
+    // body reads this same DOM input for square2 too, but then unconditionally
+    // OVERWRITES card.station.squares[2].height again a few lines later with its own
+    // "always stretch to the max allowed height above the bottom margin" formula,
+    // regardless of what was just synced in. No DOM value can defeat this -- it's a
+    // second, independent computation the pack always performs. Stash our intended
+    // value here; runOneJob's post-image-drain block re-applies it (and redraws)
+    // AFTER that stationEdited() call has already done the damage, since there's no
+    // way to prevent the override from running in the first place.
+    if (station) station._intendedSquare2Height = square2Height;
+    if (station?.squares?.[1]) querySelector('#station-square-height-1').value = String(square1Height);
 }
 
 // Auto frame: map a card's Scryfall ``frame`` value to one of our three frame styles.
@@ -811,7 +1188,9 @@ function frameFromScryfall(scry) {
 // route to a single 8th-, M15-modern, or Seventh-Edition retro pack.
 function packForLayout(layout, frame) {
     if (layout === 'flip') return { single: 'packFlip.js' };
+    if (frame === 'station') return { single: 'packStationRegular.js' };
     if (frame === 'modern') return { single: 'packM15Regular-1.js' };
+    if (frame === 'm15-8th') return { single: 'packM15Eighth.js' };
     if (frame === 'retro') return { single: 'packSeventh.js' };
     if (frame === 'borderless') return { single: 'packPromoRegular-1.js' };
     return { single: 'pack8th.js' };
@@ -852,10 +1231,15 @@ function packsForDfcSplit(layout, frame) {
     }
     if (layout === 'transform') {
         if (frame === 'modern') return { front: 'packM15TransformFront.js', back: 'packM15TransformBack.js', suffixes: ['', ''] };
+        if (frame === 'm15-8th') {
+            return { front: 'packM15EighthTransformFront.js', back: 'packM15EighthTransformBack.js', suffixes: ['', ''] };
+        }
         return { front: 'pack8thTransformFront.js', back: 'pack8thTransformBack.js', suffixes: ['', ''] };
     }
     if (layout === 'modal_dfc') {
         // packM15EighthModal is the 8th-styled MDFC hybrid (custom/m15-eighth assets).
+        // Shared by every non-modern frame — including 'm15-8th' itself, whose modal geometry
+        // IS this pack's native style, not a borrowed fallback like it is for '8th'/'retro'.
         const pack = (frame === 'modern') ? 'packModalRegular.js' : 'packM15EighthModal.js';
         return { front: pack, back: pack, suffixes: [' (Front)', ' (Back)'] };
     }
@@ -1089,10 +1473,14 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     let autoFrameTarget = '8th';
     if (isFlip) autoFrameTarget = 'Flip';
     else if (frame === 'modern') autoFrameTarget = 'M15Regular-1';
+    else if (frame === 'm15-8th') autoFrameTarget = 'M15Eighth';
     else if (frame === 'retro') autoFrameTarget = 'Seventh';
     // Promo borderless packs have no autoFrame config — built name-based below; 'false' keeps
     // any stray scheduled autoFrame() from overwriting the manual frames.
     else if (frame === 'borderless') autoFrameTarget = 'false';
+    // Station's own pack already built its frame via initializeStationFrame (see the
+    // 'station' branch below) — same reasoning as borderless.
+    else if (frame === 'station') autoFrameTarget = 'false';
     // dfc_split faces build their frames manually from the DFC pack below —
     // 'false' makes any stray engine-scheduled autoFrame() a no-op so it can't
     // overwrite them with the regular (non-DFC) frame art.
@@ -1136,8 +1524,9 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         }
     }
 
-    // Modern (M15) layout fixes. Bypass for flip layouts.
-    if (frame === 'modern' && scry.layout !== 'flip' && global.card.text) {
+    // Modern (M15) layout fixes. Bypass for flip layouts. m15-8th shares M15's bounds, so it
+    // needs the same rules-box height fix.
+    if ((frame === 'modern' || frame === 'm15-8th') && scry.layout !== 'flip' && global.card.text) {
         if (global.card.text.rules) {
             global.card.text.rules.height = 0.253;
         }
@@ -1218,6 +1607,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     let frameTypeLiteral = '8th';
     if (scry.layout === 'flip') frameTypeLiteral = 'Flip';
     else if (frame === 'modern') frameTypeLiteral = 'M15Regular-1';
+    else if (frame === 'm15-8th') frameTypeLiteral = 'M15Eighth';
     else if (frame === 'retro') frameTypeLiteral = 'Seventh';
     else if (frame === 'borderless') frameTypeLiteral = 'Borderless';
 
@@ -1295,6 +1685,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         const crownBuilder = (frame === 'retro') ? null
             : (scry.layout === 'modal_dfc') ? global.makeM15EighthFrameByLetter
             : (frame === 'modern') ? global.makeM15FrameByLetter
+            : (frame === 'm15-8th') ? global.makeM15EighthFrameByLetter
             : null;
         if (crownBuilder && faceIsLegendary) {
             const props = global.cardFrameProperties(
@@ -1455,6 +1846,87 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         // rather than the ugly 'Outline (Bevel)'. Both layers no-op on IkoShort (not in its pack).
         await addFrameByName(['Outline Cutout']);
         await addFrameByName(['Outline (Solid)']);
+    } else if (frame === 'station') {
+        // packStationRegular.js's own loadFrameVersion onclick (re-triggered by
+        // ensurePackLoaded) sets up text fields and the ability-square tinting via
+        // initializeStationFrame, but — unlike every other pack — never calls
+        // anything to add its own colored frame art, and Station isn't wired into
+        // autoFrameUnified's frame-type registry at all (getFrameTypeConfig has no
+        // 'Station' entry), so nothing else adds it either.
+        //
+        // Use modern's own proven autoFrameUnified('M15Regular-1', ...) call for the
+        // frame graphic itself (border/pinline/title/type bar, and legendary crowns
+        // for free via its own built-in crown logic) — the exact same call the
+        // 'modern' branch below makes. Only the frame comes from modern; Station's
+        // own pack still owns everything else (ability text fields, tiered squares,
+        // badges, PT badge, art bounds).
+        await global.autoFrameUnified('M15Regular-1',
+            // faceColors is null (not []) for colorless cards elsewhere in this file
+            // (used as an `if (faceColors && ...)` existence check to route past this
+            // call entirely on the 'modern' path) -- but cardFrameProperties calls
+            // colors.map() on it unconditionally and crashes on null. Since we call
+            // this unconditionally for every Station card including colorless ones,
+            // normalize to an empty array here.
+            faceColors || [],
+            (face.mana_cost || global.card.text.mana?.text || ''),
+            (face.type_line || global.card.text.type?.text || ''),
+            // Deliberately NOT passing power here (unlike the 'modern' branch below):
+            // buildAutoFrames adds its own standard M15 P/T frame layer whenever this
+            // argument is truthy, which duplicated Station's own dedicated P/T badge
+            // (a second, empty P/T outline visible peeking out from behind the real
+            // one). Station's P/T comes entirely from its own pack/badge system.
+            '');
+
+        // packStationRegular.js's own onclick hardcodes card.artBounds to 90% of the
+        // card height ({x:0.068, y:0.027, width:0.864, height:0.9000}) — confirmed
+        // against a real printed Station card (Fell Gravship) that this is simply
+        // wrong: the real art window matches the same standard M15 proportions every
+        // other frame uses. Nothing in versionStation.js or the Station-aware import
+        // branch in creator-23.js ever corrects this (grepped both — zero references
+        // to artBounds outside this one hardcoded assignment), so a real user of the
+        // interactive GUI would have to drag-resize it by hand every time. Override
+        // with the standard M15 art window. Deliberately NOT re-calling autoFitArt()
+        // here: the pack's own onclick already called it once against the original
+        // (wrong, 90%-height) bounds, and calling it a second time against the
+        // corrected bounds produced a scattered black/white noise artifact around
+        // the whole card border (isolated by toggling this call on/off — confirmed
+        // the second autoFitArt() call is the trigger, not the bounds change itself).
+        // The art placed by the first call already reads correctly cropped within
+        // the new (smaller) window without a second fit.
+        global.card.artBounds = { x: 0.0767, y: 0.1129, width: 0.8476, height: 0.4429 };
+        global.autoFitArt();
+
+        // A first attempt forced these squares to full opacity, on the theory
+        // that art could otherwise bleed through and look like a translucent
+        // overlay. That's no longer true with the corrected art window above
+        // (it ends around y=0.56, well above where these sections start,
+        // ~y=0.63) — and forcing both squares to the same full opacity erased
+        // the intentional 0.2 → 0.4 opacity step-up between them, which is
+        // exactly what gives each ability tier a progressively darker/greyer
+        // background on a real card. Leave the pack's own per-square opacities
+        // alone; nothing is behind them to bleed through anymore.
+
+        // Overwrite whatever the vendored (buggy) Station import path already put
+        // into ability0/1/2 with a correct split — see parseStationAbilities'
+        // comment for why the vendored version can't do this itself.
+        applyStationAbilities(scry);
+
+        // updateSquareColorsFromMana() (versionStation.js) -- the vendored logic
+        // that picks each tier square's tint color -- keys purely off mana symbols
+        // in the cost: zero colored symbols always resolves to colorSettings.default
+        // ('#e6ecf2', near-white), with no check for the card actually being an
+        // Artifact. colorSettings also defines a separate 'a' ('#416c77', dark
+        // blue-grey) entry specifically for artifacts, but nothing in the auto-
+        // detection path -- and our harness never drives the interactive color-mode
+        // dropdown a human user would -- ever selects it. Confirmed against a real
+        // printed Dawnsire scan: its tiered backgrounds shade progressively DARKER
+        // (~RGB 190->170->142), matching a dark tint blended normally, not lighter
+        // like '#e6ecf2' produces. Reuse the pack's own 'a' preset (not inventing a
+        // color) whenever a colorless card is actually an Artifact.
+        if (!faceColors && /\bArtifact\b/.test(face.type_line || scry.type_line || '')) {
+            if (global.card.station?.squares?.[1]) global.card.station.squares[1].color = '#416c77';
+            if (global.card.station?.squares?.[2]) global.card.station.squares[2].color = '#416c77';
+        }
     } else if (faceColors && scry.layout !== 'flip') {
         await global.autoFrameUnified(frameTypeLiteral,
             faceColors,
@@ -1650,6 +2122,16 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         await Promise.allSettled(pendingImages.splice(0));
     }
 
+    // Station's badge/PT images are still loading (async, via our Image shim) the
+    // first time stationEdited() runs automatically during importCard, so
+    // drawStationElement's `image.complete` check sees them as not-yet-loaded and
+    // skips drawing — leaving the round badge and PT background invisible even
+    // though the tinted ability squares (which don't wait on an image) render fine.
+    // Re-run it now that the drain above guarantees the images have resolved.
+    if (frame === 'station' && typeof global.stationEdited === 'function') {
+        global.stationEdited();
+    }
+
     // De-overlap the type line vs the set symbol. MUST run here, after the image drain above —
     // not earlier — because the icon's real on-canvas position (card.setSymbolX) is only known
     // once the icon image has actually loaded: uploadSetSymbol()/fetchSetSymbol() (creator-23.js)
@@ -1722,7 +2204,13 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     }
 
     await global.drawText();
-    if (frame === 'modern' || frame === 'borderless' || scry.layout === 'flip' || (frame === 'retro' && dfcFace)) {
+    if (frame === 'modern' || frame === 'station' || frame === 'borderless' || scry.layout === 'flip' ||
+        (frame === 'retro' && dfcFace)) {
+        // Station falls back to modern's bottom info deliberately — real Station
+        // printings are always modern-era and there's no Station-specific bottom-info
+        // template (packStationRegular.js sets up none at all), so without this it
+        // fell through to the final `else` below and got 8th's lean single-line style
+        // instead, same mismatch DFCs avoid by forcing modern in auto mode.
         // Use the engine's canonical M15 bottomInfo (creator-23.js:243). It builds
         // a lean variant when #enableNewCollectorStyle is unchecked (the default
         // in SELECTOR_OVERRIDES above) — gothammedium font, set/language/artist,
@@ -1737,6 +2225,106 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         await global.setBottomInfoStyle();
         delete global.card.bottomInfo.bottomLeft;
         delete global.card.bottomInfo.bottomRight;
+    } else if (frame === 'm15-8th') {
+        // packM15Eighth's loadFrameVersion onclick (re-triggered per-card by
+        // ensurePackLoaded) already loaded the pack's own bespoke bottom info —
+        // its own artist-line glyph on `top`, left completely untouched here.
+        // `wizards` (originally the pack's "™ & © ... Wizards of the Coast,
+        // Inc. {number}" copyright line) is replaced with a compact
+        // "(SET) NUMBER" tag instead — this is a proxy, not a real card, so the
+        // copyright fine print is dropped entirely; the tag exists purely so
+        // the physical card this is proxying stays identifiable during print
+        // staging. {elemidinfo-set}/{elemidinfo-number} are the same engine
+        // tokens the pack's own template used, resolved later in
+        // renderBottomInfo() from the per-card #info-set/#info-number values.
+        //
+        // Short enough to always share the artist line's row, right-aligned so
+        // its last letter sits the same distance from the card's right edge as
+        // the artist icon sits from the left (mirroring `top.x`) — capped
+        // before the P/T box on creatures/vehicles (autoFrame.js's M15Eighth
+        // `bounds.x` = 0.7573). Unlike the original long copyright string, a
+        // "(SET) NUMBER" tag never collides with even a long artist name, so
+        // there's no need for the stacked-fallback layout an earlier attempt
+        // used for creatures.
+        if (global.card.bottomInfo.wizards && global.card.bottomInfo.top) {
+            const top = global.card.bottomInfo.top;
+            const wizards = global.card.bottomInfo.wizards;
+            const prefixMatch = wizards.text.match(/^\{conditionalcolor:[^}]*\}/);
+            wizards.text = (prefixMatch ? prefixMatch[0] : '') + '({elemidinfo-set}) {elemidinfo-number}';
+            // The engine italicizes any parenthesized text in a NAMED text object
+            // (creator-23.js's writeText, gated on our own #italicize-reminder-text
+            // setting -- needed for genuine rules-text reminder text) unless that
+            // name is Title/Type/Mana Cost/Power-Toughness. The pack's native
+            // `wizards` field carries name:'wizards', so our new "(SET) NUMBER"
+            // text -- parenthesized by design -- got swept into that rule. `top`
+            // (the artist line) was never named, which is why it was never
+            // affected. Drop the name; nothing else in this per-card render reads
+            // it (the only other consumer is a URL-param copyright override for
+            // the interactive GUI, irrelevant here).
+            delete wizards.name;
+            const hasPT = !!(face.power || global.card.text.pt?.text);
+            const rightEdge = hasPT ? 0.75 : (1 - top.x);
+            wizards.y = top.y + (top.height - wizards.height) / 2;
+            wizards.align = 'right';
+            wizards.x = rightEdge - wizards.width;
+
+            // Colored artifact creatures (e.g. a black-mana artifact) get BOTH an
+            // "Artifact Frame" layer (the actual visible outer border, silver/light
+            // -- authentic Magic templating: artifact creatures keep the artifact
+            // border even with a colored cost) AND a "Black Frame" layer (the inner
+            // rules-box pinline tint, per the color). The bottom-info text's
+            // {conditionalcolor:...} token does a substring match across ALL active
+            // frame layers, not just the one actually behind the text -- so it finds
+            // "Black Frame" in the stack and forces white, even though the text sits
+            // on the light Artifact Frame border. Mirrors the engine's own frame
+            // letter selection in creator-23.js's cardFrameProperties (Land > Vehicle
+            // > Artifact > colors) to detect exactly when this mismatch applies, and
+            // forces the text black in that case.
+            //
+            // The same mismatch hits multicolor cards that include black: the
+            // pinline gets a "Black Frame" layer (cardFrameProperties' `pinline`
+            // = colors[0] = 'B'), the one plain non-Nyx/non-Land single color the
+            // pack's whitelist covers, even though the actual visible border is
+            // "Multicolored Frame" (light gold/tan). A UW or RG card never hits
+            // this -- only combinations that happen to include black. Mirrors
+            // cardFrameProperties' own frame-letter resolution once more: Land >
+            // Vehicle > Artifact > 3+ colors > 2 non-hybrid colors all resolve to
+            // 'M' (Multicolored), never 'B', regardless of which colors those are.
+            const typeLine = (face.type_line || scry.type_line || '').toLowerCase();
+            const isArtifactBorder = typeLine.includes('artifact') && !typeLine.includes('vehicle') && !typeLine.includes('land');
+            const colors = faceColors || [];
+            const isHybrid = (face.mana_cost || scry.mana_cost || global.card.text.mana?.text || '').includes('/');
+            const isMulticolorBorder = !isArtifactBorder && !typeLine.includes('land') && !typeLine.includes('vehicle') &&
+                (colors.length > 2 || (colors.length === 2 && !isHybrid));
+            if (isArtifactBorder || isMulticolorBorder) {
+                for (const region of [top, wizards]) {
+                    region.text = region.text.replace(/^\{conditionalcolor:[^}]*\}/, '');
+                    region.color = 'black';
+                }
+            }
+
+            // Outline ONLY the cases expected to end up genuinely white (mono-black,
+            // land, vehicle) so that text stays legible against the M15Eighth black
+            // frame's own embossed highlight texture, which locally breaks contrast
+            // in patches a flat "is this frame dark" check can't see. A first attempt
+            // applied this unconditionally on the assumption a same-color outline on
+            // already-black text is a visual no-op -- wrong: at this font's small
+            // size the black-on-black stroke thickens the small-caps glyphs into a
+            // bold, blobby mess (visible on multicolor cards, which this same block
+            // forces black above). So this must mirror cardFrameProperties' frame
+            // resolution precisely, not guess-and-hope: only Land / Vehicle / mono-
+            // black (and not already forced black by the artifact/multicolor case
+            // above) actually resolve to a whitelisted-white frame.
+            const isLand = typeLine.includes('land');
+            const isVehicle = typeLine.includes('vehicle');
+            const isMonoBlack = !isArtifactBorder && !isLand && !isVehicle && colors.length === 1 && colors[0] === 'B';
+            if (isLand || isVehicle || isMonoBlack) {
+                for (const region of [top, wizards]) {
+                    region.outlineWidth = 0.003;
+                    region.outlineColor = 'black';
+                }
+            }
+        }
     } else if (frame === 'retro') {
         // packSeventh's loadFrameVersion onclick already loaded the pack's own
         // centered-white bottom info (engine-native); drop only its combined
@@ -1773,6 +2361,47 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     await renderBottomInfo();
     global.drawFrames();
 
+    // stationEdited() (versionStation.js) always overwrites card.station.squares[2]
+    // .height with its own "stretch to the max allowed height above the bottom margin"
+    // formula every time it runs -- there's no input or flag that skips it. Fixing this
+    // once (right after our own stationEdited() call above) isn't enough: the "Include
+    // Template Margins" bleed step further up (ensurePackLoaded('packMargin-1.js') /
+    // addFrameByName) triggers loadMarginVersion (groupMargin.js), which itself calls
+    // stationEdited() again as part of its generic per-version redraw -- silently undoing
+    // the correction a second time. Traced via a temporary stack-trace patch of
+    // drawStationSquare: square2's height was confirmed right (matching our intended
+    // value) immediately after our own correction, then wrong again (back to the auto-
+    // max value) by the time drawFrames() above ran, with the intervening call coming
+    // from loadMarginVersion, not from anything in this file. Apply the fix here, as the
+    // very last step before the file is saved, so nothing downstream can undo it again.
+    const _station = global.card.station;
+    if (frame === 'station' && _station?.squares?.[2] && _station._intendedSquare2Height != null) {
+        _station.squares[2].height = _station._intendedSquare2Height;
+        global.updateStationTextPositions();
+        [global.stationPreFrameContext, global.stationPostFrameContext].forEach(
+            (ctx) => ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height));
+        if (!_station.disableFirstAbility) global.drawStationSquare(1);
+        global.drawStationSquare(2);
+        global.setupDrawingContext(global.stationPreFrameContext, { alpha: 1 });
+        global.drawStationBadges();
+        // updateStationTextPositions() just moved card.text.ability1/ability2's x/y/
+        // width/height to match the corrected square -- but the actual TEXT PIXELS were
+        // already drawn onto the separate textCanvas earlier (drawText() above, before
+        // this correction ran) at the OLD position, and drawCard() just recomposites
+        // whatever textCanvas currently holds. Skipping this redraw is exactly what
+        // caused the immediately-preceding regression: the background moved, the text
+        // didn't, so they no longer lined up. Redraw text before recompositing the card.
+        await global.drawText();
+        global.drawCard();
+        if (process.env.DEBUG_STATION) {
+            for (const k of ['ability0', 'ability1', 'ability2']) {
+                console.error(`[DEBUG station final] ${k}=` + JSON.stringify(global.card.text[k]));
+            }
+            console.error('[DEBUG station final squares] square1=' + JSON.stringify(_station.squares?.[1]) +
+                ' square2=' + JSON.stringify(_station.squares?.[2]));
+        }
+    }
+
     const outPath = path.join(OUTPUT, outName + '.png');
     fs.writeFileSync(outPath, global.cardCanvas.toBuffer('image/png'));
     return outPath;
@@ -1783,6 +2412,8 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
     if (skipReason) {
         throw new Error(`${skipReason} not supported on ${frame} frame — fall back to Scryfall image`);
     }
+    // Station overrides whatever frame was requested — see isStationCard's comment.
+    if (isStationCard(scry)) frame = 'station';
 
     // Mutated in place on the (already-cached) scry object, not at fetch time —
     // keeps the on-disk Scryfall JSON cache byte-identical to the API response.
@@ -1949,6 +2580,7 @@ async function runOneJob(job) {
         if (result && typeof result === 'object' && result.outBack) response.out_back = result.outBack;
         writeResponse(response);
     } catch (e) {
+        if (process.env.TRACE) console.error(e.stack);
         writeResponse({
             slot:   job.slot,
             status: 'skip',
