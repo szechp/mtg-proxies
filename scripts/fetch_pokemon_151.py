@@ -13,11 +13,12 @@ Three problems are handled so that works correctly:
    white, matching the 151 set's light border).
 
 2. Resolution: TCGdex's "high" tier tops out at 600x825px (~240 DPI on a
-   true 63x88mm card), below this repo's own 300 DPI Scryfall-highres
-   target. By default each card is AI-upscaled to that same 745px target
-   width via the project's existing Real-ESRGAN pipeline
-   (``mtg_proxies.upscale``) -- the same model already used for lowres MTG
-   scans. Pass ``--no-upscale`` to skip this.
+   true 63x88mm card). By default each card is AI-upscaled 4x via the
+   project's existing Real-ESRGAN pipeline (``mtg_proxies.upscale``) -- the
+   same model already used for lowres MTG scans -- and kept at full native
+   output resolution (~2400x3300) rather than downscaled to a print target;
+   the `print` command handles sizing down to the page at render time. Pass
+   ``--no-upscale`` to skip this and keep the native 600x825 output.
 
 3. Bleed: ``print_cards.py`` treats every ``--custom-art`` image as if it
    carries CardConjurer's "Include Template Margins" bleed
@@ -124,12 +125,20 @@ def _parse_hex_color(value: str) -> tuple[int, int, int]:
     return int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
 
 
-def _upscale_in_place(image_paths: list[str]) -> None:
-    """Upscale each path to Scryfall-highres width and replace the original file with it."""
-    from mtg_proxies.upscale import DEFAULT_TARGET_WIDTH, upscale_images
+# upscale_images() Lanczos-downscales its output to target_width once it exceeds that value
+# (see mtg_proxies/upscale.py: "if upscaled_rgb.width > target_width"). Passing a sentinel wider
+# than the model could ever produce disables that downscale, keeping the full native Real-ESRGAN
+# 4x output (~2400x3300 from a 600x825 source) -- the `print` command's own placement/DPI handles
+# sizing down to the printed page at render time, so no reason to throw away resolution here.
+_NO_DOWNSCALE_TARGET_WIDTH = 10**6
 
-    print(f"Upscaling {len(image_paths)} cards to {DEFAULT_TARGET_WIDTH}px width (Real-ESRGAN)...")
-    upscaled_paths = upscale_images(image_paths)
+
+def _upscale_in_place(image_paths: list[str]) -> None:
+    """Upscale each path 4x via Real-ESRGAN, keeping full native output resolution."""
+    from mtg_proxies.upscale import upscale_images
+
+    print(f"Upscaling {len(image_paths)} cards 4x via Real-ESRGAN (keeping full resolution)...")
+    upscaled_paths = upscale_images(image_paths, target_width=_NO_DOWNSCALE_TARGET_WIDTH)
     for original, upscaled in zip(image_paths, upscaled_paths, strict=True):
         if upscaled != original:
             Path(upscaled).replace(original)
@@ -157,7 +166,7 @@ def main() -> int:
         dest="upscale",
         action="store_true",
         default=True,
-        help="AI-upscale to 745px width / ~300 DPI via Real-ESRGAN (default: on)",
+        help="AI-upscale 4x via Real-ESRGAN, keeping full native resolution (default: on)",
     )
     parser.add_argument("--no-upscale", dest="upscale", action="store_false", help="Keep native 600x825 resolution")
     parser.add_argument(
