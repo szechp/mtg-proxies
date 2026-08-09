@@ -6,6 +6,7 @@ See:
 
 from __future__ import annotations
 
+import gzip
 import json
 import logging
 import os
@@ -196,6 +197,28 @@ def _write_pickle_atomic(path: Path, data: list[dict]) -> None:
         raise
 
 
+def _parse_bulk_file(path: Path) -> list[dict]:
+    """Parse a Scryfall bulk-data file: gzip-compressed JSON Lines, or a plain JSON array.
+
+    Scryfall migrated its bulk exports from a single (optionally plain) JSON array served via
+    ``download_uri`` to gzip-compressed JSON Lines (one card object per line) served via
+    ``jsonl_download_uri``. Detecting the shape from the decompressed content — rather than
+    trusting the ``.gz``/``.jsonl`` extension alone — keeps this working for any already-cached
+    ``.json`` files left over from before the migration.
+
+    Raises:
+        json.JSONDecodeError: The file is neither a valid JSON array nor valid JSON Lines.
+    """
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rt", encoding="utf-8") as f:
+        text = f.read()
+
+    stripped = text.lstrip()
+    if stripped.startswith("["):
+        return json.loads(text)
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
 @cache
 def _get_database(database_name: str = "default_cards") -> list[dict]:
     # Fast path: if a pickle for this database type was written within the TTL, load it
@@ -227,15 +250,26 @@ def _get_database(database_name: str = "default_cards") -> list[dict]:
     if len(bulk_data) != 1:
         raise ValueError(f"Unknown database {database_name}")
 
-    bulk_file = Path(get_file(bulk_data[0]["download_uri"].split("/")[-1], bulk_data[0]["download_uri"]))
-    pickle_file = bulk_file.with_suffix(".pickle")
-    if not pickle_file.is_file():  # Convert json to pickle
+    # ``jsonl_download_uri`` (gzip-compressed JSON Lines) is Scryfall's current format;
+    # ``download_uri`` (plain JSON array) is kept as a fallback in case Scryfall ever serves
+    # both during a future transition, or reverts.
+    download_uri = bulk_data[0].get("jsonl_download_uri") or bulk_data[0].get("download_uri")
+    if not download_uri:
+        raise ValueError(f"Scryfall bulk-data entry for {database_name!r} has no download URI: {bulk_data[0]!r}")
+
+    bulk_file = Path(get_file(download_uri.split("/")[-1], download_uri))
+    # ``.with_suffix(".pickle")`` only replaces the LAST suffix, so a ``.jsonl.gz`` file needs
+    # two strips (``.gz`` then ``.jsonl``) to land on the same ``<slug>-<date>.pickle`` shape
+    # the TTL-cache glob above expects — otherwise a plain-JSON ``.json`` bulk file and a
+    # gzipped-JSONL ``.jsonl.gz`` one for the same database would pickle to different names.
+    stem = bulk_file.with_suffix("") if bulk_file.suffix == ".gz" else bulk_file
+    pickle_file = stem.with_suffix(".pickle")
+    if not pickle_file.is_file():  # Convert bulk file to pickle
         try:
-            with open(bulk_file, encoding="utf-8") as json_file:
-                data = json.load(json_file)
+            data = _parse_bulk_file(bulk_file)
         except json.JSONDecodeError as exc:
-            # The bulk JSON itself is corrupt — drop it so the next call refetches.
-            _log.warning("scryfall bulk JSON %s is corrupt (%s); deleting for refetch", bulk_file.name, exc)
+            # The bulk file itself is corrupt — drop it so the next call refetches.
+            _log.warning("scryfall bulk file %s is corrupt (%s); deleting for refetch", bulk_file.name, exc)
             try:
                 bulk_file.unlink()
             except OSError:
@@ -245,9 +279,8 @@ def _get_database(database_name: str = "default_cards") -> list[dict]:
         return data
     data = _load_pickle_safe(pickle_file)
     if data is None:
-        # Corrupt pickle — read straight from the JSON we already have.
-        with open(bulk_file, encoding="utf-8") as json_file:
-            data = json.load(json_file)
+        # Corrupt pickle — read straight from the bulk file we already have.
+        data = _parse_bulk_file(bulk_file)
         _write_pickle_atomic(pickle_file, data)
     return data
 
