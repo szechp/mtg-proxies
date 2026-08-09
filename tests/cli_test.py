@@ -52,7 +52,7 @@ def test_main(capsys: pytest.CaptureFixture) -> None:
 
     # Check output
     captured = capsys.readouterr()
-    assert "{print,convert,tokens,deck_value,cardconjourer}" in captured.out
+    assert "{print,convert,tokens,deck_value,cube,cardconjourer}" in captured.out
     assert "Prepare a decklist for printing" in captured.out
     assert "Convert a decklist to text or arena format" in captured.out
     assert "Append the created tokens to a decklist" in captured.out
@@ -2773,3 +2773,75 @@ def test_main_print_no_upscale_does_not_call_upscale_images(tmp_path) -> None:
         main()
 
     flagged_fetch.assert_not_called()
+
+
+def test_main_cube_owned_not_found_exits_cleanly(capsys: pytest.CaptureFixture) -> None:
+    from mtg_proxies.cli import main
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cube", "--sets", "ecl", "--owned", "/no/such/file.txt"]),
+        pytest.raises(SystemExit),
+    ):
+        main()
+
+    assert "owned decklist not found" in capsys.readouterr().err
+
+
+def test_main_cube_rejects_nonpositive_target(capsys: pytest.CaptureFixture) -> None:
+    from mtg_proxies.cli import main
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cube", "--sets", "ecl", "--target", "0"]),
+        pytest.raises(SystemExit),
+    ):
+        main()
+
+    assert "--target must be positive" in capsys.readouterr().err
+
+
+def test_main_cube_no_17lands_skips_ratings_fetch(tmp_path: Path) -> None:
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "cube.csv"
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cube", "--sets", "ecl", "--no-17lands", "--out", str(out_file)]),
+        patch("mtg_proxies.cli.fetch_set_cards", return_value=[]) as fetch_set_cards,
+        patch("mtg_proxies.cli.fetch_17lands_ratings") as fetch_17lands_ratings,
+        patch("mtg_proxies.cli.write_cube_csv") as write_cube_csv,
+    ):
+        main()
+
+    fetch_set_cards.assert_called_once_with(["ecl"])
+    fetch_17lands_ratings.assert_not_called()
+    write_cube_csv.assert_called_once()
+    assert write_cube_csv.call_args.args[2] == {}  # empty lands_ratings passed through
+
+
+def test_main_cube_merges_ratings_first_set_wins_on_name_collision(tmp_path: Path) -> None:
+    """Same card name rated in two --sets: the first set's row must not be clobbered."""
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "cube.csv"
+    shared_card = {
+        "name": "Shared Card",
+        "type_line": "Creature — Human",
+        "oracle_text": "",
+        "colors": [],
+        "keywords": [],
+        "set": "ecl",
+        "rarity": "common",
+    }
+    first_set_rating = {"shared card": {"ever_drawn_win_rate": 0.6, "ever_drawn_game_count": 500, "avg_seen": 2.0}}
+    second_set_rating = {"shared card": {"ever_drawn_win_rate": 0.4, "ever_drawn_game_count": 500, "avg_seen": 5.0}}
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cube", "--sets", "ecl", "eoe", "--out", str(out_file)]),
+        patch("mtg_proxies.cli.fetch_set_cards", return_value=[shared_card]),
+        patch("mtg_proxies.cli.fetch_17lands_ratings", side_effect=[first_set_rating, second_set_rating]),
+        patch("mtg_proxies.cli.write_cube_csv") as write_cube_csv,
+    ):
+        main()
+
+    merged_ratings = write_cube_csv.call_args.args[2]
+    assert merged_ratings["shared card"]["ever_drawn_win_rate"] == pytest.approx(0.6)

@@ -79,3 +79,55 @@ Surfaced during manual visual QA of `spec-cardconjourer-m15-8th-frame.md`
   another `conditionalcolor`-vs-actual-background mismatch similar to the one
   fixed for m15-8th's colored-artifact case, but on the land-back layout/pack
   path instead of the artifact-frame path.
+
+## cube builder — deferred goals
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-cube-builder.md`
+  summary: Split output per color pair instead of one flat ranked CSV, to help with in-person deckbuilding after the draft.
+  evidence: Named in `mtg-cube-project.md`'s "Possible next steps" as not yet done; user confirmed deferring it when scoping the spec (2026-08-09).
+- source_spec: `_bmad-output/implementation-artifacts/spec-cube-builder.md`
+  summary: Pre-emptively live-verify the 17lands `card_ratings/data` JSON field names (`ever_drawn_win_rate`, `avg_seen`, `ever_drawn_game_count`) against a real response.
+  evidence: Doc flags these as documented-but-unverified. Spec instead handles this reactively via an Ask-First trigger if a live response is missing the expected fields, rather than blocking implementation on a verification pass up front. Live-verified during a real `--sets eoe`/`--sets ltr` run on 2026-08-09: the schema is correct as documented.
+
+## cube builder — code review findings deferred (2026-08-09)
+
+Findings from Blind Hunter + Edge Case Hunter review of the `cube` subcommand
+(`spec-cube-builder.md`) that are real but out of scope for this change. The
+directly-fixable/unambiguous findings from the same review were already patched
+in the same pass (cross-set dedup, `--target` validation, name-matching
+consistency, owned-decklist warning surfacing) — these are the ones that either
+need a human design decision or are pre-existing/low-urgency enough not to
+block.
+
+- **Double-faced (transform/MDFC) cards are scored incorrectly.** `oracle_text`
+  and `colors` are only present in `card_faces[]` for multi-faced cards, not at
+  the top level `score_card`/`analyze_pool` read from — so DFCs silently lose
+  their tribal-payoff/removal/blank-penalty text scoring and default to
+  colorless ("C") in the CSV. `get_creature_types` also assumes one em dash in
+  `type_line`; a DFC's combined `"Creature — Human // Creature — Zombie"` shape
+  pollutes the tribal tally with stray tokens. Neither `eoe_cube.csv` nor
+  `ltr_cube.csv` (generated 2026-08-09) happened to contain any DFCs, so this
+  hasn't visibly affected real output yet, but it will for sets with them.
+  Needs a human decision on desired behavior (front-face-only vs. concatenate
+  both faces' text vs. exclude DFCs) before fixing — genuinely ambiguous, not
+  inferred.
+- **Nonbasic land subtypes pollute the tribal `Counter`.** `get_creature_types`
+  tallies whatever follows the em dash regardless of card type, so dual lands
+  like "Breeding Pool" (`Land — Forest Island`) contribute "Forest"/"Island" to
+  `dominant_tribes` alongside real creature tribes. Confirmed present in
+  `eoe_cube.csv`. Inherited unchanged from `mtg-cube-project.md`'s reference
+  script (the frozen spec required porting the heuristic "unchanged") — a
+  heuristic-tuning fix, not a bug in this change.
+- **`fetch_17lands_ratings` hardcodes `start_date="2020-01-01"`**, blending a
+  set's ratings across its full Arena lifetime instead of a recent window.
+  Matches the reference doc's behavior; no CLI flag exists to override it.
+- **No error handling around `fetch_set_cards`/`load_owned_cards`'s
+  `parse_decklist` call for genuine network failures or malformed decklists** —
+  an unhandled exception surfaces as a raw traceback rather than a clean CLI
+  error. Consistent with how other `cli.py` subcommands already behave for
+  similar failures elsewhere in the file.
+- **`--out` pointing at a nonexistent/unwritable parent directory** crashes
+  after all fetch/scoring work is already done, instead of failing fast.
+- **17lands response rows that aren't dicts, or whose `name` isn't a string,**
+  crash outside `fetch_17lands_ratings`'s try/except instead of degrading to
+  `{}`. Low-likelihood given 17lands' API stability.
