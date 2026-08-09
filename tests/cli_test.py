@@ -2808,14 +2808,15 @@ def test_main_cube_no_17lands_skips_ratings_fetch(tmp_path: Path) -> None:
         patch("sys.argv", ["mtg-proxies", "cube", "--sets", "ecl", "--no-17lands", "--out", str(out_file)]),
         patch("mtg_proxies.cli.fetch_set_cards", return_value=[]) as fetch_set_cards,
         patch("mtg_proxies.cli.fetch_17lands_ratings") as fetch_17lands_ratings,
+        patch("mtg_proxies.cli.build_cube", return_value=([], {})) as build_cube,
         patch("mtg_proxies.cli.write_cube_csv") as write_cube_csv,
     ):
         main()
 
     fetch_set_cards.assert_called_once_with(["ecl"])
     fetch_17lands_ratings.assert_not_called()
-    write_cube_csv.assert_called_once()
-    assert write_cube_csv.call_args.args[2] == {}  # empty lands_ratings passed through
+    build_cube.assert_called_once_with([], {}, target=360)  # empty lands_ratings passed through
+    write_cube_csv.assert_called_once_with(str(out_file), [], {}, {})
 
 
 def test_main_cube_merges_ratings_first_set_wins_on_name_collision(tmp_path: Path) -> None:
@@ -2839,9 +2840,10 @@ def test_main_cube_merges_ratings_first_set_wins_on_name_collision(tmp_path: Pat
         patch("sys.argv", ["mtg-proxies", "cube", "--sets", "ecl", "eoe", "--out", str(out_file)]),
         patch("mtg_proxies.cli.fetch_set_cards", return_value=[shared_card]),
         patch("mtg_proxies.cli.fetch_17lands_ratings", side_effect=[first_set_rating, second_set_rating]),
-        patch("mtg_proxies.cli.write_cube_csv") as write_cube_csv,
+        patch("mtg_proxies.cli.build_cube", return_value=([shared_card], {})) as build_cube,
+        patch("mtg_proxies.cli.write_cube_csv"),
     ):
         main()
 
-    merged_ratings = write_cube_csv.call_args.args[2]
+    merged_ratings = build_cube.call_args.args[1]
     assert merged_ratings["shared card"]["ever_drawn_win_rate"] == pytest.approx(0.6)

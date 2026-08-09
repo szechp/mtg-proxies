@@ -6,6 +6,7 @@ See:
 
 from __future__ import annotations
 
+import gzip
 import json
 import logging
 import os
@@ -221,21 +222,27 @@ def _get_database(database_name: str = "default_cards") -> list[dict]:
             return data
         # Corrupt file was unlinked by _load_pickle_safe; try the next-newest.
 
-    # Cache miss or stale: fetch the bulk-data index to find this week's download URL.
+    # Cache miss or stale: fetch the bulk-data index to find this week's download URL. Scryfall
+    # bulk files are gzip-compressed JSONL (one JSON object per line) at ``jsonl_download_uri``
+    # -- the old single-JSON-array ``download_uri`` field no longer exists.
     databases = depaginate("https://api.scryfall.com/bulk-data")
     bulk_data = [database for database in databases if database["type"] == database_name]
     if len(bulk_data) != 1:
         raise ValueError(f"Unknown database {database_name}")
 
-    bulk_file = Path(get_file(bulk_data[0]["download_uri"].split("/")[-1], bulk_data[0]["download_uri"]))
-    pickle_file = bulk_file.with_suffix(".pickle")
-    if not pickle_file.is_file():  # Convert json to pickle
+    download_url = bulk_data[0]["jsonl_download_uri"]
+    bulk_file = Path(get_file(download_url.split("/")[-1], download_url))
+    # bulk_file.name looks like "default-cards-20260809090943.jsonl.gz" -- Path.with_suffix only
+    # strips the last suffix (".gz"), which would leave the date-stamp followed by ".jsonl.pickle"
+    # instead of ".pickle" and break _DATED_PICKLE_RE's freshness-cache glob. Strip both suffixes.
+    pickle_file = bulk_file.with_name(bulk_file.name.removesuffix(".jsonl.gz") + ".pickle")
+    if not pickle_file.is_file():  # Convert jsonl.gz to pickle
         try:
-            with open(bulk_file, encoding="utf-8") as json_file:
-                data = json.load(json_file)
-        except json.JSONDecodeError as exc:
-            # The bulk JSON itself is corrupt — drop it so the next call refetches.
-            _log.warning("scryfall bulk JSON %s is corrupt (%s); deleting for refetch", bulk_file.name, exc)
+            with gzip.open(bulk_file, "rt", encoding="utf-8") as jsonl_file:
+                data = [json.loads(line) for line in jsonl_file if line.strip()]
+        except (OSError, json.JSONDecodeError) as exc:
+            # The bulk file itself is corrupt — drop it so the next call refetches.
+            _log.warning("scryfall bulk file %s is corrupt (%s); deleting for refetch", bulk_file.name, exc)
             try:
                 bulk_file.unlink()
             except OSError:
@@ -245,9 +252,9 @@ def _get_database(database_name: str = "default_cards") -> list[dict]:
         return data
     data = _load_pickle_safe(pickle_file)
     if data is None:
-        # Corrupt pickle — read straight from the JSON we already have.
-        with open(bulk_file, encoding="utf-8") as json_file:
-            data = json.load(json_file)
+        # Corrupt pickle — read straight from the JSONL we already have.
+        with gzip.open(bulk_file, "rt", encoding="utf-8") as jsonl_file:
+            data = [json.loads(line) for line in jsonl_file if line.strip()]
         _write_pickle_atomic(pickle_file, data)
     return data
 

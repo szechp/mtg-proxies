@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 
@@ -947,6 +949,46 @@ def test_get_database_skips_corrupt_pickle_and_tries_next(tmp_path, monkeypatch)
     assert not newer.exists()
     sf._get_database.cache_clear()
 
+
+def test_get_database_fetches_and_parses_gzip_jsonl_bulk_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test for Scryfall bulk-data's current format.
+
+    It now serves gzip JSONL at ``jsonl_download_uri`` (one JSON object per line), not a single
+    JSON array at the old, now-absent ``download_uri`` field.
+    """
+    import gzip
+
+    from mtg_proxies.scryfall import scryfall as sf
+
+    monkeypatch.setattr(sf, "_cache_folder", tmp_path)
+    sf._get_database.cache_clear()
+    monkeypatch.setattr(
+        sf,
+        "depaginate",
+        lambda url: [
+            {
+                "type": "default_cards",
+                "jsonl_download_uri": (
+                    "https://data.scryfall.io/default-cards/default-cards-20260809090943.jsonl.gz"
+                ),
+            }
+        ],
+    )
+
+    def fake_download(url: str, dst: str, *, chunk_size: int = 1024 * 4, silent: bool = False) -> None:
+        with gzip.open(dst, "wt", encoding="utf-8") as f:
+            f.write('{"id": "a"}\n{"id": "b"}\n')
+
+    monkeypatch.setattr(sf, "download", fake_download)
+
+    data = sf._get_database("default_cards")
+
+    assert data == [{"id": "a"}, {"id": "b"}]
+    # Pickle filename must strip BOTH ".jsonl" and ".gz" so the date-stamp lands immediately
+    # before ".pickle" (matches _DATED_PICKLE_RE, so the 24h freshness cache actually works).
+    assert (tmp_path / "default-cards-20260809090943.pickle").is_file()
+
+    sf._get_database.cache_clear()
 
 
 # ---------------------------------------------------------------------------

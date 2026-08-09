@@ -20,6 +20,7 @@ from mtg_proxies.cube_builder import (
     fetch_set_cards,
     load_owned_cards,
     write_cube_csv,
+    write_cube_txt,
 )
 from mtg_proxies.deck_value import show_deck_value
 from mtg_proxies.decklists import archidekt, manastack, parse_decklist
@@ -1997,6 +1998,13 @@ def main() -> None:
     cube_parser.add_argument("--sets", nargs="+", required=True, help="Scryfall set code(s), e.g. ecl eoe")
     cube_parser.add_argument("--target", type=int, default=360, help="cube size (default: %(default)s)")
     cube_parser.add_argument("--out", default="cube.csv", help="output CSV path (default: %(default)s)")
+    cube_parser.add_argument(
+        "--txt-out",
+        default=None,
+        metavar="PATH",
+        help="also write the cube as a decklist (1 Name (SET) NUMBER per line) ready for"
+        " `mtg-proxies print`",
+    )
     cube_parser.add_argument("--format", default="PremierDraft", help="17lands draft format (default: %(default)s)")
     cube_parser.add_argument(
         "--no-17lands", action="store_true", help="skip 17lands entirely; score on the tribal heuristic alone"
@@ -2772,7 +2780,7 @@ def main() -> None:
                     if not ratings:
                         print(
                             f"  Warning: no 17lands data for {set_code.upper()}"
-                            " (unreachable, or set not on Arena); continuing with tribal-heuristic-only scoring."
+                            " (unreachable, or set not on Arena); continuing with lane-fit-only scoring."
                         )
                     # A card name shared by two requested sets keeps the first set's rating --
                     # rows are per-set/per-format, so blending them would misattribute one
@@ -2782,19 +2790,24 @@ def main() -> None:
                 matched = sum(1 for c in cube_cards if scryfall.canonic_card_name(c["name"]) in lands_ratings)
                 print(f"Matched 17lands data for {matched} / {len(cube_cards)} cards")
 
-            selected, tribes, _colors, keywords, dom_tribes, dom_kw = build_cube(
-                cube_cards, lands_ratings, target=args.target
+            selected, lanes = build_cube(cube_cards, lands_ratings, target=args.target)
+
+            print(f"\nDerived {len(lanes)} archetype lanes (Scryfall function tags + tribes + keywords)")
+            print("Top lanes (by representation):")
+            for lane_name in sorted(lanes, key=lanes.get)[:10]:
+                label = lane_name.split(":", 1)[-1].replace("-", " ").title()
+                print(f"  {label}")
+            print(
+                f"\n{len(selected)} of {len(cube_cards)} cards fit an archetype lane"
+                f" (capped at --target {args.target})"
             )
 
-            print("\nTop tribes:")
-            for tribe_name, count in tribes.most_common(10):
-                print(f"  {tribe_name}: {count}")
-            print("\nTop keywords:")
-            for kw_name, count in keywords.most_common(8):
-                print(f"  {kw_name}: {count}")
-
-            write_cube_csv(args.out, selected, lands_ratings, dom_tribes, dom_kw)
+            write_cube_csv(args.out, selected, lanes, lands_ratings)
             print(f"\nWrote {len(selected)} cards to {Path(args.out).resolve()}")
+
+            if args.txt_out is not None:
+                write_cube_txt(args.txt_out, selected)
+                print(f"Wrote {len(selected)} cards to {Path(args.txt_out).resolve()}")
 
         case "cardconjourer":
             _run_cardconjourer(args)
