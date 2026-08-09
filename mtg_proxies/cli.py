@@ -1222,7 +1222,7 @@ def _localize_card_payload(card: dict, localized: dict, lang: str) -> dict:
 
     Attaches ``lang`` plus ``printed_name`` / ``printed_type_line`` / ``printed_text`` /
     ``flavor_text`` from ``localized`` (a print of the same oracle_id chosen by
-    :func:`mtg_proxies.scryfall.get_localized_print`, purely for its localized text —
+    :func:`mtg_proxies.scryfall.get_localized_prints`, purely for its localized text —
     never for art/frame/set) onto a COPY of ``card``. ``card`` itself is never mutated:
     later code in ``_run_cardconjourer`` (art resolution, DFC art compositing, etc.)
     still reads the original English dict for that same slot.
@@ -1238,7 +1238,7 @@ def _localize_card_payload(card: dict, localized: dict, lang: str) -> dict:
 
     Args:
         card: The pristine English Scryfall card dict already resolved for this slot.
-        localized: The chosen localized print, from ``get_localized_print``.
+        localized: The chosen localized print, from ``get_localized_prints``.
         lang: The Scryfall language code being applied (e.g. ``"de"``).
 
     Returns:
@@ -1464,26 +1464,43 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         if resolved is not None:
             resolved_set_symbol_by_slot[slot_int] = resolved
 
-    # Write the (optionally localized) card JSON into the harness's inputs cache. Localization
-    # is decoupled from art/frame selection entirely: it only sources printed_name/
-    # printed_type_line/printed_text/flavor_text from a print of the same oracle_id in the
-    # requested language and attaches them to a copy of the already-resolved English card dict.
+    # Resolve localized prints, decoupled from art/frame selection entirely: only sources
+    # printed_name/printed_type_line/printed_text/flavor_text from a print of the same
+    # oracle_id in the requested language. Batched by language and scoped to only the oracle
+    # ids actually in this deck — a single streamed pass over Scryfall's ``all_cards`` bulk
+    # file per distinct language, never the whole multi-million-entry catalog materialized in
+    # memory (see get_localized_prints's docstring for why that distinction matters).
+    localized_by_slot: dict[int, dict] = {}
     if slot_language:
-        print(
-            "[cardconjourer] --language: fetching Scryfall's full multi-language card database "
-            "(one-time per machine, then cached)…"
-        )
+        from mtg_proxies.scryfall import get_localized_prints
+        from mtg_proxies.scryfall.scryfall import _card_oracle_id
+
+        oracle_id_by_slot: dict[int, str] = {}
+        oracle_ids_by_lang: dict[str, set[str]] = {}
+        for slot_int, lang in slot_language.items():
+            card = slot_to_card[slot_int]
+            oracle_id = _card_oracle_id(card.card)
+            if oracle_id is None:
+                continue
+            oracle_id_by_slot[slot_int] = oracle_id
+            oracle_ids_by_lang.setdefault(lang, set()).add(oracle_id)
+
+        for lang, oracle_ids in oracle_ids_by_lang.items():
+            print(
+                f"[cardconjourer] --language {lang}: scanning Scryfall's all_cards database for "
+                f"{len(oracle_ids)} card{'s' if len(oracle_ids) != 1 else ''} (one-time download "
+                "per machine, then cached)…"
+            )
+            by_oracle_id = get_localized_prints(oracle_ids, lang)
+            for slot_int, oracle_id in oracle_id_by_slot.items():
+                if slot_language.get(slot_int) == lang and oracle_id in by_oracle_id:
+                    localized_by_slot[slot_int] = by_oracle_id[oracle_id]
+
     for slot_int, card in slot_to_card.items():
         payload = card.card
         lang = slot_language.get(slot_int)
         if lang:
-            from mtg_proxies.scryfall import get_localized_print
-
-            oracle_id = card.card.get("oracle_id")
-            if oracle_id is None:
-                faces = card.card.get("card_faces") or []
-                oracle_id = faces[0].get("oracle_id") if faces else None
-            localized = get_localized_print(oracle_id, lang) if oracle_id else None
+            localized = localized_by_slot.get(slot_int)
             if localized is None:
                 print(f"[cardconjourer] --language {lang}: no print found for {card['name']!r}; rendering English.")
             else:

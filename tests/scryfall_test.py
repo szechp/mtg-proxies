@@ -1,4 +1,6 @@
+import json
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 
@@ -981,38 +983,76 @@ def test_fetch_printing_live_returns_none_on_404(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# get_localized_print
+# get_localized_prints
 # ---------------------------------------------------------------------------
 
 
-def _fake_all_cards_database(cards: list[dict]) -> Callable[..., list[dict]]:
-    """Build a ``_get_database`` stand-in that only serves ``cards`` for the ``all_cards`` bulk file.
+def _fake_all_cards_bulk_file(tmp_path: Path, cards: list[dict]) -> Callable[[str], Path]:
+    """Build a ``_resolve_bulk_file`` stand-in serving ``cards`` as a plain-text JSON-Lines file.
 
-    Any other database name returns an empty list — so a test using this fixture would fail
-    (empty index → no match) if ``_all_cards_by_oracle_id`` ever queried the wrong bulk file
-    (e.g. ``default_cards``, which doesn't carry non-English printings).
+    Returns a callable so a test can assert it was invoked with ``"all_cards"`` specifically —
+    the only Scryfall bulk file that carries non-English printings.
     """
+    path = tmp_path / "all-cards-test.jsonl"
+    # separators=(",", ":") matches Scryfall's actual compact export (no space after ':') --
+    # get_localized_prints's substring pre-filter assumes that exact shape.
+    path.write_text(
+        "\n".join(json.dumps(c, separators=(",", ":")) for c in cards) + "\n", encoding="utf-8"
+    )
 
-    def _get_database(name: str = "default_cards") -> list[dict]:
-        return cards if name == "all_cards" else []
+    def _resolve_bulk_file(database_name: str) -> Path:
+        assert database_name == "all_cards"
+        return path
 
-    return _get_database
+    return _resolve_bulk_file
 
 
-def test_all_cards_by_oracle_id_queries_the_all_cards_bulk_file(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`_all_cards_by_oracle_id` must source from `all_cards`, the only bulk file with non-English prints."""
+def test_get_localized_prints_queries_the_all_cards_bulk_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """`get_localized_prints` must source from `all_cards`, the only bulk file with non-English prints."""
     from mtg_proxies.scryfall import scryfall
 
     card = {"id": "de-print", "oracle_id": "oracle-1", "lang": "de", "printed_name": "Serra-Engel"}
-    monkeypatch.setattr(scryfall, "_get_database", _fake_all_cards_database([card]))
-    scryfall._all_cards_by_oracle_id.cache_clear()
-    try:
-        assert scryfall._all_cards_by_oracle_id() == {"oracle-1": [card]}
-    finally:
-        scryfall._all_cards_by_oracle_id.cache_clear()
+    monkeypatch.setattr(scryfall, "_resolve_bulk_file", _fake_all_cards_bulk_file(tmp_path, [card]))
+
+    result = scryfall.get_localized_prints({"oracle-1"}, "de")
+
+    assert result == {"oracle-1": card}
 
 
-def test_get_localized_print_prefers_complete_face_coverage_over_partial(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_localized_prints_ignores_oracle_ids_outside_the_requested_set(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Cards matching the language but NOT in the requested oracle_ids are dropped, not collected.
+
+    This is the actual point of the streaming design: memory stays proportional to the lookup
+    set, never the whole (1M+ entry) all_cards catalog.
+    """
+    from mtg_proxies.scryfall import scryfall
+
+    wanted = {"id": "wanted", "oracle_id": "oracle-1", "lang": "de", "printed_name": "Gewünscht"}
+    unwanted = {"id": "unwanted", "oracle_id": "oracle-2", "lang": "de", "printed_name": "Ungewünscht"}
+    monkeypatch.setattr(scryfall, "_resolve_bulk_file", _fake_all_cards_bulk_file(tmp_path, [wanted, unwanted]))
+
+    result = scryfall.get_localized_prints({"oracle-1"}, "de")
+
+    assert result == {"oracle-1": wanted}
+
+
+def test_get_localized_prints_empty_oracle_ids_short_circuits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty lookup set returns {} without touching the bulk file at all."""
+    from mtg_proxies.scryfall import scryfall
+
+    def _fail(_database_name: str) -> Path:
+        raise AssertionError("must not resolve/download the bulk file for an empty lookup set")
+
+    monkeypatch.setattr(scryfall, "_resolve_bulk_file", _fail)
+
+    assert scryfall.get_localized_prints(set(), "de") == {}
+
+
+def test_get_localized_prints_prefers_complete_face_coverage_over_partial(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """A print with printed_name on every face beats one with gaps, even if older."""
     from mtg_proxies.scryfall import scryfall
 
@@ -1030,43 +1070,37 @@ def test_get_localized_print_prefers_complete_face_coverage_over_partial(monkeyp
         "released_at": "2010-01-01",
         "card_faces": [{"printed_name": "Vorderseite"}, {"printed_name": "Rückseite"}],
     }
-    monkeypatch.setattr(scryfall, "_get_database", _fake_all_cards_database([partial, complete]))
-    scryfall._all_cards_by_oracle_id.cache_clear()
-    try:
-        result = scryfall.get_localized_print("oracle-1", "de")
-        assert result is not None
-        assert result["id"] == "complete"
-    finally:
-        scryfall._all_cards_by_oracle_id.cache_clear()
+    monkeypatch.setattr(scryfall, "_resolve_bulk_file", _fake_all_cards_bulk_file(tmp_path, [partial, complete]))
+
+    result = scryfall.get_localized_prints({"oracle-1"}, "de")
+
+    assert result["oracle-1"]["id"] == "complete"
 
 
-def test_get_localized_print_tie_breaks_by_recency(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_localized_prints_tie_breaks_by_recency(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Among equally-complete candidates, the most recently released print wins."""
     from mtg_proxies.scryfall import scryfall
 
     older = {"id": "older", "oracle_id": "oracle-1", "lang": "de", "released_at": "2005-01-01", "printed_name": "Alt"}
     newer = {"id": "newer", "oracle_id": "oracle-1", "lang": "de", "released_at": "2023-06-01", "printed_name": "Neu"}
-    monkeypatch.setattr(scryfall, "_get_database", _fake_all_cards_database([older, newer]))
-    scryfall._all_cards_by_oracle_id.cache_clear()
-    try:
-        result = scryfall.get_localized_print("oracle-1", "de")
-        assert result is not None
-        assert result["id"] == "newer"
-    finally:
-        scryfall._all_cards_by_oracle_id.cache_clear()
+    monkeypatch.setattr(scryfall, "_resolve_bulk_file", _fake_all_cards_bulk_file(tmp_path, [older, newer]))
+
+    result = scryfall.get_localized_prints({"oracle-1"}, "de")
+
+    assert result["oracle-1"]["id"] == "newer"
 
 
-def test_get_localized_print_returns_none_when_no_print_in_language(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No print of the oracle_id exists in the requested language → None, not a crash."""
+def test_get_localized_prints_omits_oracle_ids_with_no_print_in_language(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An oracle_id with no print in the requested language is simply absent, not None/crash."""
     from mtg_proxies.scryfall import scryfall
 
     english_only = {
         "id": "en", "oracle_id": "oracle-1", "lang": "en", "released_at": "2020-01-01", "printed_name": "",
     }
-    monkeypatch.setattr(scryfall, "_get_database", _fake_all_cards_database([english_only]))
-    scryfall._all_cards_by_oracle_id.cache_clear()
-    try:
-        assert scryfall.get_localized_print("oracle-1", "de") is None
-        assert scryfall.get_localized_print("unknown-oracle-id", "de") is None
-    finally:
-        scryfall._all_cards_by_oracle_id.cache_clear()
+    monkeypatch.setattr(scryfall, "_resolve_bulk_file", _fake_all_cards_bulk_file(tmp_path, [english_only]))
+
+    result = scryfall.get_localized_prints({"oracle-1", "unknown-oracle-id"}, "de")
+
+    assert result == {}

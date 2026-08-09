@@ -234,6 +234,41 @@ def _parse_bulk_file(path: Path) -> list[dict]:
         return data
 
 
+def _resolve_bulk_file(database_name: str) -> Path:
+    """Download (if needed) and return the local path of a Scryfall bulk-data file.
+
+    Only resolves the raw file on disk — does not parse it. Split out of :func:`_get_database`
+    so callers that only want to *stream* a huge bulk file (e.g. :func:`get_localized_prints`
+    scanning ``all_cards`` for a handful of oracle ids) don't have to go through the
+    parse-everything-into-a-list-and-pickle-it path that function needs for its own callers.
+    """
+    databases = depaginate("https://api.scryfall.com/bulk-data")
+    bulk_data = [database for database in databases if database["type"] == database_name]
+    if len(bulk_data) != 1:
+        raise ValueError(f"Unknown database {database_name}")
+
+    # ``jsonl_download_uri`` (gzip-compressed JSON Lines) is Scryfall's current format;
+    # ``download_uri`` (plain JSON array) is kept as a fallback in case Scryfall ever serves
+    # both during a future transition, or reverts.
+    download_uri = bulk_data[0].get("jsonl_download_uri") or bulk_data[0].get("download_uri")
+    if not download_uri:
+        raise ValueError(f"Scryfall bulk-data entry for {database_name!r} has no download URI: {bulk_data[0]!r}")
+
+    return Path(get_file(download_uri.split("/")[-1], download_uri))
+
+
+def _bulk_pickle_path(bulk_file: Path) -> Path:
+    """Return the ``<slug>-<date>.pickle`` path for a resolved bulk file.
+
+    ``.with_suffix(".pickle")`` only replaces the LAST suffix, so a ``.jsonl.gz`` file needs two
+    strips (``.gz`` then ``.jsonl``) to land on the same shape the TTL-cache glob in
+    :func:`_get_database` expects — otherwise a plain-JSON ``.json`` bulk file and a
+    gzipped-JSONL ``.jsonl.gz`` one for the same database would pickle to different names.
+    """
+    stem = bulk_file.with_suffix("") if bulk_file.suffix == ".gz" else bulk_file
+    return stem.with_suffix(".pickle")
+
+
 @cache
 def _get_database(database_name: str = "default_cards") -> list[dict]:
     # Fast path: if a pickle for this database type was written within the TTL, load it
@@ -259,26 +294,9 @@ def _get_database(database_name: str = "default_cards") -> list[dict]:
             return data
         # Corrupt file was unlinked by _load_pickle_safe; try the next-newest.
 
-    # Cache miss or stale: fetch the bulk-data index to find this week's download URL.
-    databases = depaginate("https://api.scryfall.com/bulk-data")
-    bulk_data = [database for database in databases if database["type"] == database_name]
-    if len(bulk_data) != 1:
-        raise ValueError(f"Unknown database {database_name}")
-
-    # ``jsonl_download_uri`` (gzip-compressed JSON Lines) is Scryfall's current format;
-    # ``download_uri`` (plain JSON array) is kept as a fallback in case Scryfall ever serves
-    # both during a future transition, or reverts.
-    download_uri = bulk_data[0].get("jsonl_download_uri") or bulk_data[0].get("download_uri")
-    if not download_uri:
-        raise ValueError(f"Scryfall bulk-data entry for {database_name!r} has no download URI: {bulk_data[0]!r}")
-
-    bulk_file = Path(get_file(download_uri.split("/")[-1], download_uri))
-    # ``.with_suffix(".pickle")`` only replaces the LAST suffix, so a ``.jsonl.gz`` file needs
-    # two strips (``.gz`` then ``.jsonl``) to land on the same ``<slug>-<date>.pickle`` shape
-    # the TTL-cache glob above expects — otherwise a plain-JSON ``.json`` bulk file and a
-    # gzipped-JSONL ``.jsonl.gz`` one for the same database would pickle to different names.
-    stem = bulk_file.with_suffix("") if bulk_file.suffix == ".gz" else bulk_file
-    pickle_file = stem.with_suffix(".pickle")
+    # Cache miss or stale: resolve (download if needed) this week's bulk file.
+    bulk_file = _resolve_bulk_file(database_name)
+    pickle_file = _bulk_pickle_path(bulk_file)
     if not pickle_file.is_file():  # Convert bulk file to pickle
         try:
             data = _parse_bulk_file(bulk_file)
@@ -891,58 +909,77 @@ def cards_by_oracle_id() -> dict[str, list[dict]]:
     return cards_by_oracle_id
 
 
-@cache
-def _all_cards_by_oracle_id() -> dict[str, list[dict]]:
-    """Create dictionary to look up every printing (any language) by oracle id.
-
-    Mirrors :func:`cards_by_oracle_id`, but sources from the ``all_cards`` bulk file
-    instead of ``default_cards`` — the only Scryfall bulk file that includes non-English
-    printings. Fetched lazily on first call (via the shared :func:`_get_database` cache
-    machinery) since ``all_cards`` dwarfs ``default_cards`` in size and most runs never
-    need a non-English print.
-
-    Returns:
-        dict {oracle_id: [cards]}
-    """
-    cards_by_oracle_id = defaultdict(list)
-    for c in _get_database("all_cards"):
-        if "oracle_id" in c:
-            cards_by_oracle_id[c["oracle_id"]].append(c)
-        elif "card_faces" in c and c["card_faces"] and "oracle_id" in c["card_faces"][0]:
-            cards_by_oracle_id[c["card_faces"][0]["oracle_id"]].append(c)
-    return cards_by_oracle_id
+def _card_oracle_id(card: dict) -> str | None:
+    """Return the oracle id of a card object, checking ``card_faces[0]`` when absent at top level."""
+    oracle_id = card.get("oracle_id")
+    if oracle_id is not None:
+        return oracle_id
+    faces = card.get("card_faces") or []
+    return faces[0].get("oracle_id") if faces else None
 
 
-def get_localized_print(oracle_id: str, lang: str) -> dict | None:
-    """Find the best print of a card in a given language, for its ``printed_*`` text only.
+def _print_completeness(card: dict) -> tuple[int, str]:
+    """Sort key for picking the best localized print: most fully-translated faces, then recency."""
+    faces = card.get("card_faces") or [card]
+    complete = sum(1 for face in faces if face.get("printed_name"))
+    return complete, card.get("released_at") or ""
 
-    Candidates are every printing of ``oracle_id`` whose ``lang`` matches. The best
-    candidate is the one with the most faces carrying a non-empty ``printed_name``
-    (a print with complete localization beats one with gaps), tie-broken by the most
-    recent ``released_at``.
 
-    This is decoupled from whichever print was already chosen for art/frame — callers
-    use the result purely to source ``printed_name`` / ``printed_type_line`` /
-    ``printed_text`` / ``flavor_text``, never to pick art, frame, or set.
+def get_localized_prints(oracle_ids: set[str], lang: str) -> dict[str, dict]:
+    """Find the best print in ``lang`` for each of ``oracle_ids``, for ``printed_*`` text only.
+
+    ``all_cards`` is Scryfall's largest bulk export — every printing of every card in every
+    language, on the order of a million-plus entries. Looking up even a handful of oracle ids
+    must NOT materialize the whole thing (:func:`_get_database`'s cache-and-parse-everything
+    path is fine for the small/medium bulk types, but doing that for ``all_cards`` just to read
+    ~100 cards risks paging a typical machine into a multi-minute swap storm). Instead this
+    streams the decompressed file once, discarding every line that isn't both in ``oracle_ids``
+    and in ``lang`` before it's even fully parsed — peak memory stays proportional to the
+    lookup set, not to Scryfall's entire catalog.
+
+    Among printings of the same oracle id in ``lang``, the one with the most faces carrying a
+    non-empty ``printed_name`` wins (complete localization beats gaps), tied-broken by the most
+    recent ``released_at``. This is decoupled from whichever print was already chosen for
+    art/frame — callers use the result purely to source ``printed_name`` / ``printed_type_line``
+    / ``printed_text`` / ``flavor_text``, never to pick art, frame, or set.
 
     Args:
-        oracle_id: Scryfall oracle id of the card.
+        oracle_ids: Scryfall oracle ids to look up.
         lang: Scryfall language code, e.g. ``"de"``.
 
     Returns:
-        The best-matching print in ``lang``, or ``None`` if no print exists in that
-        language for this oracle id.
+        dict {oracle_id: best-matching print in lang}. Oracle ids with no print in ``lang`` are
+        simply absent from the result — never a partial/None entry.
     """
-    candidates = [c for c in _all_cards_by_oracle_id().get(oracle_id, []) if c.get("lang") == lang]
-    if not candidates:
-        return None
+    if not oracle_ids:
+        return {}
 
-    def _completeness(card: dict) -> tuple[int, str]:
-        faces = card.get("card_faces") or [card]
-        complete = sum(1 for face in faces if face.get("printed_name"))
-        return complete, card.get("released_at") or ""
+    bulk_file = _resolve_bulk_file("all_cards")
+    # Cheap substring pre-check before the expensive json.loads: Scryfall's bulk export is
+    # compact JSON with no space after ':', so this reliably matches the lang field and lets
+    # most lines (every OTHER language, which is the vast majority of a million-plus entries)
+    # get skipped without ever being parsed.
+    lang_marker = f'"lang":"{lang}"'
 
-    return max(candidates, key=_completeness)
+    best: dict[str, dict] = {}
+    opener = gzip.open if bulk_file.suffix == ".gz" else open
+    with opener(bulk_file, "rt", encoding="utf-8") as f:
+        for line in tqdm(f, desc=f"scanning all_cards for --language {lang}", unit=" lines"):
+            if lang_marker not in line:
+                continue
+            line = line.strip()
+            if not line or line.startswith("["):
+                continue
+            card = json.loads(line)
+            if card.get("lang") != lang:  # substring pre-check can false-positive on other fields
+                continue
+            oracle_id = _card_oracle_id(card)
+            if oracle_id is None or oracle_id not in oracle_ids:
+                continue
+            current_best = best.get(oracle_id)
+            if current_best is None or _print_completeness(card) > _print_completeness(current_best):
+                best[oracle_id] = card
+    return best
 
 
 @cache
