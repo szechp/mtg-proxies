@@ -6,6 +6,7 @@ See:
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 import json
 import logging
@@ -261,6 +262,38 @@ def _parse_bulk_file(path: Path) -> list[dict]:
         return data
 
 
+# How long a cached copy of Scryfall's bulk-data listing (the small JSON index describing
+# where each bulk file currently lives) is trusted before re-fetching. Every call to
+# _resolve_bulk_file used to hit this endpoint fresh, uncached — harmless in isolation, but it
+# means every retry / re-run / repeated invocation in the same session adds another hit, which
+# adds up fast (contributed to tripping Scryfall's rate limiting during heavy same-day testing).
+# The underlying bulk FILES are already cached indefinitely once downloaded (see get_file); this
+# just extends that same "don't ask again too soon" treatment to the listing that points at them.
+_BULK_DATA_LISTING_TTL = 3600  # 1h
+
+
+def _bulk_data_listing() -> list[dict]:
+    """Scryfall's bulk-data listing, cached on disk for ``_BULK_DATA_LISTING_TTL``.
+
+    Resolves the cache path from ``_cache_folder`` on every call (not a pre-computed
+    module-level path) so tests that monkeypatch ``_cache_folder`` to a tmp dir are honored,
+    matching how every other cache path in this module is resolved.
+    """
+    cache_file = _cache_folder / "bulk-data-listing.json"
+    try:
+        age = time.time() - cache_file.stat().st_mtime
+        if age < _BULK_DATA_LISTING_TTL:
+            return json.loads(cache_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        pass  # No cache, expired, or corrupt — fetch fresh below.
+
+    listing = depaginate("https://api.scryfall.com/bulk-data")
+    # Caching is best-effort; a write failure shouldn't break the caller.
+    with contextlib.suppress(OSError):
+        cache_file.write_text(json.dumps(listing), encoding="utf-8")
+    return listing
+
+
 def _resolve_bulk_file(database_name: str) -> Path:
     """Download (if needed) and return the local path of a Scryfall bulk-data file.
 
@@ -269,7 +302,7 @@ def _resolve_bulk_file(database_name: str) -> Path:
     scanning ``all_cards`` for a handful of oracle ids) don't have to go through the
     parse-everything-into-a-list-and-pickle-it path that function needs for its own callers.
     """
-    databases = depaginate("https://api.scryfall.com/bulk-data")
+    databases = _bulk_data_listing()
     bulk_data = [database for database in databases if database["type"] == database_name]
     if len(bulk_data) != 1:
         raise ValueError(f"Unknown database {database_name}")

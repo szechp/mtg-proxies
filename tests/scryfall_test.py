@@ -1,6 +1,9 @@
 import json
+import os
+import time
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -923,6 +926,51 @@ def test_write_pickle_atomic_survives_failure_without_clobbering(tmp_path):
     assert _pickle.loads(target.read_bytes()) == [{"b": 2}]
     # No leftover .tmp file from the successful path.
     assert not any(p.suffix.startswith(".pickle.tmp") for p in tmp_path.iterdir())
+
+
+def test_bulk_data_listing_caches_to_disk_within_ttl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fresh on-disk cache is served without calling depaginate again."""
+    from mtg_proxies.scryfall import scryfall as sf
+
+    monkeypatch.setattr(sf, "_cache_folder", tmp_path)
+    fake_depaginate = MagicMock(return_value=[{"type": "all_cards", "jsonl_download_uri": "https://x/y.jsonl.gz"}])
+    monkeypatch.setattr(sf, "depaginate", fake_depaginate)
+
+    first = sf._bulk_data_listing()
+    second = sf._bulk_data_listing()
+
+    assert first == second == [{"type": "all_cards", "jsonl_download_uri": "https://x/y.jsonl.gz"}]
+    fake_depaginate.assert_called_once()
+
+
+def test_bulk_data_listing_refetches_after_ttl_expires(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An on-disk cache older than the TTL is ignored and depaginate is called again."""
+    from mtg_proxies.scryfall import scryfall as sf
+
+    monkeypatch.setattr(sf, "_cache_folder", tmp_path)
+    fake_depaginate = MagicMock(return_value=[{"type": "all_cards", "jsonl_download_uri": "https://x/y.jsonl.gz"}])
+    monkeypatch.setattr(sf, "depaginate", fake_depaginate)
+
+    sf._bulk_data_listing()
+    cache_file = tmp_path / "bulk-data-listing.json"
+    old_time = time.time() - sf._BULK_DATA_LISTING_TTL - 1
+    os.utime(cache_file, (old_time, old_time))
+
+    sf._bulk_data_listing()
+
+    assert fake_depaginate.call_count == 2
+
+
+def test_bulk_data_listing_ignores_corrupt_cache_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A corrupt cache file is treated as a miss, not a crash."""
+    from mtg_proxies.scryfall import scryfall as sf
+
+    monkeypatch.setattr(sf, "_cache_folder", tmp_path)
+    (tmp_path / "bulk-data-listing.json").write_text("not json", encoding="utf-8")
+    fake_depaginate = MagicMock(return_value=[{"type": "all_cards"}])
+    monkeypatch.setattr(sf, "depaginate", fake_depaginate)
+
+    assert sf._bulk_data_listing() == [{"type": "all_cards"}]
 
 
 def test_get_database_skips_corrupt_pickle_and_tries_next(tmp_path, monkeypatch):
