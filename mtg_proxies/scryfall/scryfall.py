@@ -844,6 +844,60 @@ def cards_by_oracle_id() -> dict[str, list[dict]]:
 
 
 @cache
+def _all_cards_by_oracle_id() -> dict[str, list[dict]]:
+    """Create dictionary to look up every printing (any language) by oracle id.
+
+    Mirrors :func:`cards_by_oracle_id`, but sources from the ``all_cards`` bulk file
+    instead of ``default_cards`` — the only Scryfall bulk file that includes non-English
+    printings. Fetched lazily on first call (via the shared :func:`_get_database` cache
+    machinery) since ``all_cards`` dwarfs ``default_cards`` in size and most runs never
+    need a non-English print.
+
+    Returns:
+        dict {oracle_id: [cards]}
+    """
+    cards_by_oracle_id = defaultdict(list)
+    for c in _get_database("all_cards"):
+        if "oracle_id" in c:
+            cards_by_oracle_id[c["oracle_id"]].append(c)
+        elif "card_faces" in c and c["card_faces"] and "oracle_id" in c["card_faces"][0]:
+            cards_by_oracle_id[c["card_faces"][0]["oracle_id"]].append(c)
+    return cards_by_oracle_id
+
+
+def get_localized_print(oracle_id: str, lang: str) -> dict | None:
+    """Find the best print of a card in a given language, for its ``printed_*`` text only.
+
+    Candidates are every printing of ``oracle_id`` whose ``lang`` matches. The best
+    candidate is the one with the most faces carrying a non-empty ``printed_name``
+    (a print with complete localization beats one with gaps), tie-broken by the most
+    recent ``released_at``.
+
+    This is decoupled from whichever print was already chosen for art/frame — callers
+    use the result purely to source ``printed_name`` / ``printed_type_line`` /
+    ``printed_text`` / ``flavor_text``, never to pick art, frame, or set.
+
+    Args:
+        oracle_id: Scryfall oracle id of the card.
+        lang: Scryfall language code, e.g. ``"de"``.
+
+    Returns:
+        The best-matching print in ``lang``, or ``None`` if no print exists in that
+        language for this oracle id.
+    """
+    candidates = [c for c in _all_cards_by_oracle_id().get(oracle_id, []) if c.get("lang") == lang]
+    if not candidates:
+        return None
+
+    def _completeness(card: dict) -> tuple[int, str]:
+        faces = card.get("card_faces") or [card]
+        complete = sum(1 for face in faces if face.get("printed_name"))
+        return complete, card.get("released_at") or ""
+
+    return max(candidates, key=_completeness)
+
+
+@cache
 def oracle_ids_by_name() -> dict[str, list[str]]:
     """Create dictionary to look up oracle ids by their name.
 

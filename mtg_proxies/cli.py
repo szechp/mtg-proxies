@@ -1199,6 +1199,78 @@ def _composite_dfc_art(front_path: Path, back_path: Path) -> Path:
     return dst
 
 
+# Scryfall fields carrying language-specific text on a print object. ``mana_cost``/``type_line``/
+# ``oracle_text``/``name`` are deliberately excluded: those stay English on every print object
+# (Scryfall's canonical oracle fields), only these ``printed_*`` fields (plus ``flavor_text``,
+# which Scryfall does localize in place) carry the localized text.
+_LOCALIZED_TEXT_FIELDS = ("printed_name", "printed_type_line", "printed_text", "flavor_text")
+
+
+def _has_any_localized_field(card: dict) -> bool:
+    """Whether ``card`` (or any of its ``card_faces``) carries a non-empty localized field.
+
+    Used to tell a genuinely localized print apart from a print that matched the requested
+    language but has every ``printed_*`` field empty (a real Scryfall data-quality gap) —
+    the latter should still warn the user that the card renders in English.
+    """
+    faces = card.get("card_faces") or [card]
+    return any(face.get(field) for face in faces for field in _LOCALIZED_TEXT_FIELDS)
+
+
+def _localize_card_payload(card: dict, localized: dict, lang: str) -> dict:
+    """Build a localized copy of a Scryfall card dict for the CC harness JSON payload.
+
+    Attaches ``lang`` plus ``printed_name`` / ``printed_type_line`` / ``printed_text`` /
+    ``flavor_text`` from ``localized`` (a print of the same oracle_id chosen by
+    :func:`mtg_proxies.scryfall.get_localized_print`, purely for its localized text —
+    never for art/frame/set) onto a COPY of ``card``. ``card`` itself is never mutated:
+    later code in ``_run_cardconjourer`` (art resolution, DFC art compositing, etc.)
+    still reads the original English dict for that same slot.
+
+    Faces are matched positionally (``card_faces[i]``). If the face counts of ``card``
+    and ``localized`` don't match, localization is skipped entirely and ``card`` is
+    returned unchanged — the caller is expected to warn.
+
+    A missing per-field value on ``localized`` (a real Scryfall data-quality gap) leaves
+    that field unset on the copy, so Card Conjurer's own vendored ``processScryfallCard``
+    falls back to the English field for that one value — never invented or
+    machine-translated here.
+
+    Args:
+        card: The pristine English Scryfall card dict already resolved for this slot.
+        localized: The chosen localized print, from ``get_localized_print``.
+        lang: The Scryfall language code being applied (e.g. ``"de"``).
+
+    Returns:
+        A copy of ``card`` with localized fields attached, or ``card`` itself if face
+        counts mismatch between ``card`` and ``localized``.
+    """
+    import copy
+
+    card_faces = card.get("card_faces")
+    localized_faces = localized.get("card_faces")
+    if bool(card_faces) != bool(localized_faces) or (
+        card_faces and localized_faces and len(card_faces) != len(localized_faces)
+    ):
+        return card
+
+    payload = copy.deepcopy(card)
+    payload["lang"] = lang
+    for field in _LOCALIZED_TEXT_FIELDS:
+        value = localized.get(field)
+        if value:
+            payload[field] = value
+
+    if card_faces and localized_faces:
+        for face, localized_face in zip(payload["card_faces"], localized_faces, strict=True):
+            for field in _LOCALIZED_TEXT_FIELDS:
+                value = localized_face.get(field)
+                if value:
+                    face[field] = value
+
+    return payload
+
+
 def _run_cardconjourer(args: argparse.Namespace) -> None:
     """Orchestrate the `cardconjourer` subcommand end-to-end.
 
@@ -1250,8 +1322,8 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     # is the canonical one in runner.slug — must match harness.js exactly.
     harness_inputs_dir = Path(tempfile.mkdtemp(prefix="cc-inputs-"))
 
-    for card in decklist.cards:
-        (harness_inputs_dir / f"{cc_runner.slug(card['name'])}.json").write_text(_json.dumps(card.card))
+    # Map 1-based slot → resolved Card object so prepare_each can look it up.
+    slot_to_card = dict(enumerate(decklist.cards, start=1))
 
     # Per-card art resolution. For each card we try MTGPics first (native
     # ~1430x1058 hi-res art crops — way better than Scryfall art_crop's
@@ -1296,16 +1368,14 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         if args.upscale_target_width:
             upscale_kwargs["target_width"] = args.upscale_target_width
 
-    # Map 1-based slot → resolved Card object so prepare_each can look it up.
-    slot_to_card = dict(enumerate(decklist.cards, start=1))
-
     # Check each card's modeline for ``#cardconjourer --scryfall`` (per-card
     # opt-out of MTGPics on watermark-affected scans without flipping the
     # whole-deck ``--scryfall`` flag), ``#cardconjourer --skip`` (per-card
     # opt-out of CC rendering entirely — the card lands in fallback.txt and is
-    # rendered via the normal Scryfall scan), and ``#cardconjourer --set-symbol
+    # rendered via the normal Scryfall scan), ``#cardconjourer --set-symbol
     # VALUE`` (per-card set-symbol override beating the deck-wide ``--set-symbol``
-    # flag for that slot only).
+    # flag for that slot only), and ``#cardconjourer --language LANG`` (per-card
+    # language override beating the deck-wide ``--language`` flag).
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
     slot_scryfall_override: dict[int, bool] = {}
     slot_skip: set[int] = set()
@@ -1314,8 +1384,12 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     slot_custom_art: dict[int, str] = {}
     slot_dfc_split_request: set[int] = set()
     slot_dfc_flip_request: set[int] = set()
+    slot_language: dict[int, str] = {}
     for slot_int, card in slot_to_card.items():
+        effective_lang = args.language
         if not card.modeline:
+            if effective_lang:
+                slot_language[slot_int] = effective_lang
             continue
         directives, _warnings = parse_modeline_trailer(card.modeline)
         for d in directives:
@@ -1334,6 +1408,9 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                 fs_val = d.flags.get("--font-size")
                 if fs_val is not None:
                     slot_font_size[slot_int] = fs_val
+                lang_val = d.flags.get("--language")
+                if lang_val:
+                    effective_lang = lang_val
                 art_val = d.flags.get("--custom-art")
                 if art_val:
                     art_p = Path(art_val).expanduser().resolve()
@@ -1346,6 +1423,8 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                         )
                     else:
                         slot_custom_art[slot_int] = str(art_p)
+        if effective_lang:
+            slot_language[slot_int] = effective_lang
 
     # Splittable layouts (transform / modal_dfc — reversible_card has two fronts
     # and stays on the flip path) render as two separate faces BY DEFAULT.
@@ -1384,6 +1463,46 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
             raise SystemExit(2) from exc
         if resolved is not None:
             resolved_set_symbol_by_slot[slot_int] = resolved
+
+    # Write the (optionally localized) card JSON into the harness's inputs cache. Localization
+    # is decoupled from art/frame selection entirely: it only sources printed_name/
+    # printed_type_line/printed_text/flavor_text from a print of the same oracle_id in the
+    # requested language and attaches them to a copy of the already-resolved English card dict.
+    if slot_language:
+        print(
+            "[cardconjourer] --language: fetching Scryfall's full multi-language card database "
+            "(one-time per machine, then cached)…"
+        )
+    for slot_int, card in slot_to_card.items():
+        payload = card.card
+        lang = slot_language.get(slot_int)
+        if lang:
+            from mtg_proxies.scryfall import get_localized_print
+
+            oracle_id = card.card.get("oracle_id")
+            if oracle_id is None:
+                faces = card.card.get("card_faces") or []
+                oracle_id = faces[0].get("oracle_id") if faces else None
+            localized = get_localized_print(oracle_id, lang) if oracle_id else None
+            if localized is None:
+                print(f"[cardconjourer] --language {lang}: no print found for {card['name']!r}; rendering English.")
+            else:
+                payload = _localize_card_payload(card.card, localized, lang)
+                if payload is card.card:
+                    print(
+                        f"[cardconjourer] --language {lang}: face count of the {lang} print of "
+                        f"{card['name']!r} doesn't match the English print; rendering English."
+                    )
+                elif not _has_any_localized_field(localized):
+                    # A matching print exists but every printed_* field on it (top-level and
+                    # per face) is empty — a real Scryfall data-quality gap. The payload is
+                    # byte-for-byte English content, just tagged with the new ``lang``. Warn
+                    # the same way as the other two "still English" cases above.
+                    print(
+                        f"[cardconjourer] --language {lang}: matched {lang} print of {card['name']!r} "
+                        "has no localized text on any field; rendering English."
+                    )
+        (harness_inputs_dir / f"{cc_runner.slug(card['name'])}.json").write_text(_json.dumps(payload))
 
     def _prepare_each(slot_int: int) -> dict:
         card = slot_to_card.get(slot_int)
@@ -2089,6 +2208,18 @@ def main() -> None:
             "downsample the upscaled art to PX wide before handing it to the"
             " renderer. Default: unset, keep the model's full 4× output. Useful"
             " when the chosen model emits oversized intermediates."
+        ),
+    )
+    from mtg_proxies.decklists.modelines import _lang_code
+
+    cardconjourer_parser.add_argument(
+        "--language", dest="language", default=None, metavar="LANG", type=_lang_code,
+        help=(
+            "render name/type/rules text from a print of the same card in this Scryfall"
+            " language (e.g. 'de'), looked up independently of whichever print was chosen"
+            " for art/frame. Cards with no print in LANG render in English (one console note"
+            " each); frame/color/land/legendary/artifact selection is unaffected either way."
+            " Per-card override via the `#cardconjourer --language LANG` modeline."
         ),
     )
 

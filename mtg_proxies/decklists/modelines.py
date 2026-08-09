@@ -59,6 +59,24 @@ def _signed_int(s: str) -> int:
 _DRIVE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{20,60}$")
 
 
+# Scryfall language codes: 2-3 lowercase letters (``en``, ``de``, ``zhs``, ``jp``, ``ph``).
+# Deliberately permissive about which codes actually exist on Scryfall — that's resolved
+# at render time by ``get_localized_print`` returning ``None`` — this only rejects
+# obviously-wrong shapes (``DEU``, ``german``) at parse time.
+_LANG_CODE_RE = re.compile(r"^[a-z]{2,3}$")
+
+
+def _lang_code(s: str) -> str:
+    """Validate that ``s`` looks like a Scryfall language code.
+
+    Catches typos (wrong case, full language names, ISO 639-2/3-letter mixups) at parse
+    time instead of a silent no-match at render time.
+    """
+    if not _LANG_CODE_RE.match(s):
+        raise ValueError(f"value {s!r} does not look like a language code (expected 2-3 lowercase letters)")
+    return s
+
+
 def _drive_id(s: str) -> str:
     """Validate that ``s`` looks like a Google Drive file ID.
 
@@ -132,6 +150,9 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     # CC's auto-fit. Canvas is 2814 px tall; rules text is ~76 px, so ±5-15 is a
     # noticeable nudge. Use negative values to shrink text that overflows, positive
     # to enlarge text on cards with very short oracle text.
+    # ``--language LANG`` overrides the deck-wide ``--language`` flag for a single card
+    # (e.g. render everything in German except one card, back in English). LANG is a
+    # 2-3 letter lowercase Scryfall language code.
     # ``--dfc-split`` / ``--dfc-flip`` pick how a double-faced card (transform /
     # modal_dfc) renders in the ``cardconjourer`` subcommand. Split (the default)
     # renders TWO separate full-size cards — front + back PNGs with the real DFC
@@ -154,6 +175,7 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         "--set-symbol": _path_str,
         "--custom-art": _path_str,
         "--font-size":  _signed_int,
+        "--language":   _lang_code,
     },
 }
 

@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 import pytest
 
 
@@ -976,3 +978,95 @@ def test_fetch_printing_live_returns_none_on_404(monkeypatch):
 
     monkeypatch.setattr(sf.requests, "get", lambda *_a, **_k: _Resp())
     assert sf.fetch_printing_live("soc", "999999") is None
+
+
+# ---------------------------------------------------------------------------
+# get_localized_print
+# ---------------------------------------------------------------------------
+
+
+def _fake_all_cards_database(cards: list[dict]) -> Callable[..., list[dict]]:
+    """Build a ``_get_database`` stand-in that only serves ``cards`` for the ``all_cards`` bulk file.
+
+    Any other database name returns an empty list — so a test using this fixture would fail
+    (empty index → no match) if ``_all_cards_by_oracle_id`` ever queried the wrong bulk file
+    (e.g. ``default_cards``, which doesn't carry non-English printings).
+    """
+
+    def _get_database(name: str = "default_cards") -> list[dict]:
+        return cards if name == "all_cards" else []
+
+    return _get_database
+
+
+def test_all_cards_by_oracle_id_queries_the_all_cards_bulk_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_all_cards_by_oracle_id` must source from `all_cards`, the only bulk file with non-English prints."""
+    from mtg_proxies.scryfall import scryfall
+
+    card = {"id": "de-print", "oracle_id": "oracle-1", "lang": "de", "printed_name": "Serra-Engel"}
+    monkeypatch.setattr(scryfall, "_get_database", _fake_all_cards_database([card]))
+    scryfall._all_cards_by_oracle_id.cache_clear()
+    try:
+        assert scryfall._all_cards_by_oracle_id() == {"oracle-1": [card]}
+    finally:
+        scryfall._all_cards_by_oracle_id.cache_clear()
+
+
+def test_get_localized_print_prefers_complete_face_coverage_over_partial(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A print with printed_name on every face beats one with gaps, even if older."""
+    from mtg_proxies.scryfall import scryfall
+
+    partial = {
+        "id": "partial",
+        "oracle_id": "oracle-1",
+        "lang": "de",
+        "released_at": "2022-01-01",
+        "card_faces": [{"printed_name": "Vorderseite"}, {"printed_name": ""}],
+    }
+    complete = {
+        "id": "complete",
+        "oracle_id": "oracle-1",
+        "lang": "de",
+        "released_at": "2010-01-01",
+        "card_faces": [{"printed_name": "Vorderseite"}, {"printed_name": "Rückseite"}],
+    }
+    monkeypatch.setattr(scryfall, "_get_database", _fake_all_cards_database([partial, complete]))
+    scryfall._all_cards_by_oracle_id.cache_clear()
+    try:
+        result = scryfall.get_localized_print("oracle-1", "de")
+        assert result is not None
+        assert result["id"] == "complete"
+    finally:
+        scryfall._all_cards_by_oracle_id.cache_clear()
+
+
+def test_get_localized_print_tie_breaks_by_recency(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Among equally-complete candidates, the most recently released print wins."""
+    from mtg_proxies.scryfall import scryfall
+
+    older = {"id": "older", "oracle_id": "oracle-1", "lang": "de", "released_at": "2005-01-01", "printed_name": "Alt"}
+    newer = {"id": "newer", "oracle_id": "oracle-1", "lang": "de", "released_at": "2023-06-01", "printed_name": "Neu"}
+    monkeypatch.setattr(scryfall, "_get_database", _fake_all_cards_database([older, newer]))
+    scryfall._all_cards_by_oracle_id.cache_clear()
+    try:
+        result = scryfall.get_localized_print("oracle-1", "de")
+        assert result is not None
+        assert result["id"] == "newer"
+    finally:
+        scryfall._all_cards_by_oracle_id.cache_clear()
+
+
+def test_get_localized_print_returns_none_when_no_print_in_language(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No print of the oracle_id exists in the requested language → None, not a crash."""
+    from mtg_proxies.scryfall import scryfall
+
+    english_only = {
+        "id": "en", "oracle_id": "oracle-1", "lang": "en", "released_at": "2020-01-01", "printed_name": "",
+    }
+    monkeypatch.setattr(scryfall, "_get_database", _fake_all_cards_database([english_only]))
+    scryfall._all_cards_by_oracle_id.cache_clear()
+    try:
+        assert scryfall.get_localized_print("oracle-1", "de") is None
+        assert scryfall.get_localized_print("unknown-oracle-id", "de") is None
+    finally:
+        scryfall._all_cards_by_oracle_id.cache_clear()

@@ -79,3 +79,30 @@ Surfaced during manual visual QA of `spec-cardconjourer-m15-8th-frame.md`
   another `conditionalcolor`-vs-actual-background mismatch similar to the one
   fixed for m15-8th's colored-artifact case, but on the land-back layout/pack
   path instead of the artifact-frame path.
+
+## cardconjourer `--language` — deferred goal
+
+Split off during clarification of the `--language=de` spec (2026-08-09): the
+`--language` flag itself (localized name/type/text via a separate oracle_id
+lookup for printed_name/printed_text/printed_type_line) shipped; this is the
+"coolest thing" bilingual-keyword follow-up the user explicitly deferred.
+
+- source_spec: none
+  summary: Bilingual keyword glossing on cardconjourer's localized rules text — e.g. render German "Wachsamkeit" as "Wachsamkeit (Vigilance)" by appending the English keyword name next to its localized standalone keyword-ability line/segment.
+  evidence: User called this "the coolest thing" but chose to split it from the base --language flag to ship localization first. Confirmed technical direction during clarification — derive per-card via positional line/segment alignment between oracle_text (English) and printed_text (localized), anchored on the card's language-agnostic `keywords` list (no hardcoded translation dictionary); split multi-keyword lines on commas; replace Scryfall's own localized reminder parenthetical with "(EnglishKeywordName)"; scope to standalone leading keyword-ability lines only, not keywords embedded in longer ability sentences. User's own framing when asked: "theres probably a list of keywords, that we can just filter for" — i.e. filter each printed_text line/segment against the card's `keywords` array to decide what counts as a keyword worth glossing.
+
+- source_spec: none
+  summary: Local machine-translation fallback for cardconjourer --language when Scryfall has no (or an incomplete) print in the requested language -- translate only the missing field(s) instead of falling back to raw English.
+  evidence: Raised during --language clarification (2026-08-09) when investigation found Scryfall's German translations are inconsistently complete (e.g. some DFC faces have populated printed_name, others silently fall back to the untranslated English string within the same print record). User asked whether a local model (torch is already a dependency, e.g. MarianMT opus-mt-en-de via transformers) could translate the gap instead of showing English. Deferred because it's a real scope expansion -- new model dependency, an inference/caching subsystem, and an accuracy risk (generic MT doesn't know MTG terminology, so mistranslated keywords/rules text could look authoritative while being wrong) -- and the user chose to keep the base --language flag scoped to Scryfall's own data for now.
+
+## `--language` flag — review-surfaced deferrals
+
+Surfaced during the code-review loop for `spec-cardconjourer-language-flag.md` (2026-08-09).
+Both real but pre-existing/structural, not this story's fault to fully fix.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-cardconjourer-language-flag.md`
+  summary: `renderCard()` now clones `scry` before `processScryfallCard` so the branching detectors stay pristine, but `processScryfallCard`'s own field backfill (`face.set`/`.rarity`/`.collector_number`/`.lang`/`.layout` copied down from the top-level card onto each face) now lands on the clone, not on `scry`/`scry.card_faces` -- so any future harness.js code that reads those specific fields off `pristineFace`/`scry.card_faces[faceIdx]` expecting the backfill would silently get pre-backfill (possibly undefined) values.
+  evidence: Verified via the vendored `processScryfallCard` source (`~/.cache/mtg-proxies/cardconjurer/js/creator-23.js`) that it does perform this backfill, and confirmed by grep that nothing in the current harness.js reads those fields off the pristine object today -- so it's not a live bug, but it is a latent trap for the next person who extends the `pristineFace`/`face` split introduced by this feature.
+- source_spec: `_bmad-output/implementation-artifacts/spec-cardconjourer-language-flag.md`
+  summary: `_run_cardconjourer`'s per-card modeline-scanning loop(s) discard `parse_modeline_trailer`'s warnings (`directives, _warnings = ...`) for every `#cardconjourer` flag, not just `--language` -- an invalid per-card flag value silently reverts to the deck-wide default with no warning surfaced anywhere.
+  evidence: Pre-existing pattern in the function before this feature (the `--scryfall`/`--skip`/`--dfc-split`/etc. loop already discarded warnings the same way); this feature's `--language` extraction was folded into that same loop and inherits the same gap rather than introducing a new one. Worth a dedicated pass across the whole function someday.

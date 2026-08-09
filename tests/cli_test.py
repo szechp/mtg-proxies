@@ -2773,3 +2773,93 @@ def test_main_print_no_upscale_does_not_call_upscale_images(tmp_path) -> None:
         main()
 
     flagged_fetch.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _localize_card_payload / _has_any_localized_field
+# ---------------------------------------------------------------------------
+
+
+def test_localize_card_payload_single_face_attaches_localized_fields() -> None:
+    """A single-faced card gets printed_name/printed_type_line/printed_text attached, copy-safe."""
+    from mtg_proxies.cli import _localize_card_payload
+
+    card = {"name": "Serra Angel", "type_line": "Creature — Angel", "oracle_text": "Flying\nVigilance"}
+    localized = {
+        "printed_name": "Serra-Engel",
+        "printed_type_line": "Kreatur — Engel",
+        "printed_text": "Fliegend\nWachsamkeit",
+    }
+
+    payload = _localize_card_payload(card, localized, "de")
+
+    assert payload["printed_name"] == "Serra-Engel"
+    assert payload["printed_type_line"] == "Kreatur — Engel"
+    assert payload["printed_text"] == "Fliegend\nWachsamkeit"
+    assert payload["lang"] == "de"
+    # The original dict must never be mutated — later code in _run_cardconjourer still
+    # reads it for art resolution.
+    assert "printed_name" not in card
+    assert "lang" not in card
+
+
+def test_localize_card_payload_dfc_matches_faces_positionally() -> None:
+    """Each card_faces[i] gets its own localized fields from localized['card_faces'][i]."""
+    from mtg_proxies.cli import _localize_card_payload
+
+    card = {
+        "layout": "transform",
+        "card_faces": [{"name": "Front", "type_line": "Creature"}, {"name": "Back", "type_line": "Creature"}],
+    }
+    localized = {
+        "card_faces": [
+            {"printed_name": "Vorderseite"},
+            {"printed_name": "Rückseite"},
+        ],
+    }
+
+    payload = _localize_card_payload(card, localized, "de")
+
+    assert payload["card_faces"][0]["printed_name"] == "Vorderseite"
+    assert payload["card_faces"][1]["printed_name"] == "Rückseite"
+
+
+def test_localize_card_payload_face_count_mismatch_returns_original_unchanged() -> None:
+    """A face-count mismatch between card and localized print skips localization entirely."""
+    from mtg_proxies.cli import _localize_card_payload
+
+    card = {"card_faces": [{"name": "Front"}, {"name": "Back"}]}
+    localized = {"card_faces": [{"printed_name": "Nur eine Seite"}]}
+
+    payload = _localize_card_payload(card, localized, "de")
+
+    assert payload is card
+
+
+def test_localize_card_payload_missing_field_falls_back_by_omission() -> None:
+    """A localized field missing on the chosen print is simply left unset on the copy."""
+    from mtg_proxies.cli import _localize_card_payload
+
+    card = {"name": "Delver of Secrets"}
+    localized = {"printed_name": "", "printed_type_line": "Kreatur — Mensch, Zauberer"}
+
+    payload = _localize_card_payload(card, localized, "de")
+
+    assert "printed_name" not in payload
+    assert payload["printed_type_line"] == "Kreatur — Mensch, Zauberer"
+
+
+def test_has_any_localized_field_true_when_any_face_has_text() -> None:
+    from mtg_proxies.cli import _has_any_localized_field
+
+    assert _has_any_localized_field({"printed_name": "Serra-Engel"}) is True
+    assert _has_any_localized_field(
+        {"card_faces": [{"printed_name": ""}, {"printed_type_line": "Kreatur"}]}
+    ) is True
+
+
+def test_has_any_localized_field_false_when_all_fields_empty() -> None:
+    from mtg_proxies.cli import _has_any_localized_field
+
+    assert _has_any_localized_field({"printed_name": "", "printed_type_line": None}) is False
+    assert _has_any_localized_field({"card_faces": [{"printed_name": ""}, {}]}) is False

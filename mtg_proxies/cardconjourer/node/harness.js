@@ -1544,6 +1544,10 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // top-level image_uris into faces that don't have their own (older split
     // cards) — but DFC faces almost always have their own face.image_uris.
     const face = processed[faceIdx] || {};
+    // Pristine (never localized) counterpart of `face`, for the custom frame/land-color/
+    // legendary/artifact detectors below — see the clone comment in renderCard(). `face`
+    // may carry --language's printed_* swap; `pristineFace` never does.
+    const pristineFace = (scry.card_faces && scry.card_faces[faceIdx]) || scry;
     const artUrl = (face.image_uris && face.image_uris.art_crop) ||
                    (scry.image_uris && scry.image_uris.art_crop) ||
                    (scry.card_faces && scry.card_faces[faceIdx] && scry.card_faces[faceIdx].image_uris &&
@@ -1641,9 +1645,9 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         // configs point at the regular frame art, not the DFC variants with
         // the icon notch / flipside-bar regions — so we pick frames by name,
         // the same approach the flip branch uses.
-        const baseName = getFrameNameForFace(face);
+        const baseName = getFrameNameForFace(pristineFace);
         const candidates = [];
-        const landWord = { W: 'White', U: 'Blue', B: 'Black', R: 'Red', G: 'Green' }[detectLandColor(face)];
+        const landWord = { W: 'White', U: 'Blue', B: 'Black', R: 'Red', G: 'Green' }[detectLandColor(pristineFace)];
         if (landWord) candidates.push(`${landWord} Land Frame${frameNameSuffix}`);
         // pack8thTransform ships no Land/Colorless frame — Artifact parchment
         // is the closest stand-in for those faces.
@@ -1668,7 +1672,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         // M15Eighth geometry; modern transform is plain M15. The 8th transform
         // packs get none — the authentic 8th frame predates crowns and CC's
         // own 8th auto-frame config has supportsCrown: false.
-        const faceIsLegendary = (face.type_line || '').toLowerCase().includes('legendary');
+        const faceIsLegendary = (pristineFace.type_line || '').toLowerCase().includes('legendary');
         if (frame === 'retro' && faceIsLegendary) {
             // Classicshifted ships crowns as named availableFrames entries (no
             // autoFrame config exists for it). The pack's numeric `complementary`
@@ -1689,7 +1693,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             : null;
         if (crownBuilder && faceIsLegendary) {
             const props = global.cardFrameProperties(
-                face.colors || [], face.mana_cost || '', face.type_line || '', face.power || '');
+                face.colors || [], face.mana_cost || '', pristineFace.type_line || '', face.power || '');
             // addFrame(_, frameObj) only loads the images — registering the
             // layer in card.frames is the caller's job (autoFrameUnified
             // assigns card.frames itself). unshift order = z-order, index 0
@@ -1721,6 +1725,10 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         //   modal both faces — flipside bar: other face's name (left) + its
         //                      mana cost, or bare type for lands (right).
         const otherFace = (scry.card_faces || [])[faceIdx === 0 ? 1 : 0] || {};
+        // Localized counterpart of `otherFace`, for the flipside bar's DISPLAYED name/type
+        // hint only (not branching — otherFace itself stays pristine for detectLandColor /
+        // getFrameNameForFace above and below, which do English-keyword matching).
+        const otherFaceDisplay = processed[faceIdx === 0 ? 1 : 0] || otherFace;
         const showReversePt = scry.layout === 'transform' && dfcFace === 'front'
             && otherFace.power != null && otherFace.power !== '' && !!global.card.text.reminder;
         if (showReversePt) {
@@ -1782,12 +1790,12 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             }
 
             if (global.card.text.flipsideType) {
-                global.card.text.flipsideType.text = otherFace.name || '';
+                global.card.text.flipsideType.text = otherFaceDisplay.name || otherFace.name || '';
             }
             if (global.card.text.flipSideReminder) {
                 // CC's inline mana glyphs use lowercase {r}-style codes.
                 global.card.text.flipSideReminder.text = (otherFace.mana_cost || '').toLowerCase()
-                    || (otherFace.type_line || '').split('—')[0].trim();
+                    || (otherFaceDisplay.type_line || otherFace.type_line || '').split('—')[0].trim();
                 // Gray the mana/type hint so it reads as secondary next to the
                 // name. Face-specific shade (fronts have a dark bar + white
                 // name, backs a light bar + black name); conditionalColor is
@@ -1809,7 +1817,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         // art with a smaller text box and no autoFrame config — pick frame + P/T by name, like
         // the flip/retro paths. Legend crowns aren't in these packs (v1: borderless legends get
         // no crown); the title plate's own art carries the look.
-        const blName = getFrameNameForFace(face);
+        const blName = getFrameNameForFace(pristineFace);
         await addFrameByName([blName, 'Colorless Frame', 'Artifact Frame']);
         // The promo title region spans most of the card width and doesn't reserve room for the mana
         // cost, so long titles (e.g. Doomsday Excruciator) run under the symbols — reserve it.
@@ -1820,7 +1828,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         // the pinline shows over the base. (3+ colors / mono stay un-split.)
         const wubrg = ['W', 'U', 'B', 'R', 'G'];
         let blColors = (face && Array.isArray(face.colors) && face.colors.length === 2) ? face.colors.slice() : [];
-        if (!blColors.length && (face.type_line || '').toLowerCase().includes('land')) {
+        if (!blColors.length && (pristineFace.type_line || '').toLowerCase().includes('land')) {
             // Dual lands have no card colors but tap for two — use their produced mana.
             const produced = (face && face.produced_mana) || scry.produced_mana || [];
             blColors = [...new Set(produced.filter(c => wubrg.includes(c)))];
@@ -1869,7 +1877,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             // normalize to an empty array here.
             faceColors || [],
             (face.mana_cost || global.card.text.mana?.text || ''),
-            (face.type_line || global.card.text.type?.text || ''),
+            (pristineFace.type_line || global.card.text.type?.text || ''),
             // Deliberately NOT passing power here (unlike the 'modern' branch below):
             // buildAutoFrames adds its own standard M15 P/T frame layer whenever this
             // argument is truthy, which duplicated Station's own dedicated P/T badge
@@ -1923,7 +1931,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         // (~RGB 190->170->142), matching a dark tint blended normally, not lighter
         // like '#e6ecf2' produces. Reuse the pack's own 'a' preset (not inventing a
         // color) whenever a colorless card is actually an Artifact.
-        if (!faceColors && /\bArtifact\b/.test(face.type_line || scry.type_line || '')) {
+        if (!faceColors && /\bArtifact\b/.test(pristineFace.type_line || scry.type_line || '')) {
             if (global.card.station?.squares?.[1]) global.card.station.squares[1].color = '#416c77';
             if (global.card.station?.squares?.[2]) global.card.station.squares[2].color = '#416c77';
         }
@@ -1931,7 +1939,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         await global.autoFrameUnified(frameTypeLiteral,
             faceColors,
             (face.mana_cost || global.card.text.mana?.text || ''),
-            (face.type_line || global.card.text.type?.text || ''),
+            (pristineFace.type_line || global.card.text.type?.text || ''),
             (face.power || global.card.text.pt?.text || ''));
         // De-overlap the name vs mana cost — see the reserveRight/estimateWidth helpers
         // above. Was only wired up for the dfc_split and borderless paths; every ordinary
@@ -2290,7 +2298,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             // cardFrameProperties' own frame-letter resolution once more: Land >
             // Vehicle > Artifact > 3+ colors > 2 non-hybrid colors all resolve to
             // 'M' (Multicolored), never 'B', regardless of which colors those are.
-            const typeLine = (face.type_line || scry.type_line || '').toLowerCase();
+            const typeLine = (pristineFace.type_line || scry.type_line || '').toLowerCase();
             const isArtifactBorder = typeLine.includes('artifact') && !typeLine.includes('vehicle') && !typeLine.includes('land');
             const colors = faceColors || [];
             const isHybrid = (face.mana_cost || scry.mana_cost || global.card.text.mana?.text || '').includes('/');
@@ -2426,8 +2434,17 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
     // splits card_faces into separate face objects (front + back); flip layouts
     // (including DFCs that runOneJob has rewritten to 'flip') render both halves
     // into a single PNG via packFlip.
+    //
+    // Feed it a deep clone, not `scry` itself: when the JSON payload carries
+    // `lang`/`printed_name`/`printed_type_line`/`printed_text` (from `mtg-proxies
+    // cardconjourer --language`), processScryfallCard swaps those onto whatever object
+    // it's given (card.name = card.printed_name || card.name, etc.). renderFace's own
+    // frame/land-color/legendary/artifact detectors do raw English-keyword matching
+    // against type_line/oracle_text and must keep reading pristine English — so `scry`
+    // (and `scry.card_faces`) stays untouched here, while the clone (`processed`,
+    // → `face`) carries the localized text into the engine's normal render pipeline.
     const processed = [];
-    global.processScryfallCard(scry, processed);
+    global.processScryfallCard(JSON.parse(JSON.stringify(scry)), processed);
 
     // dfc_split: render each face as its own full-size card via the real DFC
     // packs. Returns { out, outBack } instead of a single path.

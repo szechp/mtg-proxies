@@ -777,6 +777,39 @@ def test_modeline_parse_cardconjourer_dfc_flip() -> None:
     assert warnings == []
 
 
+def test_modeline_parse_cardconjourer_language() -> None:
+    """`--language de` captures a validated 2-3 lowercase-letter Scryfall language code."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjourer --language de")
+
+    assert len(directives) == 1
+    assert directives[0].flags == {"--language": "de"}
+    assert warnings == []
+
+
+def test_modeline_parse_cardconjourer_language_rejects_uppercase() -> None:
+    """`--language DEU` (wrong case, 3 letters but not a real Scryfall shape) is rejected."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjourer --language DEU")
+
+    assert len(directives) == 1
+    assert directives[0].flags == {}
+    assert any("does not look like a language code" in w.message for w in warnings)
+
+
+def test_modeline_parse_cardconjourer_language_rejects_full_name() -> None:
+    """`--language german` (a full language name, not a code) is rejected at parse time."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjourer --language german")
+
+    assert len(directives) == 1
+    assert directives[0].flags == {}
+    assert any("does not look like a language code" in w.message for w in warnings)
+
+
 def test_modeline_parse_cardconjourer_retro() -> None:
     """`--retro` registers as a no-value flag (Seventh-Edition retro frame)."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
