@@ -740,17 +740,21 @@ def _apply_per_card_modelines(
                 # and skip the bulk transforms (same rationale as #mpcfill above).
                 _mark_bleed_render(str(png_path))
 
-    # Pass 1c: #print --language swaps. Fetches the card's own print in the requested
+    # Pass 1c: #print --language swaps. Fetches each card's own print in the requested
     # language directly — NOT via recommend_print (which scores English +64 and would
     # never surface a foreign print when an English one exists) and NOT via default_cards
     # (Scryfall's bulk export excludes non-English prints whenever an English one exists
     # for the same card) — get_localized_prints streams all_cards instead, the only bulk
-    # file that carries every language. No bleed handling: this is a plain Scryfall scan,
-    # same as the card's normal (English) image would have been.
+    # file that carries every language. Batched by language across ALL flagged cards first
+    # (one all_cards scan per distinct language, not per card — get_localized_prints's own
+    # disk cache only helps repeat lookups of the SAME oracle_id across separate runs, not
+    # multiple different oracle_ids looked up one-by-one in the same run). No bleed handling:
+    # this is a plain Scryfall scan, same as the card's normal (English) image would have been.
     if any(any(d.verb == "print" and d.flags.get("--language") for d in dl) for dl in parsed):
         from mtg_proxies.scryfall import get_image, get_localized_prints
         from mtg_proxies.scryfall.scryfall import _card_oracle_id
 
+        card_lang: dict[int, str] = {}
         for card_idx, (card, directives) in enumerate(zip(decklist.cards, parsed, strict=True)):
             for directive in directives:
                 if directive.verb != "print":
@@ -758,35 +762,53 @@ def _apply_per_card_modelines(
                 lang = directive.flags.get("--language")
                 if not lang:
                     continue
-                front_slots = slot_map[card_idx]["front"]
-                if not front_slots:
+                if not slot_map[card_idx]["front"]:
                     _mpcfill_log.warning(
                         "#print --language on %r has no front-face slot for --faces=%s; directive ignored.",
                         card["name"],
                         faces,
                     )
                     continue
-                oracle_id = _card_oracle_id(card.card)
-                localized = get_localized_prints({oracle_id}, lang).get(oracle_id) if oracle_id else None
-                if localized is None:
-                    _mpcfill_log.warning(
-                        "#print --language %s on %r: no %s print found; using the Scryfall scan.",
-                        lang, card["name"], lang,
-                    )
-                    continue
-                image_uris = localized.get("image_uris") or (localized.get("card_faces") or [{}])[0].get(
-                    "image_uris", {}
+                card_lang[card_idx] = lang
+
+        oracle_id_by_card_idx: dict[int, str] = {}
+        oracle_ids_by_lang: dict[str, set[str]] = {}
+        for card_idx, lang in card_lang.items():
+            oracle_id = _card_oracle_id(decklist.cards[card_idx].card)
+            if oracle_id is None:
+                continue
+            oracle_id_by_card_idx[card_idx] = oracle_id
+            oracle_ids_by_lang.setdefault(lang, set()).add(oracle_id)
+
+        localized_by_card_idx: dict[int, dict] = {}
+        for lang, oracle_ids in oracle_ids_by_lang.items():
+            by_oracle_id = get_localized_prints(oracle_ids, lang)
+            for card_idx, oracle_id in oracle_id_by_card_idx.items():
+                if card_lang.get(card_idx) == lang and oracle_id in by_oracle_id:
+                    localized_by_card_idx[card_idx] = by_oracle_id[oracle_id]
+
+        for card_idx, lang in card_lang.items():
+            card = decklist.cards[card_idx]
+            localized = localized_by_card_idx.get(card_idx)
+            if localized is None:
+                _mpcfill_log.warning(
+                    "#print --language %s on %r: no %s print found; using the Scryfall scan.",
+                    lang, card["name"], lang,
                 )
-                image_url = image_uris.get("png") or image_uris.get("large") or image_uris.get("normal")
-                if not image_url:
-                    _mpcfill_log.warning(
-                        "#print --language %s on %r: matched %s print has no scan image; using the Scryfall scan.",
-                        lang, card["name"], lang,
-                    )
-                    continue
-                image_path = get_image(image_url)
-                for slot in front_slots:
-                    _write(slot, image_path)
+                continue
+            image_uris = localized.get("image_uris") or (localized.get("card_faces") or [{}])[0].get(
+                "image_uris", {}
+            )
+            image_url = image_uris.get("png") or image_uris.get("large") or image_uris.get("normal")
+            if not image_url:
+                _mpcfill_log.warning(
+                    "#print --language %s on %r: matched %s print has no scan image; using the Scryfall scan.",
+                    lang, card["name"], lang,
+                )
+                continue
+            image_path = get_image(image_url)
+            for slot in slot_map[card_idx]["front"]:
+                _write(slot, image_path)
 
     # Pass 2: per-card transforms.
     def _slots_for_verb(verb: str) -> list[SlotKey]:

@@ -992,6 +992,39 @@ def test_apply_per_card_modelines_print_language_swap(monkeypatch: pytest.Monkey
     fake_get_image.assert_called_once_with("https://cards.scryfall.io/png/front/x/elegy.png")
 
 
+def test_apply_per_card_modelines_print_language_batches_across_cards(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Multiple `#print --language de` cards trigger exactly ONE get_localized_prints call.
+
+    All their oracle ids get batched into a single set — not one all_cards scan per card.
+    """
+    from mtg_proxies import cli
+
+    localized_prints = {
+        "oracle-a": {"image_uris": {"png": "https://cards.scryfall.io/png/front/a.png"}},
+        "oracle-b": {"image_uris": {"png": "https://cards.scryfall.io/png/front/b.png"}},
+    }
+    fake_get_localized_prints = MagicMock(return_value=localized_prints)
+    downloaded = tmp_path / "de.png"
+    downloaded.write_bytes(b"PNG")
+    fake_get_image = MagicMock(return_value=str(downloaded))
+    monkeypatch.setattr("mtg_proxies.scryfall.get_localized_prints", fake_get_localized_prints)
+    monkeypatch.setattr("mtg_proxies.scryfall.get_image", fake_get_image)
+
+    card_a = _fake_card("Card A", modeline="#print --language de")
+    card_a.card["oracle_id"] = "oracle-a"
+    card_b = _fake_card("Card B", modeline="#print --language de")
+    card_b.card["oracle_id"] = "oracle-b"
+    decklist = _fake_decklist(card_a, card_b)
+    image_paths = ["a_scryfall.png", "b_scryfall.png"]
+
+    result = cli._apply_per_card_modelines(decklist, image_paths)
+
+    assert result == [str(downloaded), str(downloaded)]
+    fake_get_localized_prints.assert_called_once_with({"oracle-a", "oracle-b"}, "de")
+
+
 def test_apply_per_card_modelines_print_language_no_match_falls_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -294,6 +294,28 @@ def _bulk_data_listing() -> list[dict]:
     return listing
 
 
+# Matches a raw (unpickled) bulk file's dated name, e.g. ``all-cards-20260809092558.jsonl.gz``
+# or the legacy plain-JSON shape ``default-cards-20241201090617.json``.
+_DATED_BULK_FILE_RE = re.compile(r"^.+-\d{8,}\.(jsonl\.gz|json)$")
+
+
+def _newest_cached_bulk_file(database_name: str) -> Path | None:
+    """Return the newest already-downloaded raw bulk file for ``database_name``, or ``None``.
+
+    Used as a fallback in :func:`_resolve_bulk_file` when the bulk-data listing lookup itself
+    fails (Scryfall down/rate-limited/network error) but a previously-downloaded file is still
+    sitting in the cache — no reason to hard-fail the whole call when perfectly usable data,
+    just possibly not the very latest, is already on disk.
+    """
+    slug = database_name.replace("_", "-")
+    candidates = [
+        p for p in _cache_folder.glob(f"{slug}-*") if p.is_file() and _DATED_BULK_FILE_RE.match(p.name)
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
 def _resolve_bulk_file(database_name: str) -> Path:
     """Download (if needed) and return the local path of a Scryfall bulk-data file.
 
@@ -301,8 +323,25 @@ def _resolve_bulk_file(database_name: str) -> Path:
     so callers that only want to *stream* a huge bulk file (e.g. :func:`get_localized_prints`
     scanning ``all_cards`` for a handful of oracle ids) don't have to go through the
     parse-everything-into-a-list-and-pickle-it path that function needs for its own callers.
+
+    If the bulk-data listing lookup itself fails (Scryfall down, rate limited, network error)
+    but a previously-downloaded file for ``database_name`` is already cached, that cached file
+    is used instead of failing outright — it may not be the very latest, but it's real data
+    already on disk, and refusing to touch it just because we can't currently confirm freshness
+    would be strictly worse. Propagates the original error only when nothing is cached.
     """
-    databases = _bulk_data_listing()
+    try:
+        databases = _bulk_data_listing()
+    except (requests.RequestException, ValueError) as exc:
+        cached = _newest_cached_bulk_file(database_name)
+        if cached is not None:
+            _log.warning(
+                "Scryfall bulk-data listing unavailable (%s); using existing cached %s "
+                "(may not reflect the latest data)",
+                exc, cached.name,
+            )
+            return cached
+        raise
     bulk_data = [database for database in databases if database["type"] == database_name]
     if len(bulk_data) != 1:
         raise ValueError(f"Unknown database {database_name}")
@@ -978,11 +1017,24 @@ def _card_oracle_id(card: dict) -> str | None:
     return faces[0].get("oracle_id") if faces else None
 
 
-def _print_completeness(card: dict) -> tuple[int, str]:
-    """Sort key for picking the best localized print: most fully-translated faces, then recency."""
+# Same flashy-treatment set recommend_print's "standard" scoring penalizes (see score() above) —
+# reused here so get_localized_prints doesn't hand back a showcase/borderless/extended-art
+# German print over a plain one just because it happens to be more complete or more recent.
+_FLASHY_FRAME_EFFECTS = frozenset(
+    {"extendedart", "showcase", "shatteredglass", "upside_down", "inverted", "borderless"}
+)
+
+
+def _print_completeness(card: dict) -> tuple[int, bool, str]:
+    """Sort key for picking the best localized print.
+
+    Priority: most fully-translated faces, then a plain (non-showcase/borderless/extended-art)
+    treatment, then most recent release.
+    """
     faces = card.get("card_faces") or [card]
     complete = sum(1 for face in faces if face.get("printed_name"))
-    return complete, card.get("released_at") or ""
+    is_standard = not (set(card.get("frame_effects", [])) & _FLASHY_FRAME_EFFECTS)
+    return complete, is_standard, card.get("released_at") or ""
 
 
 def get_localized_prints(oracle_ids: set[str], lang: str) -> dict[str, dict]:
@@ -1007,6 +1059,13 @@ def get_localized_prints(oracle_ids: set[str], lang: str) -> dict[str, dict]:
         oracle_ids: Scryfall oracle ids to look up.
         lang: Scryfall language code, e.g. ``"de"``.
 
+    Results are cached to disk per ``(bulk file version, lang)`` — including negative "no print
+    in this language" results — so a repeat lookup against the same downloaded ``all_cards``
+    snapshot (the common case: iterating on the same deck within a day) skips the ~500K+ line
+    scan entirely instead of repeating it on every single invocation. The cache key embeds the
+    bulk file's own versioned filename, so it never serves stale data across a Scryfall update —
+    a new ``all_cards`` download starts with an empty cache for that version.
+
     Returns:
         dict {oracle_id: best-matching print in lang}. Oracle ids with no print in ``lang`` are
         simply absent from the result — never a partial/None entry.
@@ -1015,13 +1074,23 @@ def get_localized_prints(oracle_ids: set[str], lang: str) -> dict[str, dict]:
         return {}
 
     bulk_file = _resolve_bulk_file("all_cards")
+    cache_path = _cache_folder / f"localized-prints-{bulk_file.name}-{lang}.json"
+    cache: dict[str, dict | None] = {}
+    if cache_path.is_file():
+        with contextlib.suppress(OSError, json.JSONDecodeError):
+            cache = json.loads(cache_path.read_text(encoding="utf-8"))
+
+    best: dict[str, dict] = {oid: cache[oid] for oid in oracle_ids if cache.get(oid) is not None}
+    missing = {oid for oid in oracle_ids if oid not in cache}
+    if not missing:
+        return best
+
     # Cheap substring pre-check before the expensive json.loads: Scryfall's bulk export is
     # compact JSON with no space after ':', so this reliably matches the lang field and lets
     # most lines (every OTHER language, which is the vast majority of a million-plus entries)
     # get skipped without ever being parsed.
     lang_marker = f'"lang":"{lang}"'
 
-    best: dict[str, dict] = {}
     opener = gzip.open if bulk_file.suffix == ".gz" else open
     with opener(bulk_file, "rt", encoding="utf-8") as f:
         for line in tqdm(f, desc=f"scanning all_cards for --language {lang}", unit=" lines"):
@@ -1034,11 +1103,17 @@ def get_localized_prints(oracle_ids: set[str], lang: str) -> dict[str, dict]:
             if card.get("lang") != lang:  # substring pre-check can false-positive on other fields
                 continue
             oracle_id = _card_oracle_id(card)
-            if oracle_id is None or oracle_id not in oracle_ids:
+            if oracle_id is None or oracle_id not in missing:
                 continue
             current_best = best.get(oracle_id)
             if current_best is None or _print_completeness(card) > _print_completeness(current_best):
                 best[oracle_id] = card
+
+    for oracle_id in missing:
+        cache[oracle_id] = best.get(oracle_id)
+    with contextlib.suppress(OSError):
+        cache_path.write_text(json.dumps(cache), encoding="utf-8")
+
     return best
 
 

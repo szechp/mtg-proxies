@@ -973,6 +973,68 @@ def test_bulk_data_listing_ignores_corrupt_cache_file(tmp_path: Path, monkeypatc
     assert sf._bulk_data_listing() == [{"type": "all_cards"}]
 
 
+def test_resolve_bulk_file_falls_back_to_cached_file_when_listing_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A listing-lookup failure (Scryfall down/rate-limited) uses the newest cached file, not a crash."""
+    import requests
+
+    from mtg_proxies.scryfall import scryfall as sf
+
+    monkeypatch.setattr(sf, "_cache_folder", tmp_path)
+    cached = tmp_path / "all-cards-20260809092558.jsonl.gz"
+    cached.write_bytes(b"")
+
+    def fail() -> list[dict]:
+        raise requests.exceptions.HTTPError("503 Service Unavailable")
+
+    monkeypatch.setattr(sf, "_bulk_data_listing", fail)
+
+    assert sf._resolve_bulk_file("all_cards") == cached
+
+
+def test_resolve_bulk_file_picks_newest_cached_file_on_listing_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With multiple cached snapshots, the fallback picks the most recently modified one."""
+    import requests
+
+    from mtg_proxies.scryfall import scryfall as sf
+
+    monkeypatch.setattr(sf, "_cache_folder", tmp_path)
+    older = tmp_path / "all-cards-20260101000000.jsonl.gz"
+    newer = tmp_path / "all-cards-20260809092558.jsonl.gz"
+    older.write_bytes(b"")
+    newer.write_bytes(b"")
+    os.utime(older, (time.time() - 1000, time.time() - 1000))
+
+    def fail() -> list[dict]:
+        raise requests.exceptions.HTTPError("503 Service Unavailable")
+
+    monkeypatch.setattr(sf, "_bulk_data_listing", fail)
+
+    assert sf._resolve_bulk_file("all_cards") == newer
+
+
+def test_resolve_bulk_file_reraises_when_listing_fails_and_nothing_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A listing-lookup failure with no cached file at all propagates the original error."""
+    import requests
+
+    from mtg_proxies.scryfall import scryfall as sf
+
+    monkeypatch.setattr(sf, "_cache_folder", tmp_path)
+
+    def fail() -> list[dict]:
+        raise requests.exceptions.HTTPError("503 Service Unavailable")
+
+    monkeypatch.setattr(sf, "_bulk_data_listing", fail)
+
+    with pytest.raises(requests.exceptions.HTTPError):
+        sf._resolve_bulk_file("all_cards")
+
+
 def test_get_database_skips_corrupt_pickle_and_tries_next(tmp_path, monkeypatch):
     """A corrupt newest-pickle is skipped in favor of the next-newest (if within TTL)."""
     import pickle as _pickle
@@ -1035,12 +1097,24 @@ def test_fetch_printing_live_returns_none_on_404(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _fake_all_cards_bulk_file(tmp_path: Path, cards: list[dict]) -> Callable[[str], Path]:
+def _fake_all_cards_bulk_file(
+    tmp_path: Path, cards: list[dict], monkeypatch: pytest.MonkeyPatch | None = None
+) -> Callable[[str], Path]:
     """Build a ``_resolve_bulk_file`` stand-in serving ``cards`` as a plain-text JSON-Lines file.
 
     Returns a callable so a test can assert it was invoked with ``"all_cards"`` specifically —
     the only Scryfall bulk file that carries non-English printings.
+
+    When ``monkeypatch`` is given, also redirects ``_cache_folder`` to ``tmp_path`` —
+    ``get_localized_prints`` caches its results keyed by the bulk file's name, and every test
+    using this fixture serves the SAME fake filename (``all-cards-test.jsonl``); without this
+    redirect that cache would read/write the real ``~/.cache/mtg-proxies/scryfall/`` and leak
+    state between tests (and pollute the real cache with test data).
     """
+    if monkeypatch is not None:
+        from mtg_proxies.scryfall import scryfall
+
+        monkeypatch.setattr(scryfall, "_cache_folder", tmp_path)
     path = tmp_path / "all-cards-test.jsonl"
     # separators=(",", ":") matches Scryfall's actual compact export (no space after ':') --
     # get_localized_prints's substring pre-filter assumes that exact shape.
@@ -1060,7 +1134,7 @@ def test_get_localized_prints_queries_the_all_cards_bulk_file(monkeypatch: pytes
     from mtg_proxies.scryfall import scryfall
 
     card = {"id": "de-print", "oracle_id": "oracle-1", "lang": "de", "printed_name": "Serra-Engel"}
-    monkeypatch.setattr(scryfall, "_resolve_bulk_file", _fake_all_cards_bulk_file(tmp_path, [card]))
+    monkeypatch.setattr(scryfall, "_resolve_bulk_file", _fake_all_cards_bulk_file(tmp_path, [card], monkeypatch))
 
     result = scryfall.get_localized_prints({"oracle-1"}, "de")
 
@@ -1079,7 +1153,9 @@ def test_get_localized_prints_ignores_oracle_ids_outside_the_requested_set(
 
     wanted = {"id": "wanted", "oracle_id": "oracle-1", "lang": "de", "printed_name": "Gewünscht"}
     unwanted = {"id": "unwanted", "oracle_id": "oracle-2", "lang": "de", "printed_name": "Ungewünscht"}
-    monkeypatch.setattr(scryfall, "_resolve_bulk_file", _fake_all_cards_bulk_file(tmp_path, [wanted, unwanted]))
+    monkeypatch.setattr(
+        scryfall, "_resolve_bulk_file", _fake_all_cards_bulk_file(tmp_path, [wanted, unwanted], monkeypatch)
+    )
 
     result = scryfall.get_localized_prints({"oracle-1"}, "de")
 
@@ -1096,6 +1172,37 @@ def test_get_localized_prints_empty_oracle_ids_short_circuits(monkeypatch: pytes
     monkeypatch.setattr(scryfall, "_resolve_bulk_file", _fail)
 
     assert scryfall.get_localized_prints(set(), "de") == {}
+
+
+def test_get_localized_prints_prefers_standard_treatment_over_flashy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A showcase/borderless/extended-art German print loses to an equally-complete plain one."""
+    from mtg_proxies.scryfall import scryfall
+
+    showcase = {
+        "id": "showcase",
+        "oracle_id": "oracle-1",
+        "lang": "de",
+        "released_at": "2023-01-01",
+        "printed_name": "Zeigefassung",
+        "frame_effects": ["showcase"],
+    }
+    standard = {
+        "id": "standard",
+        "oracle_id": "oracle-1",
+        "lang": "de",
+        "released_at": "2020-01-01",
+        "printed_name": "Standardfassung",
+        "frame_effects": [],
+    }
+    monkeypatch.setattr(
+        scryfall, "_resolve_bulk_file", _fake_all_cards_bulk_file(tmp_path, [showcase, standard], monkeypatch)
+    )
+
+    result = scryfall.get_localized_prints({"oracle-1"}, "de")
+
+    assert result["oracle-1"]["id"] == "standard"
 
 
 def test_get_localized_prints_prefers_complete_face_coverage_over_partial(
@@ -1118,7 +1225,9 @@ def test_get_localized_prints_prefers_complete_face_coverage_over_partial(
         "released_at": "2010-01-01",
         "card_faces": [{"printed_name": "Vorderseite"}, {"printed_name": "Rückseite"}],
     }
-    monkeypatch.setattr(scryfall, "_resolve_bulk_file", _fake_all_cards_bulk_file(tmp_path, [partial, complete]))
+    monkeypatch.setattr(
+        scryfall, "_resolve_bulk_file", _fake_all_cards_bulk_file(tmp_path, [partial, complete], monkeypatch)
+    )
 
     result = scryfall.get_localized_prints({"oracle-1"}, "de")
 
@@ -1131,7 +1240,9 @@ def test_get_localized_prints_tie_breaks_by_recency(monkeypatch: pytest.MonkeyPa
 
     older = {"id": "older", "oracle_id": "oracle-1", "lang": "de", "released_at": "2005-01-01", "printed_name": "Alt"}
     newer = {"id": "newer", "oracle_id": "oracle-1", "lang": "de", "released_at": "2023-06-01", "printed_name": "Neu"}
-    monkeypatch.setattr(scryfall, "_resolve_bulk_file", _fake_all_cards_bulk_file(tmp_path, [older, newer]))
+    monkeypatch.setattr(
+        scryfall, "_resolve_bulk_file", _fake_all_cards_bulk_file(tmp_path, [older, newer], monkeypatch)
+    )
 
     result = scryfall.get_localized_prints({"oracle-1"}, "de")
 
@@ -1147,7 +1258,9 @@ def test_get_localized_prints_omits_oracle_ids_with_no_print_in_language(
     english_only = {
         "id": "en", "oracle_id": "oracle-1", "lang": "en", "released_at": "2020-01-01", "printed_name": "",
     }
-    monkeypatch.setattr(scryfall, "_resolve_bulk_file", _fake_all_cards_bulk_file(tmp_path, [english_only]))
+    monkeypatch.setattr(
+        scryfall, "_resolve_bulk_file", _fake_all_cards_bulk_file(tmp_path, [english_only], monkeypatch)
+    )
 
     result = scryfall.get_localized_prints({"oracle-1", "unknown-oracle-id"}, "de")
 
