@@ -177,6 +177,15 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         "--font-size":  _signed_int,
         "--language":   _lang_code,
     },
+    # ``#print --language LANG`` — for a card whose Scryfall structured translation isn't
+    # trustworthy enough for cardconjourer to render (auto-appended by the ``cardconjourer``
+    # subcommand's own fallback.txt output — see its ``--language`` flag), pin THIS slot to
+    # the real scanned print in LANG instead of the plain Scryfall (English) scan. No-op if no
+    # print exists in LANG for this card — falls back to the normal Scryfall scan, same as if
+    # the modeline weren't present.
+    "print": {
+        "--language": _lang_code,
+    },
 }
 
 

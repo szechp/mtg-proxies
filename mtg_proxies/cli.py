@@ -740,6 +740,54 @@ def _apply_per_card_modelines(
                 # and skip the bulk transforms (same rationale as #mpcfill above).
                 _mark_bleed_render(str(png_path))
 
+    # Pass 1c: #print --language swaps. Fetches the card's own print in the requested
+    # language directly — NOT via recommend_print (which scores English +64 and would
+    # never surface a foreign print when an English one exists) and NOT via default_cards
+    # (Scryfall's bulk export excludes non-English prints whenever an English one exists
+    # for the same card) — get_localized_prints streams all_cards instead, the only bulk
+    # file that carries every language. No bleed handling: this is a plain Scryfall scan,
+    # same as the card's normal (English) image would have been.
+    if any(any(d.verb == "print" and d.flags.get("--language") for d in dl) for dl in parsed):
+        from mtg_proxies.scryfall import get_image, get_localized_prints
+        from mtg_proxies.scryfall.scryfall import _card_oracle_id
+
+        for card_idx, (card, directives) in enumerate(zip(decklist.cards, parsed, strict=True)):
+            for directive in directives:
+                if directive.verb != "print":
+                    continue
+                lang = directive.flags.get("--language")
+                if not lang:
+                    continue
+                front_slots = slot_map[card_idx]["front"]
+                if not front_slots:
+                    _mpcfill_log.warning(
+                        "#print --language on %r has no front-face slot for --faces=%s; directive ignored.",
+                        card["name"],
+                        faces,
+                    )
+                    continue
+                oracle_id = _card_oracle_id(card.card)
+                localized = get_localized_prints({oracle_id}, lang).get(oracle_id) if oracle_id else None
+                if localized is None:
+                    _mpcfill_log.warning(
+                        "#print --language %s on %r: no %s print found; using the Scryfall scan.",
+                        lang, card["name"], lang,
+                    )
+                    continue
+                image_uris = localized.get("image_uris") or (localized.get("card_faces") or [{}])[0].get(
+                    "image_uris", {}
+                )
+                image_url = image_uris.get("png") or image_uris.get("large") or image_uris.get("normal")
+                if not image_url:
+                    _mpcfill_log.warning(
+                        "#print --language %s on %r: matched %s print has no scan image; using the Scryfall scan.",
+                        lang, card["name"], lang,
+                    )
+                    continue
+                image_path = get_image(image_url)
+                for slot in front_slots:
+                    _write(slot, image_path)
+
     # Pass 2: per-card transforms.
     def _slots_for_verb(verb: str) -> list[SlotKey]:
         slots: list[SlotKey] = []
@@ -1470,7 +1518,20 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     # ids actually in this deck — a single streamed pass over Scryfall's ``all_cards`` bulk
     # file per distinct language, never the whole multi-million-entry catalog materialized in
     # memory (see get_localized_prints's docstring for why that distinction matters).
+    #
+    # A matched print's structured text isn't always trustworthy: Scryfall can have a card's
+    # name translated while printed_type_line is still null and printed_text just mirrors the
+    # English oracle_text (verified on Edge of Eternities — not a "brand new set" thing, EOE is
+    # over a year old; reason unconfirmed, but the null printed_type_line is a reliable tell).
+    # Rendering with that would silently show a mix of real German name + fake German body text.
+    # Cards with printed_type_line present get the normal synthetic-render path below; cards
+    # with a matched print but no printed_type_line get routed to fallback.txt tagged with
+    # ``#print --language LANG``, so a later `mtg-proxies print` run fetches the REAL scanned
+    # German card (guaranteed-correct text, whatever frame it actually printed in) instead of
+    # rendering fabricated text. Cards with no print in the language at all render in English,
+    # same as always.
     localized_by_slot: dict[int, dict] = {}
+    fallback_modeline_by_slot: dict[int, str] = {}
     if slot_language:
         from mtg_proxies.scryfall import get_localized_prints
         from mtg_proxies.scryfall.scryfall import _card_oracle_id
@@ -1493,13 +1554,24 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
             )
             by_oracle_id = get_localized_prints(oracle_ids, lang)
             for slot_int, oracle_id in oracle_id_by_slot.items():
-                if slot_language.get(slot_int) == lang and oracle_id in by_oracle_id:
-                    localized_by_slot[slot_int] = by_oracle_id[oracle_id]
+                if slot_language.get(slot_int) != lang or oracle_id not in by_oracle_id:
+                    continue
+                match = by_oracle_id[oracle_id]
+                if match.get("printed_type_line"):
+                    localized_by_slot[slot_int] = match
+                else:
+                    slot_skip.add(slot_int)
+                    fallback_modeline_by_slot[slot_int] = f"#print --language {lang}"
+                    print(
+                        f"[cardconjourer] --language {lang}: {slot_to_card[slot_int]['name']!r} has a "
+                        f"{lang} print but incomplete structured text on Scryfall; routing to "
+                        "fallback.txt for the real scanned card instead of fabricated text."
+                    )
 
     for slot_int, card in slot_to_card.items():
         payload = card.card
         lang = slot_language.get(slot_int)
-        if lang:
+        if lang and slot_int not in fallback_modeline_by_slot:
             localized = localized_by_slot.get(slot_int)
             if localized is None:
                 print(f"[cardconjourer] --language {lang}: no print found for {card['name']!r}; rendering English.")
@@ -1800,6 +1872,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         run_harness=_run,
         prepare_each=prepare_each_cb,
         dfc_split_slots=dfc_split_slots,
+        fallback_modeline_by_slot=fallback_modeline_by_slot,
     )
     print(f"[cardconjourer] {summary['ok']}/{summary['total']} rendered, {summary['skipped']} skipped")
     if args.scryfall:

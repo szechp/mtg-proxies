@@ -129,6 +129,33 @@ def download(url: str, dst: Path | str, *, chunk_size: int = 1024 * 4, silent: b
                     pbar.update(chunk_size)
 
 
+def _get_json_with_retry(url: str, *, max_retries: int = 4) -> dict:
+    """GET ``url`` and parse JSON, retrying transient failures with exponential backoff.
+
+    A bare ``requests.get(url).json()`` crashes on any transient hiccup (timeout, connection
+    reset, a momentary empty/non-200 response, Scryfall rate limiting) with an opaque
+    ``JSONDecodeError`` that gives no indication a retry would likely succeed. Retries up to
+    ``max_retries`` times (1s, 2s, 4s, 8s) before letting the final failure propagate.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.get(url, headers=_SCRYFALL_HEADERS, timeout=30)
+            response.raise_for_status()
+            return response.json()
+        except (requests.RequestException, ValueError) as exc:
+            last_exc = exc
+            if attempt < max_retries:
+                wait = 2**attempt
+                _log.warning(
+                    "Scryfall request to %s failed (%s); retrying in %ds (%d/%d)",
+                    url, exc, wait, attempt + 1, max_retries,
+                )
+                time.sleep(wait)
+    assert last_exc is not None
+    raise last_exc
+
+
 def depaginate(url: str) -> list[dict]:
     """Depaginates Scryfall search results.
 
@@ -138,7 +165,7 @@ def depaginate(url: str) -> list[dict]:
         list: Concatenation of all `data` entries.
     """
     with scryfall_rate_limiter:
-        response = requests.get(url, headers=_SCRYFALL_HEADERS).json()
+        response = _get_json_with_retry(url)
     assert response["object"]
 
     if "data" not in response:

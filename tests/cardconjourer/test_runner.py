@@ -354,6 +354,45 @@ def test_format_fallback_txt_without_pin_is_name_only() -> None:
     assert format_fallback_txt(rows) == "2 Urza's Saga\n"
 
 
+def test_format_fallback_txt_appends_modeline_after_pin() -> None:
+    """A row with a modeline gets it appended verbatim after the (SET) CN pin."""
+    from mtg_proxies.cardconjourer.runner import format_fallback_txt
+
+    rows = [{"count": 1, "name": "Elegy Acolyte", "reason": "incomplete translation",
+             "set_code": "eoe", "collector_number": "97", "modeline": "#print --language de"}]
+
+    assert format_fallback_txt(rows) == "1 Elegy Acolyte (EOE) 97 #print --language de\n"
+
+
+def test_format_fallback_txt_appends_modeline_without_pin() -> None:
+    """A row with a modeline but no set/cn pin still appends the modeline after the bare name."""
+    from mtg_proxies.cardconjourer.runner import format_fallback_txt
+
+    rows = [{"count": 1, "name": "Elegy Acolyte", "reason": "x", "modeline": "#print --language de"}]
+
+    assert format_fallback_txt(rows) == "1 Elegy Acolyte #print --language de\n"
+
+
+def test_render_deck_threads_fallback_modeline_by_slot(tmp_path: Path) -> None:
+    """`fallback_modeline_by_slot` reaches fallback.txt for the matching (1-based) slot only."""
+    from mtg_proxies.cardconjourer.runner import render_deck
+
+    def skip_all(jobs: list[dict]) -> list[dict]:
+        return [{"slot": j["slot"], "status": "skip", "reason": "test"} for j in jobs]
+
+    render_deck(
+        [(1, "Elegy Acolyte", "eoe", "97"), (1, "Watery Grave", "eoe", "261")],
+        tmp_path,
+        frame="8th",
+        run_harness=skip_all,
+        fallback_modeline_by_slot={1: "#print --language de"},
+    )
+
+    assert (tmp_path / "fallback.txt").read_text() == (
+        "1 Elegy Acolyte (EOE) 97 #print --language de\n1 Watery Grave (EOE) 261\n"
+    )
+
+
 def test_render_deck_fallback_preserves_pin_from_card_spec(tmp_path: Path) -> None:
     """A skipped card given as a 4-tuple (count, name, set, cn) keeps its pin in fallback.txt."""
     from mtg_proxies.cardconjourer.runner import render_deck

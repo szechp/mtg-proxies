@@ -161,10 +161,11 @@ def parse_response(line: str) -> dict[str, Any] | None:
 def format_fallback_txt(rows: Iterable[FallbackRow]) -> str:
     """Render a list of skipped-card dicts as a decklist for ``print`` to consume.
 
-    Each row is ``{"count": int, "name": str, "reason": str}``. ``reason`` is
-    not written into the output (it lives in ``report.csv``); the goal here is
-    a clean decklist ``"<count> <name>"`` so the file pipes straight into
-    ``mtg-proxies print``.
+    Each row is ``{"count": int, "name": str, "reason": str}``, optionally with a
+    ``"modeline"`` (e.g. ``"#print --language de"``) appended verbatim after the pin —
+    ``reason`` is not written into the output (it lives in ``report.csv``); the goal here
+    is a clean decklist ``"<count> <name> [(SET) CN] [#verb --flag value]"`` so the file
+    pipes straight into ``mtg-proxies print``.
     """
     out: list[str] = []
     for row in rows:
@@ -172,10 +173,11 @@ def format_fallback_txt(rows: Iterable[FallbackRow]) -> str:
         name = row["name"]
         set_code = row.get("set_code")
         cn = row.get("collector_number")
-        if set_code and cn:
-            out.append(f"{count} {name} ({set_code.upper()}) {cn}\n")
-        else:
-            out.append(f"{count} {name}\n")
+        modeline = row.get("modeline")
+        line = f"{count} {name} ({set_code.upper()}) {cn}" if set_code and cn else f"{count} {name}"
+        if modeline:
+            line += f" {modeline}"
+        out.append(line + "\n")
     return "".join(out)
 
 
@@ -254,6 +256,7 @@ def render_deck(
     upscale: bool = False,
     prepare_each: PrepareEach | None = None,
     dfc_split_slots: set[int] | None = None,
+    fallback_modeline_by_slot: dict[int, str] | None = None,
 ) -> dict[str, int]:
     """Render a whole decklist via the headless Card Conjurer harness.
 
@@ -281,6 +284,13 @@ def render_deck(
     separate faces — their jobs carry ``dfc_split: true``, their cache-hit
     check requires BOTH ``<slug>.png`` and ``<slug>_back.png``, and their ok
     responses carry an extra ``out_back`` path that is copied alongside ``out``.
+
+    ``fallback_modeline_by_slot`` (1-based slot ints → modeline string, e.g.
+    ``"#print --language de"``) appends that trailer to a skipped card's fallback.txt
+    line — e.g. so a card whose Scryfall structured translation isn't reliable enough to
+    render can still be pinned to its real localized print when the fallback.txt is later
+    fed into ``mtg-proxies print``. Only applies to cards that end up skipped; a card that
+    renders ``ok`` never touches fallback.txt regardless of this mapping.
 
     ``run_harness`` is injectable so tests can stub the node subprocess.
     """
@@ -377,6 +387,7 @@ def render_deck(
             fallback_rows.append({
                 "count": count, "name": name, "reason": r.get("reason", ""),
                 "set_code": set_code, "collector_number": cn,
+                "modeline": (fallback_modeline_by_slot or {}).get(i + 1, ""),
             })
             report_rows.append({
                 "slot": slot_str, "name": name, "status": "skip",

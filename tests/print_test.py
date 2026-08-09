@@ -965,6 +965,69 @@ def test_apply_per_card_modelines_cardconjourer_skips_when_no_directives(
     assert batch_calls == []
 
 
+def test_apply_per_card_modelines_print_language_swap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """`#print --language de` fetches that card's German print's own scan and swaps the slot."""
+    from mtg_proxies import cli
+
+    localized_print = {
+        "image_uris": {"png": "https://cards.scryfall.io/png/front/x/elegy.png"},
+    }
+    fake_get_localized_prints = MagicMock(return_value={"oracle-elegy": localized_print})
+    downloaded = tmp_path / "elegy_de.png"
+    downloaded.write_bytes(b"PNG")
+    fake_get_image = MagicMock(return_value=str(downloaded))
+    monkeypatch.setattr("mtg_proxies.scryfall.get_localized_prints", fake_get_localized_prints)
+    monkeypatch.setattr("mtg_proxies.scryfall.get_image", fake_get_image)
+
+    card = _fake_card("Elegy Acolyte", modeline="#print --language de")
+    card.card["oracle_id"] = "oracle-elegy"
+    decklist = _fake_decklist(_fake_card("Sol Ring"), card)
+    image_paths = ["sol.png", "elegy_scryfall.png"]
+
+    result = cli._apply_per_card_modelines(decklist, image_paths)
+
+    assert result[0] == "sol.png"
+    assert result[1] == str(downloaded)
+    fake_get_localized_prints.assert_called_once_with({"oracle-elegy"}, "de")
+    fake_get_image.assert_called_once_with("https://cards.scryfall.io/png/front/x/elegy.png")
+
+
+def test_apply_per_card_modelines_print_language_no_match_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No print in the requested language → slot keeps its existing (English) Scryfall scan."""
+    from mtg_proxies import cli
+
+    fake_get_localized_prints = MagicMock(return_value={})
+    monkeypatch.setattr("mtg_proxies.scryfall.get_localized_prints", fake_get_localized_prints)
+
+    card = _fake_card("Elegy Acolyte", modeline="#print --language de")
+    card.card["oracle_id"] = "oracle-elegy"
+    decklist = _fake_decklist(card)
+    image_paths = ["elegy_scryfall.png"]
+
+    result = cli._apply_per_card_modelines(decklist, image_paths)
+
+    assert result == ["elegy_scryfall.png"]
+
+
+def test_apply_per_card_modelines_print_language_skips_when_no_directives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If no card has `#print --language`, get_localized_prints is never called."""
+    from mtg_proxies import cli
+
+    fake_get_localized_prints = MagicMock()
+    monkeypatch.setattr("mtg_proxies.scryfall.get_localized_prints", fake_get_localized_prints)
+
+    decklist = _fake_decklist(_fake_card("Sol Ring", modeline="#upscale"))
+    image_paths = ["sol.png"]
+
+    cli._apply_per_card_modelines(decklist, image_paths)
+
+    fake_get_localized_prints.assert_not_called()
+
+
 def test_print_cards_fpdf_places_cards_at_true_physical_size(example_images: list[str], tmp_path: Path) -> None:
     """Regression: cards must print at REAL MTG card size (63 x 88 mm), not 2.5" x 3.5".
 
