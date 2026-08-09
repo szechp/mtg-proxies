@@ -202,21 +202,36 @@ def _parse_bulk_file(path: Path) -> list[dict]:
 
     Scryfall migrated its bulk exports from a single (optionally plain) JSON array served via
     ``download_uri`` to gzip-compressed JSON Lines (one card object per line) served via
-    ``jsonl_download_uri``. Detecting the shape from the decompressed content — rather than
-    trusting the ``.gz``/``.jsonl`` extension alone — keeps this working for any already-cached
-    ``.json`` files left over from before the migration.
+    ``jsonl_download_uri``. The shape is sniffed from the first line rather than trusting the
+    ``.gz``/``.jsonl`` extension alone, so this keeps working for any already-cached ``.json``
+    file left over from before the migration.
+
+    Streams the file line-by-line instead of reading it whole (``all_cards`` decompresses to
+    several GB of text across 1M+ card objects — buffering the full string, then a second
+    ``str.lstrip()`` copy, then a ``str.splitlines()`` list, held simultaneously, risks paging
+    a typical laptop to a crawl well before the first ``json.loads`` call). A ``tqdm`` line
+    counter gives feedback during the minutes this can take on the largest bulk files, since a
+    plain multi-minute silence looks identical to a hang.
 
     Raises:
         json.JSONDecodeError: The file is neither a valid JSON array nor valid JSON Lines.
     """
     opener = gzip.open if path.suffix == ".gz" else open
     with opener(path, "rt", encoding="utf-8") as f:
-        text = f.read()
+        first_line = f.readline()
+        if first_line.lstrip().startswith("["):
+            # Plain JSON array (legacy shape) — no per-line streaming possible; the file is
+            # only ever this shape for small/legacy bulk types, never ``all_cards``.
+            return json.loads(first_line + f.read())
 
-    stripped = text.lstrip()
-    if stripped.startswith("["):
-        return json.loads(text)
-    return [json.loads(line) for line in text.splitlines() if line.strip()]
+        data: list[dict] = []
+        if first_line.strip():
+            data.append(json.loads(first_line))
+        for line in tqdm(f, desc=f"parsing {path.name}", unit=" cards"):
+            line = line.strip()
+            if line:
+                data.append(json.loads(line))
+        return data
 
 
 @cache
