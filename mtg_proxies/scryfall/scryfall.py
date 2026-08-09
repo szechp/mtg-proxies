@@ -557,8 +557,12 @@ def _standard_art_penalty(card: dict, preferred_sets: list[str] | None = None) -
 
 
 def _has_flashy_treatment(card: dict) -> bool:
-    frame_effects = set(card.get("frame_effects", []))
-    promo_types = set(card.get("promo_types", []))
+    # ``or []`` (not ``.get(key, [])``): the all_cards bulk export uses JSON ``null`` for an
+    # empty frame_effects/promo_types on some prints (confirmed on a real EOE card) rather than
+    # ``[]`` — ``.get(key, [])`` only substitutes the default when the KEY is absent, not when
+    # it's present with value ``None``, so that form still crashes on this real data shape.
+    frame_effects = set(card.get("frame_effects") or [])
+    promo_types = set(card.get("promo_types") or [])
     return bool(
         {"extendedart", "showcase", "shatteredglass", "upside_down", "inverted", "borderless"} & frame_effects
         or "boosterfun" in promo_types
@@ -1017,23 +1021,19 @@ def _card_oracle_id(card: dict) -> str | None:
     return faces[0].get("oracle_id") if faces else None
 
 
-# Same flashy-treatment set recommend_print's "standard" scoring penalizes (see score() above) —
-# reused here so get_localized_prints doesn't hand back a showcase/borderless/extended-art
-# German print over a plain one just because it happens to be more complete or more recent.
-_FLASHY_FRAME_EFFECTS = frozenset(
-    {"extendedart", "showcase", "shatteredglass", "upside_down", "inverted", "borderless"}
-)
-
-
 def _print_completeness(card: dict) -> tuple[int, bool, str]:
     """Sort key for picking the best localized print.
 
-    Priority: most fully-translated faces, then a plain (non-showcase/borderless/extended-art)
-    treatment, then most recent release.
+    Priority: most fully-translated faces, then a plain (non-flashy) treatment — via the
+    existing :func:`_has_flashy_treatment` (frame_effects like showcase/borderless/extendedart,
+    PLUS promo_types like ``boosterfun`` — that promo_type is the only signal Scryfall gives for
+    some alternate-art prints; their frame_effects and border_color come back completely plain,
+    confirmed on a real EOE case where a boosterfun borderless print otherwise looked identical
+    to the standard one) — then most recent release.
     """
     faces = card.get("card_faces") or [card]
     complete = sum(1 for face in faces if face.get("printed_name"))
-    is_standard = not (set(card.get("frame_effects", [])) & _FLASHY_FRAME_EFFECTS)
+    is_standard = not _has_flashy_treatment(card)
     return complete, is_standard, card.get("released_at") or ""
 
 

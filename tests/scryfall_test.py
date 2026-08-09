@@ -1205,6 +1205,59 @@ def test_get_localized_prints_prefers_standard_treatment_over_flashy(
     assert result["oracle-1"]["id"] == "standard"
 
 
+def test_get_localized_prints_prefers_standard_over_boosterfun_with_null_frame_effects(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Reproduce a real EOE case where frame_effects/border_color can't tell the prints apart.
+
+    The boosterfun alt-art print has frame_effects: null and border_color: black --
+    indistinguishable from the standard print by those fields alone; only
+    promo_types: ["boosterfun"] marks it as the alternate. Also exercises the None-safety fix
+    in _has_flashy_treatment (all_cards uses JSON null, not [], for empty arrays here).
+    """
+    from mtg_proxies.scryfall import scryfall
+
+    boosterfun = {
+        "id": "boosterfun",
+        "oracle_id": "oracle-1",
+        "lang": "de",
+        "collector_number": "333",
+        "released_at": "2025-08-01",
+        "printed_name": "Requiem-Monolith",
+        "frame_effects": None,
+        "promo_types": ["boosterfun"],
+    }
+    standard = {
+        "id": "standard",
+        "oracle_id": "oracle-1",
+        "lang": "de",
+        "collector_number": "113",
+        "released_at": "2025-08-01",
+        "printed_name": "Requiem-Monolith",
+        "frame_effects": None,
+        "promo_types": None,
+    }
+    monkeypatch.setattr(
+        scryfall, "_resolve_bulk_file", _fake_all_cards_bulk_file(tmp_path, [boosterfun, standard], monkeypatch)
+    )
+
+    result = scryfall.get_localized_prints({"oracle-1"}, "de")
+
+    assert result["oracle-1"]["id"] == "standard"
+
+
+def test_has_flashy_treatment_handles_null_frame_effects_and_promo_types() -> None:
+    """`.get(key, [])` only substitutes a default when the key is ABSENT, not when it's `null`.
+
+    The all_cards bulk export uses null for some prints' empty arrays, which must not crash.
+    """
+    from mtg_proxies.scryfall.scryfall import _has_flashy_treatment
+
+    assert _has_flashy_treatment({"frame_effects": None, "promo_types": None}) is False
+    assert _has_flashy_treatment({"frame_effects": None, "promo_types": ["boosterfun"]}) is True
+    assert _has_flashy_treatment({"frame_effects": ["showcase"], "promo_types": None}) is True
+
+
 def test_get_localized_prints_prefers_complete_face_coverage_over_partial(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
