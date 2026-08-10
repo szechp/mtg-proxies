@@ -1,0 +1,42 @@
+{
+  "WU": {
+    "name": "Second Spell",
+    "tags": ["second-spell-matters"]
+  },
+  "UB": {
+    "name": "Artifact Control",
+    "tags": ["synergy-artifact", "removal-artifact"]
+  },
+  "BR": {
+    "name": "Void",
+    "tags": ["kw:void", "synergy-warp", "sacrifice-outlet", "sacrifice-self"]
+  },
+  "RG": {
+    "name": "Landers and Landfall",
+    "tags": ["landfall", "kw:landfall", "thingfall", "lands-matter"]
+  },
+  "GW": {
+    "name": "+1/+1 Counters",
+    "tags": ["counters-matter", "pp-counters-matter", "gives-pp-counters", "reanimate"]
+  },
+  "WB": {
+    "name": "Go Wide",
+    "tags": ["repeatable-creature-tokens", "repeatable-artifact-tokens", "power-boost-to-all", "keyword-anthem"]
+  },
+  "UR": {
+    "name": "Artifact Aggro",
+    "tags": ["synergy-tapped", "synergy-artifact", "artifactfall", "kw:station", "attacking-matters"]
+  },
+  "BG": {
+    "name": "Graveyard",
+    "tags": ["mill-self", "mill", "kw:mill", "reanimate", "recursion-creature", "discount-self"]
+  },
+  "RW": {
+    "name": "Space Stations",
+    "tags": ["kw:station", "synergy-tapped", "tap-fuel-creature", "attacking-matters"]
+  },
+  "GU": {
+    "name": "Ramp",
+    "tags": ["land-ramp", "mana-producer"]
+  }
+}

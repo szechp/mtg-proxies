@@ -240,6 +240,151 @@ def test_best_lane_label_picks_strongest_hit_and_formats_it() -> None:
     assert cube_builder.best_lane_label(_card("Nothing special", type_line="Instant"), lanes) == ""
 
 
+# --- Official archetype skeletons ----------------------------------------------------------------
+
+
+def test_load_archetype_config_parses_json(tmp_path: Path) -> None:
+    from mtg_proxies import cube_builder
+
+    config_file = tmp_path / "eoe_archetypes.json"
+    config_file.write_text('{"WU": {"name": "Second Spell", "tags": ["second-spell-matters"]}}', encoding="utf-8")
+
+    config = cube_builder.load_archetype_config(config_file)
+
+    assert config == {"WU": {"name": "Second Spell", "tags": ["second-spell-matters"]}}
+
+
+def test_derive_archetype_lanes_has_no_minimum_representation_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A single card carrying a configured tag is enough to form a lane, unlike derive_lanes.
+
+    The config itself, not in-pool popularity, is the authority on relevance.
+    """
+    from mtg_proxies import cube_builder
+
+    _mock_oracle_tags(
+        monkeypatch, [{"id": "t1", "slug": "second-spell-matters", "parent_ids": [], "taggings": [{"oracle_id": "o1"}]}]
+    )
+    archetypes = {"WU": {"name": "Second Spell", "tags": ["second-spell-matters"]}}
+    cards = [_card("Station Monitor", oracle_id="o1"), _card("Unrelated Card", oracle_id="o2")]
+
+    lanes = cube_builder.derive_archetype_lanes(cards, archetypes)
+
+    assert lanes == {"second-spell-matters": pytest.approx(cube_builder._LANE_BASE)}  # 1 card -> BASE / 1
+
+
+def test_derive_archetype_lanes_ignores_tags_outside_the_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mtg_proxies import cube_builder
+
+    _mock_oracle_tags(
+        monkeypatch,
+        [
+            {"id": "t1", "slug": "second-spell-matters", "parent_ids": [], "taggings": [{"oracle_id": "o1"}]},
+            {"id": "t2", "slug": "removal", "parent_ids": [], "taggings": [{"oracle_id": "o1"}]},
+        ],
+    )
+    archetypes = {"WU": {"name": "Second Spell", "tags": ["second-spell-matters"]}}
+    cards = [_card("Station Monitor", oracle_id="o1")]
+
+    lanes = cube_builder.derive_archetype_lanes(cards, archetypes)
+
+    assert "removal" not in lanes  # tagged on the card, but not part of any configured archetype
+
+
+def test_best_archetype_label_picks_the_archetype_with_the_strongest_single_signal() -> None:
+    from mtg_proxies import cube_builder
+
+    archetypes = {
+        "UR": {"name": "Artifact Aggro", "tags": ["kw:station"]},
+        # Default _card() type_line ("Creature — Human Soldier") gives every test card a
+        # subtype:Human signal for free, so RW's second tag is satisfied without extra mocking.
+        "RW": {"name": "Space Stations", "tags": ["kw:station", "subtype:Human"]},
+    }
+    lanes = {"kw:station": 10.0, "subtype:Human": 25.0}
+    card = _card("Dual Fit", keywords=["Station"])
+
+    label = cube_builder.best_archetype_label(card, archetypes, lanes)
+
+    assert label == "RW: Space Stations"  # RW's strongest single tag (25.0) beats UR's (10.0)
+
+
+def test_best_archetype_label_does_not_let_redundant_sibling_tags_outweigh_one_precise_tag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for a real mislabel.
+
+    EOE's "Station Monitor" (whose entire card text is the WU "Second Spell" archetype's own
+    namesake trigger) was mislabeled "WB: Go Wide" because its token is both an artifact and a
+    creature, so it legitimately carries BOTH "repeatable-artifact-tokens" and
+    "repeatable-creature-tokens" -- and the old sum-based scoring let those two redundant token
+    tags edge out WU's one specific, correct tag.
+    """
+    from mtg_proxies import cube_builder
+
+    _mock_oracle_tags(
+        monkeypatch,
+        [
+            {"id": "t1", "slug": "second-spell-matters", "parent_ids": [], "taggings": [{"oracle_id": "o1"}]},
+            {"id": "t2", "slug": "repeatable-creature-tokens", "parent_ids": [], "taggings": [{"oracle_id": "o1"}]},
+            {"id": "t3", "slug": "repeatable-artifact-tokens", "parent_ids": [], "taggings": [{"oracle_id": "o1"}]},
+        ],
+    )
+    archetypes = {
+        "WU": {"name": "Second Spell", "tags": ["second-spell-matters"]},
+        "WB": {"name": "Go Wide", "tags": ["repeatable-creature-tokens", "repeatable-artifact-tokens"]},
+    }
+    lanes = {
+        "second-spell-matters": 14.0,
+        "repeatable-creature-tokens": 7.0,
+        "repeatable-artifact-tokens": 8.0,  # 7.0 + 8.0 = 15.0 > 14.0 under the old (buggy) sum
+    }
+    card = _card("Station Monitor", oracle_id="o1")
+
+    label = cube_builder.best_archetype_label(card, archetypes, lanes)
+
+    assert label == "WU: Second Spell"
+
+
+def test_best_archetype_label_empty_when_card_fits_no_configured_archetype() -> None:
+    from mtg_proxies import cube_builder
+
+    archetypes = {"WU": {"name": "Second Spell", "tags": ["second-spell-matters"]}}
+    lanes = {"second-spell-matters": 10.0}
+
+    assert cube_builder.best_archetype_label(_card("Vanilla Bear"), archetypes, lanes) == ""
+
+
+def test_best_archetype_label_breaks_exact_ties_by_the_cards_own_colors() -> None:
+    """Regression test for a real tie.
+
+    EOE's "Sami, Ship's Engineer" (RW) scored identically for UR and RW (both name the shared
+    "synergy-tapped" tag), and fell to whichever archetype happened to come first in the config
+    file rather than to its own printed colors.
+    """
+    from mtg_proxies import cube_builder
+
+    archetypes = {
+        "UR": {"name": "Artifact Aggro", "tags": ["kw:station"]},
+        "RW": {"name": "Space Stations", "tags": ["kw:station"]},
+    }
+    lanes = {"kw:station": 14.3}
+    card = _card("Sami", colors=["R", "W"], keywords=["Station"])
+
+    assert cube_builder.best_archetype_label(card, archetypes, lanes) == "RW: Space Stations"
+
+
+def test_build_cube_accepts_precomputed_lanes_instead_of_deriving(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mtg_proxies import cube_builder
+
+    monkeypatch.setattr(cube_builder, "derive_lanes", lambda cards: pytest.fail("must not auto-derive"))
+    lanes = {"subtype:Goblin": 25.0}
+    cards = [_card("Goblin A", type_line="Creature — Goblin"), _card("Off-lane Elf", type_line="Creature — Elf")]
+
+    selected, returned_lanes = cube_builder.build_cube(cards, {}, target=360, lanes=lanes)
+
+    assert returned_lanes == lanes
+    assert [c["name"] for c in selected] == ["Goblin A"]
+
+
 # --- Scoring & selection -------------------------------------------------------------------------
 
 
@@ -339,6 +484,106 @@ def test_build_cube_can_return_fewer_than_target_when_pool_is_small(monkeypatch:
     selected, _lanes = cube_builder.build_cube(cards, {}, target=360)
 
     assert len(selected) == 1
+
+
+def test_is_land_matches_dfc_back_face_too() -> None:
+    from mtg_proxies import cube_builder
+
+    assert cube_builder.is_land(_card("Breeding Pool", type_line="Land — Forest Island"))
+    assert not cube_builder.is_land(_card("Bear", type_line="Creature — Bear"))
+    dfc_land_back = _card("Front // Land Back", type_line="Creature — Human // Land — Forest")
+    assert cube_builder.is_land(dfc_land_back)
+
+
+def test_build_cube_keep_lands_exempts_only_17lands_good_lands(monkeypatch: pytest.MonkeyPatch) -> None:
+    """keep_lands is gated by 17lands quality, not a blanket land exemption.
+
+    A plain dual land with a strong (>=50%) win rate legitimately fits no curated archetype
+    tag; keep_lands=True keeps it in anyway (mana fixing is infrastructure, not archetype
+    identity). But a mediocre tapland with a sub-50% win rate and no archetype fit must still
+    be cut -- otherwise every land in the set would sneak in regardless of quality.
+    """
+    from mtg_proxies import cube_builder
+
+    monkeypatch.setattr(cube_builder, "derive_lanes", lambda cards: {"subtype:Goblin": 25.0})
+    cards = [
+        _card("Goblin A", type_line="Creature — Goblin"),
+        _card("Off-lane Elf", type_line="Creature — Elf"),
+        _card("Breeding Pool", type_line="Land — Forest Island"),
+        _card("Mediocre Tapland", type_line="Land"),
+    ]
+    lands_ratings = {
+        "breeding pool": {"ever_drawn_win_rate": 0.58, "ever_drawn_game_count": 500},
+        "mediocre tapland": {"ever_drawn_win_rate": 0.46, "ever_drawn_game_count": 500},
+    }
+
+    without_keep_lands, _lanes = cube_builder.build_cube(cards, lands_ratings, target=360)
+    with_keep_lands, _lanes = cube_builder.build_cube(cards, lands_ratings, target=360, keep_lands=True)
+
+    assert [c["name"] for c in without_keep_lands] == ["Goblin A"]
+    assert {c["name"] for c in with_keep_lands} == {"Goblin A", "Breeding Pool"}  # tapland still cut
+
+
+def test_build_cube_keep_lands_guarantees_a_slot_even_when_outscored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test for a real gap.
+
+    A good land with no archetype fit and no 17lands data scores 0.0, same as every other
+    off-theme card -- merely making it *eligible* to compete for a target-capped slot isn't
+    enough, since real on-theme cards almost always outscore it and it would never actually
+    survive the cap. keep_lands must reserve it a slot outright.
+    """
+    from mtg_proxies import cube_builder
+
+    monkeypatch.setattr(cube_builder, "derive_lanes", lambda cards: {"subtype:Goblin": 25.0})
+    on_theme_cards = [_card(f"Goblin {i}", type_line="Creature — Goblin") for i in range(5)]
+    shockland = _card("Breeding Pool", type_line="Land — Forest Island", rarity="rare")
+    cards = [*on_theme_cards, shockland]
+
+    # target=3: without the guarantee, the 5 real on-theme Goblins would fill every slot and the
+    # 0-scoring shockland (no lane fit, no 17lands data) would never make the cut.
+    selected, _lanes = cube_builder.build_cube(cards, {}, target=3, keep_lands=True)
+
+    assert "Breeding Pool" in [c["name"] for c in selected]
+    assert len(selected) == 3  # still capped at target overall
+
+
+def test_is_good_land_via_win_rate_path_requires_sample_size_and_average_or_better() -> None:
+    from mtg_proxies import cube_builder
+
+    good = _card("Good Land", type_line="Land", rarity="common")
+    bad = _card("Bad Land", type_line="Land", rarity="common")
+    low_sample = _card("New Land", type_line="Land", rarity="common")
+    untracked = _card("Untracked Land", type_line="Land", rarity="common")
+    ratings = {
+        "good land": {"ever_drawn_win_rate": 0.55, "ever_drawn_game_count": 500},
+        "bad land": {"ever_drawn_win_rate": 0.45, "ever_drawn_game_count": 500},
+        "new land": {"ever_drawn_win_rate": 0.60, "ever_drawn_game_count": 50},
+    }
+
+    assert cube_builder._is_good_land(good, ratings)
+    assert not cube_builder._is_good_land(bad, ratings)
+    assert not cube_builder._is_good_land(low_sample, ratings)  # under 200 games
+    assert not cube_builder._is_good_land(untracked, ratings)  # no rating at all
+
+
+def test_is_good_land_via_rarity_path_needs_no_17lands_data() -> None:
+    """Regression test for a real gap.
+
+    17lands had ZERO recorded games for any of EOE's premium fixing lands (shocklands, "Planet"
+    utility lands) -- game_count was 0, not just low, so a win-rate-only gate could never let
+    them through no matter how good they are. Rarity is the only usable signal for this category
+    of card: real MTG sets almost always print premium fixing at rare+ and filler taplands at
+    common/uncommon.
+    """
+    from mtg_proxies import cube_builder
+
+    shockland = _card("Breeding Pool", type_line="Land — Forest Island", rarity="rare")
+    planet = _card("Kavaron, Memorial World", type_line="Land — Planet", rarity="mythic")
+    common_tapland = _card("Command Bridge", type_line="Land", rarity="common")
+
+    assert cube_builder._is_good_land(shockland, {})  # no 17lands data at all, still qualifies
+    assert cube_builder._is_good_land(planet, {})
+    assert not cube_builder._is_good_land(common_tapland, {})
 
 
 # --- CSV output -----------------------------------------------------------------------------------

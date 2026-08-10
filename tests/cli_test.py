@@ -2815,8 +2815,8 @@ def test_main_cube_no_17lands_skips_ratings_fetch(tmp_path: Path) -> None:
 
     fetch_set_cards.assert_called_once_with(["ecl"])
     fetch_17lands_ratings.assert_not_called()
-    build_cube.assert_called_once_with([], {}, target=360)  # empty lands_ratings passed through
-    write_cube_csv.assert_called_once_with(str(out_file), [], {}, {})
+    build_cube.assert_called_once_with([], {}, target=360, keep_lands=False)  # empty lands_ratings passed through
+    write_cube_csv.assert_called_once_with(str(out_file), [], {}, {}, archetypes=None)
 
 
 def test_main_cube_merges_ratings_first_set_wins_on_name_collision(tmp_path: Path) -> None:

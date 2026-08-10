@@ -16,8 +16,10 @@ import mtg_proxies.scryfall as scryfall
 from mtg_proxies import fetch_scans_scryfall, print_cards_fpdf, print_cards_matplotlib
 from mtg_proxies.cube_builder import (
     build_cube,
+    derive_archetype_lanes,
     fetch_17lands_ratings,
     fetch_set_cards,
+    load_archetype_config,
     load_owned_cards,
     write_cube_csv,
     write_cube_txt,
@@ -2016,6 +2018,21 @@ def main() -> None:
         help="path to a text/Arena decklist of owned cards; restricts candidates to the"
         " intersection of the fetched set(s) and this collection before scoring",
     )
+    cube_parser.add_argument(
+        "--archetypes",
+        default=None,
+        metavar="PATH",
+        help="path to a JSON archetype skeleton (color pair -> {name, tags}, e.g. from a WotC"
+        " limited-archetype guide); restricts scoring to exactly these curated lanes instead of"
+        " every auto-derived Scryfall tag",
+    )
+    cube_parser.add_argument(
+        "--keep-lands",
+        action="store_true",
+        help="exempt lands from the archetype/lane-fit cut -- mana fixing (shocklands, etc.) is"
+        " infrastructure, not archetype identity, so it can otherwise get dropped under"
+        " --archetypes for not carrying any curated archetype tag",
+    )
 
     cardconjourer_parser = subparsers.add_parser(
         "cardconjourer",
@@ -2759,6 +2776,9 @@ def main() -> None:
             if args.owned is not None and not Path(args.owned).is_file():
                 print(f"Error: owned decklist not found: {args.owned}", file=sys.stderr)
                 raise SystemExit(1)
+            if args.archetypes is not None and not Path(args.archetypes).is_file():
+                print(f"Error: archetype config not found: {args.archetypes}", file=sys.stderr)
+                raise SystemExit(1)
             if args.target <= 0:
                 print(f"Error: --target must be positive (got {args.target})", file=sys.stderr)
                 raise SystemExit(1)
@@ -2790,19 +2810,32 @@ def main() -> None:
                 matched = sum(1 for c in cube_cards if scryfall.canonic_card_name(c["name"]) in lands_ratings)
                 print(f"Matched 17lands data for {matched} / {len(cube_cards)} cards")
 
-            selected, lanes = build_cube(cube_cards, lands_ratings, target=args.target)
+            archetypes = None
+            if args.archetypes is not None:
+                archetypes = load_archetype_config(args.archetypes)
+                archetype_lanes = derive_archetype_lanes(cube_cards, archetypes)
+                selected, lanes = build_cube(
+                    cube_cards, lands_ratings, target=args.target, lanes=archetype_lanes, keep_lands=args.keep_lands
+                )
+                print(f"\nRestricted to {len(archetypes)} official archetypes from {args.archetypes}:")
+                for pair, arche in archetypes.items():
+                    print(f"  {pair}: {arche['name']}")
+            else:
+                selected, lanes = build_cube(
+                    cube_cards, lands_ratings, target=args.target, keep_lands=args.keep_lands
+                )
+                print(f"\nDerived {len(lanes)} archetype lanes (Scryfall function tags + tribes + keywords)")
+                print("Top lanes (by representation):")
+                for lane_name in sorted(lanes, key=lanes.get)[:10]:
+                    label = lane_name.split(":", 1)[-1].replace("-", " ").title()
+                    print(f"  {label}")
 
-            print(f"\nDerived {len(lanes)} archetype lanes (Scryfall function tags + tribes + keywords)")
-            print("Top lanes (by representation):")
-            for lane_name in sorted(lanes, key=lanes.get)[:10]:
-                label = lane_name.split(":", 1)[-1].replace("-", " ").title()
-                print(f"  {label}")
             print(
                 f"\n{len(selected)} of {len(cube_cards)} cards fit an archetype lane"
                 f" (capped at --target {args.target})"
             )
 
-            write_cube_csv(args.out, selected, lanes, lands_ratings)
+            write_cube_csv(args.out, selected, lanes, lands_ratings, archetypes=archetypes)
             print(f"\nWrote {len(selected)} cards to {Path(args.out).resolve()}")
 
             if args.txt_out is not None:

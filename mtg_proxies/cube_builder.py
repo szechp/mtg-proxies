@@ -24,6 +24,7 @@ unresolved decklist lines -- see its docstring.
 from __future__ import annotations
 
 import csv
+import json
 import logging
 import math
 import re
@@ -55,6 +56,7 @@ _PAYOFF_BONUS = 5.0
 _REMOVAL_BONUS = 3.0
 _VANILLA_CREATURE_PENALTY = -2.0
 _REMOVAL_PHRASES = ("destroy target", "exile target", "deals damage to target", "return target")
+_MIN_GIH_SAMPLE = 200  # games-in-hand sample floor before trusting a card's 17lands win rate
 
 
 def fetch_set_cards(set_codes: list[str]) -> list[dict]:
@@ -399,6 +401,105 @@ def best_lane_label(card: dict, lanes: dict[str, float]) -> str:
     return sig.split(":", 1)[-1].replace("-", " ").title()
 
 
+# --- Official archetype skeletons (curated, not auto-derived) -----------------------------------
+
+
+def load_archetype_config(path: str | Path) -> dict[str, dict[str, object]]:
+    """Load a per-set official-archetype skeleton.
+
+    The file is a small hand-curated JSON mapping each two-color pair to the archetype's name
+    and the Scryfall signals (``card_signals()``-shaped: bare oracle-tag slugs, or ``kw:x`` for
+    a Scryfall keyword) that represent it, e.g.::
+
+        {"WU": {"name": "Second Spell", "tags": ["second-spell-matters"]}, ...}
+
+    There is no API for "official limited archetype" -- this is WotC editorial content (a
+    prerelease/preview article), so the mapping has to be curated by hand per set rather than
+    derived from card data.
+
+    Args:
+        path: Path to the archetype config JSON.
+
+    Returns:
+        The parsed config: color pair -> ``{"name": str, "tags": list[str]}``.
+    """
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def derive_archetype_lanes(cards: list[dict], archetypes: dict[str, dict[str, object]]) -> dict[str, float]:
+    """Build a lanes dict restricted to exactly the signals named in an archetype config.
+
+    Unlike ``derive_lanes``, there is no minimum-representation or IDF gate: an archetype's
+    defining signal counts even if only one card in the pool carries it, since the config
+    (sourced from WotC's official archetype guide) is already the authority on relevance, not
+    how statistically common the signal happens to be in this pool. Weight is still inversely
+    proportional to representation (rarer-in-this-pool signals count for more), matching
+    ``derive_lanes``'s philosophy.
+
+    Args:
+        cards: Scryfall card dicts (the candidate pool).
+        archetypes: An archetype config, from ``load_archetype_config``.
+
+    Returns:
+        Mapping of signal to weight, covering only signals named in ``archetypes`` that at
+        least one card in ``cards`` actually carries.
+    """
+    wanted = {tag for arche in archetypes.values() for tag in arche["tags"]}
+    signal_cards: dict[str, set[int]] = defaultdict(set)
+    for i, card in enumerate(cards):
+        for sig in card_signals(card):
+            if sig in wanted:
+                signal_cards[sig].add(i)
+    return {sig: _LANE_BASE / len(idxs) for sig, idxs in signal_cards.items()}
+
+
+def best_archetype_label(card: dict, archetypes: dict[str, dict[str, object]], lanes: dict[str, float]) -> str:
+    """Name of the archetype (as ``"PAIR: Name"``) this card fits best; ``""`` if it fits none.
+
+    "Best" is the archetype with the single strongest matching signal, not the sum of every
+    matching signal -- summing would let an archetype with several loosely-related tags
+    outscore a card's one precise, defining tag for a *different* archetype. E.g. a card whose
+    token happens to be both an artifact and a creature legitimately carries both
+    "repeatable-artifact-tokens" and "repeatable-creature-tokens" (real signals for a "Go Wide"
+    archetype) even when its actual identity is a completely unrelated archetype's specific
+    signpost mechanic (one single, strong tag) -- summing the two redundant token tags would
+    outweigh that one correct, specific signal. Max-per-archetype avoids that bias. (A card can
+    still legitimately fit more than one archetype at a genuine color-pair boundary; this just
+    picks the strongest single signal to label it with, not an attempt to combine several.)
+
+    A card whose top score is shared by more than one archetype (a real tie, not just close --
+    e.g. two archetypes both naming the same tag) is broken in favor of whichever tied archetype
+    matches the card's own printed color identity, since that's the one unambiguous ground-truth
+    signal available -- rather than falling arbitrarily to config-file ordering.
+
+    Args:
+        card: Scryfall card dict.
+        archetypes: An archetype config, from ``load_archetype_config``.
+        lanes: The pool's archetype-restricted lanes, from ``derive_archetype_lanes``.
+
+    Returns:
+        E.g. ``"RW: Space Stations"``, or ``""`` if the card fits no configured archetype.
+    """
+    sigs = card_signals(card)
+    scores = {
+        pair: best
+        for pair, arche in archetypes.items()
+        if (best := max((lanes.get(tag, 0.0) for tag in arche["tags"] if tag in sigs), default=0.0)) > 0
+    }
+    if not scores:
+        return ""
+    top_score = max(scores.values())
+    tied = [pair for pair, score in scores.items() if score == top_score]
+    if len(tied) > 1:
+        own_colors = card_colors(card)
+        color_matches = [pair for pair in tied if set(pair) == own_colors]
+        if color_matches:
+            tied = color_matches
+    best_pair = tied[0]
+    return f"{best_pair}: {archetypes[best_pair]['name']}"
+
+
 def card_colors(card: dict) -> frozenset[str]:
     """Color-identity-agnostic color set: card-level ``colors``, or union of face colors.
 
@@ -411,6 +512,11 @@ def card_colors(card: dict) -> frozenset[str]:
     for face in card.get("card_faces") or []:
         out.update(face.get("colors", []))
     return frozenset(out)
+
+
+def is_land(card: dict) -> bool:
+    """Whether any face of this card is a land."""
+    return "Land" in card.get("type_line", "")
 
 
 # --- Scoring, selection, I/O ----------------------------------------------------------------------
@@ -455,7 +561,7 @@ def score_card(card: dict, lanes: dict[str, float], lands_ratings: dict[str, dic
     if rating:
         gih_wr = rating.get("ever_drawn_win_rate")
         game_count = rating.get("ever_drawn_game_count", 0) or 0
-        if gih_wr is not None and game_count >= 200:
+        if gih_wr is not None and game_count >= _MIN_GIH_SAMPLE:
             score += (gih_wr * 100 - 50) * 4
         alsa = rating.get("avg_seen")
         if alsa is not None:
@@ -463,13 +569,53 @@ def score_card(card: dict, lanes: dict[str, float], lands_ratings: dict[str, dic
     return score
 
 
-def build_cube(
-    cards: list[dict], lands_ratings: dict[str, dict], target: int = 360
-) -> tuple[list[dict], dict[str, float]]:
-    """Derive a card pool's archetype lanes and select its most cohesive, best-performing cube.
+_PREMIUM_LAND_RARITIES = frozenset({"rare", "mythic"})
 
-    Cards that fit none of the pool's emergent lanes (``theme_fit`` == 0) are dropped entirely --
-    a "condensed" cube is a thematically cohesive one, not a fixed card count padded with
+
+def _is_good_land(card: dict, lands_ratings: dict[str, dict], min_win_rate: float = 0.5) -> bool:
+    """Whether a land is worth keeping despite fitting no archetype.
+
+    Used to gate ``build_cube``'s ``keep_lands`` exemption: mana fixing is infrastructure worth
+    keeping regardless of theme, but only the *good* fixing -- a mediocre common tapland should
+    still be cut, not every land unconditionally.
+
+    Two independent qualifying paths, since 17lands often has literally zero recorded games for
+    premium fixing lands (rare/mythic dual lands, "Planet"-style utility lands, etc. -- these
+    aren't always drafted as normal spells, so 17lands may never see them at all, not just too
+    few times to trust): a large-enough sample with an at-or-above-average win rate, OR being
+    printed at rare/mythic rarity. In real MTG set design, premium fixing/utility lands are
+    almost always rare+ -- filler taplands are common/uncommon -- so rarity is a reliable proxy
+    exactly where 17lands data is unavailable.
+
+    Args:
+        card: Scryfall card dict (expected to be a land; caller is responsible for checking).
+        lands_ratings: Mapping of canonic card name to 17lands ratings row.
+        min_win_rate: Games-in-hand win rate floor for the 17lands-data qualifying path.
+
+    Returns:
+        Whether the land clears either qualifying path.
+    """
+    if card.get("rarity") in _PREMIUM_LAND_RARITIES:
+        return True
+    rating = lands_ratings.get(scryfall.canonic_card_name(card["name"]))
+    if not rating:
+        return False
+    gih_wr = rating.get("ever_drawn_win_rate")
+    game_count = rating.get("ever_drawn_game_count", 0) or 0
+    return gih_wr is not None and game_count >= _MIN_GIH_SAMPLE and gih_wr >= min_win_rate
+
+
+def build_cube(
+    cards: list[dict],
+    lands_ratings: dict[str, dict],
+    target: int = 360,
+    lanes: dict[str, float] | None = None,
+    keep_lands: bool = False,
+) -> tuple[list[dict], dict[str, float]]:
+    """Derive (or accept) a card pool's archetype lanes and select its best cube.
+
+    Cards that fit none of the pool's lanes (``theme_fit`` == 0) are dropped entirely -- a
+    "condensed" cube is a thematically cohesive one, not a fixed card count padded with
     off-theme filler. ``target`` is a ceiling on the remaining lane-fitting cards, not a floor:
     a tightly-themed or small set can yield well under ``target`` cards.
 
@@ -478,18 +624,46 @@ def build_cube(
         lands_ratings: Mapping of canonic card name to 17lands ratings row (``{}`` to score on
             lane fit alone).
         target: Maximum number of cards to select.
+        lanes: Precomputed lanes to score against instead of auto-deriving them -- e.g. from
+            ``derive_archetype_lanes`` to restrict scoring to a curated set of official
+            archetypes instead of every emergent Scryfall-tag lane. ``None`` (default) derives
+            lanes from ``cards`` via ``derive_lanes``, same as before this parameter existed.
+        keep_lands: Guarantee a slot to every GOOD land (``_is_good_land``: rare/mythic rarity,
+            or a >=50% games-in-hand win rate on a >=200-game 17lands sample) regardless of lane
+            fit or score, not just exempt them from the lane-fit drop. Mana fixing/utility
+            (shocklands, Planets, etc.) legitimately scores near/at 0 (no archetype tag, no
+            17lands data for cards 17lands doesn't track the same way as normal spells) -- if it
+            merely became *eligible* to compete on score for a slot, it would still lose every
+            slot to on-theme cards with a real score and never actually appear in a real-sized
+            cube. A mediocre common tapland with no archetype fit still isn't good enough to
+            guarantee, so this isn't a blanket land exemption. Default ``False`` preserves prior
+            behavior (relevant mainly to ``derive_lanes``'s broader auto-derived tag set, where
+            lands usually already carry a "dual-land"/"shockland"/tapland-style lane anyway).
 
     Returns:
         A ``(selected_cards, lanes)`` tuple. ``selected_cards`` is sorted by score descending,
-        limited to cards with nonzero lane fit, and capped at ``target`` entries. ``lanes`` is
-        the pool's derived archetype lanes (from ``derive_lanes``), for callers that want to
-        report on or reuse them (e.g. CSV output, cross-set overlap comparison).
+        capped at ``target`` entries: on-theme cards (``theme_fit`` > 0) fill
+        ``target - (guaranteed good lands)`` slots by score, and every guaranteed good land
+        fills the rest regardless of its own score. ``lanes`` is whichever lanes were actually
+        scored against, for callers that want to report on or reuse them (e.g. CSV output,
+        cross-set overlap comparison).
     """
-    lanes = derive_lanes(cards)
+    if lanes is None:
+        lanes = derive_lanes(cards)
     on_theme = [c for c in cards if theme_fit(c, lanes) > 0]
+    guaranteed_lands: list[dict] = []
+    if keep_lands:
+        on_theme_names = {c["name"] for c in on_theme}
+        guaranteed_lands = [
+            c
+            for c in cards
+            if c["name"] not in on_theme_names and is_land(c) and _is_good_land(c, lands_ratings)
+        ][:target]
     scored = [(score_card(c, lanes, lands_ratings), c) for c in on_theme]
     scored.sort(key=itemgetter(0), reverse=True)
-    selected = [c for _, c in scored[:target]]
+    remaining_target = max(target - len(guaranteed_lands), 0)
+    selected = [c for _, c in scored[:remaining_target]] + guaranteed_lands
+    selected.sort(key=lambda c: score_card(c, lanes, lands_ratings), reverse=True)
     return selected, lanes
 
 
@@ -526,19 +700,26 @@ def load_owned_cards(path: str | Path) -> list[dict]:
 
 
 def write_cube_csv(
-    path: str | Path, cards: list[dict], lanes: dict[str, float], lands_ratings: dict[str, dict]
+    path: str | Path,
+    cards: list[dict],
+    lanes: dict[str, float],
+    lands_ratings: dict[str, dict],
+    archetypes: dict[str, dict[str, object]] | None = None,
 ) -> None:
     """Write the selected cube cards to CSV.
 
     Columns are exactly ``Name, Set, Colors, Type, Rarity, Lane, GIH_WR, ALSA, Score``. ``Lane``
-    is the card's single strongest archetype lane (``best_lane_label``) -- useful at a glance,
-    and for spotting shared archetypes when comparing multiple per-set cube CSVs side by side.
+    is the card's single strongest archetype lane -- useful at a glance, and for spotting shared
+    archetypes when comparing multiple per-set cube CSVs side by side.
 
     Args:
         path: Output CSV path.
         cards: Selected Scryfall card dicts, in the desired output order.
         lanes: The pool's derived archetype lanes, from ``build_cube``.
         lands_ratings: Mapping of canonic card name to 17lands ratings row (``{}`` if skipped).
+        archetypes: An archetype config, from ``load_archetype_config``. When given, the ``Lane``
+            column shows the official archetype name (``best_archetype_label``, e.g. ``"RW: Space
+            Stations"``) instead of a raw Scryfall tag (``best_lane_label``).
     """
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -548,13 +729,18 @@ def write_cube_csv(
             gih_wr = rating.get("ever_drawn_win_rate")
             alsa = rating.get("avg_seen")
             score = score_card(card, lanes, lands_ratings)
+            lane_label = (
+                best_archetype_label(card, archetypes, lanes)
+                if archetypes is not None
+                else best_lane_label(card, lanes)
+            )
             writer.writerow([
                 card["name"],
                 card["set"].upper(),
                 "".join(sorted(card_colors(card))) or "C",
                 card["type_line"],
                 card["rarity"],
-                best_lane_label(card, lanes),
+                lane_label,
                 f"{gih_wr * 100:.1f}%" if gih_wr is not None else "",
                 f"{alsa:.1f}" if alsa is not None else "",
                 round(score, 1),
