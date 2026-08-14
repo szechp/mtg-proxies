@@ -88,8 +88,8 @@ def fetch_set_cards(set_codes: list[str]) -> list[dict]:
     return cards
 
 
-def fetch_17lands_ratings(set_code: str, fmt: str = "PremierDraft") -> dict[str, dict]:
-    """Fetch 17lands draft ratings (GIH WR, ALSA, sample size) for a set.
+def fetch_17lands_ratings(expansion: str, fmt: str = "PremierDraft") -> dict[str, dict]:
+    """Fetch 17lands draft ratings (GIH WR, ALSA, sample size) for an expansion.
 
     Degrades to an empty dict rather than raising on any failure -- network error, non-JSON
     response, or an empty/non-list response body (the set may not be on Arena) -- so callers
@@ -99,8 +99,15 @@ def fetch_17lands_ratings(set_code: str, fmt: str = "PremierDraft") -> dict[str,
     a caller that wants to warn the user distinguishes "should I warn" simply by checking
     ``if not ratings``.
 
+    ``expansion`` is passed to 17lands verbatim (no case-folding) -- 17lands' own
+    ``/data/expansions`` endpoint lists both ordinary uppercase Scryfall set codes (``"ECL"``,
+    ``"EOE"``) AND exact-case Arena Cube event identifiers (``"Cube - Powered"``,
+    ``"Cube - Planar"``, ``"Cube"``), so this function cannot safely uppercase for you --
+    callers with a lowercase Scryfall set code must upper-case it themselves before calling.
+
     Args:
-        set_code: Scryfall set code, e.g. ``"ecl"``.
+        expansion: 17lands expansion identifier exactly as it appears in
+            ``https://www.17lands.com/data/expansions``, e.g. ``"ECL"`` or ``"Cube - Powered"``.
         fmt: 17lands draft format, e.g. ``"PremierDraft"``.
 
     Returns:
@@ -108,7 +115,7 @@ def fetch_17lands_ratings(set_code: str, fmt: str = "PremierDraft") -> dict[str,
         empty response.
     """
     params = {
-        "expansion": set_code.upper(),
+        "expansion": expansion,
         "format": fmt,
         "start_date": "2020-01-01",
         "end_date": datetime.now(tz=UTC).date().isoformat(),

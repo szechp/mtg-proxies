@@ -2796,7 +2796,7 @@ def main() -> None:
             if not args.no_17lands:
                 for set_code in args.sets:
                     print(f"Fetching 17lands ratings for {set_code.upper()}...")
-                    ratings = fetch_17lands_ratings(set_code, fmt=args.format)
+                    ratings = fetch_17lands_ratings(set_code.upper(), fmt=args.format)
                     if not ratings:
                         print(
                             f"  Warning: no 17lands data for {set_code.upper()}"
