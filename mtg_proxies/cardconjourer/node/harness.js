@@ -1595,6 +1595,30 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         }
     }
 
+    // Cards whose whole rules text is one short line -- dual-land reminder text
+    // like Badlands' "({T}: Add {W} or {B}.)", a mana dork's "{T}: Add {W}."
+    // (Avacyn's Pilgrim) or "{T}: Untap target Forest." (Arbor Elf) -- read
+    // oddly left-aligned; real MTG frames center a text box when the body is a
+    // single line. CC's own engine defaults every text box to left align
+    // (creator-23.js writeText: `textObject.align || 'left'`) and never
+    // special-cases this, so flip the existing `align` property here rather
+    // than duplicating writeText's wrap logic. Capped at 45 chars so longer
+    // one-liners that still wrap across multiple rendered lines (e.g. Command
+    // Tower) keep the normal left alignment. Always writes align explicitly
+    // (never just the 'center' branch) so a short card's centering can't bleed
+    // into the next card rendered in this same process if a later pack merges
+    // rather than replaces card.text.rules. Skipped when flavor text will be
+    // appended to this box (INCLUDE_FLAVOR on with flavor_text present) -- that
+    // turns the box into a multi-line quote block, which no real card centers.
+    if (global.card.text.rules) {
+        const rawFaceText = (face.oracle_text != null ? face.oracle_text : scry.oracle_text) || '';
+        const faceFlavorText = (face.flavor_text != null ? face.flavor_text : scry.flavor_text) || '';
+        const hasAppendedFlavor = INCLUDE_FLAVOR && faceFlavorText.length > 0;
+        const isShortOneLineText = rawFaceText.length > 0 && rawFaceText.length <= 45 &&
+            !rawFaceText.includes('\n') && !hasAppendedFlavor;
+        global.card.text.rules.align = isShortOneLineText ? 'center' : 'left';
+    }
+
     // autoFrame() reads card.text.mana.text to detect non-land colors. DFC
     // back faces have no mana cost, so autoFrame would build a colorless
     // frame even when the back face is e.g. Blue. Bypass autoFrame and
