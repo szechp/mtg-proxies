@@ -1519,13 +1519,39 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     # path per slot. Resolution happens here (not inside _prepare_each) so a
     # missing file / unknown set code errors before any subprocess work begins.
     cc_cache = Path.home() / ".cache" / "mtg-proxies" / "cardconjurer"
-    from mtg_proxies.cardconjourer.set_symbol import resolve_set_symbol
+    from mtg_proxies.cardconjourer.set_symbol import (
+        cc_symbol_exists,
+        resolve_set_symbol,
+        substitute_symbol_for_card,
+    )
     resolved_set_symbol_by_slot: dict[int, str] = {}
     for slot_int, card in slot_to_card.items():
         override = slot_set_symbol.get(slot_int) or args.set_symbol
-        if not override:
-            continue
         rarity = card.card.get("rarity", "c") or "c"
+        if not override:
+            # No override: CC's engine seeds the icon from the card's own set and
+            # loads it from its bundled official library. That library covers real
+            # expansions, so Scryfall's promo / The List / Arena-only set codes miss
+            # it, and CC renders *nothing* — a blank type-line corner, no warning.
+            # Borrow another printing's icon instead, which for those codes is what
+            # the physical card shows anyway.
+            own_set = card.card.get("set") or ""
+            if own_set and not cc_symbol_exists(own_set, rarity, cc_cache):
+                substitute = substitute_symbol_for_card(card.card, cc_cache)
+                if substitute is None:
+                    _warn(
+                        f"Note: no Card Conjurer set icon for {own_set.upper()} "
+                        f"({card['name']!r}) and no other printing has one — "
+                        f"rendering without a set icon."
+                    )
+                else:
+                    sub_path, sub_set = substitute
+                    resolved_set_symbol_by_slot[slot_int] = sub_path
+                    print(
+                        f"[cardconjourer] no set icon for {own_set.upper()} "
+                        f"({card['name']!r}) — using {sub_set} instead."
+                    )
+            continue
         try:
             resolved = resolve_set_symbol(override, rarity, cc_cache)
         except FileNotFoundError as exc:

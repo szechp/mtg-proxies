@@ -39,6 +39,97 @@ _PATH_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif"})
 
 _CUSTOMSET_PREFIX = "customset:"
 
+# Mirrors ``setSymbolAliases`` in creator-23.js:415 — set codes CC redirects to
+# a differently-named asset before hitting the official library.
+_CC_SET_ALIASES = {"anb": "ana", "tsb": "tsp", "pmei": "sld"}
+
+# Mirrors the two special-cased branches at the top of ``fetchSetSymbol``
+# (creator-23.js:2728-2732): these codes resolve into ``setSymbols/custom/``
+# with the given extension instead of ``setSymbols/official/*.svg``.
+_CC_CUSTOM_SYMBOLS = {
+    "a22": "png", "a23": "png", "j22": "png", "hlw": "png",
+    "cc": "svg", "logan": "svg", "joe": "svg",
+}
+
+
+def cc_symbol_path(set_code: str, rarity: str, cc_root: Path) -> Path:
+    """Return the asset path CC's engine will request for a card's own set + rarity.
+
+    This is the *no-override* path: when the harness leaves ``#lockSetSymbolURL``
+    false, ``changeCardIndex`` seeds ``#set-symbol-code`` from the card's set and
+    ``#set-symbol-rarity`` from ``rarity.slice(0, 1)``, then ``fetchSetSymbol``
+    turns that pair into a file under the cached engine. Mirrors that resolution
+    exactly — including the alias map and the ``custom/`` special cases — so a
+    caller can tell in advance whether the icon will actually load.
+
+    Note the rarity handling is CC's, not :func:`resolve_set_symbol`'s: the raw
+    first character is used with no clamping, so ``"bonus"`` yields ``b`` (and
+    almost certainly a missing file) rather than being coerced to ``c``.
+
+    Args:
+        set_code: The card's Scryfall ``set`` code.
+        rarity: The card's Scryfall ``rarity``.
+        cc_root: Root of the cached Card Conjurer engine.
+
+    Returns:
+        The absolute path CC will try to load. May not exist — see
+        :func:`cc_symbol_exists`.
+    """
+    code = (set_code or "").lower()
+    r = (rarity or "c")[:1].lower()
+    if code in _CC_CUSTOM_SYMBOLS:
+        return cc_root / "img" / "setSymbols" / "custom" / f"{code}-{r}.{_CC_CUSTOM_SYMBOLS[code]}"
+    code = _CC_SET_ALIASES.get(code, code)
+    return cc_root / "img" / "setSymbols" / "official" / f"{code}-{r}.svg"
+
+
+def cc_symbol_exists(set_code: str, rarity: str, cc_root: Path) -> bool:
+    """Whether the cached CC engine actually ships the icon for this set + rarity."""
+    return cc_symbol_path(set_code, rarity, cc_root).is_file()
+
+
+def _symbol_candidate_rank(card: dict) -> tuple[bool, bool, str]:
+    """Sort key for substitute printings: paper before digital, regular before promo, oldest first.
+
+    The oldest non-promo paper printing is the set a player would recognise the card
+    by, so its icon is the least surprising stand-in for a set CC doesn't ship.
+    """
+    return (bool(card.get("digital")), bool(card.get("promo")), card.get("released_at") or "9999-99-99")
+
+
+def substitute_symbol_for_card(card: dict, cc_root: Path) -> tuple[str, str] | None:
+    """Find a stand-in set icon for a card whose own set CC doesn't ship.
+
+    Scryfall prints plenty of cards in sets with no Card Conjurer icon — Arena-only
+    and store-promo sets (``olep``, ``gk1``, …) in particular. CC's engine silently
+    renders nothing at all in that case, so the card comes out with an empty type
+    line. Rather than leave the gap, borrow the icon of another printing of the same
+    card: same artwork-independent identity, a real MTG symbol, and it matches a set
+    the card genuinely appeared in.
+
+    Args:
+        card: A resolved Scryfall card dict (needs ``oracle_id`` or ``card_faces``).
+        cc_root: Root of the cached Card Conjurer engine.
+
+    Returns:
+        ``(symbol_path, set_code)`` for the best substitute printing, or ``None``
+        when no printing of this card has an icon CC ships.
+    """
+    from mtg_proxies.scryfall import cards_by_oracle_id
+    from mtg_proxies.scryfall.scryfall import _card_oracle_id
+
+    oracle_id = _card_oracle_id(card)
+    if oracle_id is None:
+        return None
+    own_set = (card.get("set") or "").lower()
+    candidates = [c for c in cards_by_oracle_id().get(oracle_id, []) if (c.get("set") or "").lower() != own_set]
+    for candidate in sorted(candidates, key=_symbol_candidate_rank):
+        set_code = candidate.get("set") or ""
+        path = cc_symbol_path(set_code, candidate.get("rarity") or "c", cc_root)
+        if path.is_file():
+            return str(path), set_code.upper()
+    return None
+
 
 def _looks_like_path(value: str) -> bool:
     """Heuristic: contains a separator or a known image extension."""
