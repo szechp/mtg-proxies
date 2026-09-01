@@ -35,6 +35,99 @@ fs.mkdirSync(OUTPUT, { recursive: true });
 // to keep it the way the GUI renders it.
 const INCLUDE_FLAVOR = process.argv.includes('--with-flavor');
 
+// Retro frames pale enough that packSeventh's white text cannot hold against them.
+// Measured title-band contrast (glyph luma minus background luma) across a retro render:
+// white +17, red +38, gold +81, vehicle +80, artifact +85, land +150 -- against +83 on a
+// real Seventh-Edition scan. Only white is badly off.
+const PALE_RETRO_FRAMES = new Set(['White Frame']);
+
+
+// Two-colour cards get the modern frame treatment on the retro frame, in the two
+// variants real cards use. Which one applies is decided by the mana cost, not the
+// colour count: a hybrid cost is castable with EITHER colour, so the whole frame
+// splits down the middle; a cost demanding BOTH stays gold and shows its colours in
+// the pinline and textbox only.
+const RETRO_HYBRID_PAIR = /\{([WUBRG])\/([WUBRG])\}/;
+const WUBRG = ['W', 'U', 'B', 'R', 'G'];
+const RETRO_COLOR_FRAME = {
+    W: 'White Frame', U: 'Blue Frame', B: 'Black Frame', R: 'Red Frame', G: 'Green Frame',
+};
+// The land variants are the muted versions of the same colours, which is what reads as
+// an accent over gold -- the full-strength frames overwhelm it.
+const RETRO_COLOR_LAND_FRAME = {
+    W: 'White Land Frame', U: 'Blue Land Frame', B: 'Black Land Frame',
+    R: 'Red Land Frame', G: 'Green Land Frame',
+};
+const RETRO_RIGHT_HALF = { name: 'Right Half', src: '/img/frames/maskRightHalf.png' };
+
+// Two-part mana pips. creator-23.js:426-428 registers every hybrid pair at 1.2x scale,
+// which suits M15 (real hybrid pips ARE drawn larger there) but leaves them looming over
+// the numerals on the Seventh frame -- a frame that predates hybrid mana entirely, so
+// there is no authentic size to match. Knocked back to 1.0 for retro only.
+const RETRO_HYBRID_PIPS = ['wu', 'wb', 'ub', 'ur', 'br', 'bg', 'rg', 'rw', 'gw', 'gu',
+                           '2w', '2u', '2b', '2r', '2g'];
+
+// Classify a face for the retro two-tone treatment, or null when it is not two-coloured.
+// `hybrid` means the cost is castable with EITHER colour, which is what decides between
+// splitting the whole frame and keeping the gold frame with two-tone accents.
+function retroTwoTone(face, scry) {
+    const colors = (face.colors && face.colors.length) ? face.colors : (scry.colors || []);
+    if (colors.length !== 2) return null;
+    return {
+        colors: [...colors].sort((a, b) => WUBRG.indexOf(a) - WUBRG.indexOf(b)),
+        hybrid: RETRO_HYBRID_PAIR.test(face.mana_cost || scry.mana_cost || ''),
+    };
+}
+
+// Scale the hybrid mana pips. The engine's `mana` Map is global (the pack loader rewrites
+// `const mana` to `var mana` precisely so it lands on globalThis), and manaSymbol.width /
+// .height feed straight into the draw size at creator-23.js:1977.
+function setRetroHybridPipScale(scale) {
+    if (!global.mana || typeof global.mana.get !== 'function') return;
+    for (const name of RETRO_HYBRID_PIPS) {
+        const symbol = global.mana.get(name);
+        if (symbol) { symbol.width = scale; symbol.height = scale; }
+    }
+}
+
+// Add one frame layer by name, optionally masked to one of the frame's own masks plus
+// any extra masks. Mirrors what picking a frame + mask and clicking "Add to card" does
+// in CC's GUI; each call lands on top of the previous (addFrame unshifts, drawFrames
+// reverses). maskName null means unmasked, i.e. the layer covers the whole card.
+async function addRetroLayer(frameName, maskName, additionalMasks = []) {
+    const idx = (global.availableFrames || []).findIndex((f) => f && f.name === frameName);
+    if (idx < 0) return false;
+    let maskIdx = -1;
+    if (maskName !== null) {
+        maskIdx = (global.availableFrames[idx].masks || []).findIndex((m) => m && m.name === maskName);
+        if (maskIdx < 0) return false;
+    }
+    global.selectedFrameIndex = idx;
+    global.selectedMaskIndex = maskIdx + 1;  // 0 = unmasked; engine slices masks[idx-1]
+    await global.addFrame(additionalMasks);
+    global.selectedMaskIndex = 0;
+    return true;
+}
+
+
+// Retro (Seventh) draws every white-on-frame string -- title, type, P/T, the artist
+// line and the copyright line -- in white with a hard ~4px drop shadow (packSeventh.js:
+// color:'white', shadowX:0.002, shadowY:0.0015). That matches a real Seventh-Edition
+// card, so the colour is not the thing to change. What is off is our parchment: it
+// renders much lighter than a real card's (measured luma 215 against 168 on a 7ED
+// scan), cutting glyph-vs-background contrast from about +83 to +33 and leaving
+// white-on-cream barely readable on the white frame.
+//
+// Softening the shadow buys that contrast back without touching identity: a blurred
+// shadow wraps the glyph on all sides instead of hugging one corner, so more of its
+// outline registers at print size. Canvas has exactly ONE shadow per draw
+// (creator-23.js:1664-1666 puts offset and blur on the same context), so this does not
+// add a second shadow -- it keeps packSeventh's offset and black and only softens the
+// edge.
+//
+// The two halves have to be applied at different points in renderFace because
+// card.text is rasterised by drawText() well before card.bottomInfo is finalised.
+
 // ---------------------------------------------------------------------------
 // 1. Font registration. node-canvas v3 requires each font FILE to be mapped
 //    to exactly ONE family name; registering the same file twice (e.g. matrix-b
@@ -2132,6 +2225,45 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         await addFrameByName(['Tombstone Icon']);
     }
 
+    // Two-colour cards get the modern two-tone treatment. Which variant applies is
+    // decided by the mana cost, not the colour count -- see RETRO_HYBRID_PAIR above.
+    // Runs before the legendary trim so that trim lands on top of the two-tone.
+    if (!dfcFace && frame === 'retro' && scry.layout !== 'flip') {
+        const twoTone = retroTwoTone(pristineFace, scry);
+        if (twoTone) {
+            const [first, second] = twoTone.colors;
+            if (twoTone.hybrid) {
+                // Hybrid: castable with either colour, so the whole frame splits down the
+                // middle. The unmasked first layer covers autoFrameUnified's gold base.
+                await addRetroLayer(RETRO_COLOR_FRAME[first], null);
+                await addRetroLayer(RETRO_COLOR_FRAME[second], null, [RETRO_RIGHT_HALF]);
+            } else {
+                // Requires both colours: stays gold, with the two colours showing only in
+                // the pinline and the textbox, using the muted land-frame art.
+                for (const maskName of ['Pinline', 'Rules']) {
+                    await addRetroLayer(RETRO_COLOR_LAND_FRAME[first], maskName);
+                    await addRetroLayer(RETRO_COLOR_LAND_FRAME[second], maskName, [RETRO_RIGHT_HALF]);
+                }
+            }
+        }
+    }
+
+    // Legendary look. The retro frame had no legend marker of its own -- pre-8th cards
+    // signalled it only in the type line -- so rather than invent an icon, legendaries
+    // get the Arabian Nights gold pinline over their base frame. One layer for every
+    // colour: the earlier per-colour opacity table looked fine on screen but muddy in
+    // print, and a single full-strength gold pinline reads cleanly on all of them.
+    //
+    // Runs after the two-colour treatment above, so on a two-colour legendary this gold
+    // pinline replaces the two-tone one while the two-tone textbox stays.
+    if (!dfcFace && frame === 'retro'
+        && /Legendary/.test(pristineFace.type_line || scry.type_line || '')
+        // Planeswalkers are out of scope for now: packSeventh has no loyalty-box
+        // geometry, so they need deciding separately.
+        && !/Planeswalker/.test(pristineFace.type_line || scry.type_line || '')) {
+        await addRetroLayer('Arabian Nights Land Frame', 'Pinline');
+    }
+
     // DFC indicator (small icon at top-left next to title) — pack8thTransform
     // packs include this as a separate availableFrames entry ('Up Arrow', etc.)
     // but autoFrame doesn't add it automatically. We add it for transform /
@@ -2235,7 +2367,37 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         global.autoFitArt();
     }
 
-    await global.drawText();
+    // Must precede drawText() -- it rasterises card.text onto its own canvas, so a
+    // shadowBlur set after this point is simply never read. (Learned the hard way:
+    // applying the whole thing next to the bottomInfo tweaks below blurred the artist
+    // and copyright lines and silently did nothing for the title.)
+    // packSeventh draws title / type / P-T / artist / copyright in WHITE with a drop
+    // shadow, which is what a real Seventh-Edition card does. It only fails on the white
+    // frame, whose parchment renders far lighter here than on a real card (measured luma
+    // 215 against 168 on a 7ED scan), dropping glyph-vs-background contrast from about
+    // +83 to +17. Black text is the deliberate trade: not what the era printed, but the
+    // only thing that reliably reads on that frame.
+    if (frame === 'retro' && PALE_RETRO_FRAMES.has(getFrameNameForFace(pristineFace))) {
+        for (const key of ['title', 'type', 'pt']) {
+            const textObject = global.card.text?.[key];
+            if (!textObject) continue;
+            textObject.color = 'black';
+            // Drop the shadow too. packSeventh's offset exists to lift white glyphs off
+            // the frame; under black text it just smears the glyph down-right.
+            textObject.shadowX = 0;
+            textObject.shadowY = 0;
+        }
+    }
+
+    // Restored immediately after: the `mana` Map is process-global and shared by every
+    // card in the run, so leaving it scaled would shrink hybrid pips on non-retro cards
+    // in a mixed (auto-frame) deck too.
+    if (frame === 'retro') setRetroHybridPipScale(1);
+    try {
+        await global.drawText();
+    } finally {
+        if (frame === 'retro') setRetroHybridPipScale(1.2);
+    }
     if (frame === 'modern' || frame === 'station' || frame === 'borderless' || scry.layout === 'flip' ||
         (frame === 'retro' && dfcFace)) {
         // Station falls back to modern's bottom info deliberately — real Station
@@ -2390,6 +2552,21 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             }
         }
     }
+
+    // The artist and copyright lines live in card.bottomInfo, not card.text, and the
+    // retro branch above is what settles them -- so they are recoloured here, after that
+    // branch and before renderBottomInfo() draws them. The title / type / P-T half is
+    // applied earlier, because drawText() has already rasterised those by this point.
+    if (frame === 'retro' && PALE_RETRO_FRAMES.has(getFrameNameForFace(pristineFace))) {
+        for (const key of ['top', 'wizards']) {
+            const region = global.card.bottomInfo?.[key];
+            if (!region) continue;
+            region.color = 'black';
+            region.shadowX = 0;
+            region.shadowY = 0;
+        }
+    }
+
     await renderBottomInfo();
     global.drawFrames();
 
