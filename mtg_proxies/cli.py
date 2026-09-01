@@ -39,6 +39,11 @@ BASIC_LAND_NAMES = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
 # noticeably, so this backs off to 0.75 mm — visible colour 53.7 x 78.9 mm, about
 # 0.8 mm of slack per side over a bulk card's own frame.
 _RETRO_SCALED_DEFAULT_MM = 0.75
+# ``--<frame>-scaled`` flags, mapped to the frame each one renders in. The 8th and retro
+# frames sit within 0.06 mm of each other once scaled at the same overlap (8th's colour
+# block measures 52.08 x 76.97 mm against retro's 52.14 x 76.67), so one constant covers
+# both and there is no separate 8th target to keep in sync.
+_SCALED_FLAG_FRAMES = {"retro_scaled": "retro", "eighth_scaled": "8th"}
 ArtPreference = Literal["standard", "wild", "premium"]
 EXCLUDED_BASIC_LAND_PRINTS = {
     ("sld", "415"),
@@ -1385,15 +1390,22 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     # sense for a deck rendered in it. Refusing here (rather than silently no-op'ing or,
     # worse, scaling an M15 card's rounded corners past the canvas) keeps the failure
     # loud and at the front of the run.
-    if args.retro_scaled:
+    scaled_flags = [dest for dest in _SCALED_FLAG_FRAMES if getattr(args, dest, False)]
+    if len(scaled_flags) > 1:
+        names = ", ".join(f"--{d.replace('eighth', '8th').replace('_', '-')}" for d in scaled_flags)
+        print(f"Error: {names} are mutually exclusive — each renders in a different frame.", file=sys.stderr)
+        raise SystemExit(2)
+    if scaled_flags:
+        flag_name = f"--{scaled_flags[0].replace('eighth', '8th').replace('_', '-')}"
+        wanted = _SCALED_FLAG_FRAMES[scaled_flags[0]]
         if frame == "auto":
             # The flag names the frame it operates on, so it selects it too — needing
             # `--retro --retro-scaled` to mean "retro, scaled" is just a papercut.
-            frame = "retro"
-        elif frame != "retro":
+            frame = wanted
+        elif frame != wanted:
             print(
-                f"Error: --retro-scaled renders in the retro frame, which conflicts with --{frame}."
-                " Drop the other frame flag, or drop --retro-scaled.",
+                f"Error: {flag_name} renders in the {wanted} frame, which conflicts with --{frame}."
+                f" Drop the other frame flag, or drop {flag_name}.",
                 file=sys.stderr,
             )
             raise SystemExit(2)
@@ -1940,9 +1952,9 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     # colour block overlaps what it covers. Runs per newly-written PNG rather than over
     # the whole outdir afterwards, because a cached PNG from an earlier run has already
     # been scaled and doing it again would compound every invocation.
-    retro_scale_stats = {"scaled": 0, "unmeasurable": 0, "scale": 0.0}
+    frame_scale_stats = {"scaled": 0, "unmeasurable": 0, "scale": 0.0}
     post_process_cb = None
-    if args.retro_scaled:
+    if scaled_flags:
         from mtg_proxies.cardconjourer import frame_scale
         from mtg_proxies.print_cards import CARD_SIZE_MM
 
@@ -1951,11 +1963,11 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         def post_process_cb(png: Path) -> None:
             applied = frame_scale.enlarge_frame(png, _RETRO_SCALED_DEFAULT_MM, card_mm)
             if applied is None:
-                retro_scale_stats["unmeasurable"] += 1
-                _warn(f"Note: --retro-scaled could not find the frame edge in {png.name} — left unscaled.")
+                frame_scale_stats["unmeasurable"] += 1
+                _warn(f"Note: {flag_name} could not find the frame edge in {png.name} — left unscaled.")
             else:
-                retro_scale_stats["scaled"] += 1
-                retro_scale_stats["scale"] = applied
+                frame_scale_stats["scaled"] += 1
+                frame_scale_stats["scale"] = applied
 
     summary = cc_runner.render_deck(
         cards,
@@ -1969,10 +1981,10 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         post_process=post_process_cb,
     )
     print(f"[cardconjourer] {summary['ok']}/{summary['total']} rendered, {summary['skipped']} skipped")
-    if retro_scale_stats["scaled"]:
+    if frame_scale_stats["scaled"]:
         print(
-            f"[cardconjourer] --retro-scaled: {retro_scale_stats['scaled']} frames grown "
-            f"~{retro_scale_stats['scale']:.3f}x for {_RETRO_SCALED_DEFAULT_MM:g} mm overlap per side"
+            f"[cardconjourer] {flag_name}: {frame_scale_stats['scaled']} frames grown "
+            f"~{frame_scale_stats['scale']:.3f}x for {_RETRO_SCALED_DEFAULT_MM:g} mm overlap per side"
         )
     if args.scryfall:
         suffix = " (upscaled)" if args.upscale else ""
@@ -2354,6 +2366,17 @@ def main() -> None:
             " showing. This buys back that tolerance. The PNG keeps its exact dimensions and"
             " still prints at true 63x88 mm; the black border absorbs the growth, so nothing"
             " downstream changes. Implies --retro; conflicts with the other frame flags."
+        ),
+    )
+    cardconjourer_parser.add_argument(
+        "--8th-scaled", dest="eighth_scaled", action="store_true", default=False,
+        help=(
+            f"the same treatment as --retro-scaled, on the 8th-Edition frame: grow the"
+            f" frame inside the card so it overlaps what it has to cover by"
+            f" {_RETRO_SCALED_DEFAULT_MM:g} mm on every side. The 8th and retro colour"
+            " blocks are within 0.06 mm of each other, so both end up the same printed"
+            " size. Implies --8th; conflicts with the other frame flags and with"
+            " --retro-scaled."
         ),
     )
     # No --auto flag: auto is simply the absence of an explicit frame flag (the default).
