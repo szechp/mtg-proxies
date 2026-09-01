@@ -32,6 +32,13 @@ _mpcfill_log = logging.getLogger("mtg_proxies.mpcfill.cli")
 # image but is otherwise unused — a non-zero value is ignored with a warning.
 DEFAULT_CUSTOM_ART_BLEED_CROP_PERCENT = 0.0
 BASIC_LAND_NAMES = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
+# Overlap per side for ``--retro-scaled``, in mm, measured against the retro frame's
+# own size. Note the retro frame starts ~0.58 mm per side *narrower* than a modern
+# one, so the first ~0.6 mm only buys parity; what's left over is the actual slack
+# against the card being covered. Settled by printing and cutting: 1.0 mm overhung
+# noticeably, so this backs off to 0.75 mm — visible colour 53.7 x 78.9 mm, about
+# 0.8 mm of slack per side over a bulk card's own frame.
+_RETRO_SCALED_DEFAULT_MM = 0.75
 ArtPreference = Literal["standard", "wild", "premium"]
 EXCLUDED_BASIC_LAND_PRINTS = {
     ("sld", "415"),
@@ -1374,6 +1381,23 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     else:
         frame = "auto"
 
+    # ``--retro-scaled`` is measured against the retro frame's geometry and only makes
+    # sense for a deck rendered in it. Refusing here (rather than silently no-op'ing or,
+    # worse, scaling an M15 card's rounded corners past the canvas) keeps the failure
+    # loud and at the front of the run.
+    if args.retro_scaled:
+        if frame == "auto":
+            # The flag names the frame it operates on, so it selects it too — needing
+            # `--retro --retro-scaled` to mean "retro, scaled" is just a papercut.
+            frame = "retro"
+        elif frame != "retro":
+            print(
+                f"Error: --retro-scaled renders in the retro frame, which conflicts with --{frame}."
+                " Drop the other frame flag, or drop --retro-scaled.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+
     # Resolve every decklist line to a full Scryfall card dict. parse_decklist_spec
     # handles count prefix, `Name (SET) CN`, the new URL/shorthand form, foil markers,
     # and trailing modelines — everything the standalone naive line.split() used to miss.
@@ -1912,6 +1936,27 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
             )
         return responses + skip_responses
 
+    # ``--retro-scaled``: grow each rendered frame inside its own canvas so the cut-out
+    # colour block overlaps what it covers. Runs per newly-written PNG rather than over
+    # the whole outdir afterwards, because a cached PNG from an earlier run has already
+    # been scaled and doing it again would compound every invocation.
+    retro_scale_stats = {"scaled": 0, "unmeasurable": 0, "scale": 0.0}
+    post_process_cb = None
+    if args.retro_scaled:
+        from mtg_proxies.cardconjourer import frame_scale
+        from mtg_proxies.print_cards import CARD_SIZE_MM
+
+        card_mm = (float(CARD_SIZE_MM[0]), float(CARD_SIZE_MM[1]))
+
+        def post_process_cb(png: Path) -> None:
+            applied = frame_scale.enlarge_frame(png, _RETRO_SCALED_DEFAULT_MM, card_mm)
+            if applied is None:
+                retro_scale_stats["unmeasurable"] += 1
+                _warn(f"Note: --retro-scaled could not find the frame edge in {png.name} — left unscaled.")
+            else:
+                retro_scale_stats["scaled"] += 1
+                retro_scale_stats["scale"] = applied
+
     summary = cc_runner.render_deck(
         cards,
         args.outdir,
@@ -1921,8 +1966,14 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         prepare_each=prepare_each_cb,
         dfc_split_slots=dfc_split_slots,
         fallback_modeline_by_slot=fallback_modeline_by_slot,
+        post_process=post_process_cb,
     )
     print(f"[cardconjourer] {summary['ok']}/{summary['total']} rendered, {summary['skipped']} skipped")
+    if retro_scale_stats["scaled"]:
+        print(
+            f"[cardconjourer] --retro-scaled: {retro_scale_stats['scaled']} frames grown "
+            f"~{retro_scale_stats['scale']:.3f}x for {_RETRO_SCALED_DEFAULT_MM:g} mm overlap per side"
+        )
     if args.scryfall:
         suffix = " (upscaled)" if args.upscale else ""
         print(f"[cardconjourer] art source: Scryfall art_crop only (--scryfall){suffix}")
@@ -2290,6 +2341,19 @@ def main() -> None:
             "render every card in the borderless (full-art) frame. Needs full-bleed MTGPics"
             " art (present for actual borderless printings); single-faced cards without it are"
             " skipped to fallback.txt for their normal scan. DFCs render modern."
+        ),
+    )
+    cardconjourer_parser.add_argument(
+        "--retro-scaled", dest="retro_scaled", action="store_true", default=False,
+        help=(
+            f"grow the retro frame inside the card so it overlaps what it has to cover by"
+            f" {_RETRO_SCALED_DEFAULT_MM:g} mm on every side. For the sticker workflow: the"
+            " retro colour block is the good one to cut, because it ends in a hard square"
+            " corner, but at true size it only just covers a bulk card's own frame — a"
+            " millimetre of cutting or sticking error leaves a sliver of the old card"
+            " showing. This buys back that tolerance. The PNG keeps its exact dimensions and"
+            " still prints at true 63x88 mm; the black border absorbs the growth, so nothing"
+            " downstream changes. Implies --retro; conflicts with the other frame flags."
         ),
     )
     # No --auto flag: auto is simply the absence of an explicit frame flag (the default).

@@ -257,6 +257,7 @@ def render_deck(
     prepare_each: PrepareEach | None = None,
     dfc_split_slots: set[int] | None = None,
     fallback_modeline_by_slot: dict[int, str] | None = None,
+    post_process: Callable[[Path], None] | None = None,
 ) -> dict[str, int]:
     """Render a whole decklist via the headless Card Conjurer harness.
 
@@ -292,6 +293,12 @@ def render_deck(
     fed into ``mtg-proxies print``. Only applies to cards that end up skipped; a card that
     renders ``ok`` never touches fallback.txt regardless of this mapping.
 
+    ``post_process``, if given, is called with the path of each PNG this run newly
+    wrote into ``outdir`` — fronts and split backs alike — for in-place edits like
+    ``--retro-scaled``. Cache hits are deliberately excluded: a PNG left over from an
+    earlier run has already been through it, and running it again would compound the
+    edit on every invocation.
+
     ``run_harness`` is injectable so tests can stub the node subprocess.
     """
     outdir = Path(outdir)
@@ -319,7 +326,9 @@ def render_deck(
         expected = outdir / f"{slug(name)}.png"
         expected_back = outdir / f"{slug(name)}_back.png"
         if _cached(expected) and (not split or _cached(expected_back)):
-            resp: dict[str, Any] = {"slot": slot_str, "status": "ok", "out": str(expected), "ms": 0}
+            resp: dict[str, Any] = {
+                "slot": slot_str, "status": "ok", "out": str(expected), "ms": 0, "cached": True,
+            }
             if split:
                 resp["out_back"] = str(expected_back)
             pre_existing.append(resp)
@@ -371,12 +380,16 @@ def render_deck(
             # is left intact for debugging.
             if src.resolve() != dst.resolve():
                 shutil.copyfile(src, dst)
+            if post_process is not None:
+                post_process(dst)
             back_name = ""
             if r.get("out_back"):
                 src_back = Path(r["out_back"])
                 dst_back = outdir / src_back.name
                 if src_back.resolve() != dst_back.resolve():
                     shutil.copyfile(src_back, dst_back)
+                if post_process is not None:
+                    post_process(dst_back)
                 back_name = dst_back.name
             report_rows.append({
                 "slot": slot_str, "name": name, "status": "ok",
