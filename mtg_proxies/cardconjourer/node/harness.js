@@ -41,6 +41,28 @@ const INCLUDE_FLAVOR = process.argv.includes('--with-flavor');
 // real Seventh-Edition scan. Only white is badly off.
 const PALE_RETRO_FRAMES = new Set(['White Frame']);
 
+// Mana font's `.ms-ability-legendary` glyph, used to mark legendary cards on the 8th
+// frame. Inlining it as text rather than compositing an image means it rides the title's
+// baseline and scales with the title font for free -- an image layer needs its bounds
+// hand-calibrated against the title box, and gets it wrong the moment the box moves.
+const MANA_LEGENDARY_GLYPH = '\uEA77';
+// The crown's ink is 1.5x the title font's cap height at the same em (measured directly:
+// at em 128px, matrixb 'D' inks 76px and the crown inks 114px). Shrink the glyph's em by
+// this share so it stands as tall as a D or P rather than towering over the name.
+const MANA_LEGENDARY_EM_SHRINK = 1 - 1 / 1.5;
+// Shrinking the glyph lifts it off the baseline -- the engine seats a run by the line's
+// size, so a smaller em rides higher rather than staying planted. Measured on a render:
+// after the shrink the crown's ink bottom sat 28px above a 352px baseline at a 128px em,
+// so it needs dropping by this share of the em to sit level with the capitals. Emitted as
+// {upinline-N}, which is `lineY -= N` (creator-23.js), and undone straight after so the
+// rest of the name is unaffected.
+const MANA_LEGENDARY_BASELINE_DROP = 28 / 128;
+// Extra right-hand reserve taken off the title once the glyph is in, as a card-width
+// fraction (~1.3mm). reserveRight already backs the name off the mana cost, but it runs
+// before the glyph is prepended, so without this the longer string auto-shrinks straight
+// up against the pips.
+const MANA_LEGENDARY_RIGHT_GAP = 0.02;
+
 
 // Two-colour cards get the modern frame treatment on the retro frame, in the two
 // variants real cards use. Which one applies is decided by the mana cost, not the
@@ -183,6 +205,11 @@ reg('gothambold.otf',             'gothambold');
 reg('goudy-medieval.ttf',         'goudymedieval');
 reg('phyrexian.ttf',              'phyrexian');
 reg('NotoSans-Regular.ttf',       'notosans');
+// Andrew Gioia's Mana font (SIL OFL 1.1, see fonts/mana-NOTICE.txt). Carries the MTG
+// symbol set as glyphs, which is how the legendary crown gets inline with the card name
+// -- as text it scales and sits on the baseline with the title, needing none of the
+// bounds calibration an image layer would.
+reg('mana.ttf',                   'mana');
 console.error('[harness] fonts:', _fontLoaded, 'loaded,', _fontFailed, 'failed (bundled dir:', BUNDLED_FONT_DIR, ')');
 
 // ---------------------------------------------------------------------------
@@ -2386,6 +2413,30 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             // the frame; under black text it just smears the glyph down-right.
             textObject.shadowX = 0;
             textObject.shadowY = 0;
+        }
+    }
+
+    // 8th legendary marker. {fontmana} switches family mid-string and {font<original>}
+    // switches back; creator-23.js:1839 carries the size across the switch, so the glyph
+    // comes out at the title's own size. Guarded against double-prefixing because
+    // card.text can survive between cards when consecutive renders share a pack.
+    if (frame === '8th' && !dfcFace
+        && /Legendary/.test(pristineFace.type_line || scry.type_line || '')
+        // Planeswalkers are out of scope: pack8th has no loyalty-box geometry anyway.
+        && !/Planeswalker/.test(pristineFace.type_line || scry.type_line || '')) {
+        const title = global.card.text?.title;
+        if (title && typeof title.text === 'string' && !title.text.includes(MANA_LEGENDARY_GLYPH)) {
+            // {fontsize<N>} is additive and in canvas pixels (creator-23.js:1836), so the
+            // shrink has to be computed from this card's own em rather than hard-coded.
+            const em = (title.size || 0) * (global.card.height || 0);
+            const shrink = Math.round(em * MANA_LEGENDARY_EM_SHRINK);
+            const back = title.font || 'matrixb';
+            const drop = Math.round(em * MANA_LEGENDARY_BASELINE_DROP);
+            title.text = shrink > 0
+                ? `{fontsize-${shrink}}{upinline-${drop}}{fontmana}${MANA_LEGENDARY_GLYPH}`
+                  + `{upinline${drop}}{fontsize+${shrink}}{font${back}} ${title.text}`
+                : `{fontmana}${MANA_LEGENDARY_GLYPH}{font${back}} ${title.text}`;
+            title.width = Math.max(0.2, title.width - MANA_LEGENDARY_RIGHT_GAP);
         }
     }
 
