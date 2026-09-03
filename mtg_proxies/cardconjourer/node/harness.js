@@ -1273,6 +1273,12 @@ function frameFromScryfall(scry) {
     return SCRYFALL_FRAME_TO_STYLE[scry.frame] || null;
 }
 
+// Whether a card should get an 8th-Edition legend crown. Planeswalkers are excluded --
+// pack8th has no loyalty-box geometry, so they are not renderable in this frame anyway.
+function wantsEighthLegendCrown(typeLine) {
+    return /Legendary/.test(typeLine || '') && !/Planeswalker/.test(typeLine || '');
+}
+
 // Pack routing per Scryfall layout AND requested frame. ND-JSON's runOneJob
 // rewrites every DFC layout to 'flip' before this fires, so the only multi-
 // face layout that reaches here is 'flip' (Kamigawa + DFC-as-flip), which
@@ -2225,6 +2231,18 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         await addFrameByName(['Tombstone Icon']);
     }
 
+    // 8th legend crown, matching what the modern frame does for legendaries. The real
+    // Eighth Edition frame predates crowns entirely (CC's own 8th auto-frame config sets
+    // supportsCrown: false), so this is a deliberate departure -- the crown art is CC's,
+    // from pack8thLegendCrowns, loaded alongside pack8th above.
+    //
+    // Border cover first, crown second: addFrame unshifts, so the later layer sits on top.
+    if (!dfcFace && frame === '8th' && wantsEighthLegendCrown(pristineFace.type_line || scry.type_line)) {
+        await addFrameByName(['Legend Crown Border Cover']);
+        const crown = getFrameNameForFace(pristineFace).replace(' Frame', ' Legend Crown');
+        await addFrameByName([crown, 'Artifact Legend Crown', 'Colorless Legend Crown']);
+    }
+
     // Two-colour cards get the modern two-tone treatment. Which variant applies is
     // decided by the mana cost, not the colour count -- see RETRO_HYBRID_PAIR above.
     // Runs before the legendary trim so that trim lands on top of the two-tone.
@@ -2664,6 +2682,14 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
 
     let packFile = packForLayout(scry.layout, frame).single;
     if (frame === 'borderless' && scry.layout !== 'flip') packFile = borderlessPack(scry);
+    // 8th legend crowns live in their own pack, so load it alongside pack8th to get the
+    // crown frames into availableFrames. pack8th goes LAST because ensurePackLoaded
+    // re-triggers only the final file's loadFrameVersion onclick, and the crown pack
+    // registers no text options -- letting its handler win would leave the card with no
+    // title / type / rules regions at all.
+    if (frame === '8th' && scry.layout !== 'flip' && wantsEighthLegendCrown(scry.type_line)) {
+        packFile = ['pack8thLegendCrowns.js', 'pack8th.js'];
+    }
     return await renderFace({ packFile, processed, faceIdx: 0, scry, outName: slug, frame, setSymbolPath, fontSizeDelta });
 }
 
