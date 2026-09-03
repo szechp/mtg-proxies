@@ -258,6 +258,7 @@ def render_deck(
     dfc_split_slots: set[int] | None = None,
     fallback_modeline_by_slot: dict[int, str] | None = None,
     post_process: Callable[[Path], None] | None = None,
+    filename_prefix_by_slot: dict[int, str] | None = None,
 ) -> dict[str, int]:
     """Render a whole decklist via the headless Card Conjurer harness.
 
@@ -299,8 +300,14 @@ def render_deck(
     earlier run has already been through it, and running it again would compound the
     edit on every invocation.
 
+    ``filename_prefix_by_slot`` (1-based slot ints → prefix string) prepends that prefix to
+    a card's output filename, e.g. ``legendary_`` so legendary cards can be told apart in
+    the output directory without opening them. Applied to the cache-hit check as well as
+    the copy, so a prefixed PNG from an earlier run is still recognised.
+
     ``run_harness`` is injectable so tests can stub the node subprocess.
     """
+    filename_prefix_by_slot = filename_prefix_by_slot or {}
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     dfc_split_slots = dfc_split_slots or set()
@@ -323,8 +330,9 @@ def render_deck(
         slot_int = i + 1
         slot_str = f"{slot_int:04d}"
         split = slot_int in dfc_split_slots
-        expected = outdir / f"{slug(name)}.png"
-        expected_back = outdir / f"{slug(name)}_back.png"
+        prefix = filename_prefix_by_slot.get(slot_int, "")
+        expected = outdir / f"{prefix}{slug(name)}.png"
+        expected_back = outdir / f"{prefix}{slug(name)}_back.png"
         if _cached(expected) and (not split or _cached(expected_back)):
             resp: dict[str, Any] = {
                 "slot": slot_str, "status": "ok", "out": str(expected), "ms": 0, "cached": True,
@@ -372,8 +380,12 @@ def render_deck(
         slot_str = f"{i + 1:04d}"
         r = responses_by_slot.get(slot_str, {"status": "skip", "reason": "no response"})
         if r["status"] == "ok":
+            # A cache hit's `out` already points at the prefixed file in outdir, so
+            # re-applying the prefix here would produce legendary_legendary_<name>.png on
+            # every re-run. Only freshly rendered PNGs arrive under their bare slug name.
+            prefix = "" if r.get("cached") else filename_prefix_by_slot.get(i + 1, "")
             src = Path(r["out"])
-            dst = outdir / src.name
+            dst = outdir / f"{prefix}{src.name}"
             # When the harness writes directly into ``outdir`` the names match
             # and shutil.copy is a no-op-ish overwrite; otherwise we move it
             # into place. Use copy (not move) so the harness's working directory
@@ -385,7 +397,7 @@ def render_deck(
             back_name = ""
             if r.get("out_back"):
                 src_back = Path(r["out_back"])
-                dst_back = outdir / src_back.name
+                dst_back = outdir / f"{prefix}{src_back.name}"
                 if src_back.resolve() != dst_back.resolve():
                     shutil.copyfile(src_back, dst_back)
                 if post_process is not None:

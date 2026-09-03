@@ -39,6 +39,8 @@ BASIC_LAND_NAMES = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
 # noticeably, so this backs off to 0.75 mm — visible colour 53.7 x 78.9 mm, about
 # 0.8 mm of slack per side over a bulk card's own frame.
 _RETRO_SCALED_DEFAULT_MM = 0.75
+# Prepended to the output filename of legendary cards rendered by `cardconjourer`.
+LEGENDARY_FILENAME_PREFIX = "legendary_"
 # ``--<frame>-scaled`` flags, mapped to the frame each one renders in. The 8th and retro
 # frames sit within 0.06 mm of each other once scaled at the same overlap (8th's colour
 # block measures 52.08 x 76.97 mm against retro's 52.14 x 76.67), so one constant covers
@@ -1551,6 +1553,16 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
             f"layout {card.card.get('layout')!r} is not a splittable DFC"
         )
 
+    # Prefix legendary cards' output filenames so they can be told apart in the output
+    # directory without opening them. Keyed on the type line rather than on whether a crown
+    # was drawn, so the marker is about the card, not about which frame happened to render
+    # it — a legendary retro card is still legendary.
+    filename_prefix_by_slot = {
+        slot_int: LEGENDARY_FILENAME_PREFIX
+        for slot_int, card in slot_to_card.items()
+        if "Legendary" in (card.card.get("type_line") or "")
+    }
+
     # Resolve the deck-wide / per-card ``--set-symbol`` value to an absolute
     # path per slot. Resolution happens here (not inside _prepare_each) so a
     # missing file / unknown set code errors before any subprocess work begins.
@@ -1913,9 +1925,12 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                     # stream-copy both so the back face appears alongside the
                     # front as cards finish, not only at render_deck's end.
                     outs = [parsed["out"]] + ([parsed["out_back"]] if parsed.get("out_back") else [])
+                    # Same prefix render_deck will use for its own copy — without it this
+                    # streaming copy drops an unprefixed duplicate into the output dir.
+                    stream_prefix = filename_prefix_by_slot.get(int(parsed["slot"]), "")
                     for out_path in outs:
                         src = Path(out_path)
-                        dst = args.outdir / src.name
+                        dst = args.outdir / f"{stream_prefix}{src.name}"
                         if src.resolve() != dst.resolve():
                             try:
                                 shutil.copyfile(src, dst)
@@ -1979,6 +1994,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         dfc_split_slots=dfc_split_slots,
         fallback_modeline_by_slot=fallback_modeline_by_slot,
         post_process=post_process_cb,
+        filename_prefix_by_slot=filename_prefix_by_slot,
     )
     print(f"[cardconjourer] {summary['ok']}/{summary['total']} rendered, {summary['skipped']} skipped")
     if frame_scale_stats["scaled"]:

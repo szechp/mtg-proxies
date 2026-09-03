@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import io
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -737,3 +738,86 @@ def test_render_deck_non_split_cache_hit_ignores_back_file(tmp_path: Path) -> No
 
     render_deck([(1, "Murder")], outdir, frame="8th", run_harness=fake_run)
     assert enqueued == []
+
+
+def _prefix_harness(render_dir: Path) -> Callable[..., list[dict]]:
+    """run_harness stub writing each job's PNG under its bare slug name.
+
+    Writes into ``render_dir``, not the output directory: the real harness renders into
+    its own ``node/output`` folder (CC_OUTPUT is never set in production) and render_deck
+    copies from there, which is what makes the prefixed destination name possible.
+    """
+    from mtg_proxies.cardconjourer.runner import slug
+
+    render_dir.mkdir(parents=True, exist_ok=True)
+
+    def run_harness(jobs: list[dict], prepare_each: object = None) -> list[dict]:
+        responses = []
+        for job in jobs:
+            png = render_dir / f"{slug(job['name'])}.png"
+            png.write_bytes(b"rendered")
+            responses.append({"slot": job["slot"], "status": "ok", "out": str(png), "ms": 1})
+        return responses
+
+    return run_harness
+
+
+def test_filename_prefix_applied_to_selected_slots(tmp_path: Path) -> None:
+    """Only the flagged slots get the prefix; the rest keep their bare slug name."""
+    from mtg_proxies.cardconjourer.runner import render_deck
+
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    render_deck(
+        [(1, "Avacyn, Angel of Hope"), (1, "Serra Angel")],
+        outdir,
+        run_harness=_prefix_harness(tmp_path / "render"),
+        filename_prefix_by_slot={1: "legendary_"},
+    )
+    names = sorted(p.name for p in outdir.glob("*.png"))
+    assert names == ["legendary_avacyn_angel_of_hope.png", "serra_angel.png"]
+
+
+def test_filename_prefix_is_not_reapplied_on_a_cache_hit(tmp_path: Path) -> None:
+    """Re-running must not turn legendary_x.png into legendary_legendary_x.png.
+
+    A cache hit's ``out`` already points at the prefixed file in outdir, so prefixing the
+    copy destination again compounds it on every run, leaving stale copies behind.
+    """
+    from mtg_proxies.cardconjourer.runner import render_deck
+
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    cards = [(1, "Avacyn, Angel of Hope"), (1, "Serra Angel")]
+
+    for _ in range(3):
+        render_deck(
+            cards, outdir,
+            run_harness=_prefix_harness(tmp_path / "render"),
+            filename_prefix_by_slot={1: "legendary_"},
+        )
+
+    names = sorted(p.name for p in outdir.glob("*.png"))
+    assert names == ["legendary_avacyn_angel_of_hope.png", "serra_angel.png"]
+
+
+def test_filename_prefix_makes_a_prefixed_png_count_as_cached(tmp_path: Path) -> None:
+    """The cache-hit check has to look for the prefixed name, or it re-renders every run."""
+    from mtg_proxies.cardconjourer.runner import render_deck, slug
+
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+    (outdir / f"legendary_{slug('Avacyn, Angel of Hope')}.png").write_bytes(b"from an earlier run")
+
+    sent: list[str] = []
+
+    def run_harness(jobs: list[dict], prepare_each: object = None) -> list[dict]:
+        sent.extend(job["name"] for job in jobs)
+        return []
+
+    summary = render_deck(
+        [(1, "Avacyn, Angel of Hope")], outdir,
+        run_harness=run_harness, filename_prefix_by_slot={1: "legendary_"},
+    )
+    assert sent == []
+    assert summary["ok"] == 1
