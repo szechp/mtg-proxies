@@ -40,6 +40,49 @@ const INCLUDE_FLAVOR = process.argv.includes('--with-flavor');
 // white +17, red +38, gold +81, vehicle +80, artifact +85, land +150 -- against +83 on a
 // real Seventh-Edition scan. Only white is badly off.
 const PALE_RETRO_FRAMES = new Set(['White Frame']);
+// Black outline added to the retro frame's white text on those pale frames, as a
+// card-height fraction. creator-23.js strokes the glyph via ctx.strokeText with
+// lineWidth = scaleHeight(outlineWidth), centred on the outline, so half of it sits
+// inside the glyph -- keep it small or the letterforms thicken up.
+const PALE_RETRO_OUTLINE = 0.0013;
+// Blur applied to the drop shadow on everything EXCEPT the card name. Shadow and outline
+// together suit the big display type of the name, but at type-line and bottom-info size
+// the hard-edged shadow sits right where the outline already is and the two read as mud.
+// Softening it keeps the lift without the smear; the name is deliberately left alone.
+const PALE_RETRO_SHADOW_BLUR = 0.0025;
+
+// Mana font's `.ms-commander` glyph (the Arena commander crest -- andrewgioia/mana#59),
+// drawn on retro legendary CREATURES in packSeventh's tombstone slot. Rendered as text
+// rather than as an image layer so it takes the same white fill and black outline as the
+// title, and so it needs no bounds calibration against the frame art.
+//
+// The slot is 0.0338 x 0.0329 (74 x 98px on a 2975px canvas) -- taller than wide -- while
+// the crest inks 1.0 x 0.785 of its em, i.e. wider than tall. Fitted to the slot's WIDTH,
+// which is the binding dimension; matching its height would overflow into the title.
+// DECOMMISSIONED. The crest worked mechanically -- right slot, tombstone colours, on the
+// title's baseline, and it correctly yielded to a real tombstone -- but it did not earn its
+// place on the card. Left in rather than deleted: flip this to true to bring it back, and
+// see the notes below for the two things that constrained it. Everything downstream of
+// here (fonts/mana.ttf, its OFL notice, the reg('mana.ttf') call) exists only for this.
+const MANA_COMMANDER_ENABLED = false;
+const MANA_COMMANDER_GLYPH = '\uE9C6';
+const RETRO_TOMBSTONE_BOUNDS = { x: 0.0687, y: 0.0491, width: 0.0338, height: 0.0329 };
+const MANA_COMMANDER_SIZE = 0.0338 * 2187 / 2975;  // em = slot width, as a height fraction
+// Region top, calibrated against a render. Placing it at the tombstone slot's own y sat
+// the crest 24px above the title's baseline (crest bottom y282 against a y306 baseline on
+// a 2975px canvas) -- the tombstone is an image layer, whose bounds are its whole box,
+// while a text region's y is a box top the engine then derives a baseline from. This
+// offset drops the crest onto the title's baseline so it reads as inline with the name.
+const MANA_COMMANDER_Y = 0.0491 + 24 / 2975;
+// Match the tombstone's own treatment, which layers white outer halo -> black keyline ->
+// grey body (tombstone.svg is three fills: #fff, then the shape, then #a6a6a6/#737373).
+// One strokeText can only carry one colour, so the crest is drawn as two regions: a fat
+// white stroke first, then the grey glyph with a thin black keyline on top. drawText
+// iterates Object.entries(card.text), i.e. insertion order, so the halo goes in first.
+const MANA_COMMANDER_COLOR = '#a6a6a6';
+const MANA_COMMANDER_HALO_COLOR = '#ffffff';
+const MANA_COMMANDER_HALO_OUTLINE = 0.0050;
+const MANA_COMMANDER_OUTLINE = 0.0013;
 
 
 // Two-colour cards get the modern frame treatment on the retro frame, in the two
@@ -66,6 +109,18 @@ const RETRO_RIGHT_HALF = { name: 'Right Half', src: '/img/frames/maskRightHalf.p
 // there is no authentic size to match. Knocked back to 1.0 for retro only.
 const RETRO_HYBRID_PIPS = ['wu', 'wb', 'ub', 'ur', 'br', 'bg', 'rg', 'rw', 'gw', 'gu',
                            '2w', '2u', '2b', '2r', '2g'];
+
+// Whether this face's retro frame is pale enough under its TEXT that packSeventh's white
+// needs outlining. Two ways to qualify: a mono-white frame, or a hybrid card, whose frame
+// splits down the middle -- and since the halves are ordered WUBRG, white is always the
+// LEFT half, which is exactly where the title, type, artist and copyright lines start.
+// The AND variant does not qualify: it keeps the gold frame and shows its colours only in
+// the pinline and textbox, so the text still sits on gold.
+function retroNeedsTextOutline(face, scry) {
+    if (PALE_RETRO_FRAMES.has(getFrameNameForFace(face))) return true;
+    const twoTone = retroTwoTone(face, scry);
+    return !!(twoTone && twoTone.hybrid && twoTone.colors.includes('W'));
+}
 
 // Classify a face for the retro two-tone treatment, or null when it is not two-coloured.
 // `hybrid` means the cost is castable with EITHER colour, which is what decides between
@@ -183,6 +238,9 @@ reg('gothambold.otf',             'gothambold');
 reg('goudy-medieval.ttf',         'goudymedieval');
 reg('phyrexian.ttf',              'phyrexian');
 reg('NotoSans-Regular.ttf',       'notosans');
+// Andrew Gioia's Mana font (SIL OFL 1.1, see fonts/mana-NOTICE.txt). Carries the MTG
+// symbol set as glyphs; used for the retro commander icon.
+reg('mana.ttf',                   'mana');
 console.error('[harness] fonts:', _fontLoaded, 'loaded,', _fontFailed, 'failed (bundled dir:', BUNDLED_FONT_DIR, ')');
 
 // ---------------------------------------------------------------------------
@@ -2227,8 +2285,43 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // Odyssey-era tombstone icon (flashback / disturb / unearth …): Scryfall
     // flags eligible prints via frame_effects; packSeventh ships the same icon
     // asset the GUI offers, positioned left of the title.
+    let addedTombstone = false;
     if (!dfcFace && frame === 'retro' && (scry.frame_effects || []).includes('tombstone')) {
-        await addFrameByName(['Tombstone Icon']);
+        addedTombstone = (await addFrameByName(['Tombstone Icon'])) !== null;
+    }
+
+    // Commander crest for retro legendary creatures, in the tombstone's slot. Mutually
+    // exclusive with the tombstone itself, which occupies the same spot -- the tombstone
+    // wins, being the period-authentic marker of the two.
+    if (MANA_COMMANDER_ENABLED && !dfcFace && !addedTombstone && frame === 'retro') {
+        const typeLine = pristineFace.type_line || scry.type_line || '';
+        if (/Legendary/.test(typeLine) && /Creature/.test(typeLine) && global.card.text?.title) {
+            const crestBox = {
+                name: 'Commander Icon',
+                text: MANA_COMMANDER_GLYPH,
+                font: 'mana',
+                x: RETRO_TOMBSTONE_BOUNDS.x,
+                y: MANA_COMMANDER_Y,
+                width: RETRO_TOMBSTONE_BOUNDS.width * 2,
+                height: RETRO_TOMBSTONE_BOUNDS.height,
+                size: MANA_COMMANDER_SIZE,
+                oneLine: true,
+            };
+            // Halo first, body second: later entries draw over earlier ones.
+            global.card.text.commanderIconHalo = {
+                ...crestBox,
+                name: 'Commander Icon Halo',
+                color: MANA_COMMANDER_HALO_COLOR,
+                outlineWidth: MANA_COMMANDER_HALO_OUTLINE,
+                outlineColor: MANA_COMMANDER_HALO_COLOR,
+            };
+            global.card.text.commanderIcon = {
+                ...crestBox,
+                color: MANA_COMMANDER_COLOR,
+                outlineWidth: MANA_COMMANDER_OUTLINE,
+                outlineColor: 'black',
+            };
+        }
     }
 
     // 8th legend crown, matching what the modern frame does for legendaries. The real
@@ -2393,17 +2486,16 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // shadow, which is what a real Seventh-Edition card does. It only fails on the white
     // frame, whose parchment renders far lighter here than on a real card (measured luma
     // 215 against 168 on a 7ED scan), dropping glyph-vs-background contrast from about
-    // +83 to +17. Black text is the deliberate trade: not what the era printed, but the
-    // only thing that reliably reads on that frame.
-    if (frame === 'retro' && PALE_RETRO_FRAMES.has(getFrameNameForFace(pristineFace))) {
+    // +83 to +17. Keeping the white and outlining it in black restores the contrast while
+    // staying closer to the printed card than recolouring the text outright.
+    if (frame === 'retro' && retroNeedsTextOutline(pristineFace, scry)) {
         for (const key of ['title', 'type', 'pt']) {
             const textObject = global.card.text?.[key];
             if (!textObject) continue;
-            textObject.color = 'black';
-            // Drop the shadow too. packSeventh's offset exists to lift white glyphs off
-            // the frame; under black text it just smears the glyph down-right.
-            textObject.shadowX = 0;
-            textObject.shadowY = 0;
+            textObject.outlineWidth = PALE_RETRO_OUTLINE;
+            textObject.outlineColor = 'black';
+            // The name keeps packSeventh's hard shadow; everything else gets it softened.
+            if (key !== 'title') textObject.shadowBlur = PALE_RETRO_SHADOW_BLUR;
         }
     }
 
@@ -2572,16 +2664,16 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     }
 
     // The artist and copyright lines live in card.bottomInfo, not card.text, and the
-    // retro branch above is what settles them -- so they are recoloured here, after that
+    // retro branch above is what settles them -- so they are outlined here, after that
     // branch and before renderBottomInfo() draws them. The title / type / P-T half is
     // applied earlier, because drawText() has already rasterised those by this point.
-    if (frame === 'retro' && PALE_RETRO_FRAMES.has(getFrameNameForFace(pristineFace))) {
+    if (frame === 'retro' && retroNeedsTextOutline(pristineFace, scry)) {
         for (const key of ['top', 'wizards']) {
             const region = global.card.bottomInfo?.[key];
             if (!region) continue;
-            region.color = 'black';
-            region.shadowX = 0;
-            region.shadowY = 0;
+            region.outlineWidth = PALE_RETRO_OUTLINE;
+            region.outlineColor = 'black';
+            region.shadowBlur = PALE_RETRO_SHADOW_BLUR;
         }
     }
 
