@@ -19,6 +19,14 @@ dependencies = [
 dev = [
     "pytest",
 ]
+# Standalone `swapfinder.py` side tool only (not part of the proxy CLI). Install with
+# `uv sync --extra swaps`. sentence-transformers powers `--semantic` (embedding similarity);
+# it pulls in the already-present torch plus the transformers stack + a ~90 MB model on first use.
+swaps = [
+    "scikit-learn",
+    # 3.x line: its transformers 4.x works with the project's torch 2.2 (transformers 5.x needs torch>=2.4).
+    "sentence-transformers>=3.0,<4",
+]
 
 [project.scripts]
 mtg-proxies = "mtg_proxies.cli:main"
@@ -121,6 +129,8 @@ future-annotations = true
 "tokens.py" = ["T20"]
 "upscale.py" = ["T20"]
 "picker.py" = ["T20"]
+"swapfinder.py" = ["T20"]
+"commander_finder.py" = ["T20"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 banned-module-level-imports = ["mtg_proxies"]
