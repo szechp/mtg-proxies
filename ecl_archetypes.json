@@ -1,0 +1,42 @@
+{
+  "WU": {
+    "name": "Merfolk (Tapping Matters)",
+    "tags": ["subtype:Merfolk", "typal-merfolk", "synergy-tapped", "kw:convoke"]
+  },
+  "UB": {
+    "name": "Flash Control",
+    "tags": ["kw:flash", "subtype:Faerie", "off-turn-casting-matters", "removal-nonland"]
+  },
+  "BR": {
+    "name": "Goblins (Blight & Sacrifice)",
+    "tags": ["subtype:Goblin", "typal-goblin", "kw:blight", "sacrifice-self", "death-trigger"]
+  },
+  "RG": {
+    "name": "Vivid Midrange",
+    "tags": ["kw:vivid", "vivid"]
+  },
+  "GW": {
+    "name": "Kithkin (Go Wide)",
+    "tags": ["subtype:Kithkin", "typal-kithkin", "repeatable-creature-tokens", "power-boost-to-all"]
+  },
+  "WB": {
+    "name": "Blight Control",
+    "tags": ["kw:blight", "gains-mm-counters", "remove-counters", "removal-nonland"]
+  },
+  "UR": {
+    "name": "Elementals (Mana Value 4+)",
+    "tags": ["subtype:Elemental", "typal-elemental", "mana-value-matters"]
+  },
+  "BG": {
+    "name": "Elves (Graveyard)",
+    "tags": ["subtype:Elf", "typal-elf", "mill-self", "reanimate", "recursion-creature"]
+  },
+  "RW": {
+    "name": "Blight Aggro",
+    "tags": ["kw:blight", "gains-mm-counters", "remove-counters", "attacking-matters", "gives-haste"]
+  },
+  "GU": {
+    "name": "Vivid Ramp",
+    "tags": ["kw:vivid", "vivid", "land-ramp", "mana-producer"]
+  }
+}

@@ -14,6 +14,16 @@ import requests
 
 import mtg_proxies.scryfall as scryfall
 from mtg_proxies import fetch_scans_scryfall, print_cards_fpdf, print_cards_matplotlib
+from mtg_proxies.cube_builder import (
+    build_cube,
+    derive_archetype_lanes,
+    fetch_17lands_ratings,
+    fetch_set_cards,
+    load_archetype_config,
+    load_owned_cards,
+    write_cube_csv,
+    write_cube_txt,
+)
 from mtg_proxies.deck_value import show_deck_value
 from mtg_proxies.decklists import archidekt, manastack, parse_decklist
 from mtg_proxies.decklists.decklist import Card, Comment, Decklist
@@ -2313,6 +2323,53 @@ def main() -> None:
         metavar="FLOAT",
     )
 
+    # Cube builder tool
+    cube_parser = subparsers.add_parser(
+        "cube",
+        help="Build a draft cube CSV from Scryfall set(s), scored by tribal synergy + 17lands data",
+        description=(
+            "Score a Scryfall set's cards for cube construction using a tribal/keyword synergy"
+            " heuristic plus 17lands draft performance data (GIH win rate, ALSA), then write the"
+            " top --target cards to a CSV."
+        ),
+    )
+    cube_parser.add_argument("--sets", nargs="+", required=True, help="Scryfall set code(s), e.g. ecl eoe")
+    cube_parser.add_argument("--target", type=int, default=360, help="cube size (default: %(default)s)")
+    cube_parser.add_argument("--out", default="cube.csv", help="output CSV path (default: %(default)s)")
+    cube_parser.add_argument(
+        "--txt-out",
+        default=None,
+        metavar="PATH",
+        help="also write the cube as a decklist (1 Name (SET) NUMBER per line) ready for"
+        " `mtg-proxies print`",
+    )
+    cube_parser.add_argument("--format", default="PremierDraft", help="17lands draft format (default: %(default)s)")
+    cube_parser.add_argument(
+        "--no-17lands", action="store_true", help="skip 17lands entirely; score on the tribal heuristic alone"
+    )
+    cube_parser.add_argument(
+        "--owned",
+        default=None,
+        metavar="PATH",
+        help="path to a text/Arena decklist of owned cards; restricts candidates to the"
+        " intersection of the fetched set(s) and this collection before scoring",
+    )
+    cube_parser.add_argument(
+        "--archetypes",
+        default=None,
+        metavar="PATH",
+        help="path to a JSON archetype skeleton (color pair -> {name, tags}, e.g. from a WotC"
+        " limited-archetype guide); restricts scoring to exactly these curated lanes instead of"
+        " every auto-derived Scryfall tag",
+    )
+    cube_parser.add_argument(
+        "--keep-lands",
+        action="store_true",
+        help="exempt lands from the archetype/lane-fit cut -- mana fixing (shocklands, etc.) is"
+        " infrastructure, not archetype identity, so it can otherwise get dropped under"
+        " --archetypes for not carrying any curated archetype tag",
+    )
+
     cardconjourer_parser = subparsers.add_parser(
         "cardconjourer",
         help="Render an 8th-edition, modern, M15Eighth, or retro frame for each card via headless Card Conjurer",
@@ -3086,6 +3143,76 @@ def main() -> None:
 
             # Show deck value decomposition
             show_deck_value(decklist, lump_threshold=args.lump_threshold)
+
+        case "cube":
+            if args.owned is not None and not Path(args.owned).is_file():
+                print(f"Error: owned decklist not found: {args.owned}", file=sys.stderr)
+                raise SystemExit(1)
+            if args.archetypes is not None and not Path(args.archetypes).is_file():
+                print(f"Error: archetype config not found: {args.archetypes}", file=sys.stderr)
+                raise SystemExit(1)
+            if args.target <= 0:
+                print(f"Error: --target must be positive (got {args.target})", file=sys.stderr)
+                raise SystemExit(1)
+
+            print(f"Fetching cards from Scryfall for sets: {args.sets}")
+            cube_cards = fetch_set_cards(args.sets)
+            print(f"Fetched {len(cube_cards)} non-basic-land cards")
+
+            if args.owned is not None:
+                owned_names = {scryfall.canonic_card_name(c["name"]) for c in load_owned_cards(args.owned)}
+                cube_cards = [c for c in cube_cards if scryfall.canonic_card_name(c["name"]) in owned_names]
+                print(f"Restricted to {len(cube_cards)} cards owned per {args.owned}")
+
+            lands_ratings: dict[str, dict] = {}
+            if not args.no_17lands:
+                for set_code in args.sets:
+                    print(f"Fetching 17lands ratings for {set_code.upper()}...")
+                    ratings = fetch_17lands_ratings(set_code.upper(), fmt=args.format)
+                    if not ratings:
+                        print(
+                            f"  Warning: no 17lands data for {set_code.upper()}"
+                            " (unreachable, or set not on Arena); continuing with lane-fit-only scoring."
+                        )
+                    # A card name shared by two requested sets keeps the first set's rating --
+                    # rows are per-set/per-format, so blending them would misattribute one
+                    # printing's win rate/ALSA to the other.
+                    for name, row in ratings.items():
+                        lands_ratings.setdefault(name, row)
+                matched = sum(1 for c in cube_cards if scryfall.canonic_card_name(c["name"]) in lands_ratings)
+                print(f"Matched 17lands data for {matched} / {len(cube_cards)} cards")
+
+            archetypes = None
+            if args.archetypes is not None:
+                archetypes = load_archetype_config(args.archetypes)
+                archetype_lanes = derive_archetype_lanes(cube_cards, archetypes)
+                selected, lanes = build_cube(
+                    cube_cards, lands_ratings, target=args.target, lanes=archetype_lanes, keep_lands=args.keep_lands
+                )
+                print(f"\nRestricted to {len(archetypes)} official archetypes from {args.archetypes}:")
+                for pair, arche in archetypes.items():
+                    print(f"  {pair}: {arche['name']}")
+            else:
+                selected, lanes = build_cube(
+                    cube_cards, lands_ratings, target=args.target, keep_lands=args.keep_lands
+                )
+                print(f"\nDerived {len(lanes)} archetype lanes (Scryfall function tags + tribes + keywords)")
+                print("Top lanes (by representation):")
+                for lane_name in sorted(lanes, key=lanes.get)[:10]:
+                    label = lane_name.split(":", 1)[-1].replace("-", " ").title()
+                    print(f"  {label}")
+
+            print(
+                f"\n{len(selected)} of {len(cube_cards)} cards fit an archetype lane"
+                f" (capped at --target {args.target})"
+            )
+
+            write_cube_csv(args.out, selected, lanes, lands_ratings, archetypes=archetypes)
+            print(f"\nWrote {len(selected)} cards to {Path(args.out).resolve()}")
+
+            if args.txt_out is not None:
+                write_cube_txt(args.txt_out, selected)
+                print(f"Wrote {len(selected)} cards to {Path(args.txt_out).resolve()}")
 
         case "cardconjourer":
             _run_cardconjourer(args)
