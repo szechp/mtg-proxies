@@ -2673,7 +2673,11 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             if (!region) continue;
             region.outlineWidth = PALE_RETRO_OUTLINE;
             region.outlineColor = 'black';
-            region.shadowBlur = PALE_RETRO_SHADOW_BLUR;
+            // Outline only, no shadow at all -- not even the softened one the type line
+            // gets. These are the smallest text on the card, and at that size any shadow
+            // under an outline just thickens the strokes without adding depth.
+            region.shadowX = 0;
+            region.shadowY = 0;
         }
     }
 
