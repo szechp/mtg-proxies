@@ -20,6 +20,7 @@ const vm        = require('node:vm');
 const crypto    = require('node:crypto');
 const canvasPkg = require('canvas');
 const { createCanvas, loadImage, registerFont } = canvasPkg;
+const { applyFlavorPolicy } = require('./flavor_policy');
 const {
     isPlaneswalkerFace,
     resolveSpecialLayout,
@@ -36,7 +37,7 @@ const OUTPUT  = process.env.CC_OUTPUT || path.join(ROOT, 'output');
 fs.mkdirSync(INPUTS, { recursive: true });
 fs.mkdirSync(OUTPUT, { recursive: true });
 
-// Flavor text (italic lore quotes) is stripped by default. Pass --with-flavor
+// Flavor text is stripped by default except on vanilla creatures. Pass --with-flavor
 // to keep it the way the GUI renders it.
 const INCLUDE_FLAVOR = process.argv.includes('--with-flavor');
 
@@ -1917,14 +1918,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         global.uploadSetSymbol(setSymbolPath, 'resetSetSymbol');
     }
 
-    if (!INCLUDE_FLAVOR) {
-        const stripFlavor = (s) => (typeof s === 'string') ? s.replace(/\{flavor\}[\s\S]*$/, '') : s;
-        for (const k of ['rules', 'rules2', 'rules3',
-                         'ability0', 'ability1', 'ability2', 'ability3']) {
-            const t = global.card.text && global.card.text[k];
-            if (t && typeof t.text === 'string') t.text = stripFlavor(t.text);
-        }
-    }
+    applyFlavorPolicy(global.card.text, dfcFace ? [pristineFace] : (scry.card_faces || [scry]), INCLUDE_FLAVOR);
 
     // Cards whose whole rules text is one short line -- dual-land reminder text
     // like Badlands' "({T}: Add {W} or {B}.)", a mana dork's "{T}: Add {W}."
@@ -1943,8 +1937,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // turns the box into a multi-line quote block, which no real card centers.
     if (global.card.text.rules) {
         const rawFaceText = (face.oracle_text != null ? face.oracle_text : scry.oracle_text) || '';
-        const faceFlavorText = (face.flavor_text != null ? face.flavor_text : scry.flavor_text) || '';
-        const hasAppendedFlavor = INCLUDE_FLAVOR && faceFlavorText.length > 0;
+        const hasAppendedFlavor = (global.card.text.rules.text || '').includes('{flavor}');
         const isShortOneLineText = rawFaceText.length > 0 && rawFaceText.length <= 45 &&
             !rawFaceText.includes('\n') && !hasAppendedFlavor;
         global.card.text.rules.align = isShortOneLineText ? 'center' : 'left';
