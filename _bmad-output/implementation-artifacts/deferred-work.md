@@ -158,3 +158,7 @@ block.
 - **17lands response rows that aren't dicts, or whose `name` isn't a string,**
   crash outside `fetch_17lands_ratings`'s try/except instead of degrading to
   `{}`. Low-likelihood given 17lands' API stability.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-cardconjourer-modeline-frames.md`
+  summary: Give repeated card names with different render settings distinct output and cache identities.
+  evidence: runner.render_deck and harness renderCard use card-name slugs, so variants overwrite the same PNG. Per-frame scaling exclusions also cannot distinguish same-name variants. Existing naming limitation needs a separate change to output/cache identity.

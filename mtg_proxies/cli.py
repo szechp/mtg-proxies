@@ -1503,6 +1503,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     slot_dfc_split_request: set[int] = set()
     slot_dfc_flip_request: set[int] = set()
     slot_language: dict[int, str] = {}
+    slot_frame: dict[int, str] = {}
     for slot_int, card in slot_to_card.items():
         effective_lang = args.language
         if not card.modeline:
@@ -1512,6 +1513,9 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         directives, _warnings = parse_modeline_trailer(card.modeline)
         for d in directives:
             if d.verb == "cardconjourer":
+                requested_frame = _resolve_cc_frame(d.flags)
+                if requested_frame != "auto":
+                    slot_frame[slot_int] = requested_frame
                 if d.flags.get("--scryfall"):
                     slot_scryfall_override[slot_int] = True
                 if d.flags.get("--skip"):
@@ -1708,6 +1712,9 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         # return branch below so it survives whichever art-source path fires.
         sym_override = resolved_set_symbol_by_slot.get(slot_int)
         extras: dict = {"set_symbol_path": sym_override} if sym_override else {}
+        effective_frame = slot_frame.get(slot_int, frame)
+        if slot_int in slot_frame:
+            extras["frame"] = effective_frame
         fs_delta = slot_font_size.get(slot_int)
         if fs_delta is not None:
             extras["font_size"] = fs_delta
@@ -1723,7 +1730,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         # borderless / full-art printings). Resolve it here or signal a skip → fallback.txt
         # (the card then prints from its real scan). Gated to borderless candidates only, so
         # the normal MTGPics→Scryfall art fallback below is left untouched for every other card.
-        if _will_render_borderless(card.card, frame):
+        if _will_render_borderless(card.card, effective_frame):
             set_code = card.card.get("set") or ""
             cn = card.card.get("collector_number") or ""
             allow_mtgpics = bool(set_code and cn) and not (args.scryfall or slot_scryfall_override.get(slot_int))
@@ -1984,8 +1991,16 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         from mtg_proxies.print_cards import CARD_SIZE_MM
 
         card_mm = (float(CARD_SIZE_MM[0]), float(CARD_SIZE_MM[1]))
+        unscaled_names = {
+            f"{filename_prefix_by_slot.get(slot_int, '')}{cc_runner.slug(slot_to_card[slot_int]['name'])}{suffix}.png"
+            for slot_int, selected_frame in slot_frame.items()
+            if selected_frame != frame
+            for suffix in ("", "_back")
+        }
 
         def post_process_cb(png: Path) -> None:
+            if png.name in unscaled_names:
+                return
             applied = frame_scale.enlarge_frame(png, _RETRO_SCALED_DEFAULT_MM, card_mm)
             if applied is None:
                 frame_scale_stats["unmeasurable"] += 1

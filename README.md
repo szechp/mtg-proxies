@@ -521,6 +521,11 @@ straight into `mtg-proxies print` to fill those slots from Scryfall.
 report.csv records the per-card outcome. Re-runs skip any card whose
 <NNNN>-<slug>.png is already in OUTDIR — delete a PNG to force a re-render.
 
+Per-card `#cardconjourer --8th`, `--modern`, `--m15-8th`, `--retro`, and
+`--borderless` override the subcommand's deck-wide frame selection. A bare
+`#cardconjourer` or a modifier such as `--scryfall` keeps the deck-wide frame.
+Cards overriding the frame selected by a deck-wide scaling flag are left unscaled.
+
 Art source: MTGPics (~1430×1058 native crops) by default; cards missing
 from MTGPics fall back to Scryfall's `art_crop` raw. `--upscale` only
 kicks in for the Scryfall-fallback path.
