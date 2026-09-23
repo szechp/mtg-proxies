@@ -129,8 +129,16 @@ def test_parsing(data_dir: Path) -> None:
         ),
     ],
 )
-def test_parse_decklist_warnings(line: str, expected_card_name: str | None, expected_warnings: list[str]) -> None:
+def test_parse_decklist_warnings(
+    line: str, expected_card_name: str | None, expected_warnings: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
     from mtg_proxies.decklists import Card, Comment, parse_decklist_stream
+    from mtg_proxies.scryfall import scryfall
+
+    # Neutralize the art-style nudge: it is sourced from Scryfall's community-edited art_tags,
+    # so leaving it live would tie these print suggestions to whatever the tags say today
+    # (e.g. Alpha's painted Counterspell out-scoring DMR's modern frame by a few points).
+    monkeypatch.setattr(scryfall, "_illustration_style_delta", dict)
 
     decklist, ok, warnings = parse_decklist_stream(StringIO(f"{line}\n"))
 
