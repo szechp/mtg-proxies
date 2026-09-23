@@ -168,6 +168,12 @@ mtg-proxies convert deck.txt deck-out.txt --art-preference standard
 mtg-proxies convert deck.txt deck-out.txt --art-preference wild
 ```
 
+Standard recommendations give classic `1993`/`1997` frames a small +8 bonus,
+so comparable retro reprints beat modern frames (+2). Existing scan-quality,
+language, and art-style scores still apply. This default nudge excludes `2003`
+frames; `--prefer-retro-frame` remains the stronger preference for all three
+pre-2015 frame families. Wild mode is unchanged.
+
 **Prefer the original (older) printing's art:**
 
 ```bash

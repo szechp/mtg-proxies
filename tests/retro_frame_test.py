@@ -12,6 +12,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 
 def _card(
     *,
@@ -137,3 +139,101 @@ def test_recommend_print_retro_recognizes_1993_and_1997_frames() -> None:
     with patch("mtg_proxies.scryfall.scryfall.cards_by_oracle_id", return_value={"oracle-x": candidates}):
         chosen = scryfall.recommend_print(oracle_id="oracle-x", prefer_retro_frame=True)
     assert chosen["id"] == "r1993"
+
+
+@pytest.mark.parametrize("frame", ["1993", "1997", "2003"])
+@pytest.mark.parametrize("mode", ["standard", "wild"])
+def test_default_classic_frame_nudge(frame: str, mode: str) -> None:
+    """Only classic frames receive the default preference, and only in standard mode."""
+    from mtg_proxies import scryfall
+
+    cards = [_card(card_id="modern"), _card(card_id="retro", frame=frame)]
+    with (
+        patch("mtg_proxies.scryfall.scryfall.cards_by_oracle_id", return_value={"oracle-x": cards}),
+        patch("mtg_proxies.scryfall.scryfall._illustration_style_delta", return_value={}),
+    ):
+        chosen = scryfall.recommend_print(oracle_id="oracle-x", art_preference=mode)
+    assert chosen["id"] == ("retro" if mode == "standard" and frame != "2003" else "modern")
+
+
+@pytest.mark.parametrize("retro_changes", [
+    {"highres": False}, {"lang": "de"}, {"nonfoil": False}, {"border_color": "white"},
+])
+def test_classic_frame_nudge_preserves_quality_preferences(retro_changes: dict) -> None:
+    """The modest frame bonus does not beat individual scan/language/finish/border bonuses."""
+    from mtg_proxies import scryfall
+
+    cards = [_card(card_id="modern"), _card(card_id="retro", frame="1997", **retro_changes)]
+    with (
+        patch("mtg_proxies.scryfall.scryfall.cards_by_oracle_id", return_value={"oracle-x": cards}),
+        patch("mtg_proxies.scryfall.scryfall._illustration_style_delta", return_value={}),
+    ):
+        assert scryfall.recommend_print(oracle_id="oracle-x")["id"] == "modern"
+
+
+def test_classic_frame_nudge_combines_with_art_without_beating_highres() -> None:
+    """Oil art plus the frame nudge still loses to a highres scan with an anime penalty."""
+    from mtg_proxies import scryfall
+
+    modern = {**_card(card_id="modern"), "illustration_id": "anime"}
+    retro = {**_card(card_id="retro", frame="1997", highres=False), "illustration_id": "oil"}
+    with (
+        patch("mtg_proxies.scryfall.scryfall.cards_by_oracle_id", return_value={"oracle-x": [modern, retro]}),
+        patch("mtg_proxies.scryfall.scryfall._illustration_style_delta", return_value={"oil": 8, "anime": -16}),
+    ):
+        assert scryfall.recommend_print(oracle_id="oracle-x")["id"] == "modern"
+        assert scryfall.recommend_print(oracle_id="oracle-x", mode="all")[0]["id"] == "modern"
+
+
+def test_better_art_can_outweigh_classic_frame_nudge() -> None:
+    """A modern oil painting can still beat an otherwise comparable untagged retro print."""
+    from mtg_proxies import scryfall
+
+    modern = {**_card(card_id="modern"), "illustration_id": "oil"}
+    retro = _card(card_id="retro", frame="1997")
+    with (
+        patch("mtg_proxies.scryfall.scryfall.cards_by_oracle_id", return_value={"oracle-x": [modern, retro]}),
+        patch("mtg_proxies.scryfall.scryfall._illustration_style_delta", return_value={"oil": 8}),
+    ):
+        assert scryfall.recommend_print(oracle_id="oracle-x")["id"] == "modern"
+
+
+def test_classic_frame_nudge_respects_preferred_set() -> None:
+    """A frame preference cannot escape an explicit set restriction."""
+    from mtg_proxies import scryfall
+
+    cards = [_card(card_id="modern", set_code="abc"), _card(card_id="retro", frame="1997", set_code="xyz")]
+    with (
+        patch("mtg_proxies.scryfall.scryfall.cards_by_oracle_id", return_value={"oracle-x": cards}),
+        patch("mtg_proxies.scryfall.scryfall._illustration_style_delta", return_value={}),
+    ):
+        assert scryfall.recommend_print(oracle_id="oracle-x", preferred_sets=["abc"])["id"] == "modern"
+
+
+@pytest.mark.parametrize("frame", ["1993", "1997"])
+def test_classic_frame_bonus_is_exactly_eight(frame: str) -> None:
+    """Classic +8 ties a modern +2 frame with +6 art, preserving either current print."""
+    from mtg_proxies import scryfall
+
+    modern = {**_card(card_id="modern"), "illustration_id": "acrylic"}
+    classic = _card(card_id="classic", frame=frame)
+    with (
+        patch("mtg_proxies.scryfall.scryfall.cards_by_oracle_id", return_value={"oracle-x": [modern, classic]}),
+        patch("mtg_proxies.scryfall.scryfall._illustration_style_delta", return_value={"acrylic": 6}),
+    ):
+        for current in (modern, classic):
+            assert scryfall.recommend_print(current)["id"] == current["id"]
+
+
+@pytest.mark.parametrize("frame", ["1993", "1997"])
+def test_explicit_retro_preference_does_not_stack_classic_bonus(frame: str) -> None:
+    """The explicit +128 preference treats classic and 2003 frames equally."""
+    from mtg_proxies import scryfall
+
+    eighth = _card(card_id="eighth", frame="2003")
+    classic = _card(card_id="classic", frame=frame)
+    with (
+        patch("mtg_proxies.scryfall.scryfall.cards_by_oracle_id", return_value={"oracle-x": [classic, eighth]}),
+        patch("mtg_proxies.scryfall.scryfall._illustration_style_delta", return_value={}),
+    ):
+        assert scryfall.recommend_print(eighth, prefer_retro_frame=True)["id"] == "eighth"
