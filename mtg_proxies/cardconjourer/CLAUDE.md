@@ -1,0 +1,30 @@
+<!-- bmad:context -->
+<!-- Verified 2026-09-15 against 03b18c1. Managed by bmad-project-context; edits inside this block are replaced on refresh. Split from the root AGENTS.md block, scoped to this subtree. -->
+
+## mtg_proxies/cardconjourer/
+
+Headless Card Conjurer frame rendering, orchestrated from `cli.py`'s `_run_cardconjourer` (per-deck Node harness invocation via `node/harness.js`, slot-prefixed PNG outputs, `fallback.txt` + `report.csv`).
+
+## DFC handling
+
+- Transform/modal_dfc cards render as two separate PNGs BY DEFAULT (`<slug>.png` + `<slug>_back.png`, `out`/`out_back` in the harness response, `png_back` column in `report.csv`), using CC's real DFC frame packs: transform title icon mapped from Scryfall `frame_effects`, gray reverse-P/T reminder on transform fronts, MDFC flipside bar tinted with the other face's color and filled with its name + mana/type, legendary crowns via the engine's autoFrame builders.
+- `--dfc-flip` (deck-wide flag, or `#cardconjourer --dfc-flip` per-card modeline; per-card `--dfc-split` overrides the deck flag) merges both faces into one Kamigawa-flip card instead.
+- `reversible_card` always stays on the flip path; saga-faced and planeswalker-faced DFCs skip to `fallback.txt`.
+- In `print`, `#cardconjourer --dfc-split` is warned-and-ignored — flip only.
+
+## Frame styles
+
+- Set symbols come from CC's local official library per card set (no 8ED hardcode); `--set-symbol` overrides.
+- `--8th` (2003), `--modern` (M15), `--m15-8th`, `--retro` (Seventh Edition 1997) are mutually exclusive (CLI group + modeline mutex).
+- `--m15-8th`: a modern M15 card body restyled with 8th-Edition trim — shares modern's size/legend-crown/P-T-box geometry via engine-native `autoFrameUnified('M15Eighth')` and the `makeM15EighthFrameByLetter` crown builder; transform/MDFC split faces use `packM15Eighth*` DFC packs. Never auto-selected — no Scryfall `frame` value maps to it. Its bottom-info line drops the real-card copyright/legal text and shows a compact `(SET) NUMBER` print-staging tag instead, right-aligned to mirror the artist icon's left-margin gap, capped before the P/T box on creatures/vehicles — a long copyright string was found to collide with long artist names there.
+- `--retro`: engine-native `autoFrameUnified('Seventh')`, per-color land frames, tombstone icon via `frame_effects`, no legend crowns; transform/MDFC split faces use the Classicshifted retro DFC packs with native crowns, transform icon/indicator, and pre-colored flipside bars.
+- No frame flag → style is `auto` (default for both the subcommand and a bare `#cardconjourer` modeline): the harness picks each card's frame from its resolved Scryfall `frame` (`SCRYFALL_FRAME_TO_STYLE`: 2015→modern, 2003→8th, 1997/1993→retro); frames with no CC equivalent (`future`, unknown) skip to `fallback.txt` for the raw scan. Resolved per-card in `runOneJob` (harness.js), only when `job.frame === 'auto'` — an explicit frame flag fully overrides it and renders every card in that frame, never skipping on frame. DFCs in auto render modern (real DFCs are 2015-frame); the 8th/retro/m15-8th DFC packs are reachable only via the explicit flags.
+
+## Adventure / Prepare / planeswalker layouts
+
+- `node/special_layouts.js` — dependency-free routing module (`resolveSpecialLayout`, `routePlaneswalkerDfcFace`, `validateSpecialLayout`), consumed by `harness.js` and directly unit-testable without Canvas. Adventure and Prepare (Scryfall `layout` 'adventure'/'prepare') always render through their dedicated modern-only packs (`packAdventure.js`/`packPrepare.js` via `autoFrameUnified('Adventure'|'Prepare')`) regardless of requested frame — `--8th`/`--m15-8th`/`--retro`/`--borderless` are all ignored for these layouts, since no non-modern furniture exists for the inset spell.
+- Planeswalkers are detected by `type_line` containing "Planeswalker", not by Scryfall `layout` (most single-face planeswalkers are `layout: 'normal'`). A single-face planeswalker renders native `packPlaneswalkerRegular.js` under auto/modern/`--8th`/`--m15-8th` (8th and M15-Eighth have no planeswalker furniture, so both normalize to modern), the Seventh-Edition `packPlaneswalkerSeventh.js` under `--retro`, and `packPlaneswalkerBorderless.js` under `--borderless`.
+- A Transform or MDFC card with a planeswalker on either face always renders as two full-size faces (`forceSplit: true` in `resolveSpecialLayout`) — `--dfc-flip`/`job.dfc_split` is ignored for these, since no combined planeswalker template exists (`runOneJob` ORs `special.forceSplit` into its split decision). Each face routes independently via `routePlaneswalkerDfcFace`: a planeswalker face uses the native full-size planeswalker DFC packs (`packPlaneswalkerTransformFront/Back.js` + `packPlaneswalkerTransformIcons.js` for Transform, `packPlaneswalkerMDFC.js` for MDFC — the latter shared by both faces, disambiguated by `addFrameByName`'s `occurrence` param when both faces are the same color), while a non-planeswalker face keeps its ordinary DFC pack (`packM15TransformFront/Back.js`, `packModalRegular.js`). `--retro` on a Transform planeswalker DFC uses the Classicshifted planeswalker packs (`packClassicshiftedPlaneswalker.js` + `packClassicshiftedPlaneswalkerTransform.js`); MDFC has no Classicshifted planeswalker pack, so `--retro` on an MDFC planeswalker normalizes to modern like the other unsupported styles.
+- `harness.js`'s `assertCompleteSpecialText()` throws if the native importer left any Adventure/Prepare text region or planeswalker loyalty/ability region empty; `runOneJob`'s existing catch-all turns that into a `status: 'skip'` response (no partial PNG ever written), so invalid or incomplete special-layout data falls back to the Scryfall scan like any other unrenderable card.
+
+<!-- /bmad:context -->

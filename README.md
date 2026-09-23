@@ -394,7 +394,9 @@ Supported verbs:
   no frame flag the frame is chosen automatically from the card's Scryfall data (same mapping
   as the subcommand). All flagged cards in the decklist
   are batched into a single subprocess invocation, so the ~1-2 s engine boot amortizes
-  across the whole deck. Unsupported layouts (sagas, planeswalkers) silently fall back to Scryfall. Requires
+  across the whole deck. Adventure, Prepare, and planeswalker cards (including Transform/MDFC
+  planeswalker faces) render through their native Card Conjurer layouts; remaining unsupported
+  layouts (sagas, battles, etc.) silently fall back to Scryfall. Requires
   `make cardconjurer` (one-time lazy clone of the renderer source).
 
   Extra modifiers for this directive:
@@ -511,8 +513,10 @@ engine and write it to OUTDIR. The mutually-exclusive frame selectors --8th /
 picked per-card from the card's Scryfall frame (2015→modern, 2003→8th,
 1997/1993→retro), and
 frames with no Card Conjurer equivalent (Future Sight, unknown) skip to the
-scan. Unsupported layouts (saga, transform, modal_dfc, reversible_card,
-planeswalker) are logged in fallback.txt — a valid decklist you can feed
+scan. Adventure, Prepare, and planeswalker cards (single- and double-faced,
+including Transform/MDFC planeswalker faces) render through their native Card
+Conjurer layouts. Remaining unsupported layouts (saga, reversible_card,
+battle, etc.) are logged in fallback.txt — a valid decklist you can feed
 straight into `mtg-proxies print` to fill those slots from Scryfall.
 report.csv records the per-card outcome. Re-runs skip any card whose
 <NNNN>-<slug>.png is already in OUTDIR — delete a PNG to force a re-render.

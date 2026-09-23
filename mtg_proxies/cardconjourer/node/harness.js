@@ -20,6 +20,11 @@ const vm        = require('node:vm');
 const crypto    = require('node:crypto');
 const canvasPkg = require('canvas');
 const { createCanvas, loadImage, registerFont } = canvasPkg;
+const {
+    isPlaneswalkerFace,
+    resolveSpecialLayout,
+    routePlaneswalkerDfcFace,
+} = require('./special_layouts');
 
 const ROOT    = __dirname;
 // In production CC lives in ~/.cache/mtg-proxies/cardconjurer (cloned by the
@@ -921,14 +926,10 @@ async function fetchScryfall(name) {
 //   leveler                    — level-up boxes (Joraga Treespeaker)
 //   class                      — DnD Class three-level stack
 //   case                       — Karlov Manor Cases three-section enchantment
-//   adventure                  — adventure half doesn't fit a single frame
 //   battle                     — sideways layout (March of the Machine)
 //   planar / scheme / vanguard — oversized non-card shapes
-// Planeswalkers also punt (versionPlaneswalker.js has heavy DOM deps the
-// headless context doesn't satisfy) but Scryfall keeps them on layout
-// 'normal', so they're gated on type_line below.
 const SKIP_LAYOUTS = new Set([
-    'saga', 'split', 'meld', 'leveler', 'class', 'case', 'adventure', 'battle',
+    'saga', 'split', 'meld', 'leveler', 'class', 'case', 'battle',
     'planar', 'scheme', 'vanguard',
 ]);
 // Keyword-based skips for layouts Scryfall still marks 'normal'. Mutate and
@@ -936,8 +937,6 @@ const SKIP_LAYOUTS = new Set([
 const SKIP_KEYWORDS = new Set(['Mutate', 'Prototype', 'Station']);
 function shouldSkip(scry) {
     if (SKIP_LAYOUTS.has(scry.layout)) return `layout '${scry.layout}'`;
-    // Planeswalker isn't a Scryfall layout (Ashiok's layout is 'normal') — gate on type_line.
-    if ((scry.type_line || '').toLowerCase().includes('planeswalker')) return 'planeswalker';
     // Transform sagas (NEO, Urabrask…) have layout 'transform', not 'saga' — the
     // joined type_line catches them. The chapter layout breaks on every frame
     // we render (crammed roman-numeral text, phantom P/T), flip and split alike.
@@ -1451,15 +1450,71 @@ function detectLandColor(face) {
     return m ? m[1] : null;
 }
 
+// packPlaneswalkerSeventh.js ships no loyalty-badge graphic of its own (confirmed by
+// grepping every availableFrames entry in the pack — only a card.text.loyalty NUMBER
+// position, no image). Two hand-rolled stand-ins were tried and rejected: drawing
+// /img/frames/planeswalker/maskLoyalty.png directly (its own raw pixels are solid red,
+// uncorrelated with card color) and a flat-fill-plus-synthetic-border recolor of that
+// same mask (looked "jank" — a real card's badge has actual bevel/shading, not a flat
+// color). The real fix: packPlaneswalkerRegular.js's own per-color frame art (e.g.
+// planeswalkerFrameA.png for Artifact/colorless) HAS a properly rendered badge baked
+// in at this same position — clip THAT through the shared loyalty mask instead of
+// drawing the mask's own pixels or Seventh's blank parchment. Regular's frame PNGs are
+// 1500x2100 (baseWidth/baseHeight) vs the mask's 2010x2814 — same aspect ratio, so
+// scaling the frame image up to the mask's canvas is a faithful resample, not a
+// distortion. A drop shadow is baked in too — real card badges sit visibly above the
+// parchment, not flush with it. Cached per base-color name (data URI) since each
+// card's color picks a different source frame.
+//
+// Seventh's own card.text.loyalty (x:0.8074, y:0.9043, width:0.1367, height:0.0429,
+// from packPlaneswalkerSeventh.js's loadTextOptions) was authored against a pack with
+// no badge to align to, so it doesn't quite match this mask's real shape: sampling the
+// mask's own opaque pixels gives a true bounding-box center of (x:0.8756, y:0.9131),
+// while Seventh's text box center is (x:0.8758, y:0.9258) — x matches almost exactly,
+// but y sits 0.0127 (~36px of 2814) too low. Corrected where card.text.loyalty is set,
+// next to the rules-box re-anchor above.
+const _seventhLoyaltyBadgeDataUris = new Map();
+const SEVENTH_LOYALTY_BADGE_SOURCE_LETTER = {
+    'White Frame': 'W', 'Blue Frame': 'U', 'Black Frame': 'B', 'Red Frame': 'R',
+    'Green Frame': 'G', 'Multicolored Frame': 'M', 'Artifact Frame': 'A',
+};
+async function getSeventhLoyaltyBadgeDataUri(baseName) {
+    const letter = SEVENTH_LOYALTY_BADGE_SOURCE_LETTER[baseName] || 'A';
+    if (_seventhLoyaltyBadgeDataUris.has(letter)) return _seventhLoyaltyBadgeDataUris.get(letter);
+    const maskPath = path.join(CC_ROOT, 'img/frames/planeswalker/maskLoyalty.png');
+    const framePath = path.join(CC_ROOT, `img/frames/planeswalker/regular/planeswalkerFrame${letter}.png`);
+    if (!fs.existsSync(maskPath) || !fs.existsSync(framePath)) return null;
+    const [mask, frame] = await Promise.all([loadImage(maskPath), loadImage(framePath)]);
+    const badge = createCanvas(mask.width, mask.height);
+    const badgeCtx = badge.getContext('2d');
+    badgeCtx.drawImage(frame, 0, 0, badge.width, badge.height);
+    badgeCtx.globalCompositeOperation = 'destination-in';
+    badgeCtx.drawImage(mask, 0, 0);
+
+    const canvas = createCanvas(mask.width, mask.height);
+    const ctx = canvas.getContext('2d');
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.65)';
+    ctx.shadowBlur = badge.height * 0.006;
+    ctx.shadowOffsetX = badge.width * 0.0025;
+    ctx.shadowOffsetY = badge.height * 0.003;
+    ctx.drawImage(badge, 0, 0);
+    const uri = canvas.toDataURL('image/png');
+    _seventhLoyaltyBadgeDataUris.set(letter, uri);
+    return uri;
+}
+
 // Add the first availableFrames entry whose name matches a candidate (in
 // order), with optional extra masks. Returns the matched name or null. The
 // candidate-list form covers pack gaps — e.g. pack8thTransform has no Land /
 // Colorless frame, so land faces fall back to the Artifact parchment.
 // Entries whose image file is missing from the CC checkout are skipped too
 // (pack8thTransformBack's Colorless P/T points at a nonexistent l.png).
-async function addFrameByName(candidates, masks = []) {
+async function addFrameByName(candidates, masks = [], occurrence = 0) {
     for (const name of candidates) {
-        const idx = (global.availableFrames || []).findIndex(f => f && f.name === name);
+        const matches = (global.availableFrames || [])
+            .map((frame, index) => ({ frame, index }))
+            .filter(({ frame: candidate }) => candidate && candidate.name === name);
+        const idx = matches[occurrence]?.index ?? -1;
         if (idx < 0) continue;
         const src = global.availableFrames[idx].src || '';
         if (src.startsWith('/') && !fs.existsSync(path.join(CC_ROOT, src.slice(1)))) continue;
@@ -1588,7 +1643,8 @@ function resetCanvases() {
     global.card.frames = [];
     for (const name of ['card', 'frame', 'frameMasking', 'frameCompositing',
                         'text', 'paragraph', 'line', 'watermark',
-                        'bottomInfo', 'guidelines', 'prePT', 'preview']) {
+                        'bottomInfo', 'guidelines', 'prePT', 'preview',
+                        'planeswalkerPreFrame', 'planeswalkerPostFrame']) {
         const c = global[name + 'Canvas'];
         if (!c) continue;
         const ctx = global[name + 'Context'] || c.getContext('2d');
@@ -1599,12 +1655,53 @@ function resetCanvases() {
     pendingImages.splice(0);
 }
 
+function resetPlaneswalkerState(frame) {
+    global.card.planeswalker = {
+        abilities: ['', '', '', ''],
+        abilityAdjust: frame === 'retro'
+            ? [-0.0143, -0.0143, -0.0143, -0.0143]
+            : [0, 0, 0, 0],
+        count: 0,
+        x: 0.1167,
+        width: 0.8094,
+        invert: false,
+    };
+    querySelector('#planeswalker-invert').checked = false;
+    for (let index = 0; index < 4; index++) {
+        querySelector(`#planeswalker-height-${index}`).value = 0;
+        querySelector(`#planeswalker-cost-${index}`).value = '';
+        querySelector(`#planeswalker-shift-${index}`).value = 0;
+    }
+}
+
+function assertCompleteSpecialText(kind, face) {
+    if (kind === 'adventure' || kind === 'prepare') {
+        for (const key of ['title', 'mana', 'type', 'rules', 'title2', 'mana2', 'type2', 'rules2']) {
+            if (!global.card.text?.[key] || !String(global.card.text[key].text || '').trim()) {
+                throw new Error(`${kind}: native importer left ${key} empty`);
+            }
+        }
+        return;
+    }
+    if (kind !== 'planeswalker') return;
+    if (!String(global.card.text?.loyalty?.text || '').trim()) {
+        throw new Error('planeswalker: native importer left loyalty empty');
+    }
+    const lines = String(face.oracle_text || '').split('\n').filter(line => line.trim()).slice(0, 4);
+    for (let index = 0; index < lines.length; index++) {
+        if (!String(global.card.text?.[`ability${index}`]?.text || '').trim()) {
+            throw new Error(`planeswalker: native importer left ability${index} empty`);
+        }
+    }
+}
+
 // Render a single face: load the pack, import + select the indicated face,
 // upload the matching art, autoframe, drain images, draw, save.
 async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath, fontSizeDelta = 0,
-                             dfcFace = null, frameNameSuffix = '' }) {
+                             dfcFace = null, frameNameSuffix = '', specialLayout = null }) {
     resetCanvases();
     await ensurePackLoaded(packFile);
+    if (specialLayout?.planeswalker) resetPlaneswalkerState(frame);
 
     // Per-render selector reset. These default to 8th at load time
     // (SELECTOR_OVERRIDES + the force-reset after engine init), but per-card frame
@@ -1638,17 +1735,94 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // Station's own pack already built its frame via initializeStationFrame (see the
     // 'station' branch below) — same reasoning as borderless.
     else if (frame === 'station') autoFrameTarget = 'false';
+    else if (specialLayout?.autoFrameTarget) autoFrameTarget = specialLayout.autoFrameTarget;
     // dfc_split faces build their frames manually from the DFC pack below —
     // 'false' makes any stray engine-scheduled autoFrame() a no-op so it can't
     // overwrite them with the regular (non-DFC) frame art.
-    if (dfcFace) autoFrameTarget = 'false';
+    if (dfcFace || specialLayout?.planeswalker) autoFrameTarget = 'false';
 
     querySelector('#autoFrame').value = autoFrameTarget;
     querySelector('#lockSetSymbolURL').checked  = harnessOwnsSetSymbol;
     querySelector('#lockSetSymbolCode').checked = harnessOwnsSetSymbol;
 
     querySelector('#import-index').value = String(faceIdx);
+    // Planeswalker packs use ability0-3/loyalty instead of rules/pt — but CC's own
+    // changeCardIndex (creator-23.js) unconditionally writes card.text.rules.text
+    // (no optional chaining) whenever card.version matches its generic multi-faced
+    // heuristic (any of flip/split/transform/modal/etc. as a SUBSTRING — e.g.
+    // 'planeswalkerTransformFront' matches 'transform'), which is true for every
+    // Transform/MDFC-adjacent planeswalker pack. Without `rules`/`pt` defined, that
+    // assignment throws "Cannot set properties of undefined". Stub them as inert
+    // (near-zero, unused) placeholders so the native import completes without
+    // crashing; the real ability/loyalty text is written a few lines later in the
+    // same call by changeCardIndex's dedicated `card.version.includes('planeswalker')`
+    // branch, so the stubs are discarded right after — nothing depends on them.
+    const planeswalkerImportStubKeys = [];
+    if (specialLayout?.planeswalker) {
+        for (const key of ['rules', 'rules2', 'pt', 'pt2', 'defense']) {
+            if (!global.card.text[key]) {
+                global.card.text[key] = { text: '', x: 0, y: 0, width: 0.0001, height: 0.0001, size: 0.0001, oneLine: true };
+                planeswalkerImportStubKeys.push(key);
+            }
+        }
+    }
     global.importCard(processed);
+    for (const key of planeswalkerImportStubKeys) delete global.card.text[key];
+
+    // importCard's native ability-height split (creator-23.js) divides a hardcoded
+    // 0.2915 card-height budget evenly across the abilities, starting at
+    // packPlaneswalkerSeventh.js's own ability0.y (0.6067) — both tuned for
+    // Regular/Borderless, not for Seventh's own rules-box art. Seventh's pack
+    // declares a `bounds` var ({x:0.3354, y:0.6239, width:0.33, height:0.2386}) that
+    // LOOKS like the real box, but it's dead code — grepping the pack file, nothing
+    // ever reads it. The real reference is the frame art itself: sampled the actual
+    // rules-box rectangle baked into img/frames/seventh/regular/c.png (flat-grey
+    // pixel run, identical at three x-positions across its width) at y:0.5977 to
+    // y:0.8863 — i.e. start 0.009 higher and total height 0.2886, barely different
+    // from the native 0.2915 budget. Re-anchor to that measured box and re-stack.
+    if (specialLayout?.planeswalker && frame === 'retro' && !specialLayout.classicshifted
+        && global.card.version === 'planeswalkerSeventh') {
+        const RULES_BOX_TOP = 0.5977;
+        const RULES_BOX_HEIGHT = 0.2886;
+        const nativeTop = global.card.text.ability0.y;
+        const nativeBudget = 0.2915;
+        const scale = RULES_BOX_HEIGHT / nativeBudget;
+        global.card.text.ability0.y = RULES_BOX_TOP;
+        for (let i = 0; i < 4; i++) {
+            const input = querySelector(`#planeswalker-height-${i}`);
+            input.value = Math.round((parseInt(input.value) || 0) * scale);
+        }
+        if (typeof global.planeswalkerEdited === 'function') global.planeswalkerEdited();
+
+        // Re-center the loyalty NUMBER on the real badge mask's own bounding box —
+        // see getSeventhLoyaltyBadgeDataUri's comment for the measured y mismatch.
+        if (global.card.text.loyalty) {
+            const LOYALTY_BADGE_CENTER_Y = 0.9131;
+            global.card.text.loyalty.y = LOYALTY_BADGE_CENTER_Y - global.card.text.loyalty.height / 2;
+        }
+
+        // The +2/-X/-10 cost icons are positioned separately, from
+        // versionPlaneswalker.js's own hardcoded per-ability-count fraction table
+        // (planeswalkerAbilityLayout) — e.g. 0.6639 for a 3-ability card's first icon.
+        // That constant was tuned against the NATIVE (wrong) box, where it happened to
+        // land level with the second line, not the first — the box-top shift above
+        // (-0.009) only closes part of the gap. -0.027 is the extra empirically-checked
+        // nudge (verified by render: icon now lines up with each ability's first line)
+        // — 0.009 + 0.027 = 0.036 total, close to one text line's height (textSize
+        // ~99px / cardHeight 2814 ≈ 0.035) — consistent with the table having been
+        // built for a layout roughly one line taller per ability than Seventh's real
+        // box supports. abilityAdjust is applied from the '#planeswalker-shift-N' DOM
+        // pixel values (not the card.planeswalker.abilityAdjust array directly —
+        // planeswalkerEdited() overwrites that array FROM the DOM inputs every call).
+        if (typeof global.scaleHeight === 'function') {
+            const topShiftPx = Math.round(global.scaleHeight(RULES_BOX_TOP - nativeTop - 0.027));
+            for (let i = 0; i < 4; i++) {
+                const shiftInput = querySelector(`#planeswalker-shift-${i}`);
+                shiftInput.value = (parseInt(shiftInput.value) || 0) + topShiftPx;
+            }
+            if (typeof global.planeswalkerEdited === 'function') global.planeswalkerEdited();
+        }
+    }
     
     // For flip layouts, move the set symbol to the top type line.
     // We anchor it relative to the type-line center and P/T box left edge.
@@ -1820,7 +1994,78 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         leftRegion.width = Math.max(0.2, leftRegion.width - reserve);
     };
 
-    if (dfcFace) {
+    if (specialLayout?.planeswalker) {
+        const baseName = getFrameNameForFace(pristineFace);
+        const occurrence = specialLayout.frameOccurrence || 0;
+        const added = await addFrameByName(
+            [baseName + frameNameSuffix, 'Artifact Frame' + frameNameSuffix, 'Colorless Frame' + frameNameSuffix],
+            [],
+            occurrence,
+        );
+        if (!added) throw new Error(`planeswalker: no native frame for ${baseName}${frameNameSuffix}`);
+
+        // packPlaneswalkerSeventh.js ships no loyalty-badge artwork of its own — see
+        // getSeventhLoyaltyBadgeDataUri's comment for why the real modern frame art,
+        // clipped through the shared badge mask, is the fix (not a synthetic fill, not
+        // the mask's own raw red pixels, not Seventh's blank texture).
+        if (frame === 'retro' && !specialLayout.classicshifted) {
+            const badgeUri = await getSeventhLoyaltyBadgeDataUri(baseName);
+            if (badgeUri) {
+                const loyaltyBadge = { src: badgeUri, name: 'Loyalty Badge', masks: [] };
+                global.card.frames.unshift(loyaltyBadge);
+                await global.addFrame([], loyaltyBadge);
+            }
+        }
+
+        if (specialLayout.classicshifted) {
+            await addFrameByName(['Frame Cutout']);
+            await addFrameByName(['Transform Icon']);
+            await addFrameByName([dfcIconName(scry, faceIdx), DFC_ICON_DEFAULT[faceIdx]]);
+            const otherFace = (scry.card_faces || [])[faceIdx === 0 ? 1 : 0];
+            if (otherFace) {
+                await addFrameByName([
+                    getFrameNameForFace(otherFace).replace(' Frame', ' Transform Indicator'),
+                    'Colorless Transform Indicator',
+                ]);
+            }
+        } else if (scry.layout === 'transform') {
+            await addFrameByName([dfcIconName(scry, faceIdx), DFC_ICON_DEFAULT[faceIdx]]);
+            if (specialLayout.side === 'back') await addFrameByName(['Loyalty Box']);
+        }
+
+        reserveRight(global.card.text.title, global.card.text.mana);
+    } else if (specialLayout?.autoFrameTarget) {
+        // Adventure/Prepare card_faces carry no per-face `colors` field on Scryfall
+        // (unlike Transform/MDFC faces) — the inset and the main face share one
+        // frame color, recorded only on the top-level card. Fall back to that so
+        // autoFrameUnified doesn't build a colorless frame for e.g. a red creature.
+        const insetColors = faceColors
+            || (Array.isArray(scry.colors) && scry.colors.length ? scry.colors : []);
+        await global.autoFrameUnified(
+            specialLayout.autoFrameTarget,
+            insetColors,
+            (face.mana_cost || global.card.text.mana?.text || ''),
+            (pristineFace.type_line || global.card.text.type?.text || ''),
+            (face.power || global.card.text.pt?.text || ''),
+        );
+        reserveRight(global.card.text.title, global.card.text.mana);
+        reserveRight(global.card.text.title2, global.card.text.mana2);
+        // Adventure/Prepare's main (creature) rules box ships at y:0.65 height:0.2358 —
+        // ending at 0.8858, essentially flush against the P/T plate's own y:0.8848
+        // (autoFrame.js's Adventure/Prepare `bounds.pt`, shared with ordinary M15 creature
+        // frames). A ~0.001 gap survives the engine's own browser auto-fit but not
+        // node-canvas's slightly different glyph metrics, so long oracle text's last line
+        // bleeds onto the plate. Clamp with a real safety margin whenever this face has
+        // power — the inset spell face (rules2) never has a P/T box, so it's left alone.
+        if (global.card.text.rules && pristineFace.power != null && pristineFace.power !== '') {
+            const ptBoxTop = 0.8848;
+            const margin = 0.008;
+            const maxHeight = ptBoxTop - global.card.text.rules.y - margin;
+            if (maxHeight > 0 && global.card.text.rules.height > maxHeight) {
+                global.card.text.rules.height = maxHeight;
+            }
+        }
+    } else if (dfcFace) {
         // dfc_split: build the whole-card frame from the loaded DFC pack's
         // availableFrames. autoFrameUnified can't do this — its 8th/M15 frame
         // configs point at the regular frame art, not the DFC variants with
@@ -1854,7 +2099,29 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         // packs get none — the authentic 8th frame predates crowns and CC's
         // own 8th auto-frame config has supportsCrown: false.
         const faceIsLegendary = (pristineFace.type_line || '').toLowerCase().includes('legendary');
-        if (frame === 'retro' && faceIsLegendary) {
+        // Planeswalker-DFC non-planeswalker faces (e.g. Nissa, Vastwood Seer's creature
+        // front) route through CC's dedicated static legend-crown packs instead of the
+        // procedural M15-letter builder below: that builder was written for ordinary M15
+        // legendary crowns, and its geometry only approximates the modal/transform packs'
+        // own title-bar proportions. Retro already has its own Classicshifted crown branch
+        // below; 8th/m15-8th never reach here for a planeswalker-DFC card — resolveSpecialLayout
+        // normalizes those frame requests to modern. These static packs have no true per-color
+        // split (unlike the procedural builder) — acceptable since every printed
+        // planeswalker-DFC's non-PW face is a single Scryfall color; a genuinely multicolor
+        // face would fall back to the single 'Multicolored Legend Crown' art.
+        const usesStaticDfcCrown = !!specialLayout && frame === 'modern' && faceIsLegendary
+            && (scry.layout === 'modal_dfc' || scry.layout === 'transform');
+        if (usesStaticDfcCrown) {
+            const crownPackFile = scry.layout === 'modal_dfc' ? 'packModalLegendCrowns.js' : 'packTransformLegendCrowns.js';
+            await ensurePackLoaded(crownPackFile);
+            for (const af of global.availableFrames || []) {
+                if (af && /Crown$/.test(af.name || '')) delete af.complementary;
+            }
+            const crownSuffix = (scry.layout === 'transform' && dfcFace === 'back') ? ' (Back)' : '';
+            await addFrameByName(['Legend Crown Border Cover']);
+            await addFrameByName([baseName.replace(' Frame', ' Legend Crown') + crownSuffix,
+                                  'Multicolored Legend Crown' + crownSuffix]);
+        } else if (frame === 'retro' && faceIsLegendary) {
             // Classicshifted ships crowns as named availableFrames entries (no
             // autoFrame config exists for it). The pack's numeric `complementary`
             // index predates its current entry list — today it lands on
@@ -1867,7 +2134,8 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             await addFrameByName([baseName.replace(' Frame', ' Crown'),
                                   'Artifact Crown', 'Colorless Crown']);
         }
-        const crownBuilder = (frame === 'retro') ? null
+        const crownBuilder = usesStaticDfcCrown ? null  // handled above via static packs
+            : (frame === 'retro') ? null
             : (scry.layout === 'modal_dfc') ? global.makeM15EighthFrameByLetter
             : (frame === 'modern') ? global.makeM15FrameByLetter
             : (frame === 'm15-8th') ? global.makeM15EighthFrameByLetter
@@ -2406,6 +2674,9 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     if (frame === 'station' && typeof global.stationEdited === 'function') {
         global.stationEdited();
     }
+    if (specialLayout?.planeswalker && typeof global.planeswalkerEdited === 'function') {
+        global.planeswalkerEdited();
+    }
 
     // De-overlap the type line vs the set symbol. MUST run here, after the image drain above —
     // not earlier — because the icon's real on-canvas position (card.setSymbolX) is only known
@@ -2477,6 +2748,34 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         global.card.artBounds = _origArtBounds;
         global.autoFitArt();
     }
+
+    // Margin loading resizes every registered canvas, including the two
+    // planeswalker version canvases. Rebuild their loyalty icons and alternating
+    // ability backgrounds at the final dimensions after all image assets loaded.
+    if (specialLayout?.planeswalker && typeof global.planeswalkerEdited === 'function') {
+        global.planeswalkerEdited();
+    }
+
+    // Every planeswalker pack's ability-text boxes (card.text.ability0-3) run the full
+    // 0.7467 card-width fraction, well past the loyalty badge's left edge (x=0.806) baked
+    // into the same base frame art. Real cards' last ability rarely wraps far enough right
+    // to reach it, but verbose ones (Ugin, the Spirit Dragon's -10) do, and the loyalty
+    // number is drawn on TOP of the text afterward — the interactive editor's per-ability
+    // "shift" inputs exist precisely so a human can narrow this by hand; nudge it here
+    // instead, on only the last populated ability (the rest never reach that far down).
+    if (specialLayout?.planeswalker && global.card.planeswalker) {
+        const lastIndex = global.card.planeswalker.count - 1;
+        const lastAbility = global.card.text[`ability${lastIndex}`];
+        if (lastAbility) {
+            const loyaltyLeftEdge = global.card.text.loyalty?.x ?? 0.806;
+            lastAbility.width = Math.min(lastAbility.width, loyaltyLeftEdge - lastAbility.x - 0.01);
+        }
+    }
+
+    assertCompleteSpecialText(
+        specialLayout?.planeswalker ? 'planeswalker' : specialLayout?.kind,
+        face,
+    );
 
     // Must precede drawText() -- it rasterises card.text onto its own canvas, so a
     // shadowBlur set after this point is simply never read. (Learned the hard way:
@@ -2731,6 +3030,8 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
 }
 
 async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fontSizeDelta = 0, dfcSplit = false } = {}) {
+    const special = resolveSpecialLayout(scry, frame);
+    if (special?.kind === 'invalid') throw new Error(special.reason);
     const skipReason = shouldSkip(scry);
     if (skipReason) {
         throw new Error(`${skipReason} not supported on ${frame} frame — fall back to Scryfall image`);
@@ -2763,7 +3064,7 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
 
     // dfc_split: render each face as its own full-size card via the real DFC
     // packs. Returns { out, outBack } instead of a single path.
-    const splitPacks = dfcSplit ? packsForDfcSplit(scry.layout, frame) : null;
+    const splitPacks = !special && dfcSplit ? packsForDfcSplit(scry.layout, frame) : null;
     if (splitPacks) {
         const out = await renderFace({
             packFile: splitPacks.front, processed, faceIdx: 0, scry, outName: slug,
@@ -2776,8 +3077,38 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
         return { out, outBack };
     }
 
-    let packFile = packForLayout(scry.layout, frame).single;
-    if (frame === 'borderless' && scry.layout !== 'flip') packFile = borderlessPack(scry);
+    if (special?.kind === 'planeswalker-dfc') {
+        const routes = [0, 1].map(index => routePlaneswalkerDfcFace(scry, frame, index));
+        if (routes.some(route => !route)) throw new Error('planeswalker DFC: missing native face route');
+        let out = null;
+        try {
+            out = await renderFace({
+                packFile: routes[0].pack, processed, faceIdx: 0, scry, outName: slug,
+                frame, setSymbolPath, fontSizeDelta, dfcFace: 'front',
+                frameNameSuffix: routes[0].frameNameSuffix,
+                specialLayout: routes[0],
+            });
+            const outBack = await renderFace({
+                packFile: routes[1].pack, processed, faceIdx: 1, scry, outName: slug + '_back',
+                frame, setSymbolPath, fontSizeDelta, dfcFace: 'back',
+                frameNameSuffix: routes[1].frameNameSuffix,
+                specialLayout: routes[1],
+            });
+            return { out, outBack };
+        } catch (error) {
+            if (out) {
+                try { fs.unlinkSync(out); } catch (_) {}
+            }
+            throw error;
+        }
+    }
+
+    let packFile = special?.pack || packForLayout(scry.layout, frame).single;
+    // Planeswalker borderless already resolved its own native pack via `special.pack`
+    // (packPlaneswalkerBorderless.js) above — borderlessPack() picks the ORDINARY promo
+    // packs (no loyalty/ability text regions, no versionPlaneswalker.js load), which would
+    // silently produce a loyalty-less card. Only override for non-special borderless cards.
+    if (!special && frame === 'borderless' && scry.layout !== 'flip') packFile = borderlessPack(scry);
     // 8th legend crowns live in their own pack, so load it alongside pack8th to get the
     // crown frames into availableFrames. pack8th goes LAST because ensurePackLoaded
     // re-triggers only the final file's loadFrameVersion onclick, and the crown pack
@@ -2786,7 +3117,12 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
     if (frame === '8th' && scry.layout !== 'flip' && wantsEighthLegendCrown(scry.type_line)) {
         packFile = ['pack8thLegendCrowns.js', 'pack8th.js'];
     }
-    return await renderFace({ packFile, processed, faceIdx: 0, scry, outName: slug, frame, setSymbolPath, fontSizeDelta });
+    return await renderFace({
+        packFile, processed, faceIdx: 0, scry, outName: slug, frame, setSymbolPath, fontSizeDelta,
+        specialLayout: special?.kind === 'planeswalker'
+            ? { ...special, planeswalker: true, side: 'single' }
+            : special,
+    });
 }
 
 
@@ -2847,11 +3183,15 @@ async function runOneJob(job) {
     try {
         const { scry } = await fetchScryfall(job.name);
         
+        const requestedFrame = job.frame || '8th';
+        const special = resolveSpecialLayout(scry, requestedFrame);
+
         // dfc_split: render transform / modal_dfc faces as two separate cards
         // instead of the flip merge. reversible_card is excluded — both its
         // faces are fronts (no transform icon, no frame_effects), so the flip
         // merge remains the only sensible rendering for it.
-        const dfcSplit = !!job.dfc_split && ['transform', 'modal_dfc'].includes(scry.layout);
+        const dfcSplit = (special?.forceSplit || !!job.dfc_split)
+            && ['transform', 'modal_dfc'].includes(scry.layout);
 
         // art_path override: ESRGAN-upscaled local file OR Python-composited DFC art.
         // Threaded into scry.image_uris.art_crop and face uris so the engine
@@ -2890,8 +3230,8 @@ async function runOneJob(job) {
         // resolved print's Scryfall ``frame``; an unmappable frame (Future Sight, unknown)
         // skips to fallback.txt so the raw Scryfall scan is used. An explicit style always
         // renders, even for old/oddball frames.
-        let frame = job.frame || '8th';
-        if (frame === 'auto') {
+        let frame = special && special.kind !== 'invalid' ? special.frame : requestedFrame;
+        if (!special && frame === 'auto') {
             const resolved = frameFromScryfall(scry);
             if (!resolved) {
                 writeResponse({
