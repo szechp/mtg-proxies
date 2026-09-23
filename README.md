@@ -525,6 +525,11 @@ Per-card `#cardconjourer --8th`, `--modern`, `--m15-8th`, `--retro`, and
 `--borderless` override the subcommand's deck-wide frame selection. A bare
 `#cardconjourer` or a modifier such as `--scryfall` keeps the deck-wide frame.
 Cards overriding the frame selected by a deck-wide scaling flag are left unscaled.
+Per-card `#cardconjourer --retro-scaled` and `#cardconjourer --8th-scaled`
+select the corresponding frame and apply the same overlap as the CLI flags,
+including when used through `print`. They override the deck's frame and scaling
+selection for that card. A matching base flag (such as `--retro --retro-scaled`)
+is allowed; flags selecting different frame families conflict.
 
 Art source: MTGPics (~1430×1058 native crops) by default; cards missing
 from MTGPics fall back to Scryfall's `art_crop` raw. `--upscale` only

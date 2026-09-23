@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-@pytest.mark.parametrize("frame", ["8th", "modern", "m15-8th", "retro", "borderless"])
+@pytest.mark.parametrize("frame", ["8th", "modern", "m15-8th", "retro", "borderless", "retro-scaled", "8th-scaled"])
 @pytest.mark.parametrize("deck_frame", [None, "modern", "borderless"])
 def test_modeline_frame_overrides_deck(tmp_path: Path, frame: str, deck_frame: str | None) -> None:
     """Every selector reaches the job and controls art routing without leaking to other cards."""
@@ -33,7 +33,7 @@ def test_modeline_frame_overrides_deck(tmp_path: Path, frame: str, deck_frame: s
         base = render.call_args.kwargs["frame"]
         for slot in range(1, 5):
             extras = prepare(slot)
-            effective = frame if slot == 1 else (deck_frame or "auto")
+            effective = frame.removesuffix("-scaled") if slot == 1 else (deck_frame or "auto")
             assert {"frame": base, **extras}["frame"] == effective
             assert bool(extras.get("skip")) == (effective == "borderless")
 
@@ -68,7 +68,7 @@ def test_frame_override_survives_custom_art_and_scaling(tmp_path: Path) -> None:
         scale.assert_called_once()
 
 
-@pytest.mark.parametrize("frame", ["8th", "modern", "m15-8th", "retro", "borderless"])
+@pytest.mark.parametrize("frame", ["8th", "modern", "m15-8th", "retro", "borderless", "retro-scaled", "8th-scaled"])
 def test_frame_reaches_serialized_harness_job(tmp_path: Path, frame: str) -> None:
     """The real runner and subprocess wrapper serialize per-card overrides."""
     import io
@@ -99,7 +99,7 @@ def test_frame_reaches_serialized_harness_job(tmp_path: Path, frame: str) -> Non
     ):
         main()
     jobs = [json.loads(call.args[0]) for call in process.stdin.write.call_args_list]
-    assert [job["frame"] for job in jobs] == [frame, "8th"]
+    assert [job["frame"] for job in jobs] == [frame.removesuffix("-scaled"), "8th"]
     assert jobs[0]["art_path"] == str(art)
 
 
@@ -127,3 +127,122 @@ def test_borderless_override_fetches_full_bleed_art(tmp_path: Path) -> None:
         extras = render.call_args.kwargs["prepare_each"](1)
         assert extras == {"frame": "borderless", "art_path": str(art)}
         assert fetch.call_args.args == ("tst", "1")
+
+
+@pytest.mark.parametrize("selector", ["retro", "8th"])
+@pytest.mark.parametrize("deck_flag", ["--modern", "--retro-scaled", "--8th-scaled"])
+def test_scaled_modeline_scales_only_eligible_cards(tmp_path: Path, selector: str, deck_flag: str) -> None:
+    """Explicit scaling overrides the deck and applies to front and back once."""
+    from mtg_proxies.cli import main
+    from mtg_proxies.decklists.decklist import Card, Decklist
+
+    deck = Decklist([
+        Card(1, {"name": "Override"}, f"#cardconjourer --{selector}-scaled"),
+        Card(1, {"name": "Plain"}),
+    ])
+    with (
+        patch("sys.argv", ["mtg-proxies", "cardconjourer", "unused.txt", str(tmp_path / "out"), deck_flag]),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=deck),
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as render,
+        patch("mtg_proxies.cardconjourer.frame_scale.enlarge_frame", return_value=1.0) as scale,
+    ):
+        def render_stub(*args: object, **kwargs: object) -> dict:
+            prepare = kwargs["prepare_each"]
+            assert prepare(1)["frame"] == selector
+            post = kwargs["post_process"]
+            for name in ("override.png", "override_back.png", "plain.png"):
+                post(tmp_path / name)
+            return {"ok": 2, "skipped": 0, "total": 2}
+
+        render.side_effect = render_stub
+        main()
+        assert [call.args[0].name for call in scale.call_args_list] == (
+            ["override.png", "override_back.png"] + (["plain.png"] if deck_flag.endswith("-scaled") else [])
+        )
+
+
+@pytest.mark.parametrize("selector", ["retro", "8th"])
+def test_scaled_parser_accepts_matching_base_and_rejects_other_frames(selector: str) -> None:
+    """Scaled flags imply frames and share the base-frame conflict rules."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer(f"#cardconjourer --{selector} --{selector}-scaled")
+    assert not warnings
+    assert directives[0].flags[f"--{selector}-scaled"]
+    for other in ("modern", "borderless", "m15-8th", "8th" if selector == "retro" else "retro"):
+        directives, warnings = parse_modeline_trailer(f"#cardconjourer --{selector}-scaled --{other}")
+        assert warnings
+        assert not directives[0].flags
+    directives, warnings = parse_modeline_trailer("#cardconjourer --retro-scaled --8th-scaled")
+    assert warnings
+    assert not directives[0].flags
+
+
+@pytest.mark.parametrize("frame", ["retro", "8th"])
+def test_print_batch_scales_a_separate_copy(tmp_path: Path, frame: str) -> None:
+    """Print-time scaling leaves the harness source available to unscaled slots."""
+    from mtg_proxies.cardconjourer.per_card import CardConjourerRequest, render_per_card_batch
+
+    source = tmp_path / "render.png"
+    source.write_bytes(b"rendered")
+    requests = [CardConjourerRequest("0001", "Example", frame, frame_overlap_mm=0.5)]
+    with patch("mtg_proxies.cardconjourer.frame_scale.enlarge_frame") as scale:
+        outputs = render_per_card_batch(requests, run_harness=lambda jobs: [
+            {"slot": "0001", "status": "ok", "out": str(source)},
+        ])
+    assert outputs["0001"] != source
+    assert outputs["0001"].read_bytes() == source.read_bytes()
+    assert scale.call_args.args[0] == outputs["0001"]
+    assert scale.call_args.args[1] == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize("frame", ["retro", "8th"])
+def test_print_dispatch_passes_scaling_request(frame: str) -> None:
+    """The print modeline dispatch carries both frame selection and overlap."""
+    from mtg_proxies.cli import _RETRO_SCALED_DEFAULT_MM, _apply_per_card_modelines
+    from mtg_proxies.decklists.decklist import Card, Decklist
+
+    deck = Decklist([Card(1, {"name": "Example", "layout": "normal", "image_uris": {"normal": "scan.png"}},
+                          f"#cardconjourer --{frame}-scaled")])
+    with patch("mtg_proxies.cardconjourer.per_card.render_per_card_batch", return_value={}) as batch:
+        _apply_per_card_modelines(deck, ["original.png"])
+    request = batch.call_args.args[0][0]
+    assert request.frame == frame
+    assert request.frame_overlap_mm == pytest.approx(_RETRO_SCALED_DEFAULT_MM)
+
+
+@pytest.mark.parametrize("last", ["--modern", "--8th-scaled", "--scryfall"])
+def test_stacked_directives_keep_frame_and_scaling_consistent(tmp_path: Path, last: str) -> None:
+    """A later explicit frame resets scaling; non-frame modifiers preserve it."""
+    from mtg_proxies.cli import main
+    from mtg_proxies.decklists.decklist import Card, Decklist
+
+    deck = Decklist([Card(1, {"name": "Example"}, f"#cardconjourer --retro-scaled #cardconjourer {last}")])
+    with (
+        patch("sys.argv", ["mtg-proxies", "cardconjourer", "unused.txt", str(tmp_path / "out")]),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=deck),
+        patch("mtg_proxies.cardconjourer.runner.render_deck") as render,
+        patch("mtg_proxies.cardconjourer.frame_scale.enlarge_frame", return_value=1.0) as scale,
+    ):
+        render.return_value = {"ok": 0, "skipped": 0, "total": 1}
+        main()
+        expected = {"--modern": "modern", "--8th-scaled": "8th", "--scryfall": "retro"}[last]
+        assert render.call_args.kwargs["prepare_each"](1)["frame"] == expected
+        post = render.call_args.kwargs["post_process"]
+        if last == "--modern":
+            assert post is None
+        else:
+            post(tmp_path / "example.png")
+            scale.assert_called_once()
+
+
+def test_print_scaling_warns_on_unmeasurable_frame(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Failed enlargement reports the affected card instead of silently succeeding."""
+    from mtg_proxies.cardconjourer.per_card import CardConjourerRequest, render_per_card_batch
+
+    source = tmp_path / "render.png"
+    source.write_bytes(b"rendered")
+    with patch("mtg_proxies.cardconjourer.frame_scale.enlarge_frame", return_value=None):
+        render_per_card_batch([CardConjourerRequest("0001", "Example", "retro", frame_overlap_mm=0.5)],
+                              run_harness=lambda jobs: [{"slot": "0001", "status": "ok", "out": str(source)}])
+    assert "could not be applied to 'Example'" in caplog.text

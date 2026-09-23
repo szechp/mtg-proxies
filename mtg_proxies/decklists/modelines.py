@@ -167,6 +167,8 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         "--m15-8th":    NO_VALUE,
         "--retro":      NO_VALUE,
         "--borderless": NO_VALUE,
+        "--retro-scaled": NO_VALUE,
+        "--8th-scaled": NO_VALUE,
         "--upscale":    NO_VALUE,
         "--scryfall":   NO_VALUE,
         "--skip":       NO_VALUE,
@@ -309,16 +311,24 @@ def parse_modeline_trailer(trailer: str) -> tuple[list[Directive], list[ParseWar
             continue
 
         # Mutex enforcement. The cardconjourer verb's frame selectors --8th /
-        # --modern / --m15-8th / --retro / --borderless are mutually exclusive, as are
+        # --modern / --m15-8th / --retro / --borderless (including scaled variants)
+        # select mutually exclusive frame families, as do
         # the DFC mode selectors --dfc-split / --dfc-flip: stacking flags from one
         # group leaves downstream resolution ambiguous. Drop all conflicting flags
         # with a warning rather than silently picking one.
         if verb == "cardconjourer":
             for group, what in (
-                (("--8th", "--modern", "--m15-8th", "--retro", "--borderless"), "frame"),
+                (("--8th", "--modern", "--m15-8th", "--retro", "--borderless",
+                  "--retro-scaled", "--8th-scaled"), "frame"),
                 (("--dfc-split", "--dfc-flip"), "DFC mode"),
             ):
                 set_flags = [f for f in group if parsed_flags.get(f)]
+                # A scaled selector may accompany its matching base frame, just
+                # like the CLI. Different frame families remain conflicting.
+                if what == "frame":
+                    families = {f.removesuffix("-scaled") for f in set_flags}
+                    if len(families) <= 1:
+                        continue
                 if len(set_flags) > 1:
                     warnings.append(ParseWarning(
                         "WARNING",

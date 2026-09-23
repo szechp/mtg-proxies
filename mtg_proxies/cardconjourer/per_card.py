@@ -36,6 +36,7 @@ class CardConjourerRequest:
     upscale: bool = False
     set_symbol_path: str | None = None
     art_path: str | None = None
+    frame_overlap_mm: float | None = None
 
 
 RunHarness = Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
@@ -105,6 +106,7 @@ def render_per_card_batch(
         for req in requests
     ]
     responses = run_harness(jobs)
+    requests_by_slot = {req.slot_id: req for req in requests}
 
     by_slot: dict[str, Path] = {}
     for resp in responses:
@@ -114,5 +116,26 @@ def render_per_card_batch(
         out = resp.get("out")
         if slot is None or out is None:
             continue
-        by_slot[str(slot)] = Path(out)
+        output = Path(out)
+        request = requests_by_slot.get(str(slot))
+        if request is not None and request.frame_overlap_mm is not None:
+            import logging
+            import shutil
+            import tempfile
+
+            from mtg_proxies.cardconjourer.frame_scale import enlarge_frame
+            from mtg_proxies.print_cards import CARD_SIZE_MM
+
+            # Keep the harness output intact: other slots may use the same art.
+            scaled = Path(tempfile.mkdtemp(prefix="cc-scaled-")) / output.name
+            shutil.copyfile(output, scaled)
+            applied = enlarge_frame(
+                scaled, request.frame_overlap_mm, (float(CARD_SIZE_MM[0]), float(CARD_SIZE_MM[1]))
+            )
+            if applied is None:
+                logging.getLogger(__name__).warning(
+                    "Frame scaling could not be applied to %r; leaving the render unchanged.", request.name
+                )
+            output = scaled
+        by_slot[str(slot)] = output
     return by_slot

@@ -158,11 +158,11 @@ def _resolve_cc_frame(flags: dict) -> str:
         return "modern"
     if flags.get("--m15-8th"):
         return "m15-8th"
-    if flags.get("--retro"):
+    if flags.get("--retro") or flags.get("--retro-scaled"):
         return "retro"
     if flags.get("--borderless"):
         return "borderless"
-    if flags.get("--8th"):
+    if flags.get("--8th") or flags.get("--8th-scaled"):
         return "8th"
     return "auto"
 
@@ -750,6 +750,11 @@ def _apply_per_card_modelines(
                         upscale=upscale,
                         set_symbol_path=resolved_sym,
                         art_path=resolved_art,
+                        frame_overlap_mm=(
+                            _RETRO_SCALED_DEFAULT_MM
+                            if directive.flags.get("--retro-scaled") or directive.flags.get("--8th-scaled")
+                            else None
+                        ),
                     )
                 )
                 cc_slots_by_id[slot_id] = list(front_slots)
@@ -1504,6 +1509,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     slot_dfc_flip_request: set[int] = set()
     slot_language: dict[int, str] = {}
     slot_frame: dict[int, str] = {}
+    slot_scaled: set[int] = set()
     for slot_int, card in slot_to_card.items():
         effective_lang = args.language
         if not card.modeline:
@@ -1516,6 +1522,9 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                 requested_frame = _resolve_cc_frame(d.flags)
                 if requested_frame != "auto":
                     slot_frame[slot_int] = requested_frame
+                    slot_scaled.discard(slot_int)
+                if d.flags.get("--retro-scaled") or d.flags.get("--8th-scaled"):
+                    slot_scaled.add(slot_int)
                 if d.flags.get("--scryfall"):
                     slot_scryfall_override[slot_int] = True
                 if d.flags.get("--skip"):
@@ -1986,25 +1995,25 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     # been scaled and doing it again would compound every invocation.
     frame_scale_stats = {"scaled": 0, "unmeasurable": 0, "scale": 0.0}
     post_process_cb = None
-    if scaled_flags:
+    if scaled_flags or slot_scaled:
         from mtg_proxies.cardconjourer import frame_scale
         from mtg_proxies.print_cards import CARD_SIZE_MM
 
         card_mm = (float(CARD_SIZE_MM[0]), float(CARD_SIZE_MM[1]))
-        unscaled_names = {
+        scaled_names = {
             f"{filename_prefix_by_slot.get(slot_int, '')}{cc_runner.slug(slot_to_card[slot_int]['name'])}{suffix}.png"
-            for slot_int, selected_frame in slot_frame.items()
-            if selected_frame != frame
+            for slot_int in slot_to_card
+            if slot_int in slot_scaled or (scaled_flags and slot_frame.get(slot_int, frame) == frame)
             for suffix in ("", "_back")
         }
 
         def post_process_cb(png: Path) -> None:
-            if png.name in unscaled_names:
+            if png.name not in scaled_names:
                 return
             applied = frame_scale.enlarge_frame(png, _RETRO_SCALED_DEFAULT_MM, card_mm)
             if applied is None:
                 frame_scale_stats["unmeasurable"] += 1
-                _warn(f"Note: {flag_name} could not find the frame edge in {png.name} — left unscaled.")
+                _warn(f"Note: frame scaling could not find the frame edge in {png.name} — left unscaled.")
             else:
                 frame_scale_stats["scaled"] += 1
                 frame_scale_stats["scale"] = applied
@@ -2024,7 +2033,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     print(f"[cardconjourer] {summary['ok']}/{summary['total']} rendered, {summary['skipped']} skipped")
     if frame_scale_stats["scaled"]:
         print(
-            f"[cardconjourer] {flag_name}: {frame_scale_stats['scaled']} frames grown "
+            f"[cardconjourer] frame scaling: {frame_scale_stats['scaled']} frames grown "
             f"~{frame_scale_stats['scale']:.3f}x for {_RETRO_SCALED_DEFAULT_MM:g} mm overlap per side"
         )
     if args.scryfall:
