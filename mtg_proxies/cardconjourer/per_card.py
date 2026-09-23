@@ -37,6 +37,7 @@ class CardConjourerRequest:
     set_symbol_path: str | None = None
     art_path: str | None = None
     frame_overlap_mm: float | None = None
+    legendary: bool = False
 
 
 RunHarness = Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
@@ -102,6 +103,7 @@ def render_per_card_batch(
             upscale=req.upscale,
             set_symbol_path=req.set_symbol_path,
             art_path=req.art_path,
+            legendary=req.legendary,
         )
         for req in requests
     ]

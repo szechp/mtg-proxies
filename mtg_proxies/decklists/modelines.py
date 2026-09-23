@@ -161,6 +161,8 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     # for short-text DFCs you want on a single physical card. Per-card
     # ``--dfc-split`` also overrides a deck-wide ``--dfc-flip`` flag. Both are
     # no-ops on single-faced cards; mutually exclusive on one segment.
+    # ``--legendary`` opts into the non-stock legendary markers: the Arabian Nights gold
+    # pinline on retro, the legend crown on 8th. No-op on the other frames.
     "cardconjourer": {
         "--8th":        NO_VALUE,
         "--modern":     NO_VALUE,
@@ -169,6 +171,7 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         "--borderless": NO_VALUE,
         "--retro-scaled": NO_VALUE,
         "--8th-scaled": NO_VALUE,
+        "--legendary":  NO_VALUE,
         "--upscale":    NO_VALUE,
         "--scryfall":   NO_VALUE,
         "--skip":       NO_VALUE,

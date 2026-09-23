@@ -531,6 +531,12 @@ including when used through `print`. They override the deck's frame and scaling
 selection for that card. A matching base flag (such as `--retro --retro-scaled`)
 is allowed; flags selecting different frame families conflict.
 
+Retro and 8th render legendaries like stock by default: no legend marker at all.
+`--legendary` (deck-wide, or per card as `#cardconjourer --legendary`) opts in
+to one: the Arabian Nights gold pinline on retro, Card Conjurer's legend crown
+on 8th. It works with the `-scaled` variants too, and conflicts with `--modern`,
+`--m15-8th` and `--borderless`, which already carry their own crowns.
+
 Art source: MTGPics (~1430×1058 native crops) by default; cards missing
 from MTGPics fall back to Scryfall's `art_crop` raw. `--upscale` only
 kicks in for the Scryfall-fallback path.
@@ -546,6 +552,8 @@ options:
                               body, 8th-Edition styling; never auto-selected)
   --retro                     render in retro (Seventh Edition, 1997) frame
                               (omit all four → auto per-card from Scryfall)
+  --legendary                 mark legendaries on retro (gold pinline) and 8th
+                              (legend crown); off = stock, no marker
   --upscale                   when MTGPics doesn't have a card, run the
                               Scryfall art_crop fallback through Real-ESRGAN
                               before handing it to the renderer (instead of

@@ -96,6 +96,7 @@ def build_job(
     set_symbol_path: str | None = None,
     font_size: int | None = None,
     dfc_split: bool = False,
+    legendary: bool = False,
 ) -> dict[str, Any]:
     """Build one ND-JSON job dict for the node harness.
 
@@ -123,6 +124,9 @@ def build_job(
     ``dfc_split`` asks the harness to render a double-faced card as two
     separate full-size cards (``<slug>.png`` + ``<slug>_back.png``, response
     carries ``out`` + ``out_back``) instead of the default Kamigawa-flip merge.
+
+    ``legendary`` opts into the non-stock legendary markers: the Arabian Nights gold
+    pinline on retro, the legend crown on 8th. No-op on the other frames.
     """
     job: dict[str, Any] = {
         "slot": f"{slot:04d}",
@@ -139,6 +143,8 @@ def build_job(
         job["font_size"] = font_size
     if dfc_split:
         job["dfc_split"] = True
+    if legendary:
+        job["legendary"] = True
     return job
 
 

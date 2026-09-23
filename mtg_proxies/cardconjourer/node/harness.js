@@ -1699,7 +1699,7 @@ function assertCompleteSpecialText(kind, face) {
 // Render a single face: load the pack, import + select the indicated face,
 // upload the matching art, autoframe, drain images, draw, save.
 async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath, fontSizeDelta = 0,
-                             dfcFace = null, frameNameSuffix = '', specialLayout = null }) {
+                             dfcFace = null, frameNameSuffix = '', specialLayout = null, legendary = false }) {
     resetCanvases();
     await ensurePackLoaded(packFile);
     if (specialLayout?.planeswalker) resetPlaneswalkerState(frame);
@@ -2585,13 +2585,14 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         }
     }
 
-    // 8th legend crown, matching what the modern frame does for legendaries. The real
-    // Eighth Edition frame predates crowns entirely (CC's own 8th auto-frame config sets
-    // supportsCrown: false), so this is a deliberate departure -- the crown art is CC's,
-    // from pack8thLegendCrowns, loaded alongside pack8th above.
+    // 8th legend crown, opt-in via --legendary. The real Eighth Edition frame predates
+    // crowns entirely (CC's own 8th auto-frame config sets supportsCrown: false), so stock
+    // 8th draws none -- the crown art is CC's, from pack8thLegendCrowns, loaded alongside
+    // pack8th in renderCard.
     //
     // Border cover first, crown second: addFrame unshifts, so the later layer sits on top.
-    if (!dfcFace && frame === '8th' && wantsEighthLegendCrown(pristineFace.type_line || scry.type_line)) {
+    if (legendary && !dfcFace && frame === '8th'
+        && wantsEighthLegendCrown(pristineFace.type_line || scry.type_line)) {
         await addFrameByName(['Legend Crown Border Cover']);
         const crown = getFrameNameForFace(pristineFace).replace(' Frame', ' Legend Crown');
         await addFrameByName([crown, 'Artifact Legend Crown', 'Colorless Legend Crown']);
@@ -2620,15 +2621,16 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         }
     }
 
-    // Legendary look. The retro frame had no legend marker of its own -- pre-8th cards
-    // signalled it only in the type line -- so rather than invent an icon, legendaries
-    // get the Arabian Nights gold pinline over their base frame. One layer for every
+    // Legendary look, opt-in via --legendary. The retro frame had no legend marker of its
+    // own -- pre-8th cards signalled it only in the type line -- so stock retro draws none;
+    // with the flag, legendaries get the Arabian Nights gold pinline over their base frame
+    // rather than an invented icon. One layer for every
     // colour: the earlier per-colour opacity table looked fine on screen but muddy in
     // print, and a single full-strength gold pinline reads cleanly on all of them.
     //
     // Runs after the two-colour treatment above, so on a two-colour legendary this gold
     // pinline replaces the two-tone one while the two-tone textbox stays.
-    if (!dfcFace && frame === 'retro'
+    if (legendary && !dfcFace && frame === 'retro'
         && /Legendary/.test(pristineFace.type_line || scry.type_line || '')
         // Planeswalkers are out of scope for now: packSeventh has no loyalty-box
         // geometry, so they need deciding separately.
@@ -3022,7 +3024,8 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     return outPath;
 }
 
-async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fontSizeDelta = 0, dfcSplit = false } = {}) {
+async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fontSizeDelta = 0, dfcSplit = false,
+                                        legendary = false } = {}) {
     const special = resolveSpecialLayout(scry, frame);
     if (special?.kind === 'invalid') throw new Error(special.reason);
     const skipReason = shouldSkip(scry);
@@ -3102,16 +3105,16 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
     // packs (no loyalty/ability text regions, no versionPlaneswalker.js load), which would
     // silently produce a loyalty-less card. Only override for non-special borderless cards.
     if (!special && frame === 'borderless' && scry.layout !== 'flip') packFile = borderlessPack(scry);
-    // 8th legend crowns live in their own pack, so load it alongside pack8th to get the
-    // crown frames into availableFrames. pack8th goes LAST because ensurePackLoaded
+    // 8th legend crowns (--legendary) live in their own pack, so load it alongside pack8th
+    // to get the crown frames into availableFrames. pack8th goes LAST because ensurePackLoaded
     // re-triggers only the final file's loadFrameVersion onclick, and the crown pack
     // registers no text options -- letting its handler win would leave the card with no
     // title / type / rules regions at all.
-    if (frame === '8th' && scry.layout !== 'flip' && wantsEighthLegendCrown(scry.type_line)) {
+    if (legendary && frame === '8th' && scry.layout !== 'flip' && wantsEighthLegendCrown(scry.type_line)) {
         packFile = ['pack8thLegendCrowns.js', 'pack8th.js'];
     }
     return await renderFace({
-        packFile, processed, faceIdx: 0, scry, outName: slug, frame, setSymbolPath, fontSizeDelta,
+        packFile, processed, faceIdx: 0, scry, outName: slug, frame, setSymbolPath, fontSizeDelta, legendary,
         specialLayout: special?.kind === 'planeswalker'
             ? { ...special, planeswalker: true, side: 'single' }
             : special,
@@ -3243,7 +3246,8 @@ async function runOneJob(job) {
         const setSymbolPath = job.set_symbol_path || null;
         const fontSizeDelta = (job.font_size != null) ? parseInt(job.font_size) : 0;
         const slug = slugify(job.name);
-        const result = await renderCard(scry, slug, { frame, setSymbolPath, fontSizeDelta, dfcSplit });
+        const legendary = !!job.legendary;
+        const result = await renderCard(scry, slug, { frame, setSymbolPath, fontSizeDelta, dfcSplit, legendary });
         const response = {
             slot:   job.slot,
             status: 'ok',

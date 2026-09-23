@@ -750,6 +750,7 @@ def _apply_per_card_modelines(
                         upscale=upscale,
                         set_symbol_path=resolved_sym,
                         art_path=resolved_art,
+                        legendary=bool(directive.flags.get("--legendary")),
                         frame_overlap_mm=(
                             _RETRO_SCALED_DEFAULT_MM
                             if directive.flags.get("--retro-scaled") or directive.flags.get("--8th-scaled")
@@ -1427,6 +1428,15 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
             )
             raise SystemExit(2)
 
+    # ``--legendary`` only has something to draw on retro (gold pinline) and 8th (legend
+    # crown); modern and m15-8th already carry crowns, borderless has no marker.
+    if args.legendary and frame in {"modern", "m15-8th", "borderless"}:
+        print(
+            f"Error: --legendary only applies to the retro and 8th frames, not --{frame}.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
     # Resolve every decklist line to a full Scryfall card dict. parse_decklist_spec
     # handles count prefix, `Name (SET) CN`, the new URL/shorthand form, foil markers,
     # and trailing modelines — everything the standalone naive line.split() used to miss.
@@ -1510,6 +1520,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     slot_language: dict[int, str] = {}
     slot_frame: dict[int, str] = {}
     slot_scaled: set[int] = set()
+    slot_legendary: set[int] = set()
     for slot_int, card in slot_to_card.items():
         effective_lang = args.language
         if not card.modeline:
@@ -1525,6 +1536,8 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                     slot_scaled.discard(slot_int)
                 if d.flags.get("--retro-scaled") or d.flags.get("--8th-scaled"):
                     slot_scaled.add(slot_int)
+                if d.flags.get("--legendary"):
+                    slot_legendary.add(slot_int)
                 if d.flags.get("--scryfall"):
                     slot_scryfall_override[slot_int] = True
                 if d.flags.get("--skip"):
@@ -1727,6 +1740,8 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         fs_delta = slot_font_size.get(slot_int)
         if fs_delta is not None:
             extras["font_size"] = fs_delta
+        if args.legendary or slot_int in slot_legendary:
+            extras["legendary"] = True
 
         # Per-card ``#cardconjourer --custom-art PATH`` wins over every art source below. This is
         # the escape hatch for borderless cards with no full-bleed MTGPics art: supply your own
@@ -2476,6 +2491,16 @@ def main() -> None:
             " blocks are within 0.06 mm of each other, so both end up the same printed"
             " size. Implies --8th; conflicts with the other frame flags and with"
             " --retro-scaled."
+        ),
+    )
+    cardconjourer_parser.add_argument(
+        "--legendary", dest="legendary", action="store_true", default=False,
+        help=(
+            "mark legendary cards on frames that have no stock legend marker: the Arabian"
+            " Nights gold pinline on --retro / --retro-scaled, CC's legend crown on --8th /"
+            " --8th-scaled. Without it both frames render legendaries like stock. Also"
+            " available per card as `#cardconjourer --legendary`. Conflicts with --modern,"
+            " --m15-8th and --borderless, which already have their own crowns."
         ),
     )
     # No --auto flag: auto is simply the absence of an explicit frame flag (the default).
