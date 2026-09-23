@@ -40,7 +40,7 @@ Create a high quality printable PDF from your decklist or a list of cards you wa
   Generate decklists of random basic land printings with `convert --basic-lands`, with weighted art variety and configurable art style.
 
 - **Token support**  
-  The `mtg-proxies tokens` tool appends the tokens created by the cards in a decklist to it. Requires Scryfall token data (available for cards printed or reprinted since Tenth Edition).
+  The `mtg-proxies tokens` tool appends created tokens under a commented section, preserving the existing decklist verbatim and replacing its own section on reruns. Requires Scryfall token data (available for cards printed or reprinted since Tenth Edition).
 
 - **ManaStack and Archidekt integration**  
   Use ManaStack and Archidekt deck IDs directly as input instead of local files. Archidekt decks must be public.
@@ -263,7 +263,7 @@ mtg-proxies print deck.txt output.pdf --split-pages 3
 **Append tokens created by your deck:**
 
 ```bash
-mtg-proxies tokens deck.txt        # rewrites deck.txt in place with a "Tokens" section appended
+mtg-proxies tokens deck.txt        # updates a commented token section; preserves the rest verbatim
 mtg-proxies print deck.txt output.pdf
 ```
 
