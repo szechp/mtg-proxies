@@ -1521,6 +1521,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     slot_frame: dict[int, str] = {}
     slot_scaled: set[int] = set()
     slot_legendary: set[int] = set()
+    card_payload_by_slot: dict[int, dict] = {}
     for slot_int, card in slot_to_card.items():
         effective_lang = args.language
         if not card.modeline:
@@ -1723,6 +1724,11 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                         f"[cardconjourer] --language {lang}: matched {lang} print of {card['name']!r} "
                         "has no localized text on any field; rendering English."
                     )
+        # Keep an unambiguous per-slot payload as well as the legacy name cache.
+        # Token names (e.g. Human, Soldier, Treasure) are not unique Scryfall
+        # identities, and a name-keyed cache can silently substitute a different
+        # token/card when several entries share a name.
+        card_payload_by_slot[slot_int] = payload
         (harness_inputs_dir / f"{cc_runner.slug(card['name'])}.json").write_text(_json.dumps(payload))
 
     def _prepare_each(slot_int: int) -> dict:
@@ -1733,7 +1739,9 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         # Per-slot set-symbol override (resolved up-front) — merged into every
         # return branch below so it survives whichever art-source path fires.
         sym_override = resolved_set_symbol_by_slot.get(slot_int)
-        extras: dict = {"set_symbol_path": sym_override} if sym_override else {}
+        extras: dict = {"card_data": card_payload_by_slot[slot_int]}
+        if sym_override:
+            extras["set_symbol_path"] = sym_override
         effective_frame = slot_frame.get(slot_int, frame)
         if slot_int in slot_frame:
             extras["frame"] = effective_frame
@@ -1804,7 +1812,13 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                         return {**extras, "art_path": str(composite)}
 
         # 1) MTGPics by set+collector (Normal cards / fallback for DFCs with missing faces).
-        skip_mtgpics = args.scryfall or slot_scryfall_override.get(slot_int, False)
+        # A token pack expects art-only input; MTGPics can return the full token
+        # card scan, which would otherwise be embedded inside the art window.
+        skip_mtgpics = (
+            args.scryfall
+            or slot_scryfall_override.get(slot_int, False)
+            or card.card.get("layout") == "token"
+        )
         if not skip_mtgpics:
             set_code = card.card.get("set") or ""
             cn = card.card.get("collector_number") or ""

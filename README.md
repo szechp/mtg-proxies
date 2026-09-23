@@ -275,10 +275,12 @@ mtg-proxies tokens deck-with-tokens.txt
 mtg-proxies cardconjourer deck-with-tokens.txt token-images/
 ```
 
-Token entries use dedicated Card Conjurer token frames matched to the selected
-card frame style. Textless tokens use a textless token pack. Double-faced or
-borderless tokens fall back to the original Scryfall scan when there is no
-compatible token pack.
+Single-face generated tokens are rendered with Card Conjurer's native Original
+Tokens (Old Bordered) pack and its loaded frame version, regardless of the deck's
+selected frame. That version supplies the token's own fonts, text layout, and
+power/toughness placement. Unsupported double-faced token layouts retain their
+Scryfall token scan. For supported tokens, Scryfall's art-only crop is used so a
+full token scan is never embedded inside the token frame.
 
 **Use a ManaStack or Archidekt deck directly:**
 

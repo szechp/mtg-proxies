@@ -1354,15 +1354,11 @@ function packForLayout(layout, frame) {
     return { single: 'pack8th.js' };
 }
 
-function tokenPackForCard(scry, frame) {
-    // Card Conjurer token packs have their own card geometry and must be selected
-    // before ordinary frame packs. Old, M15, hybrid, and textless styles each have
-    // a matching native pack. Borderless tokens have no compatible pack.
-    if (frame === 'borderless') return null;
-    if (frame === 'retro') return scry.textless ? 'packTokenTextless-1.js' : 'packTokenOld.js';
-    if (frame === 'modern') return scry.textless ? 'packTokenTextlessM15.js' : 'packTokenRegularM15.js';
-    if (frame === 'm15-8th') return scry.textless ? 'packM15EighthTokenTextless.js' : 'packM15EighthToken.js';
-    return scry.textless ? 'packTokenTextless-1.js' : 'packTokenRegular-1.js';
+function tokenPackForCard() {
+    // Generated tokens always use the native Original Tokens (Old Bordered)
+    // pack. Its loadFrameVersion handler supplies the token-specific fonts,
+    // geometry, and text/P-T regions.
+    return 'packTokenOld.js';
 }
 
 // Borderless uses CardConjurer's "Promo Borderless" frames — a smaller (full-art-friendly) text
@@ -1735,6 +1731,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // the engine's per-set icon from the local official set-symbol library
     // (#set-symbol-source = 'official'); use --set-symbol 8ED for the old look.
     const isFlip = scry.layout === 'flip';
+    const isToken = scry.layout === 'token';
     const harnessOwnsSetSymbol = !!setSymbolPath;
 
     let autoFrameTarget = '8th';
@@ -1752,7 +1749,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // dfc_split faces build their frames manually from the DFC pack below —
     // 'false' makes any stray engine-scheduled autoFrame() a no-op so it can't
     // overwrite them with the regular (non-DFC) frame art.
-    if (dfcFace || specialLayout?.planeswalker) autoFrameTarget = 'false';
+    if (dfcFace || specialLayout?.planeswalker || isToken) autoFrameTarget = 'false';
 
     querySelector('#autoFrame').value = autoFrameTarget;
     querySelector('#lockSetSymbolURL').checked  = harnessOwnsSetSymbol;
@@ -1879,7 +1876,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // Per-card font-size delta (--font-size modeline). Applied after importCard so it
     // stacks on top of whatever CC's auto-fit chose. Units: canvas pixels (canvas is
     // 2814 px tall; rules text baseline is ~76–107 px, so ±5–15 is a visible nudge).
-    if (fontSizeDelta !== 0 && global.card.text && global.card.text.rules) {
+    if (scry.layout !== 'token' && fontSizeDelta !== 0 && global.card.text && global.card.text.rules) {
         global.card.text.rules.fontSize =
             (parseInt(global.card.text.rules.fontSize) || 0) + fontSizeDelta;
     }
@@ -1947,7 +1944,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // rather than replaces card.text.rules. Skipped when flavor text will be
     // appended to this box (INCLUDE_FLAVOR on with flavor_text present) -- that
     // turns the box into a multi-line quote block, which no real card centers.
-    if (global.card.text.rules) {
+    if (scry.layout !== 'token' && global.card.text.rules) {
         const rawFaceText = (face.oracle_text != null ? face.oracle_text : scry.oracle_text) || '';
         const hasAppendedFlavor = (global.card.text.rules.text || '').includes('{flavor}');
         const isShortOneLineText = rawFaceText.length > 0 && rawFaceText.length <= 45 &&
@@ -2389,6 +2386,20 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             if (global.card.station?.squares?.[1]) global.card.station.squares[1].color = '#416c77';
             if (global.card.station?.squares?.[2]) global.card.station.squares[2].color = '#416c77';
         }
+    } else if (scry.layout === 'token') {
+        // Token packs include their own frame variants. Do not call autoFrame
+        // or autoFrameUnified here: those add ordinary Seventh card layers on
+        // top of the token frame (and autoFrame assumes a missing mana field).
+        const tokenFace = {
+            colors: Array.isArray(face.colors) && face.colors.length
+                ? face.colors
+                : (Array.isArray(scry.colors) ? scry.colors : []),
+            type_line: pristineFace.type_line || face.type_line || scry.type_line || '',
+        };
+        const tokenFrame = getFrameNameForFace(tokenFace);
+        if (!await addFrameByName([tokenFrame])) {
+            throw new Error(`token pack has no native frame variant '${tokenFrame}'`);
+        }
     } else if (faceColors && scry.layout !== 'flip') {
         await global.autoFrameUnified(frameTypeLiteral,
             faceColors,
@@ -2559,14 +2570,16 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // flags eligible prints via frame_effects; packSeventh ships the same icon
     // asset the GUI offers, positioned left of the title.
     let addedTombstone = false;
-    if (!dfcFace && frame === 'retro' && (scry.frame_effects || []).includes('tombstone')) {
+    if (!dfcFace && scry.layout !== 'token' && frame === 'retro' &&
+        (scry.frame_effects || []).includes('tombstone')) {
         addedTombstone = (await addFrameByName(['Tombstone Icon'])) !== null;
     }
 
     // Commander crest for retro legendary creatures, in the tombstone's slot. Mutually
     // exclusive with the tombstone itself, which occupies the same spot -- the tombstone
     // wins, being the period-authentic marker of the two.
-    if (MANA_COMMANDER_ENABLED && !dfcFace && !addedTombstone && frame === 'retro') {
+    if (MANA_COMMANDER_ENABLED && !dfcFace && scry.layout !== 'token' &&
+        !addedTombstone && frame === 'retro') {
         const typeLine = pristineFace.type_line || scry.type_line || '';
         if (/Legendary/.test(typeLine) && /Creature/.test(typeLine) && global.card.text?.title) {
             const crestBox = {
@@ -2613,7 +2626,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // Two-colour cards get the modern two-tone treatment. Which variant applies is
     // decided by the mana cost, not the colour count -- see RETRO_HYBRID_PAIR above.
     // Runs before the legendary trim so that trim lands on top of the two-tone.
-    if (!dfcFace && frame === 'retro' && scry.layout !== 'flip') {
+    if (!dfcFace && frame === 'retro' && scry.layout !== 'flip' && scry.layout !== 'token') {
         const twoTone = retroTwoTone(pristineFace, scry);
         if (twoTone) {
             const [first, second] = twoTone.colors;
@@ -2642,7 +2655,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     //
     // Runs after the two-colour treatment above, so on a two-colour legendary this gold
     // pinline replaces the two-tone one while the two-tone textbox stays.
-    if (legendary && !dfcFace && frame === 'retro'
+    if (legendary && !dfcFace && frame === 'retro' && scry.layout !== 'token'
         && /Legendary/.test(pristineFace.type_line || scry.type_line || '')
         // Planeswalkers are out of scope for now: packSeventh has no loyalty-box
         // geometry, so they need deciding separately.
@@ -2704,7 +2717,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // box was reserving space nobody was using. card.setSymbolX is CC's own resolved left edge
     // for THIS card's actual icon, so it tightens or loosens per-icon automatically; no more
     // static per-frame guesses (0.74/0.71/0.70) needed at all.
-    if (!dfcFace && !isFlip && global.card.text.type && global.card.setSymbolBounds &&
+    if (!dfcFace && !isFlip && scry.layout !== 'token' && global.card.text.type && global.card.setSymbolBounds &&
         global.card.setSymbolBounds.horizontal === 'right' && typeof global.card.setSymbolX === 'number' &&
         Number.isFinite(global.card.setSymbolX)) {
         const margin = 0.012;
@@ -2794,7 +2807,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // 215 against 168 on a 7ED scan), dropping glyph-vs-background contrast from about
     // +83 to +17. Keeping the white and outlining it in black restores the contrast while
     // staying closer to the printed card than recolouring the text outright.
-    if (frame === 'retro' && retroNeedsTextOutline(pristineFace, scry)) {
+    if (frame === 'retro' && scry.layout !== 'token' && retroNeedsTextOutline(pristineFace, scry)) {
         for (const key of ['title', 'type', 'pt']) {
             const textObject = global.card.text?.[key];
             if (!textObject) continue;
@@ -2808,13 +2821,16 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // Restored immediately after: the `mana` Map is process-global and shared by every
     // card in the run, so leaving it scaled would shrink hybrid pips on non-retro cards
     // in a mixed (auto-frame) deck too.
-    if (frame === 'retro') setRetroHybridPipScale(1);
+    if (frame === 'retro' && scry.layout !== 'token') setRetroHybridPipScale(1);
     try {
         await global.drawText();
     } finally {
-        if (frame === 'retro') setRetroHybridPipScale(1.2);
+        if (frame === 'retro' && scry.layout !== 'token') setRetroHybridPipScale(1.2);
     }
-    if (frame === 'modern' || frame === 'station' || frame === 'borderless' || scry.layout === 'flip' ||
+    if (scry.layout === 'token') {
+        // The token pack's loadFrameVersion handler owns this exact layout.
+        // Leave its native artist/copyright fields unchanged.
+    } else if (frame === 'modern' || frame === 'station' || frame === 'borderless' || scry.layout === 'flip' ||
         (frame === 'retro' && dfcFace)) {
         // Station falls back to modern's bottom info deliberately — real Station
         // printings are always modern-era and there's no Station-specific bottom-info
@@ -2935,7 +2951,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
                 }
             }
         }
-    } else if (frame === 'retro') {
+    } else if (frame === 'retro' && scry.layout !== 'token') {
         // packSeventh's loadFrameVersion onclick already loaded the pack's own
         // centered-white bottom info (engine-native); drop only its combined
         // "NOT FOR SALE  CardConjurer.com" line.
@@ -2973,7 +2989,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // retro branch above is what settles them -- so they are outlined here, after that
     // branch and before renderBottomInfo() draws them. The title / type / P-T half is
     // applied earlier, because drawText() has already rasterised those by this point.
-    if (frame === 'retro' && retroNeedsTextOutline(pristineFace, scry)) {
+    if (frame === 'retro' && scry.layout !== 'token' && retroNeedsTextOutline(pristineFace, scry)) {
         for (const key of ['top', 'wizards']) {
             const region = global.card.bottomInfo?.[key];
             if (!region) continue;
@@ -3046,6 +3062,10 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
     }
     // Station overrides whatever frame was requested — see isStationCard's comment.
     if (isStationCard(scry)) frame = 'station';
+    // Generated tokens always use Card Conjurer's native Old Bordered token
+    // pack. ensurePackLoaded runs that pack's own frame-version handler, which
+    // supplies the matching typography, text boxes, and P/T layout.
+    if (scry.layout === 'token') frame = 'retro';
 
     // Mutated in place on the (already-cached) scry object, not at fetch time —
     // keeps the on-disk Scryfall JSON cache byte-identical to the API response.
@@ -3111,9 +3131,9 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
         }
     }
 
-    const tokenPack = scry.layout === 'token' ? tokenPackForCard(scry, frame) : null;
+    const tokenPack = scry.layout === 'token' ? tokenPackForCard() : null;
     if (scry.layout === 'token' && !tokenPack) {
-        throw new Error(`no token pack for ${frame} frame — fall back to Scryfall scan`);
+        throw new Error(`no token pack for ${frame} frame — fall back to Scryfall image`);
     }
     let packFile = special?.pack || tokenPack || packForLayout(scry.layout, frame).single;
     // Planeswalker borderless already resolved its own native pack via `special.pack`
@@ -3194,7 +3214,14 @@ function writeResponse(obj) {
 async function runOneJob(job) {
     const start = Date.now();
     try {
-        const { scry } = await fetchScryfall(job.name);
+        // The CLI supplies the already-resolved Scryfall object per slot. This
+        // matters for tokens: names such as Human/Soldier/Treasure identify
+        // many distinct token cards, so looking them up by name (or a shared
+        // name-keyed cache file) can render the wrong card or ignore the added
+        // token's actual Scryfall data entirely.
+        const { scry } = job.card_data
+            ? { scry: job.card_data }
+            : await fetchScryfall(job.name);
         
         const requestedFrame = job.frame || '8th';
         const special = resolveSpecialLayout(scry, requestedFrame);
