@@ -937,6 +937,7 @@ const SKIP_LAYOUTS = new Set([
 // Prototype each need an extra cost/text region the 8th frame doesn't have.
 const SKIP_KEYWORDS = new Set(['Mutate', 'Prototype', 'Station']);
 function shouldSkip(scry) {
+    if (scry.layout === 'double_faced_token') return 'double-faced token layout';
     if (SKIP_LAYOUTS.has(scry.layout)) return `layout '${scry.layout}'`;
     // Transform sagas (NEO, Urabrask…) have layout 'transform', not 'saga' — the
     // joined type_line catches them. The chapter layout breaks on every frame
@@ -1351,6 +1352,17 @@ function packForLayout(layout, frame) {
     if (frame === 'retro') return { single: 'packSeventh.js' };
     if (frame === 'borderless') return { single: 'packPromoRegular-1.js' };
     return { single: 'pack8th.js' };
+}
+
+function tokenPackForCard(scry, frame) {
+    // Card Conjurer token packs have their own card geometry and must be selected
+    // before ordinary frame packs. Old, M15, hybrid, and textless styles each have
+    // a matching native pack. Borderless tokens have no compatible pack.
+    if (frame === 'borderless') return null;
+    if (frame === 'retro') return scry.textless ? 'packTokenTextless-1.js' : 'packTokenOld.js';
+    if (frame === 'modern') return scry.textless ? 'packTokenTextlessM15.js' : 'packTokenRegularM15.js';
+    if (frame === 'm15-8th') return scry.textless ? 'packM15EighthTokenTextless.js' : 'packM15EighthToken.js';
+    return scry.textless ? 'packTokenTextless-1.js' : 'packTokenRegular-1.js';
 }
 
 // Borderless uses CardConjurer's "Promo Borderless" frames — a smaller (full-art-friendly) text
@@ -3099,7 +3111,11 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
         }
     }
 
-    let packFile = special?.pack || packForLayout(scry.layout, frame).single;
+    const tokenPack = scry.layout === 'token' ? tokenPackForCard(scry, frame) : null;
+    if (scry.layout === 'token' && !tokenPack) {
+        throw new Error(`no token pack for ${frame} frame — fall back to Scryfall scan`);
+    }
+    let packFile = special?.pack || tokenPack || packForLayout(scry.layout, frame).single;
     // Planeswalker borderless already resolved its own native pack via `special.pack`
     // (packPlaneswalkerBorderless.js) above — borderlessPack() picks the ORDINARY promo
     // packs (no loyalty/ability text regions, no versionPlaneswalker.js load), which would
@@ -3110,7 +3126,8 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
     // re-triggers only the final file's loadFrameVersion onclick, and the crown pack
     // registers no text options -- letting its handler win would leave the card with no
     // title / type / rules regions at all.
-    if (legendary && frame === '8th' && scry.layout !== 'flip' && wantsEighthLegendCrown(scry.type_line)) {
+    if (legendary && frame === '8th' && scry.layout !== 'flip' && scry.layout !== 'token'
+        && wantsEighthLegendCrown(scry.type_line)) {
         packFile = ['pack8thLegendCrowns.js', 'pack8th.js'];
     }
     return await renderFace({

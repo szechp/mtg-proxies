@@ -267,6 +267,19 @@ mtg-proxies tokens deck.txt        # rewrites deck.txt in place with a "Tokens" 
 mtg-proxies print deck.txt output.pdf
 ```
 
+To render the generated tokens with Card Conjurer, use a copy of the decklist:
+
+```bash
+cp deck.txt deck-with-tokens.txt
+mtg-proxies tokens deck-with-tokens.txt
+mtg-proxies cardconjourer deck-with-tokens.txt token-images/
+```
+
+Token entries use dedicated Card Conjurer token frames matched to the selected
+card frame style. Textless tokens use a textless token pack. Double-faced or
+borderless tokens fall back to the original Scryfall scan when there is no
+compatible token pack.
+
 **Use a ManaStack or Archidekt deck directly:**
 
 ```bash
