@@ -844,10 +844,6 @@ def recommend_print(
                 points += 128
         elif card["frame"] == "2015":
             points += 2
-        elif art_preference == "standard" and card["frame"] in {"1993", "1997"}:
-            # A gentle preference for classic-frame reprints among comparable scans.
-            # 2003 frames are only boosted by the explicit retro preference above.
-            points += 8
         if not card["digital"]:
             points += 4
         if card["border_color"] == "black" and (mode != "best" or "extendedart" not in frame_effects):
