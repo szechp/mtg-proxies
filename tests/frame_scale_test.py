@@ -1,4 +1,4 @@
-"""Unit tests for --retro-scaled frame enlargement.
+"""Unit tests for frame enlargement (``--retro-scaled``, ``print --scaled``, ``#mpcfill --scaled``).
 
 Cards are synthesised rather than rendered: a black canvas with a coloured
 rectangle inset by a known amount is exactly the geometry the real thing has, and
@@ -43,7 +43,7 @@ def _ink_extent(image: Image.Image) -> tuple[int, int, int, int]:
 
 
 def test_measure_frame_box_finds_the_inset_rectangle() -> None:
-    from mtg_proxies.cardconjourer.frame_scale import measure_frame_box
+    from mtg_proxies.frame_scale import measure_frame_box
 
     assert measure_frame_box(_fake_card(inset=(36, 36))) == (36, 36, 363, 523)
 
@@ -55,28 +55,28 @@ def test_measure_frame_box_reads_a_dark_frame_correctly() -> None:
     crosses dark frame before registering anything, reports the frame as narrower
     than it is, and the card gets scaled too far.
     """
-    from mtg_proxies.cardconjourer.frame_scale import measure_frame_box
+    from mtg_proxies.frame_scale import measure_frame_box
 
     dark = _fake_card(inset=(36, 36), colour=(60, 60, 60))
     assert measure_frame_box(dark) == (36, 36, 363, 523)
 
 
 def test_measure_frame_box_rejects_an_all_black_render() -> None:
-    from mtg_proxies.cardconjourer.frame_scale import measure_frame_box
+    from mtg_proxies.frame_scale import measure_frame_box
 
     assert measure_frame_box(Image.new("RGB", (400, 560), (0, 0, 0))) is None
 
 
 def test_measure_frame_box_rejects_art_bleeding_to_the_edge() -> None:
     """No border at all → nothing to give up, so refuse rather than scale blindly."""
-    from mtg_proxies.cardconjourer.frame_scale import measure_frame_box
+    from mtg_proxies.frame_scale import measure_frame_box
 
     assert measure_frame_box(Image.new("RGB", (400, 560), (200, 180, 120))) is None
 
 
 def test_scale_for_margin_is_driven_by_the_shorter_side() -> None:
     """Gaining N mm costs proportionally more on the short side, so it sets the factor."""
-    from mtg_proxies.cardconjourer.frame_scale import frame_size_mm, scale_for_margin
+    from mtg_proxies.frame_scale import frame_size_mm, scale_for_margin
 
     box, canvas = (36, 36, 363, 523), (400, 560)
     width_mm, height_mm = frame_size_mm(box, canvas, CARD_MM)
@@ -95,7 +95,7 @@ def test_max_margin_mm_accounts_for_the_shared_scale() -> None:
     Checking axes independently would report the raw border thickness, which is
     larger and would let the crop slice the frame's own edge off.
     """
-    from mtg_proxies.cardconjourer.frame_scale import frame_size_mm, max_margin_mm, scale_for_margin
+    from mtg_proxies.frame_scale import frame_size_mm, max_margin_mm, scale_for_margin
 
     box, canvas = (36, 36, 363, 523), (400, 560)
     width_mm, height_mm = frame_size_mm(box, canvas, CARD_MM)
@@ -103,7 +103,7 @@ def test_max_margin_mm_accounts_for_the_shared_scale() -> None:
 
     # At the ceiling the binding axis is down to the reserved border strip, not zero:
     # a frame flush with the canvas edge would touch its neighbour on the sheet.
-    from mtg_proxies.cardconjourer.frame_scale import _MIN_REMAINING_BORDER_MM
+    from mtg_proxies.frame_scale import _MIN_REMAINING_BORDER_MM
 
     scale = scale_for_margin(box, canvas, ceiling, CARD_MM)
     tightest = min(CARD_MM[0] - width_mm * scale, CARD_MM[1] - height_mm * scale) / 2
@@ -114,7 +114,7 @@ def test_max_margin_mm_accounts_for_the_shared_scale() -> None:
 
 def test_enlarge_frame_keeps_canvas_and_grows_the_frame(tmp_path: Path) -> None:
     """The whole point: same pixel dimensions out, bigger frame, thinner border."""
-    from mtg_proxies.cardconjourer.frame_scale import enlarge_frame, frame_size_mm, measure_frame_box
+    from mtg_proxies.frame_scale import enlarge_frame, frame_size_mm, measure_frame_box
 
     path = tmp_path / "card.png"
     _fake_card().save(path)
@@ -133,7 +133,7 @@ def test_enlarge_frame_keeps_canvas_and_grows_the_frame(tmp_path: Path) -> None:
 
 def test_enlarge_frame_clamps_a_margin_past_the_ceiling(tmp_path: Path) -> None:
     """An over-large request must clamp, never crop into the frame itself."""
-    from mtg_proxies.cardconjourer.frame_scale import enlarge_frame, max_margin_mm, measure_frame_box
+    from mtg_proxies.frame_scale import enlarge_frame, max_margin_mm, measure_frame_box
 
     path = tmp_path / "card.png"
     _fake_card().save(path)
@@ -151,7 +151,7 @@ def test_enlarge_frame_clamps_a_margin_past_the_ceiling(tmp_path: Path) -> None:
 
 
 def test_enlarge_frame_leaves_an_unmeasurable_card_untouched(tmp_path: Path) -> None:
-    from mtg_proxies.cardconjourer.frame_scale import enlarge_frame
+    from mtg_proxies.frame_scale import enlarge_frame
 
     path = tmp_path / "black.png"
     Image.new("RGB", (400, 560), (0, 0, 0)).save(path)
@@ -168,7 +168,7 @@ def test_enlarge_frame_is_idempotent_across_runs(tmp_path: Path) -> None:
     handed to post_process on every invocation. Without the metadata stamp the
     enlargement would compound each time until the frame ran off the canvas.
     """
-    from mtg_proxies.cardconjourer.frame_scale import enlarge_frame
+    from mtg_proxies.frame_scale import enlarge_frame
 
     path = tmp_path / "card.png"
     _fake_card().save(path)
@@ -183,7 +183,7 @@ def test_enlarge_frame_is_idempotent_across_runs(tmp_path: Path) -> None:
 
 def test_enlarge_frame_refuses_a_different_margin_on_scaled_output(tmp_path: Path) -> None:
     """Scaling isn't reversible, so a changed margin needs a re-render, not a second pass."""
-    from mtg_proxies.cardconjourer.frame_scale import enlarge_frame
+    from mtg_proxies.frame_scale import enlarge_frame
 
     path = tmp_path / "card.png"
     _fake_card().save(path)
@@ -221,3 +221,58 @@ def test_render_deck_post_processes_cache_hits_too(tmp_path: Path) -> None:
 
     assert summary["ok"] == 2
     assert sorted(seen) == sorted([f"{slug('Fresh Card')}.png", f"{slug('Cached Card')}.png"])
+
+
+def test_enlarge_frame_copy_leaves_source_untouched_and_is_idempotent(tmp_path: Path) -> None:
+    """Cached renders are shared across slots and decks, so only the copy may be grown."""
+    from mtg_proxies.frame_scale import enlarge_frame_copy
+
+    source = tmp_path / "render.jpg"
+    _fake_card().save(source)
+    original = source.read_bytes()
+    destination = tmp_path / "render_ov.png"
+
+    scale = enlarge_frame_copy(source, destination, 0.75, CARD_MM)
+    scaled_bytes = destination.read_bytes()
+
+    assert scale is not None
+    assert scale > 1.0
+    assert source.read_bytes() == original
+    # A JPEG source still yields a stamped PNG, so the second call is a no-op.
+    assert enlarge_frame_copy(source, destination, 0.75, CARD_MM) == pytest.approx(scale)
+    assert destination.read_bytes() == scaled_bytes
+
+
+@pytest.mark.parametrize("leftover", [b"", b"\x89PNG\r\n\x1a\n truncated"])
+def test_enlarge_frame_copy_rebuilds_a_broken_destination(tmp_path: Path, leftover: bytes) -> None:
+    """A copy left half-written by an interrupted run must not pin the card unscaled forever."""
+    from mtg_proxies.frame_scale import enlarge_frame_copy
+
+    source = tmp_path / "render.png"
+    _fake_card().save(source)
+    destination = tmp_path / "render_ov.png"
+    destination.write_bytes(leftover)
+
+    assert enlarge_frame_copy(source, destination, 0.75, CARD_MM) is not None
+    assert Image.open(destination).info["mtg-proxies:retro-scaled-mm"] == "0.75"
+    assert not (tmp_path / "render_ov.partial.png").exists()
+
+
+def test_enlarge_frame_copy_rebuilds_when_source_is_newer(tmp_path: Path) -> None:
+    """A replaced source render must not keep serving the old scaled copy."""
+    import os
+
+    from mtg_proxies.frame_scale import enlarge_frame_copy
+
+    source = tmp_path / "render.png"
+    _fake_card(colour=(200, 180, 120)).save(source)
+    destination = tmp_path / "render_ov.png"
+    enlarge_frame_copy(source, destination, 0.75, CARD_MM)
+
+    _fake_card(colour=(40, 160, 60)).save(source)
+    later = destination.stat().st_mtime + 10
+    os.utime(source, (later, later))
+    enlarge_frame_copy(source, destination, 0.75, CARD_MM)
+
+    with Image.open(destination) as rebuilt:
+        assert rebuilt.convert("RGB").getpixel((200, 280)) == (40, 160, 60)

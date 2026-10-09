@@ -122,17 +122,15 @@ def render_per_card_batch(
         request = requests_by_slot.get(str(slot))
         if request is not None and request.frame_overlap_mm is not None:
             import logging
-            import shutil
             import tempfile
 
-            from mtg_proxies.cardconjourer.frame_scale import enlarge_frame
+            from mtg_proxies.frame_scale import enlarge_frame_copy
             from mtg_proxies.print_cards import CARD_SIZE_MM
 
             # Keep the harness output intact: other slots may use the same art.
             scaled = Path(tempfile.mkdtemp(prefix="cc-scaled-")) / output.name
-            shutil.copyfile(output, scaled)
-            applied = enlarge_frame(
-                scaled, request.frame_overlap_mm, (float(CARD_SIZE_MM[0]), float(CARD_SIZE_MM[1]))
+            applied = enlarge_frame_copy(
+                output, scaled, request.frame_overlap_mm, (float(CARD_SIZE_MM[0]), float(CARD_SIZE_MM[1]))
             )
             if applied is None:
                 logging.getLogger(__name__).warning(

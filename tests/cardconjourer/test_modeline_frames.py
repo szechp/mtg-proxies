@@ -54,7 +54,7 @@ def test_frame_override_survives_custom_art_and_scaling(tmp_path: Path) -> None:
         patch("sys.argv", ["mtg-proxies", "cardconjourer", "unused.txt", str(tmp_path / "out"), "--retro-scaled"]),
         patch("mtg_proxies.cli.parse_decklist_spec", return_value=deck),
         patch("mtg_proxies.cardconjourer.runner.render_deck") as render,
-        patch("mtg_proxies.cardconjourer.frame_scale.enlarge_frame", return_value=1.0) as scale,
+        patch("mtg_proxies.frame_scale.enlarge_frame", return_value=1.0) as scale,
     ):
         render.return_value = {"ok": 0, "skipped": 0, "total": 2}
         main()
@@ -144,7 +144,7 @@ def test_scaled_modeline_scales_only_eligible_cards(tmp_path: Path, selector: st
         patch("sys.argv", ["mtg-proxies", "cardconjourer", "unused.txt", str(tmp_path / "out"), deck_flag]),
         patch("mtg_proxies.cli.parse_decklist_spec", return_value=deck),
         patch("mtg_proxies.cardconjourer.runner.render_deck") as render,
-        patch("mtg_proxies.cardconjourer.frame_scale.enlarge_frame", return_value=1.0) as scale,
+        patch("mtg_proxies.frame_scale.enlarge_frame", return_value=1.0) as scale,
     ):
         def render_stub(*args: object, **kwargs: object) -> dict:
             prepare = kwargs["prepare_each"]
@@ -186,21 +186,24 @@ def test_print_batch_scales_a_separate_copy(tmp_path: Path, frame: str) -> None:
     source = tmp_path / "render.png"
     source.write_bytes(b"rendered")
     requests = [CardConjourerRequest("0001", "Example", frame, frame_overlap_mm=0.5)]
-    with patch("mtg_proxies.cardconjourer.frame_scale.enlarge_frame") as scale:
+    with patch("mtg_proxies.frame_scale.enlarge_frame") as scale:
         outputs = render_per_card_batch(requests, run_harness=lambda jobs: [
             {"slot": "0001", "status": "ok", "out": str(source)},
         ])
     assert outputs["0001"] != source
     assert outputs["0001"].read_bytes() == source.read_bytes()
-    assert scale.call_args.args[0] == outputs["0001"]
+    # Scaled under a temporary name next to the output, then renamed into place.
+    assert scale.call_args.args[0] != source
+    assert scale.call_args.args[0].parent == outputs["0001"].parent
     assert scale.call_args.args[1] == pytest.approx(0.5)
 
 
 @pytest.mark.parametrize("frame", ["retro", "8th"])
 def test_print_dispatch_passes_scaling_request(frame: str) -> None:
     """The print modeline dispatch carries both frame selection and overlap."""
-    from mtg_proxies.cli import _RETRO_SCALED_DEFAULT_MM, _apply_per_card_modelines
+    from mtg_proxies.cli import _apply_per_card_modelines
     from mtg_proxies.decklists.decklist import Card, Decklist
+    from mtg_proxies.frame_scale import DEFAULT_OVERLAP_MM
 
     deck = Decklist([Card(1, {"name": "Example", "layout": "normal", "image_uris": {"normal": "scan.png"}},
                           f"#cardconjourer --{frame}-scaled")])
@@ -208,7 +211,7 @@ def test_print_dispatch_passes_scaling_request(frame: str) -> None:
         _apply_per_card_modelines(deck, ["original.png"])
     request = batch.call_args.args[0][0]
     assert request.frame == frame
-    assert request.frame_overlap_mm == pytest.approx(_RETRO_SCALED_DEFAULT_MM)
+    assert request.frame_overlap_mm == pytest.approx(DEFAULT_OVERLAP_MM)
 
 
 @pytest.mark.parametrize("last", ["--modern", "--8th-scaled", "--scryfall"])
@@ -222,7 +225,7 @@ def test_stacked_directives_keep_frame_and_scaling_consistent(tmp_path: Path, la
         patch("sys.argv", ["mtg-proxies", "cardconjourer", "unused.txt", str(tmp_path / "out")]),
         patch("mtg_proxies.cli.parse_decklist_spec", return_value=deck),
         patch("mtg_proxies.cardconjourer.runner.render_deck") as render,
-        patch("mtg_proxies.cardconjourer.frame_scale.enlarge_frame", return_value=1.0) as scale,
+        patch("mtg_proxies.frame_scale.enlarge_frame", return_value=1.0) as scale,
     ):
         render.return_value = {"ok": 0, "skipped": 0, "total": 1}
         main()
@@ -242,7 +245,7 @@ def test_print_scaling_warns_on_unmeasurable_frame(tmp_path: Path, caplog: pytes
 
     source = tmp_path / "render.png"
     source.write_bytes(b"rendered")
-    with patch("mtg_proxies.cardconjourer.frame_scale.enlarge_frame", return_value=None):
+    with patch("mtg_proxies.frame_scale.enlarge_frame", return_value=None):
         render_per_card_batch([CardConjourerRequest("0001", "Example", "retro", frame_overlap_mm=0.5)],
                               run_harness=lambda jobs: [{"slot": "0001", "status": "ok", "out": str(source)}])
     assert "could not be applied to 'Example'" in caplog.text

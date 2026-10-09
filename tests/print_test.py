@@ -1145,3 +1145,73 @@ def test_border_cropped_image_always_reflects_current_source(tmp_path: Path) -> 
     Image.new("RGB", (w, h), (0, 200, 0)).save(src)  # overwrite same path with green
     green = np.asarray(_border_cropped_image(src, 14)).astype(int)
     assert green[..., 1].mean() > green[..., 0].mean(), "stale red crop served instead of new green"
+
+
+def _bordered_render(path: Path) -> Path:
+    """Black-bordered card: a coloured block inset 36 px on a black 400x560 canvas."""
+    from PIL import Image
+
+    image = Image.new("RGB", (400, 560), (0, 0, 0))
+    image.paste(Image.new("RGB", (328, 488), (200, 180, 120)), (36, 36))
+    image.save(path)
+    return path
+
+
+def _borderless_render(path: Path) -> Path:
+    """Art to every edge: no black border for frame scaling to find."""
+    from PIL import Image
+
+    Image.new("RGB", (400, 560), (90, 120, 160)).save(path)
+    return path
+
+
+@pytest.mark.parametrize(("modeline", "global_scaled"), [
+    ("#mpcfill --identifier 1A2b3C4d5E6f7G8h9I0jKlMnOpQrStUvW --scaled", False),
+    ("#mpcfill --identifier 1A2b3C4d5E6f7G8h9I0jKlMnOpQrStUvW", True),
+])
+def test_apply_per_card_modelines_mpcfill_scaled_swaps_in_grown_copy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, modeline: str, global_scaled: bool
+) -> None:
+    """`#mpcfill --scaled` (or `print --scaled`) prints a frame-grown copy; the cached render stays as is."""
+    from PIL import Image
+
+    from mtg_proxies import cli
+
+    render = _bordered_render(tmp_path / "render.png")
+    original = render.read_bytes()
+    monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", MagicMock(return_value=render))
+
+    bleed_renders: set[str] = set()
+    result = cli._apply_per_card_modelines(
+        _fake_decklist(_fake_card("Sol Ring", modeline=modeline)),
+        ["sol_scryfall.png"],
+        bleed_renders=bleed_renders,
+        global_mpc_scaled=global_scaled,
+    )
+
+    assert result[0] != str(render)
+    assert Path(result[0]).name == "render_ov0.75.png"
+    with Image.open(result[0]) as scaled:
+        assert scaled.size == (400, 560)
+        assert scaled.info["mtg-proxies:retro-scaled-mm"] == "0.75"
+    assert render.read_bytes() == original
+    assert bleed_renders == {result[0]}
+
+
+def test_apply_per_card_modelines_mpcfill_scaled_borderless_keeps_render(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A render with no black border can't be grown; the slot still gets the render, unscaled."""
+    from mtg_proxies import cli
+
+    render = _borderless_render(tmp_path / "render.png")
+    monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", MagicMock(return_value=render))
+
+    result = cli._apply_per_card_modelines(
+        _fake_decklist(
+            _fake_card("Sol Ring", modeline="#mpcfill --identifier 1A2b3C4d5E6f7G8h9I0jKlMnOpQrStUvW --scaled")
+        ),
+        ["sol_scryfall.png"],
+    )
+
+    assert result == [str(render)]

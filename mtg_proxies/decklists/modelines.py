@@ -98,6 +98,9 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         # ``--bleed-crop PERCENT`` — edge bleed-crop applied to the MPCFill render before it
         # replaces the Scryfall scan. Default 4 % (matches ``--custom-art-bleed-crop``).
         "--bleed-crop": _float_in_range(0.0, 50.0),
+        # ``--scaled`` — grow the render's frame for sticker-cut overlap (see ``frame_scale``).
+        # The per-card form of ``print --scaled``, for decks that mix scaled and unscaled cards.
+        "--scaled": NO_VALUE,
     },
     "upscale": {
         # When ``--upscale-model`` is supplied, the directive is treated as an *always-on*

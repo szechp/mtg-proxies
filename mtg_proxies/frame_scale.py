@@ -22,11 +22,18 @@ it gets correspondingly thinner — and the border is the part being cut off any
 That thinning is the hard limit. The border can only give up so much before the
 frame reaches the canvas edge and starts getting clipped, which caps the usable
 overlap at roughly 3.8 mm per side — see :func:`scale_for_margin`.
+
+Nothing here is specific to where the render came from. Card Conjurer output
+(``cardconjourer --retro-scaled``, ``#cardconjourer --retro-scaled``) and MPCFill
+renders (``print --scaled``, ``#mpcfill --scaled``) both go through it: any card
+with a black border is measured the same way, and one without (borderless,
+extended art) fails :func:`measure_frame_box` and is left alone.
 """
 
 from __future__ import annotations
 
 import logging
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -34,8 +41,20 @@ from PIL import Image, PngImagePlugin
 
 _log = logging.getLogger(__name__)
 
+#: Overlap per side, in mm, measured against the frame's own size. Note the retro frame
+#: starts ~0.58 mm per side *narrower* than a modern one, so the first ~0.6 mm only buys
+#: parity; what's left over is the actual slack against the card being covered. Settled
+#: by printing and cutting: 1.0 mm overhung noticeably, so this backs off to 0.75 mm —
+#: visible colour 53.7 x 78.9 mm, about 0.8 mm of slack per side over a bulk card's own
+#: frame. The 8th frame sits within 0.06 mm of retro at the same overlap, and MPCFill
+#: renders (after their default bleed crop) land the card on the same geometry as Card
+#: Conjurer's, so one value covers every caller.
+DEFAULT_OVERLAP_MM = 0.75
+
 #: PNG metadata keys recording what was applied, so a re-run over an output directory
-#: is idempotent instead of either compounding or silently skipping.
+#: is idempotent instead of either compounding or silently skipping. The ``retro-``
+#: names predate non-retro callers; renaming them would make every already-scaled file
+#: on disk look unscaled and get grown a second time.
 _STAMP_MARGIN = "mtg-proxies:retro-scaled-mm"
 #: Written by the withdrawn bevel-trim behaviour; still *read*, so its output is
 #: recognised as stale rather than mistaken for current.
@@ -254,3 +273,44 @@ def enlarge_frame(path: Path, margin_mm: float, card_size_mm: tuple[float, float
     stamp.add_text(_STAMP_SCALE, f"{scale:.6f}")
     result.save(path, pnginfo=stamp)
     return scale
+
+
+def enlarge_frame_copy(
+    source: Path, destination: Path, margin_mm: float, card_size_mm: tuple[float, float]
+) -> float | None:
+    """Write ``source`` to ``destination`` with its frame grown, leaving ``source`` untouched.
+
+    For renders that live in a shared cache (another slot, or another deck, may use the
+    same file unscaled). An existing ``destination`` is reused only when it carries the
+    stamp for this margin and is no older than ``source``; anything else — an unscaled
+    copy, a stale one, a file truncated by an interrupted run — is rebuilt from
+    ``source``. The rebuild happens under a temporary name and is renamed into place, so
+    ``destination`` is never left half-written. ``destination`` should end in ``.png``:
+    the stamp is PNG metadata, and a JPEG would drop it and get rebuilt on every run.
+
+    Args:
+        source: The render to scale. Never modified.
+        destination: Where the scaled copy goes. When the frame can't be measured it
+            still receives an unscaled copy, so the caller can use it either way.
+        margin_mm: Desired overlap per side, in millimetres.
+        card_size_mm: ``(width, height)`` the canvas prints at.
+
+    Returns:
+        Same as :func:`enlarge_frame`.
+    """
+    if destination.is_file() and destination.stat().st_mtime >= source.stat().st_mtime:
+        try:
+            with Image.open(destination) as existing:
+                stamped_margin = existing.info.get(_STAMP_MARGIN)
+                stamped_scale = existing.info.get(_STAMP_SCALE)
+            if stamped_margin is not None and abs(float(stamped_margin) - margin_mm) < 1e-6:
+                return float(stamped_scale) if stamped_scale is not None else 1.0
+        except (OSError, ValueError) as exc:
+            _log.debug("frame-scale rebuilding unreadable %s: %s", destination, exc)
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    partial = destination.with_name(f"{destination.stem}.partial{destination.suffix}")
+    shutil.copyfile(source, partial)
+    applied = enlarge_frame(partial, margin_mm, card_size_mm)
+    partial.replace(destination)
+    return applied

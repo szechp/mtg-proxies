@@ -274,6 +274,39 @@ def test_main_print_order_xml_slot_order_dedupe_and_bleed(tmp_path: Path) -> Non
     assert {str(renders["idA"]), str(renders["idB"])} <= bleed_images
 
 
+def test_main_print_order_xml_scaled_grows_bordered_fronts_only(tmp_path: Path) -> None:
+    """`print --scaled`: bordered renders print as grown copies, borderless ones as-is."""
+    from PIL import Image
+
+    from mtg_proxies.cli import main
+
+    xml_file = tmp_path / "cards.xml"
+    _write_order_xml(xml_file, [("idA", "0,2", "A.png"), ("idB", "1", "B.png")], quantity=3)
+    out_file = tmp_path / "out.pdf"
+
+    bordered = Image.new("RGB", (400, 560), (0, 0, 0))
+    bordered.paste(Image.new("RGB", (328, 488), (200, 180, 120)), (36, 36))
+    bordered.save(tmp_path / "idA.png")
+    Image.new("RGB", (400, 560), (90, 120, 160)).save(tmp_path / "idB.png")
+    original_a = (tmp_path / "idA.png").read_bytes()
+
+    def fake_resolve(*, drive_id_override: str, **kwargs: object) -> Path:
+        return tmp_path / f"{drive_id_override}.png"
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "print", str(xml_file), str(out_file), "--scaled"]),
+        patch("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", side_effect=fake_resolve),
+        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+    ):
+        main()
+
+    scaled_a = str(tmp_path / "idA_ov0.75.png")
+    images = print_cards_fpdf.call_args.args[0]
+    assert images == [scaled_a, str(tmp_path / "idB.png"), scaled_a]
+    assert {scaled_a, str(tmp_path / "idB.png")} <= print_cards_fpdf.call_args.kwargs["bleed_images"]
+    assert (tmp_path / "idA.png").read_bytes() == original_a
+
+
 def test_main_print_order_xml_fetch_failure_exits(tmp_path: Path) -> None:
     """A failed Drive fetch must abort the whole print (a dropped slot would shift the sheet)."""
     from mtg_proxies.cli import main

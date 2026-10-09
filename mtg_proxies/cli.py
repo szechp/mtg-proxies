@@ -27,6 +27,7 @@ from mtg_proxies.cube_builder import (
 from mtg_proxies.deck_value import show_deck_value
 from mtg_proxies.decklists import archidekt, manastack, parse_decklist
 from mtg_proxies.decklists.decklist import Card, Comment, Decklist
+from mtg_proxies.frame_scale import DEFAULT_OVERLAP_MM
 from mtg_proxies.mpcfill.cache import default_cache_root
 from mtg_proxies.mpcfill.order_xml import is_order_xml
 from mtg_proxies.print_cards import CARD_SIZE_MM
@@ -42,19 +43,12 @@ _mpcfill_log = logging.getLogger("mtg_proxies.mpcfill.cli")
 # image but is otherwise unused — a non-zero value is ignored with a warning.
 DEFAULT_CUSTOM_ART_BLEED_CROP_PERCENT = 0.0
 BASIC_LAND_NAMES = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
-# Overlap per side for ``--retro-scaled``, in mm, measured against the retro frame's
-# own size. Note the retro frame starts ~0.58 mm per side *narrower* than a modern
-# one, so the first ~0.6 mm only buys parity; what's left over is the actual slack
-# against the card being covered. Settled by printing and cutting: 1.0 mm overhung
-# noticeably, so this backs off to 0.75 mm — visible colour 53.7 x 78.9 mm, about
-# 0.8 mm of slack per side over a bulk card's own frame.
-_RETRO_SCALED_DEFAULT_MM = 0.75
 # Prepended to the output filename of legendary cards rendered by `cardconjourer`.
 LEGENDARY_FILENAME_PREFIX = "legendary_"
 # ``--<frame>-scaled`` flags, mapped to the frame each one renders in. The 8th and retro
 # frames sit within 0.06 mm of each other once scaled at the same overlap (8th's colour
-# block measures 52.08 x 76.97 mm against retro's 52.14 x 76.67), so one constant covers
-# both and there is no separate 8th target to keep in sync.
+# block measures 52.08 x 76.97 mm against retro's 52.14 x 76.67), so one constant
+# (``frame_scale.DEFAULT_OVERLAP_MM``) covers both.
 _SCALED_FLAG_FRAMES = {"retro_scaled": "retro", "eighth_scaled": "8th"}
 ArtPreference = Literal["standard", "wild", "premium"]
 EXCLUDED_BASIC_LAND_PRINTS = {
@@ -346,7 +340,24 @@ def parse_decklist_spec(
     return decklist
 
 
-def _fetch_mpc_order_images(order_path: str, bleed_renders: set[str]) -> list[str]:
+def _scale_mpc_render(path: str) -> str | None:
+    """Return a frame-scaled copy of an MPCFill render, or ``None`` if its frame can't be measured.
+
+    The copy sits next to the cached render under an ``_ov<mm>`` suffix, so the cache
+    entry itself stays unscaled for slots and decks that don't ask for it. ``None``
+    almost always means borderless or extended art: no black border, nothing to grow.
+    """
+    from mtg_proxies.frame_scale import enlarge_frame_copy
+
+    source = Path(path)
+    scaled = source.with_name(f"{source.stem}_ov{DEFAULT_OVERLAP_MM:.2f}.png")
+    card_mm = (float(CARD_SIZE_MM[0]), float(CARD_SIZE_MM[1]))
+    if enlarge_frame_copy(source, scaled, DEFAULT_OVERLAP_MM, card_mm) is None:
+        return None
+    return str(scaled)
+
+
+def _fetch_mpc_order_images(order_path: str, bleed_renders: set[str], *, scaled: bool = False) -> list[str]:
     """Fetch every front render of an MPC Autofill ``order.xml`` to local PNGs.
 
     Returns one image path per slot, in slot order. Each Drive id is fetched once
@@ -354,6 +365,9 @@ def _fetch_mpc_order_images(order_path: str, bleed_renders: set[str]) -> list[st
     --identifier`` modeline uses, with the same default bleed crop) and fanned
     back out to its slots. All returned paths are added to ``bleed_renders`` so
     they get the --custom-art bleed placement and skip the bulk transforms.
+
+    With ``scaled`` (``print --scaled``), every render whose frame can be measured is
+    swapped for a frame-grown copy; the rest (borderless / extended art) print as-is.
 
     A failed fetch is a hard exit: silently dropping a slot would shift every
     card after it on the print sheet.
@@ -387,6 +401,22 @@ def _fetch_mpc_order_images(order_path: str, bleed_renders: set[str]) -> list[st
             failing = [slot for slot, (d, _) in enumerate(slots) if d == drive_id]
             _die(f"could not fetch {name or '?'!r} (drive id {drive_id}, slot(s) {failing})")
         resolved[drive_id] = str(out)
+
+    if scaled:
+        unscaled = []
+        for drive_id, path in resolved.items():
+            scaled_path = _scale_mpc_render(path)
+            if scaled_path is None:
+                unscaled.append(unique[drive_id] or drive_id)
+            else:
+                resolved[drive_id] = scaled_path
+        print(
+            f"[mpc-xml] frame scaling: {len(resolved) - len(unscaled)}/{len(resolved)} grown for"
+            f" {DEFAULT_OVERLAP_MM:g} mm overlap per side",
+            file=sys.stderr,
+        )
+        if unscaled:
+            _warn(f"Note: no black border to grow (borderless/extended art?), left as-is: {', '.join(unscaled)}")
 
     paths = [resolved[drive_id] for drive_id, _ in slots]
     bleed_renders.update(paths)
@@ -557,6 +587,7 @@ def _apply_per_card_modelines(
     global_upscale: bool = False,
     global_normalize: bool = False,
     global_shadow_lift: bool = False,
+    global_mpc_scaled: bool = False,
     upscale_model: Path | None = None,
     upscale_target_width: int | None = None,
     cache_root: Path | None = None,
@@ -575,7 +606,8 @@ def _apply_per_card_modelines(
     slots in the map (DFC in non-duplex, or DFC in duplex), also try matching the back-face
     render keyed on the back-face name; misses fall back to Scryfall. Single-faced cards in
     duplex mode have empty back-slot lists, so the user-supplied generic card-back stays
-    untouched.
+    untouched. ``#mpcfill --scaled`` (or ``global_mpc_scaled``, from ``print --scaled``)
+    swaps in a frame-grown copy of the render; one with no measurable frame stays as-is.
 
     Pass 2 — per-card transforms (``#upscale`` / ``#normalize`` / ``#shadow-lift``): when
     the corresponding global flag is OFF, gather slots from flagged cards and run the
@@ -663,6 +695,16 @@ def _apply_per_card_modelines(
                         "MPCFill fetch failed for %r — falling back to Scryfall art.", card["name"],
                     )
                     continue
+                if global_mpc_scaled or directive.flags.get("--scaled"):
+                    scaled_front = _scale_mpc_render(str(out_front))
+                    if scaled_front is None:
+                        _mpcfill_log.warning(
+                            "#mpcfill --scaled on %r: no black border to grow (borderless/extended art?);"
+                            " using the render as-is.",
+                            card["name"],
+                        )
+                    else:
+                        out_front = scaled_front
                 for slot in front_slots:
                     _write(slot, str(out_front))
                 # MPCFill renders ship at print resolution with the MPC bleed baked in: scale them
@@ -752,7 +794,7 @@ def _apply_per_card_modelines(
                         art_path=resolved_art,
                         legendary=bool(directive.flags.get("--legendary")),
                         frame_overlap_mm=(
-                            _RETRO_SCALED_DEFAULT_MM
+                            DEFAULT_OVERLAP_MM
                             if directive.flags.get("--retro-scaled") or directive.flags.get("--8th-scaled")
                             else None
                         ),
@@ -2025,7 +2067,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     frame_scale_stats = {"scaled": 0, "unmeasurable": 0, "scale": 0.0}
     post_process_cb = None
     if scaled_flags or slot_scaled:
-        from mtg_proxies.cardconjourer import frame_scale
+        from mtg_proxies import frame_scale
         from mtg_proxies.print_cards import CARD_SIZE_MM
 
         card_mm = (float(CARD_SIZE_MM[0]), float(CARD_SIZE_MM[1]))
@@ -2039,7 +2081,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         def post_process_cb(png: Path) -> None:
             if png.name not in scaled_names:
                 return
-            applied = frame_scale.enlarge_frame(png, _RETRO_SCALED_DEFAULT_MM, card_mm)
+            applied = frame_scale.enlarge_frame(png, DEFAULT_OVERLAP_MM, card_mm)
             if applied is None:
                 frame_scale_stats["unmeasurable"] += 1
                 _warn(f"Note: frame scaling could not find the frame edge in {png.name} — left unscaled.")
@@ -2063,7 +2105,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     if frame_scale_stats["scaled"]:
         print(
             f"[cardconjourer] frame scaling: {frame_scale_stats['scaled']} frames grown "
-            f"~{frame_scale_stats['scale']:.3f}x for {_RETRO_SCALED_DEFAULT_MM:g} mm overlap per side"
+            f"~{frame_scale_stats['scale']:.3f}x for {DEFAULT_OVERLAP_MM:g} mm overlap per side"
         )
     if args.scryfall:
         suffix = " (upscaled)" if args.upscale else ""
@@ -2167,6 +2209,19 @@ def main() -> None:
         type=float,
         default=DEFAULT_CUSTOM_ART_BLEED_CROP_PERCENT,
         metavar="PERCENT",
+    )
+    print_parser.add_argument(
+        "--scaled",
+        action="store_true",
+        default=False,
+        help=(
+            f"grow the frame of every MPCFill render (order.xml fronts and #mpcfill lines) so it"
+            f" overlaps what it covers by {DEFAULT_OVERLAP_MM:g} mm on every side — the sticker"
+            " workflow, same as cardconjourer --retro-scaled. Renders with no black border"
+            " (borderless, extended art) are left as-is. Applies to every frame style, modern"
+            " included; to scale only some cards, use #mpcfill --scaled per line instead."
+            " Scryfall scans and #cardconjourer renders are untouched."
+        ),
     )
     print_parser.add_argument(
         "--split-pages",
@@ -2487,7 +2542,7 @@ def main() -> None:
         "--retro-scaled", dest="retro_scaled", action="store_true", default=False,
         help=(
             f"grow the retro frame inside the card so it overlaps what it has to cover by"
-            f" {_RETRO_SCALED_DEFAULT_MM:g} mm on every side. For the sticker workflow: the"
+            f" {DEFAULT_OVERLAP_MM:g} mm on every side. For the sticker workflow: the"
             " retro colour block is the good one to cut, because it ends in a hard square"
             " corner, but at true size it only just covers a bulk card's own frame — a"
             " millimetre of cutting or sticking error leaves a sliver of the old card"
@@ -2501,7 +2556,7 @@ def main() -> None:
         help=(
             f"the same treatment as --retro-scaled, on the 8th-Edition frame: grow the"
             f" frame inside the card so it overlaps what it has to cover by"
-            f" {_RETRO_SCALED_DEFAULT_MM:g} mm on every side. The 8th and retro colour"
+            f" {DEFAULT_OVERLAP_MM:g} mm on every side. The 8th and retro colour"
             " blocks are within 0.06 mm of each other, so both end up the same printed"
             " size. Implies --8th; conflicts with the other frame flags and with"
             " --retro-scaled."
@@ -2648,7 +2703,7 @@ def main() -> None:
                     # Nulled so the bulk-upscale block below (which reads the decklist-path
                     # ``highres_flags``) never fires for XML input.
                     upscale_scope = None
-                xml_paths = _fetch_mpc_order_images(args.decklist, modeline_bleed_renders)
+                xml_paths = _fetch_mpc_order_images(args.decklist, modeline_bleed_renders, scaled=args.scaled)
                 print(f"Found {len(xml_paths)} cards in MPC order '{args.decklist}'.")
                 if duplex_mode:
                     fronts = list(xml_paths)
@@ -2699,6 +2754,7 @@ def main() -> None:
                             global_upscale=upscale_scope is not None,
                             global_normalize=bool(args.normalize),
                             global_shadow_lift=bool(args.shadow_lift),
+                            global_mpc_scaled=args.scaled,
                             upscale_model=args.upscale_model,
                             upscale_target_width=args.upscale_target_width,
                         )
@@ -2715,9 +2771,18 @@ def main() -> None:
                             global_upscale=upscale_scope is not None,
                             global_normalize=bool(args.normalize),
                             global_shadow_lift=bool(args.shadow_lift),
+                            global_mpc_scaled=args.scaled,
                             upscale_model=args.upscale_model,
                             upscale_target_width=args.upscale_target_width,
                         )
+                if args.scaled and not (
+                    has_modelines and any(card.modeline and "#mpcfill" in card.modeline for card in decklist.cards)
+                ):
+                    print(
+                        "Note: --scaled only grows MPCFill renders (order.xml input or #mpcfill lines);"
+                        " this decklist has none, so nothing is scaled.",
+                        file=sys.stderr,
+                    )
 
             if args.custom_art:
                 custom_folder = Path(args.custom_art)
