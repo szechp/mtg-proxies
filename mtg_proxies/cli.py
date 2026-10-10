@@ -2227,7 +2227,7 @@ def main() -> None:
         help=(
             "grow the frame of every MPCFill render (order.xml fronts and #mpcfill lines) for the"
             " sticker workflow, like cardconjourer --retro-scaled but by a smaller amount tuned on"
-            " MPC prints (~1.1 mm wider frame in total). Renders with no black border"
+            " MPC prints (~1.3 mm wider frame in total). Renders with no black border"
             " (borderless, extended art) are left as-is. Applies to every frame style, modern"
             " included; to scale only some cards, use #mpcfill --scaled per line instead."
             " Scryfall scans and #cardconjourer renders are untouched."

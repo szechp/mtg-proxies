@@ -382,7 +382,7 @@ To cover a bulk card with a printed sticker, you print on sticker paper at 100 %
 coloured frame and stick it on. At true size the frame only just covers the bulk card's own
 frame, so a millimetre of cutting error shows a sliver of the old card. **Scaling** grows the
 frame inside the image to buy back that tolerance: about 1.65 mm wider in total for Card
-Conjurer renders, and a slightly smaller ~1.1 mm for MPCFill renders, where the larger amount overhung.
+Conjurer renders, and a slightly smaller ~1.3 mm for MPCFill renders, where the larger amount overhung.
 Both values were tuned on printed cards.
 The canvas keeps its size and still prints at 63×88 mm; the black border absorbs the growth.
 
@@ -400,7 +400,7 @@ The canvas keeps its size and still prints at 63×88 mm; the black border absorb
   section).
 - Plain Scryfall scans are never scaled.
 - Scaled files carry a PNG stamp, so re-runs never grow them twice. Cached MPCFill renders stay
-  unscaled; the scaled copy sits next to them as `<name>_ov0.50.png`.
+  unscaled; the scaled copy sits next to them as `<name>_ov0.60.png`.
 
 ## MPC Autofill orders
 
