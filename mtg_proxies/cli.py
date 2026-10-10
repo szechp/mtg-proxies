@@ -661,11 +661,21 @@ def _apply_per_card_modelines(
 
         cache_root_ = cache_root if cache_root is not None else default_cache_root()
         session_ = session if session is not None else requests.Session()
+        # Full-size renders take a few seconds each to fetch, crop and scale; without a progress
+        # line a big deck sits silent long enough to look hung (same format as the order.xml path).
+        mpcfill_total = sum(1 for dl in parsed for d in dl if d.verb == "mpcfill")
+        mpcfill_done = 0
 
         for card_idx, (card, directives) in enumerate(zip(decklist.cards, parsed, strict=True)):
             for directive in directives:
                 if directive.verb != "mpcfill":
                     continue
+                mpcfill_done += 1
+                will_scale = bool(global_mpc_scaled or directive.flags.get("--scaled"))
+                print(
+                    f"[mpcfill] {mpcfill_done}/{mpcfill_total} {card['name']}" + (" (scaling)" if will_scale else ""),
+                    file=sys.stderr,
+                )
                 identifier_override = directive.flags.get("--identifier")
                 if not identifier_override:
                     _mpcfill_log.warning(
@@ -695,7 +705,7 @@ def _apply_per_card_modelines(
                         "MPCFill fetch failed for %r — falling back to Scryfall art.", card["name"],
                     )
                     continue
-                if global_mpc_scaled or directive.flags.get("--scaled"):
+                if will_scale:
                     scaled_front = _scale_mpc_render(str(out_front))
                     if scaled_front is None:
                         _mpcfill_log.warning(
