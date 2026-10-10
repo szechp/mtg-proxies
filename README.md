@@ -347,12 +347,11 @@ Rules:
 | `#cardconjourer` | see [table below](#cardconjourer-flags) | Render this card with the headless Card Conjurer engine instead of using the Scryfall scan. |
 | `#print` | `--language LANG` | Use the real scanned print of this card in language `LANG` (e.g. `de`) instead of the English scan. If no such print exists, the normal scan is used. The `cardconjourer` subcommand writes this into its `fallback.txt` for cards whose translation it can't render. |
 | `#upscale` | `--upscale-model PATH` | Run this card through Real-ESRGAN. Bare `#upscale` does nothing extra when `--upscale` is already on deck-wide. With `--upscale-model` it always runs, using that model, even under `--upscale all`. |
-| `#normalize` | `--lift F` | Run auto-levels on this card. No-op when `--normalize` is on deck-wide. `--lift` is accepted but **currently ignored**. |
-| `#shadow-lift` | `--amount F` | Lift crushed shadows on this card. No-op when `--shadow-lift` is on deck-wide. `--amount` is accepted but **currently ignored**. |
+| `#normalize` | — | Run auto-levels on this card. No-op when `--normalize` is on deck-wide. |
+| `#shadow-lift` | — | Lift crushed shadows on this card. No-op when `--shadow-lift` is on deck-wide. |
 | `#no-upscale` | — | Exclude this card from the deck-wide `--upscale`. |
 | `#no-normalize` | — | Exclude this card from the deck-wide `--normalize`. |
 | `#no-shadow-lift` | — | Exclude this card from the deck-wide `--shadow-lift`. |
-| `#vignette` | `--strength F` `--edge F` `--max-black N` | Parsed and validated, but **not wired up yet**. Per-card vignette has no effect; use the deck-wide `--vignette`. |
 
 Only `print` acts on `#mpcfill`, `#print`, `#upscale`, `#normalize`, `#shadow-lift` and the
 `#no-*` verbs. The `cardconjourer` subcommand reads `#cardconjourer` only.

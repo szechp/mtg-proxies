@@ -1219,30 +1219,21 @@ def test_parse_decklist_url_line_with_modeline_keeps_trailer(monkeypatch: pytest
     assert decklist.cards[0].modeline.strip().startswith("#upscale")
 
 
-def test_modeline_parse_vignette_with_all_keys() -> None:
+@pytest.mark.parametrize(
+    ("trailer", "expected"),
+    [
+        (" #vignette --strength 0.5", "unknown modeline verb '#vignette'"),
+        (" #normalize --lift 6", "unknown flag '--lift'"),
+        (" #shadow-lift --amount 0.5", "unknown flag '--amount'"),
+    ],
+)
+def test_modeline_rejects_removed_per_card_tuning(trailer: str, expected: str) -> None:
+    """These were parsed but never applied; they now warn instead of silently doing nothing."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer(" #vignette --strength 0.5 --edge 0.04 --max-black 30")
-    assert warnings == []
-    assert len(directives) == 1
-    d = directives[0]
-    assert d.verb == "vignette"
-    assert d.flags == {"--strength": 0.5, "--edge": 0.04, "--max-black": 30.0}
-
-
-def test_modeline_parse_vignette_bare_no_flags() -> None:
-    from mtg_proxies.decklists.modelines import Directive, parse_modeline_trailer
-
-    directives, warnings = parse_modeline_trailer(" #vignette")
-    assert warnings == []
-    assert directives == [Directive(verb="vignette", flags={})]
-
-
-def test_modeline_parse_vignette_out_of_range_warns() -> None:
-    from mtg_proxies.decklists.modelines import parse_modeline_trailer
-
-    _, warnings = parse_modeline_trailer(" #vignette --strength 2.5")
-    assert any("strength" in str(w).lower() for w in warnings)
+    directives, warnings = parse_modeline_trailer(trailer)
+    assert directives == []
+    assert any(expected in str(w).lower() for w in warnings)
 
 
 def test_parse_decklist_url_line_miss_warns_and_comments(monkeypatch: pytest.MonkeyPatch) -> None:

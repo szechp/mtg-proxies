@@ -108,23 +108,8 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         # can swap the model for problematic cards (e.g. anime_6B for halftone-print scans).
         "--upscale-model": _path_str,
     },
-    "normalize": {
-        # ``--lift VALUE`` — boost applied at the ~25 % mid-shadow point on the 0-255 scale.
-        # Default 6; set 0 for pure black-point remap with no mid-tone lift. Matches the
-        # ``lift`` arg on :func:`normalize_images`.
-        "--lift": _float_in_range(0.0, 64.0),
-    },
-    "shadow-lift": {
-        "--amount": _float_in_range(0.0, 1.0),
-    },
-    # ``#vignette`` — per-card override of the global ``--vignette`` flag. Flag keys mirror
-    # the CLI's ``key=value`` schema so users can copy values across. Not yet wired into
-    # the print pipeline as a per-card override; reserved for the upcoming pipeline stage.
-    "vignette": {
-        "--strength": _float_in_range(0.0, 1.0),
-        "--edge": _float_in_range(0.0, 1.0),
-        "--max-black": _float_in_range(0.0, 255.0),
-    },
+    "normalize": {},
+    "shadow-lift": {},
     # Opt-out verbs — exclude this card from a globally-enabled pass. Mirror of
     # ``#upscale`` / ``#normalize`` / ``#shadow-lift``: those add for a single card when
     # the global flag is off; these subtract for a single card when the global flag is on.
