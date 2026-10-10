@@ -27,7 +27,7 @@ from mtg_proxies.cube_builder import (
 from mtg_proxies.deck_value import show_deck_value
 from mtg_proxies.decklists import archidekt, manastack, parse_decklist
 from mtg_proxies.decklists.decklist import Card, Comment, Decklist
-from mtg_proxies.frame_scale import DEFAULT_OVERLAP_MM
+from mtg_proxies.frame_scale import DEFAULT_OVERLAP_MM, MPC_OVERLAP_MM
 from mtg_proxies.mpcfill.cache import default_cache_root
 from mtg_proxies.mpcfill.order_xml import is_order_xml
 from mtg_proxies.print_cards import CARD_SIZE_MM
@@ -350,9 +350,9 @@ def _scale_mpc_render(path: str) -> str | None:
     from mtg_proxies.frame_scale import enlarge_frame_copy
 
     source = Path(path)
-    scaled = source.with_name(f"{source.stem}_ov{DEFAULT_OVERLAP_MM:.2f}.png")
+    scaled = source.with_name(f"{source.stem}_ov{MPC_OVERLAP_MM:.2f}.png")
     card_mm = (float(CARD_SIZE_MM[0]), float(CARD_SIZE_MM[1]))
-    if enlarge_frame_copy(source, scaled, DEFAULT_OVERLAP_MM, card_mm) is None:
+    if enlarge_frame_copy(source, scaled, MPC_OVERLAP_MM, card_mm) is None:
         return None
     return str(scaled)
 
@@ -412,7 +412,7 @@ def _fetch_mpc_order_images(order_path: str, bleed_renders: set[str], *, scaled:
                 resolved[drive_id] = scaled_path
         print(
             f"[mpc-xml] frame scaling: {len(resolved) - len(unscaled)}/{len(resolved)} grown for"
-            f" {DEFAULT_OVERLAP_MM:g} mm overlap per side",
+            f" {MPC_OVERLAP_MM:g} mm overlap per side",
             file=sys.stderr,
         )
         if unscaled:
@@ -2215,9 +2215,9 @@ def main() -> None:
         action="store_true",
         default=False,
         help=(
-            f"grow the frame of every MPCFill render (order.xml fronts and #mpcfill lines) so it"
-            f" overlaps what it covers by {DEFAULT_OVERLAP_MM:g} mm on every side — the sticker"
-            " workflow, same as cardconjourer --retro-scaled. Renders with no black border"
+            "grow the frame of every MPCFill render (order.xml fronts and #mpcfill lines) for the"
+            " sticker workflow, like cardconjourer --retro-scaled but by a smaller amount tuned on"
+            " MPC prints (~0.65 mm wider frame in total). Renders with no black border"
             " (borderless, extended art) are left as-is. Applies to every frame style, modern"
             " included; to scale only some cards, use #mpcfill --scaled per line instead."
             " Scryfall scans and #cardconjourer renders are untouched."

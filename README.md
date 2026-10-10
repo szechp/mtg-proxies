@@ -55,7 +55,7 @@ Create a high quality printable PDF from your decklist or a list of cards you wa
   `mtg-proxies print cards.xml out.pdf` — pass an [MPC Autofill](https://mpcfill.com) order export straight to `print` in place of a decklist (detected by the `.xml` extension, no flag). Fronts only; combine with `--card-back PATH` for duplex sheets. `scripts/mpc_xml_to_decklist.py` turns an order into an editable decklist. See [MPC Autofill orders](#mpc-autofill-orders).
 
 - **Sticker workflow: scaled frames**  
-  Grow a card's frame by 0.75 mm per side inside its own canvas, so a sticker cut from it still covers a bulk card after a slightly-off cut. Works for Card Conjurer and MPCFill renders, deck-wide or per card. See [Sticker workflow](#sticker-workflow-scaled-frames).
+  Grow a card's frame a little inside its own canvas, so a sticker cut from it still covers a bulk card after a slightly-off cut. Works for Card Conjurer and MPCFill renders, deck-wide or per card. See [Sticker workflow](#sticker-workflow-scaled-frames).
 
 - **Per-card modelines**  
   Append `#verb --flags` to a decklist line to treat one card differently: swap in an MPCFill render, render it with Card Conjurer, upscale it, or opt it out of a deck-wide pass. See [Modelines](#modelines-per-card-directives).
@@ -381,7 +381,9 @@ honored in both:
 To cover a bulk card with a printed sticker, you print on sticker paper at 100 %, cut out the
 coloured frame and stick it on. At true size the frame only just covers the bulk card's own
 frame, so a millimetre of cutting error shows a sliver of the old card. **Scaling** grows the
-frame inside the image by 0.75 mm per side (a print-tested value) to buy back that tolerance.
+frame inside the image to buy back that tolerance: about 1.65 mm wider in total for Card
+Conjurer renders, and a smaller ~0.65 mm for MPCFill renders, where the larger amount overhung.
+Both values were tuned on printed cards.
 The canvas keeps its size and still prints at 63×88 mm; the black border absorbs the growth.
 
 | What you print | How to scale it |
@@ -398,7 +400,7 @@ The canvas keeps its size and still prints at 63×88 mm; the black border absorb
   section).
 - Plain Scryfall scans are never scaled.
 - Scaled files carry a PNG stamp, so re-runs never grow them twice. Cached MPCFill renders stay
-  unscaled; the scaled copy sits next to them as `<name>_ov0.75.png`.
+  unscaled; the scaled copy sits next to them as `<name>_ov0.29.png`.
 
 ## MPC Autofill orders
 

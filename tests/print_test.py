@@ -1176,6 +1176,7 @@ def test_apply_per_card_modelines_mpcfill_scaled_swaps_in_grown_copy(
     from PIL import Image
 
     from mtg_proxies import cli
+    from mtg_proxies.frame_scale import MPC_OVERLAP_MM
 
     render = _bordered_render(tmp_path / "render.png")
     original = render.read_bytes()
@@ -1190,10 +1191,10 @@ def test_apply_per_card_modelines_mpcfill_scaled_swaps_in_grown_copy(
     )
 
     assert result[0] != str(render)
-    assert Path(result[0]).name == "render_ov0.75.png"
+    assert Path(result[0]).name == f"render_ov{MPC_OVERLAP_MM:.2f}.png"
     with Image.open(result[0]) as scaled:
         assert scaled.size == (400, 560)
-        assert scaled.info["mtg-proxies:retro-scaled-mm"] == "0.75"
+        assert scaled.info["mtg-proxies:retro-scaled-mm"] == f"{MPC_OVERLAP_MM:g}"
     assert render.read_bytes() == original
     assert bleed_renders == {result[0]}
 

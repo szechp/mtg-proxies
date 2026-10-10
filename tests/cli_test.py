@@ -279,6 +279,7 @@ def test_main_print_order_xml_scaled_grows_bordered_fronts_only(tmp_path: Path) 
     from PIL import Image
 
     from mtg_proxies.cli import main
+    from mtg_proxies.frame_scale import MPC_OVERLAP_MM
 
     xml_file = tmp_path / "cards.xml"
     _write_order_xml(xml_file, [("idA", "0,2", "A.png"), ("idB", "1", "B.png")], quantity=3)
@@ -300,7 +301,7 @@ def test_main_print_order_xml_scaled_grows_bordered_fronts_only(tmp_path: Path) 
     ):
         main()
 
-    scaled_a = str(tmp_path / "idA_ov0.75.png")
+    scaled_a = str(tmp_path / f"idA_ov{MPC_OVERLAP_MM:.2f}.png")
     images = print_cards_fpdf.call_args.args[0]
     assert images == [scaled_a, str(tmp_path / "idB.png"), scaled_a]
     assert {scaled_a, str(tmp_path / "idB.png")} <= print_cards_fpdf.call_args.kwargs["bleed_images"]

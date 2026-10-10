@@ -51,6 +51,14 @@ _log = logging.getLogger(__name__)
 #: Conjurer's, so one value covers every caller.
 DEFAULT_OVERLAP_MM = 0.75
 
+#: Overlap for MPCFill renders (``print --scaled``, ``#mpcfill --scaled``), in the same units.
+#: Judged on paper: 0.75 overhung on MPC renders, and the frame was asked to come out 1 mm
+#: narrower in total. The margin is measured against the canvas as if it printed at card size,
+#: but a bleed render's canvas prints ~8.8 % wider (``print_cards._CC_MARGIN_SCALE``), so each
+#: unit here is ~1.09 mm on paper: 0.75 grows the frame ~1.67 mm in width, 0.29 ~0.65 mm —
+#: measured 0.97-1.02 mm narrower on real MPC renders.
+MPC_OVERLAP_MM = 0.29
+
 #: PNG metadata keys recording what was applied, so a re-run over an output directory
 #: is idempotent instead of either compounding or silently skipping. The ``retro-``
 #: names predate non-retro callers; renaming them would make every already-scaled file
