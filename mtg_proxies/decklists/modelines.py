@@ -96,7 +96,7 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         # were cut in MR8: the only way to select an MPCFill render now is by knowing its id.
         "--identifier": _drive_id,
         # ``--bleed-crop PERCENT`` — edge bleed-crop applied to the MPCFill render before it
-        # replaces the Scryfall scan. Default 4 % (matches ``--custom-art-bleed-crop``).
+        # replaces the Scryfall scan. Default ``per_card.DEFAULT_BLEED_CROP_PERCENT`` (0.7 %).
         "--bleed-crop": _float_in_range(0.0, 50.0),
         # ``--scaled`` — grow the render's frame for sticker-cut overlap (see ``frame_scale``).
         # The per-card form of ``print --scaled``, for decks that mix scaled and unscaled cards.

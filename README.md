@@ -28,7 +28,7 @@ Create a high quality printable PDF from your decklist or a list of cards you wa
   Paste any Scryfall URL or `set/cn` shorthand on a decklist line — `1 https://scryfall.com/card/soc/128/sol-ring`, `1 card/soc/128`, or just `1 soc/128`. Lets you swap one card in an already-converted decklist and re-run `print` without re-running `convert`.
 
 - **Custom art appended to a print run**  
-  Drop full-card PNG images into a folder and append them to the PDF with `--custom-art FOLDER`. `--custom-art-bleed-crop PERCENT` trims each edge before rendering so art that bleeds past the card edge prints correctly.
+  Drop full-card PNG renders (Card Conjurer / MPCFill, with bleed) into a folder and append them to the PDF with `--custom-art FOLDER`. Their bleed is placed exactly, so the card lands on the true 63×88 mm slot.
 
 - **AI upscaling**  
   Upscale low-quality scans with Real-ESRGAN or any ESRGAN-compatible model via `--upscale [auto|all]` (`auto` = lowres only, `all` = every card). Models are loaded with [spandrel](https://github.com/chaiNNer-org/spandrel) and cached locally.
@@ -49,10 +49,16 @@ Create a high quality printable PDF from your decklist or a list of cards you wa
   `mtg-proxies cardconjourer DECKLIST OUTDIR` renders every supported card via a headless [Card Conjurer](https://cardconjurer.com) Node harness, producing PNGs ready to feed back into `print --custom-art OUTDIR`. With no frame flag each card's frame is chosen automatically from its Scryfall data (2015→modern, 2003→8th, 1997/1993→retro; frames with no equivalent skip to the scan); pass `--8th` / `--modern` / `--m15-8th` / `--retro` to force one style for the whole deck (`--m15-8th` is a hybrid modern-M15 body with 8th-Edition styling, never auto-selected). Re-runs skip cards whose PNG is already in OUTDIR (delete to force a redo). **Hi-res art is fetched from [MTGPics](https://www.mtgpics.com) by default** (~1430×1058 native crops, no GPU upscale needed); cards missing from MTGPics fall back to Scryfall's `art_crop` raw. Optional `--upscale [--upscale-model PATH]` runs the Scryfall fallback through Real-ESRGAN when MTGPics doesn't have a card. Per-card opt-in via `#cardconjourer --8th` modeline is also supported. The Card Conjurer source is lazy-cloned on demand — see `make cardconjurer`.
 
 - **MPCFill render fetch by identifier**  
-  Use `#mpcfill --identifier <drive_id> [--bleed-crop PCT]` on a decklist line to swap that slot to a specific [MPCFill](https://mpcfill.com) community render. The previous auto-matcher (LightGlue/SuperPoint), interactive picker, retro classifier, and standalone `mpcfill` subcommand were cut — the community catalog has no stable contract, so only the deterministic identifier-fetch path is exposed now.
+  Use `#mpcfill --identifier <drive_id> [--bleed-crop PCT] [--scaled]` on a decklist line to swap that slot to a specific [MPCFill](https://mpcfill.com) community render.
 
 - **MPC Autofill order.xml input**  
-  `mtg-proxies print cards.xml out.pdf` — pass an [MPC Autofill](https://mpcfill.com) order export straight to `print` in place of a decklist (detected by the `.xml` extension, no flag). Each front's Drive id is fetched through the same path as `#mpcfill --identifier` and laid out with MPC bleed handling. Fronts only: `<backs>`/`<cardback>` are ignored; combine with `--card-back PATH` for duplex sheets.
+  `mtg-proxies print cards.xml out.pdf` — pass an [MPC Autofill](https://mpcfill.com) order export straight to `print` in place of a decklist (detected by the `.xml` extension, no flag). Fronts only; combine with `--card-back PATH` for duplex sheets. `scripts/mpc_xml_to_decklist.py` turns an order into an editable decklist. See [MPC Autofill orders](#mpc-autofill-orders).
+
+- **Sticker workflow: scaled frames**  
+  Grow a card's frame by 0.75 mm per side inside its own canvas, so a sticker cut from it still covers a bulk card after a slightly-off cut. Works for Card Conjurer and MPCFill renders, deck-wide or per card. See [Sticker workflow](#sticker-workflow-scaled-frames).
+
+- **Per-card modelines**  
+  Append `#verb --flags` to a decklist line to treat one card differently: swap in an MPCFill render, render it with Card Conjurer, upscale it, or opt it out of a deck-wide pass. See [Modelines](#modelines-per-card-directives).
 
 ## Usage
 
@@ -213,29 +219,25 @@ mtg-proxies print deck.txt dfc-backs.pdf --faces back
 mtg-proxies print deck.txt output.pdf --custom-art ./my-art-folder/
 ```
 
-Images in the folder are appended after the decklist cards. Use `--custom-art-bleed-crop` to trim edges (default 4%) to extend art to card borders:
-
-```bash
-mtg-proxies print deck.txt output.pdf --custom-art ./my-art-folder/ --custom-art-bleed-crop 5
-```
+`.png` files in the folder are appended after the decklist cards, sorted by name. They're
+treated as renders with bleed (Card Conjurer / MPCFill), so they print at exactly 63×88 mm with
+the bleed spilling into the gap between cards.
 
 **Print card backs for double-sided printing:**
 
 ```bash
-# Backs matching a full deck (one per card):
-mtg-proxies print decklist.txt backs.pdf --card-back card_back.png
+# Duplex: each sheet of fronts is followed by a sheet of mirrored backs (long-edge flip).
+mtg-proxies print decklist.txt output.pdf --card-back card_back.png
 
-# Backs for custom art only (no decklist needed):
-mtg-proxies print backs.pdf --custom-art ./my-art/ --card-back card_back.png
+# Works with custom art too, with or without a decklist:
+mtg-proxies print output.pdf --custom-art ./my-art/ --card-back card_back.png
 
-# Backs covering both decklist and custom art fronts:
-mtg-proxies print decklist.txt output.pdf --custom-art ./my-art/ --card-back card_back.png
-
-# Exact count (for cards you already have fronts for):
+# Legacy, no duplex: just append N copies of the back after the fronts.
 mtg-proxies print backs.pdf --card-back card_back.png --card-back-count 9
 ```
 
-`--card-back` takes any PNG/JPG path. Without `--card-back-count`, it automatically matches the total number of front images collected (from decklist, custom art, or both). Download a high-res card back scan from Scryfall's card viewer or use an alternate back design (Arena-style, token backs, etc.).
+`--card-back` takes any PNG/JPG path. Double-faced cards get their real back face; every other
+card gets the supplied image.
 
 **Adjust paper size and card scale:**
 
@@ -295,342 +297,283 @@ mtg-proxies print archidekt:123456 output.pdf
 uv tool upgrade mtg-proxies
 ```
 
-## Help
+## Decklist format
+
+Every command reads the same decklist format. One card per line:
+
+| Line | Meaning |
+|---|---|
+| `1 Sol Ring (C21) 263` | Arena format: count, name, set, collector number. Pins that exact print. |
+| `1 Sol Ring` | Text format: no print pinned. `convert` picks one; `print` resolves a sane default. |
+| `Sol Ring` | A bare name counts as 1. |
+| `1 https://scryfall.com/card/soc/128/sol-ring` | Scryfall URL. `1 card/soc/128` and `1 soc/128` work too. |
+| `# Sideboard` | A line starting with `#` is a comment and is kept verbatim. |
+| `1 Sol Ring (C21) 263 #upscale` | Any of the above plus a trailing **modeline** (next section). |
+
+`print` also accepts `manastack:<id>`, `archidekt:<id>` (public decks), or an MPC Autofill
+`order.xml` in place of a decklist file.
+
+## Modelines: per-card directives
+
+A modeline is a `#verb [--flag [value]] …` segment at the end of a decklist line. It applies a
+treatment to that one card. Several verbs can stack on one line:
+
+```
+1 Caves of Koilos (DRC) 148  #mpcfill --identifier 1nUk_jZc6JtMxr-WrFlqHO5MGNkAS--XS --scaled
+1 Birds of Paradise (RVR) 133 #upscale
+1 Exploration (DMR) 339      #cardconjourer --retro-scaled --legendary
+4 Mountain (RVR) 271         #normalize #shadow-lift
+1 Sol Ring (C21) 263         #no-upscale
+```
+
+Rules:
+
+- Modelines round-trip through `convert` and `tokens` byte-for-byte, whitespace included.
+- If the first `#word` is not a known verb, the whole trailer is treated as a free-form note
+  and the line is left alone.
+- An unknown verb further along the line, or an unknown flag, drops that verb's segment. An
+  invalid flag value drops just that flag. All of these print a warning, and the card itself
+  still prints normally.
+- Conflicting `#cardconjourer` frame flags (say `--retro --modern`) are all dropped with a
+  warning. A scaled flag next to its own base frame (`--retro --retro-scaled`) is fine.
+
+### Verbs
+
+| Verb | Flags | What it does |
+|---|---|---|
+| `#mpcfill` | `--identifier ID` (required) | Swap this card to a specific [MPCFill](https://mpcfill.com) render, by its Google Drive id. A failed fetch falls back to the Scryfall scan with a warning. The render skips the bulk upscale / normalize / shadow-lift passes. |
+| | `--bleed-crop PCT` | Trim each edge of the render before printing (0–50, default **0.7**). The default lines MPCFill renders up with Card Conjurer renders on the same 63×88 mm slot. |
+| | `--scaled` | Grow the render's frame for the sticker workflow (see [Sticker workflow](#sticker-workflow-scaled-frames)). |
+| `#cardconjourer` | see [table below](#cardconjourer-flags) | Render this card with the headless Card Conjurer engine instead of using the Scryfall scan. |
+| `#print` | `--language LANG` | Use the real scanned print of this card in language `LANG` (e.g. `de`) instead of the English scan. If no such print exists, the normal scan is used. The `cardconjourer` subcommand writes this into its `fallback.txt` for cards whose translation it can't render. |
+| `#upscale` | `--upscale-model PATH` | Run this card through Real-ESRGAN. Bare `#upscale` does nothing extra when `--upscale` is already on deck-wide. With `--upscale-model` it always runs, using that model, even under `--upscale all`. |
+| `#normalize` | `--lift F` | Run auto-levels on this card. No-op when `--normalize` is on deck-wide. `--lift` is accepted but **currently ignored**. |
+| `#shadow-lift` | `--amount F` | Lift crushed shadows on this card. No-op when `--shadow-lift` is on deck-wide. `--amount` is accepted but **currently ignored**. |
+| `#no-upscale` | — | Exclude this card from the deck-wide `--upscale`. |
+| `#no-normalize` | — | Exclude this card from the deck-wide `--normalize`. |
+| `#no-shadow-lift` | — | Exclude this card from the deck-wide `--shadow-lift`. |
+| `#vignette` | `--strength F` `--edge F` `--max-black N` | Parsed and validated, but **not wired up yet**. Per-card vignette has no effect; use the deck-wide `--vignette`. |
+
+Only `print` acts on `#mpcfill`, `#print`, `#upscale`, `#normalize`, `#shadow-lift` and the
+`#no-*` verbs. The `cardconjourer` subcommand reads `#cardconjourer` only.
+
+### `#cardconjourer` flags
+
+`#cardconjourer` is honored in both places that render with Card Conjurer, but not every flag is
+honored in both:
+
+| Flag | In `print` | In `cardconjourer` subcommand | Meaning |
+|---|:-:|:-:|---|
+| *(no frame flag)* | ✓ | ✓ | `print`: frame chosen automatically from the card's Scryfall frame. Subcommand: keeps the deck-wide frame. |
+| `--8th` / `--modern` / `--m15-8th` / `--retro` / `--borderless` | ✓ | ✓ | Force a frame for this card (overrides the deck-wide one in the subcommand). |
+| `--retro-scaled` / `--8th-scaled` | ✓ | ✓ | That frame, grown by 0.75 mm per side for the sticker workflow. Implies the base frame. |
+| `--legendary` | ✓ | ✓ | Legend marker on frames that have none stock: gold pinline on retro, crown on 8th. |
+| `--set-symbol VALUE` | ✓ | ✓ | File path, CC set code (`LTC`), or `customset:An`. |
+| `--custom-art PATH` | ✓ | ✓ | Use a local image (png/jpg/jpeg/webp) as the art instead of MTGPics/Scryfall. |
+| `--upscale` | ✓ | — | Run the art through Real-ESRGAN first. In the subcommand use the deck-wide `--upscale`. |
+| `--scryfall` | — | ✓ | Skip MTGPics, use Scryfall's `art_crop` (e.g. MTGPics scan has a watermark). |
+| `--skip` | — | ✓ | Don't render this card; it goes to `fallback.txt` for its normal scan. |
+| `--font-size N` | — | ✓ | Nudge the rules-text size by `N` px (signed; canvas is 2814 px tall, ±5–15 is noticeable). |
+| `--language LANG` | — | ✓ | Render name/type/rules text from the card's `LANG` print. |
+| `--dfc-split` / `--dfc-flip` | flip only | ✓ | DFC as two full cards (split, default in the subcommand) or one Kamigawa-flip card. `print` always renders the flip merge and warns on `--dfc-split`. |
+
+## Sticker workflow (scaled frames)
+
+To cover a bulk card with a printed sticker, you print on sticker paper at 100 %, cut out the
+coloured frame and stick it on. At true size the frame only just covers the bulk card's own
+frame, so a millimetre of cutting error shows a sliver of the old card. **Scaling** grows the
+frame inside the image by 0.75 mm per side (a print-tested value) to buy back that tolerance.
+The canvas keeps its size and still prints at 63×88 mm; the black border absorbs the growth.
+
+| What you print | How to scale it |
+|---|---|
+| A whole deck rendered with Card Conjurer | `mtg-proxies cardconjourer deck.txt out/ --retro-scaled` (or `--8th-scaled`) |
+| Single Card Conjurer cards in a `print` run | `#cardconjourer --retro-scaled` / `--8th-scaled` on those lines |
+| Every MPCFill render in a `print` run (`order.xml` fronts and `#mpcfill` lines) | `mtg-proxies print cards.xml out.pdf --scaled` |
+| Single MPCFill cards | `#mpcfill --identifier ID --scaled` on those lines |
+
+- Cards with no black border to grow (borderless, extended art) are left as they are, with a
+  note.
+- `print --scaled` scales every MPCFill render it can measure, **modern frames included**. To
+  scale only some cards, convert the order to a decklist and use `--scaled` per line (next
+  section).
+- Plain Scryfall scans are never scaled.
+- Scaled files carry a PNG stamp, so re-runs never grow them twice. Cached MPCFill renders stay
+  unscaled; the scaled copy sits next to them as `<name>_ov0.75.png`.
+
+## MPC Autofill orders
+
+`print` takes an MPC Autofill `order.xml` directly (detected by the `.xml` extension):
+
+```bash
+mtg-proxies print cards.xml out.pdf                       # every front, MPC bleed handled
+mtg-proxies print cards.xml out.pdf --scaled              # …with every frame scaled
+mtg-proxies print cards.xml out.pdf --card-back back.png  # duplex sheets
+```
+
+Only `<fronts>` is read; `<backs>` and `<cardback>` are ignored. A failed fetch aborts the whole
+print, because a dropped slot would shift every card after it on the sheet.
+
+To treat cards differently (scale some, swap others to Card Conjurer), convert the order into a
+decklist first:
+
+```bash
+uv run python scripts/mpc_xml_to_decklist.py cards.xml            # writes cards.txt
+uv run python scripts/mpc_xml_to_decklist.py cards.xml deck.txt --scaled
+```
+
+Each render becomes one line, `1 Sol Ring #mpcfill --identifier <drive_id>`. Card names are
+taken from the render's file name with MPC Autofill's decorations stripped (`[SET] {123}`,
+`(Artist)`, `(1)`). Renders used in several slots become one line with a count. Edit the lines
+as needed, then `mtg-proxies print cards.txt out.pdf`. The script refuses to overwrite an
+existing file unless you pass `--force`.
+
+## Command reference
+
+These tables summarize every flag. `mtg-proxies <command> --help` has the full text.
 
 ### print
 
-```
-usage: mtg-proxies print [-h] [--dpi DPI] [--paper WIDTHxHEIGHT]
-                         [--scale FLOAT] [--border_crop PIXELS]
-                         [--background COLOR] [--cropmarks | --no-cropmarks]
-                         [--faces {all,front,back}] [--custom-art FOLDER]
-                         [--custom-art-bleed-crop PERCENT] [--split-pages N]
-                         [--upscale [{auto,all}]] [--upscale-model PATH]
-                         [--upscale-target-width PX] [--normalize]
-                         [--shadow-lift] [--vignette [KEY=VALUE ...]]
-                         [--card-back PATH] [--card-back-count N]
-                         [decklist] outfile
+`mtg-proxies print [DECKLIST] OUTFILE [options]` — render a decklist to `.pdf`, `.png` or `.jpg`.
+`print` is render-only: it uses whatever print each line pins. Art selection lives in `convert`.
+DECKLIST may be omitted when you only print `--custom-art` and/or card backs.
 
-Prepare a decklist for printing. `print` is render-only — art selection
-lives in `convert`. Use Scryfall URL / set-cn shorthand on a decklist line
-to swap an individual printing without re-running `convert`.
-
-positional arguments:
-  decklist              path to a decklist in text/arena format, or
-                        manastack:{manastack_id}, or archidekt:{archidekt_id}
-  outfile               output file. Supports pdf, png and jpg.
-
-options:
-  -h, --help            show this help message and exit
-  --dpi DPI             dpi of output file for raster formats (png, jpg);
-                        ignored for pdf (default: 300)
-  --paper WIDTHxHEIGHT  paper size in inches or preconfigured format (default:
-                        a4)
-  --scale FLOAT         scaling factor for printed cards (default: 1.0)
-  --border_crop PIXELS  how much to crop inner borders of printed cards, in
-                        source image pixels (default: 14)
-  --background COLOR    background color, either by name or by hex code (e.g.
-                        black or "#ff0000", default: None)
-  --cropmarks, --no-cropmarks
-                        add crop marks (png, jpg); ignored for pdf
-  --faces {all,front,back}
-                        which faces to print (default: all)
-  --custom-art FOLDER   folder with custom art images to append to the PDF
-  --custom-art-bleed-crop PERCENT
-                        percent to trim from each edge of custom art images
-                        before printing (default: 4.0)
-  --split-pages N       split PDF output into a new file every N pages;
-                        ignored for non-pdf output
-  --upscale [{auto,all}]
-                        upscale lowres scans with Real-ESRGAN. Bare flag ==
-                        'auto' (only cards Scryfall marks lowres). 'all'
-                        upscales every card. Off when omitted.
-  --upscale-model PATH  path to a local .pth upscaling model (default:
-                        RealESRNet_x4plus); implies --upscale auto when set
-                        without --upscale
-  --upscale-target-width PX
-                        downsample upscaled cards to PX wide before saving
-                        (default: 745, matches Scryfall highres ≈ 298 DPI on a
-                        2.5-inch card)
-  --normalize           Photoshop-curves-style pass: set black point from the
-                        card's printed border, then a gentle luminance-only
-                        lift around the 25% mid-shadow region. Hue and
-                        saturation are preserved.
-  --shadow-lift         brighten crushed-shadow regions on each card
-  --vignette [KEY=VALUE ...]
-                        pull near-black edge pixels to true #000. Bare
-                        --vignette uses defaults (strength=1.0, edge=0.05,
-                        max-black=40). Tune with key=value tokens:
-                        strength (0..1), edge (0..1), max-black (0..255).
-                        E.g. --vignette strength=0.8 edge=0.04
-  --card-back PATH      path to a card back image; appends one copy per front
-                        image collected (decklist, custom art, or both);
-                        override count with --card-back-count
-  --card-back-count N   number of card back copies to append instead of
-                        auto-matching the front image count
-```
-
-#### Per-card modelines
-
-Append a `#verb` directive to a decklist line to apply a treatment to that card only,
-without paying the cost on the rest of the deck. Multiple verbs stack on one line; flags
-mirror the matching CLI options.
-
-```
-1 Caves of Koilos (DRC) 148 #mpcfill --identifier 1nUk_jZc6JtMxr-WrFlqHO5MGNkAS--XS
-1 Birds of Paradise (RVR) 133 #upscale
-1 Sol Ring (SOC) 128         #cardconjourer --8th
-4 Mountain (RVR) 271         #normalize #shadow-lift
-```
-
-Supported verbs:
-
-- `#mpcfill --identifier <drive_id> [--bleed-crop PERCENT]` —
-  fetch a specific MPCFill community render by its Drive identifier (~33 chars,
-  visible in MPCFill's UI) and swap that slot to it. The previous auto-matcher,
-  picker, and retro classifier were cut — the catalog has no stable contract.
-  A fetch failure falls back to Scryfall with a warning. **Implicitly opts out
-  of the bulk upscale pass** for the swapped slot — MPCFill renders are already
-  at print resolution.
-
-  `--bleed-crop PERCENT` trims each side of the render before placing it in the
-  PDF. Defaults to **4 %** (matches `--custom-art-bleed-crop`). Pass `0` for tight
-  renders, or higher for wide-bleed renders.
-
-  ```
-  1 Sol Ring (SOC) 128 #mpcfill --identifier 1nUk_jZc6JtMxr-WrFlqHO5MGNkAS--XS --bleed-crop 4
-  ```
-- `#cardconjourer [--8th | --modern | --m15-8th | --retro] [--upscale] [--skip] [--scryfall] [--set-symbol VALUE]` — render this card via the headless
-  [Card Conjurer](https://cardconjurer.com) Node harness and use the resulting PNG
-  in place of the Scryfall scan. Frame selectors: `--8th` (8th
-  edition base frame), `--modern` (M15 frame), `--m15-8th` (M15Eighth hybrid — modern M15
-  body with 8th-Edition styling, shares modern's crown/P-T geometry, never auto-selected),
-  `--retro` (Seventh Edition 1997 look); with
-  no frame flag the frame is chosen automatically from the card's Scryfall data (same mapping
-  as the subcommand). All flagged cards in the decklist
-  are batched into a single subprocess invocation, so the ~1-2 s engine boot amortizes
-  across the whole deck. Adventure, Prepare, and planeswalker cards (including Transform/MDFC
-  planeswalker faces) render through their native Card Conjurer layouts; remaining unsupported
-  layouts (sagas, battles, etc.) silently fall back to Scryfall. Requires
-  `make cardconjurer` (one-time lazy clone of the renderer source).
-
-  Extra modifiers for this directive:
-  - `--skip`: Exclude this specific card from the bulk Card Conjurer render. The card will land in `fallback.txt` and be rendered using its normal Scryfall scan.
-  - `--scryfall`: Opt-out of MTGPics for this specific card, falling back to Scryfall's `art_crop` (useful if the MTGPics scan has a watermark).
-  - `--set-symbol VALUE`: Override the rendered set symbol just for this card.
-  - `--font-size N`: Nudge the rules-text font size by `N` canvas pixels (e.g. `-10` to shrink overflowing text, `+10` to enlarge sparse text). Canvas is 2814 px tall; rules text is ~76–107 px, so ±5–15 is a noticeable step.
-- `#upscale [--upscale-model PATH]` — upscale this card via Real-ESRGAN. With
-  `--upscale-model` it's an **always-on override**: even with `--upscale all` set
-  globally, this card uses the specified model instead of the global default. Useful
-  for problem cards — e.g. halftone-pattern scans get cleaner results from the anime
-  model than from Net.
-- `#normalize [--lift F]` — Photoshop-curves-style luminance lift on this card.
-- `#shadow-lift [--amount F]` — lift crushed blacks on this card.
-- `#vignette [--strength F] [--edge F] [--max-black N]` — per-card override of
-  the global `--vignette` flag. Same key set as the CLI flag; not yet wired
-  into the print dispatch (reserved for an upcoming pipeline stage).
-
-**Opt-out verbs** (mirror images — exclude this card from the corresponding global pass):
-
-- `#no-upscale` — skip the bulk `--upscale` for this card.
-- `#no-normalize` — skip the bulk `--normalize` for this card.
-- `#no-shadow-lift` — skip the bulk `--shadow-lift` for this card.
-
-Bare `#upscale` / `#normalize` / `#shadow-lift` (without an override flag) are **additive**
-with the global flags: when a global flag is on, the bulk pass already handles every card,
-so the per-card directive becomes a no-op. `#upscale --upscale-model PATH` and the `#no-*`
-verbs are the exceptions — they always take effect. Modelines round-trip through
-`mtg-proxies convert` — the modeline tokens themselves (including whitespace between
-segments) are preserved exactly.
-
-Unknown verbs or malformed flag values surface as warnings and are dropped; the card
-itself still parses and prints normally.
+| Flag | Default | Description |
+|---|---|---|
+| `--paper WxH` | `a4` | Paper size, a preset or inches (e.g. `8.5x11`). |
+| `--scale F` | `1.0` | Card size factor. |
+| `--dpi N` | `300` | Resolution for png/jpg output; ignored for pdf. |
+| `--border_crop PX` | `14` | Pixels cropped from inner card borders (source pixels). |
+| `--background COLOR` | none | Fill behind the card grid (covers the gaps between rounded corners). Name or hex. |
+| `--cropmarks` / `--no-cropmarks` | on | Crop marks for png/jpg. |
+| `--faces all\|front\|back` | `all` | Which DFC faces to print. |
+| `--split-pages N` | off | Start a new PDF file every N pages. |
+| `--custom-art FOLDER` | — | Append every `.png` in FOLDER, sorted, after the decklist cards. Expects Card Conjurer / MPCFill renders with bleed. |
+| `--custom-art-bleed-crop PCT` | `0` | Legacy. Renders' bleed is now placed exactly by the print step, so a non-zero value is ignored with a note. |
+| `--scaled` | off | Grow the frame of every MPCFill render (sticker workflow). |
+| `--upscale [auto\|all]` | off | Real-ESRGAN upscaling: `auto` (bare flag) = cards Scryfall marks lowres, `all` = every card. |
+| `--upscale-model PATH` | RealESRNet_x4plus | Any ESRGAN-compatible `.pth`; implies `--upscale auto`. |
+| `--upscale-target-width PX` | `745` | Downsample upscaled cards to this width. |
+| `--normalize` | off | Per-card auto-levels. |
+| `--shadow-lift` | off | Lift crushed shadow detail in dark art. |
+| `--vignette [k=v …]` | off | Pull near-black rim pixels to true black. Keys: `strength` (1.0), `edge` (0.05), `max-black` (40). |
+| `--card-back PATH` | — | Duplex layout: alternating front sheets and mirrored back sheets for long-edge flip. DFCs get their real back face. |
+| `--card-back-count N` | — | Legacy: append N copies of `--card-back` instead of duplex sheets. |
 
 ### convert
 
-```
-usage: mtg-proxies convert [-h] [--format {arena,text}] [--clean]
-                           [--basic-lands NAME=COUNT [NAME=COUNT ...]]
-                           [--art-preference {standard,wild,premium}]
-                           [--set SET [SET ...]] [--allow-low-res]
-                           [--prefer-retro-frame] [--art-before YEAR]
-                           [decklist] [outfile]
+`mtg-proxies convert DECKLIST [OUTFILE | -o PATH] [options]` — resolve and pin a print for every
+line, and write the decklist in Arena (default) or text format.
 
-Convert a decklist to text or arena format.
+| Flag | Default | Description |
+|---|---|---|
+| `-o PATH`, `--out PATH` | — | Output file (overrides the positional OUTFILE). |
+| `--format arena\|text` | `arena` | Output format. |
+| `--clean` | off | Drop all non-card lines. |
+| `--art-preference standard\|wild\|premium` | `standard` | `standard` avoids promos/digital, `wild` takes any art, `premium` (only with `--basic-lands`) full-art basics. |
+| `--set SET …` | — | Preferred sets in priority order; quality rules still apply. |
+| `--allow-low-res` | off | With `--set`, keep lowres prints from those sets. |
+| `--prefer-retro-frame` | off | Prefer 1993/1997/2003 frames when they exist. |
+| `--prefer-borderless` | off | Prefer borderless printings when they exist. |
+| `--art-before YEAR` | — | Only consider printings released before YEAR-01-01. |
+| `--basic-lands NAME=N …` | — | Generate random basic land printings instead, e.g. `mountain=9 forest=7`. |
 
-positional arguments:
-  decklist              path to a decklist in text/arena format, or
-                        manastack:{manastack_id}, or archidekt:{archidekt_id}
-  outfile               output file (required, except when generating basic
-                        lands with --basic-lands and a non-existent path is
-                        supplied as the decklist positional)
-
-options:
-  -h, --help            show this help message and exit
-  -o PATH, --out PATH   output file (recommended; overrides the positional
-                        outfile if both are given)
-  --format {arena,text}
-                        output format (default: arena)
-  --clean               remove all non-card lines
-  --basic-lands NAME=COUNT [NAME=COUNT ...]
-                        generate a decklist of random basic land printings,
-                        e.g. mountain=9 forest=7
-  --art-preference {standard,wild,premium}
-                        art recommendation style (default: standard)
-  --set SET [SET ...]   one or more preferred set codes in priority order
-                        (e.g. LTR LTO); quality rules still apply
-  --allow-low-res       when used with --set, keep low-res prints from
-                        preferred sets instead of upgrading to highres
-                        alternatives
-  --prefer-retro-frame  prefer pre-2015 (retro / old-school / blocky) frames
-                        when they exist (1993 / 1997 / 2003); falls back
-                        silently when no retro print is available
-  --art-before YEAR     for each card, prefer the earliest printing released
-                        before YEAR-01-01. Dodges the recent-reprint wave of
-                        new digital art commissions in favor of the original
-                        painted art (e.g. --art-before 2023 picks Carl
-                        Critchlow's 2010 Exsanguinate over the 2023 Marie
-                        Magny / Scott Fischer redesigns). Falls back silently
-                        to the default recommendation when a card has no
-                        print before the cutoff.
-```
-
-Low-res cards that cannot be upgraded are sorted to the bottom of the output file, under a comment indicating why (not in set, or no highres available).
+Low-res cards that can't be upgraded are moved to the bottom of the output under a comment
+explaining why.
 
 ### tokens
 
-```
-usage: mtg-proxies tokens [-h] [--format {arena,text}] decklist
-
-Append the created tokens to a decklist.
-
-positional arguments:
-  decklist              path to a decklist in text/arena format, or
-                        manastack:{manastack_id}, or archidekt:{archidekt_id}
-
-options:
-  -h, --help            show this help message and exit
-  --format {arena,text}
-                        output format (default: arena)
-```
+`mtg-proxies tokens DECKLIST [--format arena|text]` — append the tokens the deck creates under a
+commented section. The rest of the file is preserved verbatim; re-runs replace only that
+section. Needs Scryfall token data (cards printed or reprinted since Tenth Edition).
 
 ### cardconjourer
 
-```
-usage: mtg-proxies cardconjourer [-h] [--8th | --modern | --m15-8th | --retro]
-                                 [--upscale] [--upscale-model PATH]
-                                 [--upscale-target-width PX]
-                                 decklist outdir
+`mtg-proxies cardconjourer DECKLIST OUTDIR [options]` — render every card with the headless
+[Card Conjurer](https://cardconjurer.com) engine into `OUTDIR/<NNNN>-<slug>.png`. Cards it can't
+render go to `OUTDIR/fallback.txt` (a decklist you can `print`); `report.csv` records each
+outcome. Re-runs skip PNGs already in OUTDIR; delete one to force a re-render. Per-card
+`#cardconjourer` flags are in the [table above](#cardconjourer-flags).
 
-For each card in DECKLIST, render a fresh PNG via the headless Card Conjurer
-engine and write it to OUTDIR. The mutually-exclusive frame selectors --8th /
---modern / --m15-8th / --retro force one style; with no flag the frame is
-picked per-card from the card's Scryfall frame (2015→modern, 2003→8th,
-1997/1993→retro), and
-frames with no Card Conjurer equivalent (Future Sight, unknown) skip to the
-scan. Adventure, Prepare, and planeswalker cards (single- and double-faced,
-including Transform/MDFC planeswalker faces) render through their native Card
-Conjurer layouts. Remaining unsupported layouts (saga, reversible_card,
-battle, etc.) are logged in fallback.txt — a valid decklist you can feed
-straight into `mtg-proxies print` to fill those slots from Scryfall.
-report.csv records the per-card outcome. Re-runs skip any card whose
-<NNNN>-<slug>.png is already in OUTDIR — delete a PNG to force a re-render.
+| Flag | Description |
+|---|---|
+| *(no frame flag)* | Frame chosen per card from Scryfall: 2015→modern, 2003→8th, 1997/1993→retro. Frames with no Card Conjurer equivalent go to `fallback.txt`. |
+| `--8th` / `--modern` / `--m15-8th` / `--retro` / `--borderless` | Force one frame for the whole deck (mutually exclusive). `--m15-8th` is a modern body with 8th-Edition trim and is never auto-selected. `--borderless` needs full-bleed MTGPics art. |
+| `--retro-scaled` / `--8th-scaled` | That frame, grown 0.75 mm per side ([sticker workflow](#sticker-workflow-scaled-frames)). Implies the base frame. |
+| `--legendary` | Legend marker on retro (gold pinline) and 8th (crown). Off = stock, no marker. |
+| `--set-symbol VALUE` | Override the set symbol: file path, CC set code, or `customset:An`. |
+| `--scryfall` | Skip MTGPics, use Scryfall's `art_crop`. |
+| `--dfc-flip` | Render DFCs as one Kamigawa-flip card instead of two full cards. |
+| `--language LANG` | Render text from the card's print in `LANG`. Cards without one render in English. |
+| `--upscale` | Run Scryfall-fallback art through Real-ESRGAN (MTGPics art is unaffected). |
+| `--upscale-model PATH` | Model for `--upscale` (default RealESRNet_x4plus). |
+| `--upscale-target-width PX` | Downsample upscaled art before rendering (default: keep the full 4× output). |
 
-Per-card `#cardconjourer --8th`, `--modern`, `--m15-8th`, `--retro`, and
-`--borderless` override the subcommand's deck-wide frame selection. A bare
-`#cardconjourer` or a modifier such as `--scryfall` keeps the deck-wide frame.
-Cards overriding the frame selected by a deck-wide scaling flag are left unscaled.
-Per-card `#cardconjourer --retro-scaled` and `#cardconjourer --8th-scaled`
-select the corresponding frame and apply the same overlap as the CLI flags,
-including when used through `print`. They override the deck's frame and scaling
-selection for that card. A matching base flag (such as `--retro --retro-scaled`)
-is allowed; flags selecting different frame families conflict.
-
-Retro and 8th render legendaries like stock by default: no legend marker at all.
-`--legendary` (deck-wide, or per card as `#cardconjourer --legendary`) opts in
-to one: the Arabian Nights gold pinline on retro, Card Conjurer's legend crown
-on 8th. It works with the `-scaled` variants too, and conflicts with `--modern`,
-`--m15-8th` and `--borderless`, which already carry their own crowns.
-
-Art source: MTGPics (~1430×1058 native crops) by default; cards missing
-from MTGPics fall back to Scryfall's `art_crop` raw. `--upscale` only
-kicks in for the Scryfall-fallback path.
-
-positional arguments:
-  decklist                    decklist file (text or arena format)
-  outdir                      output directory (will be created if missing)
-
-options:
-  --8th                       render in 8th-edition (2003) base frame
-  --modern                    render in modern (M15, 2015) frame
-  --m15-8th                   render in the M15Eighth hybrid frame (modern M15
-                              body, 8th-Edition styling; never auto-selected)
-  --retro                     render in retro (Seventh Edition, 1997) frame
-                              (omit all four → auto per-card from Scryfall)
-  --legendary                 mark legendaries on retro (gold pinline) and 8th
-                              (legend crown); off = stock, no marker
-  --upscale                   when MTGPics doesn't have a card, run the
-                              Scryfall art_crop fallback through Real-ESRGAN
-                              before handing it to the renderer (instead of
-                              using it raw). MTGPics-hit cards are unaffected.
-  --upscale-model PATH        path to a local .pth model used for the Scryfall
-                              fallback. Default is RealESRNet_x4plus.
-                              Swap in a GAN-trained model (e.g.
-                              RealESRGAN_x4plus_anime_6B.pth) to suppress
-                              halftone / JPEG artifacts in scanned source art
-  --upscale-target-width PX   downsample the upscaled art to PX wide before
-                              rendering (default: keep the model's full 4×
-                              output)
-```
-
-Usage example — render an 8th-edition proxy deck, then print:
+Adventure, Prepare and planeswalker cards (including Transform/MDFC planeswalker faces) render
+through their native layouts. Generated tokens use Card Conjurer's Old Bordered token frame.
 
 ```bash
-make cardconjurer                                   # one-time lazy clone of CC source
-mtg-proxies cardconjourer --8th deck.txt ./cc-out   # writes PNGs + fallback.txt + report.csv
+make cardconjurer                                   # one-time lazy clone of the Card Conjurer source
+mtg-proxies cardconjourer --8th deck.txt ./cc-out   # PNGs + fallback.txt + report.csv
 mtg-proxies print deck.txt out.pdf --custom-art ./cc-out
 ```
 
-The summary line shows the MTGPics hit rate (e.g. `art sources: 87/105
-MTGPics, 18 Scryfall fallback`) so you know how many cards used native
-hi-res vs Scryfall's smaller `art_crop`. MTGPics responses are cached at
-`~/.cache/mtg-proxies/mtgpics/<set>/<collector>.jpg` indefinitely (delete
-the dir to refresh).
+**Art source.** Hi-res art comes from [MTGPics](https://www.mtgpics.com) by default (~1430×1058
+crops). Cards missing there fall back to Scryfall's `art_crop`. The summary line shows the hit
+rate (e.g. `art sources: 87/105 MTGPics, 18 Scryfall fallback`). MTGPics responses are cached
+indefinitely at `~/.cache/mtg-proxies/mtgpics/<set>/<collector>.jpg`; delete the folder to
+refresh.
 
-**Cleaning up dotty scan art.** When MTGPics doesn't have a card AND the
-Scryfall art_crop is from an older scan with visible halftone / ink-dot
-screening, the default `RealESRNet` model preserves those dots as crisp
-detail. Swap to a GAN-trained variant that smooths dither while keeping
-edges:
+**Cleaning up dotty scan art.** When the Scryfall fallback is an old halftone scan, the default
+model keeps the dots as detail. A GAN-trained model smooths them:
 
 ```bash
 mtg-proxies cardconjourer --8th --upscale \
   --upscale-model ~/models/RealESRGAN_x4plus_anime_6B.pth deck.txt ./cc-out
 ```
 
-Anime / illustration-trained models (anime_6B, NMKD-Siax) are the strongest
-dot-suppressors. RealESRGAN_x4plus is a gentler middle ground.
+Anime/illustration models (anime_6B, NMKD-Siax) suppress dots most; RealESRGAN_x4plus is a
+gentler middle ground.
 
-The Card Conjurer source is fetched on demand into `~/.cache/mtg-proxies/cardconjurer/` (partial+sparse git clone of a pinned commit, ~50 MB) the first time you run `make cardconjurer` (or `python scripts/setup.py --cardconjurer-only`). On a fresh checkout, `make install` does the clone, runs `npm install` in the harness dir, and `uv sync`'s the Python venv in one go. MTGPics is built into the codebase (no install step) — its URL pattern is in `mtg_proxies/cardconjourer/mtgpics.py`.
+The Card Conjurer source is fetched on demand into `~/.cache/mtg-proxies/cardconjurer/` (a
+partial, sparse git clone of a pinned commit, ~50 MB) by `make cardconjurer` or
+`python scripts/setup.py --cardconjurer-only`. On a fresh checkout `make install` does the
+clone, the harness's `npm install` and `uv sync` in one go.
+
+### cube
+
+`mtg-proxies cube --sets SET … [options]` — score a set's cards for a draft cube (tribal/keyword
+synergy plus 17lands GIH win rate and ALSA) and write the top `--target` cards to CSV.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--sets SET …` | required | Scryfall set code(s), e.g. `ecl eoe`. |
+| `--target N` | `360` | Cube size. |
+| `--out PATH` | `cube.csv` | Output CSV. |
+| `--txt-out PATH` | — | Also write the cube as a decklist ready for `print`. |
+| `--format FORMAT` | `PremierDraft` | 17lands draft format. |
+| `--no-17lands` | off | Score on the synergy heuristic alone. |
+| `--owned PATH` | — | Only consider cards in this owned-collection decklist. |
+| `--archetypes PATH` | — | JSON archetype skeleton (color pair → name, tags); scores only those lanes. |
+| `--keep-lands` | off | Exempt lands from the archetype/lane-fit cut. |
 
 ### deck_value
 
-```
-usage: mtg-proxies deck_value [-h] [--lump-threshold FLOAT] decklist
-
-Show deck value decomposition.
-
-positional arguments:
-  decklist              path to a decklist in text/arena format, or
-                        manastack:{manastack_id}, or archidekt:{archidekt_id}
-
-options:
-  -h, --help            show this help message and exit
-  --lump-threshold FLOAT
-                        lump together cards with lesser proportional value (default: 0.03)
-```
+`mtg-proxies deck_value DECKLIST [--lump-threshold F]` — chart the deck's value by card. Cards
+below the threshold share (default `0.03`) are lumped together.
 
 ![](examples/deck_value.png)
+
+### Side tools
+
+Standalone scripts, not part of the `mtg-proxies` CLI. Each documents itself in its module
+docstring.
+
+| Script | Purpose |
+|---|---|
+| `scripts/mpc_xml_to_decklist.py` | MPC Autofill `order.xml` → decklist with `#mpcfill` lines ([above](#mpc-autofill-orders)). |
+| `swapfinder.py` | Offline functional-substitute suggester for cube building from a bulk collection. Needs `uv sync --extra swaps`. |
+| `commander_finder.py` | Ranks commanders you're closest to building from a bulk collection (EDHREC data). Needs `uv sync --extra swaps`. |
 
 ## Acknowledgements
 
