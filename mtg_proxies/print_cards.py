@@ -28,6 +28,14 @@ CARD_SIZE_MM = np.array([63.0, 88.0])
 # rect lands exactly on the slot and the bleed spills into the inter-card gap.
 _CC_MARGIN_SCALE = np.array([1 + 2 * 0.044, 1 + 2 / 35])
 
+# Every card is resampled (Lanczos) up to this resolution at its printed size before it is
+# embedded in the PDF. Sources range from ~300 dpi (Scryfall scans) through ~550-1200 dpi
+# (MPCFill renders) to ~770 dpi (cardconjourer), and left alone a PDF viewer or printer driver
+# enlarges them with whatever cheap filter it has, which softens small text. Doing it here with
+# a proper filter keeps it crisp, at the cost of much larger PDFs (~12 MP per card). Images
+# already at or above the target are embedded untouched.
+PDF_TARGET_DPI = 1200
+
 # Matches the per-card MPCFill warped output: ``<id>__<hash>_warped<NN>.png`` where NN is the
 # achieved card-content fill percentage. Legacy ``_warped.png`` (no NN) means "assume 0.92" —
 # old caches from before this marker existed.
@@ -90,6 +98,38 @@ def _border_cropped_image(image: Image.Image | str | Path, border_crop: int) -> 
     finally:
         if opened:
             img.close()
+
+
+def _resample_to_dpi(
+    image: Image.Image | str | Path, placed_mm: np.ndarray, dpi: int
+) -> Image.Image | str | Path:
+    """Return ``image`` upsampled so it reaches ``dpi`` at its placed size, or unchanged if it already does.
+
+    Width drives the factor and the aspect ratio is kept, so the result is never stretched
+    (the caller's ``pdf.image`` box does the final fit, exactly as before).
+
+    Args:
+        image: A path, or an already-open PIL image (cropped/stripped by the caller).
+        placed_mm: ``(width, height)`` the image is drawn at on the page, in mm.
+        dpi: Target resolution.
+
+    Returns:
+        A new PIL image when upsampling was needed, otherwise ``image`` itself — so a path
+        stays a path and fpdf keeps embedding it as-is.
+    """
+    target_w = round(float(placed_mm[0]) / 25.4 * dpi)
+    source = Image.open(image) if not isinstance(image, Image.Image) else image
+    try:
+        if source.width >= target_w:
+            return image
+        # Palette / 1-bit images can't be Lanczos-resampled; RGBA keeps any transparency.
+        img = source if source.mode in ("RGB", "RGBA", "L", "LA") else source.convert("RGBA")
+        target_h = round(img.height * target_w / img.width)
+        return img.resize((target_w, target_h), Image.LANCZOS)
+    finally:
+        # ``resize`` returns a new image, so a file opened here can always be closed.
+        if source is not image:
+            source.close()
 
 
 def _occupied_space(cardsize: np.ndarray, pos: np.ndarray, border_crop: int, closed: bool = False) -> np.ndarray:
@@ -288,6 +328,7 @@ def print_cards_fpdf(
     cropmarks: bool = True,
     split_pages: int | None = None,
     bleed_images: set[str] | None = None,
+    target_dpi: int | None = PDF_TARGET_DPI,
 ) -> None:
     """Print a list of cards to a pdf file.
 
@@ -309,6 +350,8 @@ def print_cards_fpdf(
             (``_strip_cc_margin``) so the card places pixel-identically to a no-bleed scan, with no
             aspect stretch. Plain scans (not listed) are never scaled or stripped. These renders
             must be passed raw (``--custom-art-bleed-crop 0``) so the strip math is correct.
+        target_dpi: Upsample every card below this resolution (at its placed size) before
+            embedding it; see ``PDF_TARGET_DPI``. ``None`` embeds sources as-is.
     """
     from fpdf import FPDF
 
@@ -427,9 +470,11 @@ def print_cards_fpdf(
 
         if place_size is not None:
             place_pos = lower - (place_size - size) / 2.0
-            pdf.image(card_image, x=place_pos[0], y=place_pos[1], w=place_size[0], h=place_size[1])
         else:
-            pdf.image(card_image, x=lower[0], y=lower[1], w=size[0], h=size[1])
+            place_pos, place_size = lower, size
+        if target_dpi is not None:
+            card_image = _resample_to_dpi(card_image, place_size, target_dpi)
+        pdf.image(card_image, x=place_pos[0], y=place_pos[1], w=place_size[0], h=place_size[1])
 
         if (i + 1) % cards_per_sheet == 0 or i + 1 == len(images):
             # If this was the last card on a page, add crop marks

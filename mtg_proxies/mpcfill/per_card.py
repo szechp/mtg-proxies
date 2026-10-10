@@ -18,7 +18,11 @@ import requests
 from mtg_proxies.mpcfill.drive import fetch_thumbnail
 from mtg_proxies.mpcfill.errors import ThumbnailFetchError
 
-DEFAULT_OUTPUT_SIZE = 1500
+# Width requested from Drive. Drive serves min(this, the upload's own width), so this is a cap,
+# not a resize: 3264 px is MPC's 2.72" sheet at 1200 dpi, the highest resolution MPC prints.
+# Real uploads range ~1632 (600 dpi) to 3264 (1200 dpi); every bit of that is genuine detail that
+# the old 1500 px request threw away. ``print_cards.PDF_TARGET_DPI`` upsamples the rest of the way.
+DEFAULT_OUTPUT_SIZE = 3264
 # MPCFill renders are MPC's 2.72x3.7" print sheet (3264x4440 @ 1200 dpi) with the real 63x88 mm card
 # inside -> card content is 0.912 x 0.937 of the render. CardConjurer's template margin is tighter
 # (content 0.919 x 0.946), so the print step's CC-based bleed scale leaves an MPCFill card ~0.4 mm
@@ -65,10 +69,13 @@ def resolve_per_card_mpcfill(
         bleed_crop_percent = 0.0
 
     output_dir = cache_root / "per_card"
-    raw_path = output_dir / f"{scryfall_id}__{drive_id_override}.png"
+    # The requested width is part of the name: renders cached at another size (the old 1500 px
+    # default) must not be served as hits for this one.
+    stem = f"{scryfall_id}__{drive_id_override}_w{output_size}"
+    raw_path = output_dir / f"{stem}.png"
     # Stable two-decimal format so 4 and 4.0 land at the same filename and 4.5
     # doesn't sneak a stray dot into the basename.
-    cropped_path = output_dir / f"{scryfall_id}__{drive_id_override}_bc{bleed_crop_percent:.2f}.png"
+    cropped_path = output_dir / f"{stem}_bc{bleed_crop_percent:.2f}.png"
 
     # Cache hit: if the path the caller will eventually receive already exists
     # on disk, return it without re-downloading or re-writing. This is the hot

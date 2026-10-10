@@ -99,3 +99,20 @@ def _png_bytes(size: tuple[int, int], color: tuple[int, int, int]) -> bytes:
     buf = io.BytesIO()
     Image.new("RGB", size, color=color).save(buf, format="PNG")
     return buf.getvalue()
+
+
+def test_resolve_cache_name_includes_requested_width(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A render cached at the old 1500 px request must not be served for a full-size one."""
+    fetch = MagicMock(return_value=b"PNG-BYTES")
+    monkeypatch.setattr(per_card, "fetch_thumbnail", fetch)
+    (tmp_path / "per_card").mkdir()
+    (tmp_path / "per_card" / "abc-123__drv-xyz.png").write_bytes(b"OLD-1500")
+
+    out = per_card.resolve_per_card_mpcfill(
+        scryfall_id="abc-123", cache_root=tmp_path, session=MagicMock(), drive_id_override="drv-xyz"
+    )
+
+    assert out is not None
+    assert out.name == f"abc-123__drv-xyz_w{per_card.DEFAULT_OUTPUT_SIZE}.png"
+    assert out.read_bytes() == b"PNG-BYTES"
+    assert fetch.call_args.args[1] == per_card.DEFAULT_OUTPUT_SIZE

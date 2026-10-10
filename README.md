@@ -10,7 +10,7 @@ Create a high quality printable PDF from your decklist or a list of cards you wa
 
 - **High resolution prints**  
   In contrast to online tools that provide this service (e.g. [MTG Press](http://www.mtgpress.net/)), this project creates the PDF file locally.
-  This allows to use highest resolution Scryfall scans to create a large, high-dpi PDF file without regard for bandwidth limitations. For example, the generated PDF for a complete Commander decklist has a size of about 140MB.
+  This allows to use highest resolution Scryfall scans to create a large, high-dpi PDF file without regard for bandwidth limitations. Every card is resampled (Lanczos) to **1200 dpi** at its printed size before it goes into the PDF, so small text stays crisp instead of being enlarged by the printer driver's cheaper filter. MPCFill renders are downloaded at full size (up to 1200 dpi). Expect roughly 140 MB per A4 page of 9 cards.
 
 - **Up-to-date card scans**  
   By directly utilizing the Scryfall API, all the latest sets are automatically available as soon as they're available on Scryfall. To avoid overrunning Scryfall with requests, this project uses [Scryfall bulk data](https://scryfall.com/docs/api/bulk-data) to reduce API calls as much as possible. A 100ms delay is enforced between requests as requested by Scryfall.
@@ -436,6 +436,11 @@ These tables summarize every flag. `mtg-proxies <command> --help` has the full t
 `mtg-proxies print [DECKLIST] OUTFILE [options]` — render a decklist to `.pdf`, `.png` or `.jpg`.
 `print` is render-only: it uses whatever print each line pins. Art selection lives in `convert`.
 DECKLIST may be omitted when you only print `--custom-art` and/or card backs.
+
+PDF output resamples every card below 1200 dpi (at its printed size) up to 1200 dpi before
+embedding it — scans, MPCFill and Card Conjurer renders, custom art alike. This is always on
+and adds no detail the source doesn't have; it only keeps the enlargement step high quality.
+`--dpi` only affects PNG/JPG output.
 
 | Flag | Default | Description |
 |---|---|---|

@@ -162,3 +162,41 @@ def test_plain_scan_not_scaled_on_negative_crop(tmp_path: Path) -> None:
 
     assert math.isclose(w, _CARD_SIZE_MM[0], abs_tol=0.01)
     assert math.isclose(h, _CARD_SIZE_MM[1], abs_tol=0.01)
+
+
+def test_cards_are_upsampled_to_target_dpi_without_moving(tmp_path: Path) -> None:
+    """A 745 px scan is resampled to 1200 dpi at its placed width; placement is unchanged."""
+    from mtg_proxies.print_cards import PDF_TARGET_DPI
+
+    img = _save_card(tmp_path / "scan.png")
+    (_, _, w, h) = _capture([img], border_crop=0, bleed_images=set(), tmp=tmp_path)[0]
+    embedded = _CapturingPdf.images[0]
+
+    assert isinstance(embedded, Image.Image)
+    assert embedded.width == round(w / 25.4 * PDF_TARGET_DPI)
+    # Aspect kept: no stretch beyond what pdf.image's box already did before.
+    assert math.isclose(embedded.width / embedded.height, 745 / 1040, rel_tol=1e-3)
+    assert (w, h) == tuple(_CARD_SIZE_MM)
+
+
+def test_images_already_at_target_dpi_are_embedded_as_is(tmp_path: Path) -> None:
+    """A source at or above the target is passed through untouched (still a path)."""
+    path = tmp_path / "big.png"
+    Image.fromarray(np.full((4400, 3200, 3), 128, dtype=np.uint8)).save(path)
+
+    _capture([str(path)], border_crop=0, bleed_images=set(), tmp=tmp_path)
+
+    assert _CapturingPdf.images[0] == str(path)
+
+
+def test_palette_images_are_resampled_in_rgba(tmp_path: Path) -> None:
+    """Lanczos can't run on palette images; they're converted rather than resampled nearest-neighbour."""
+    from mtg_proxies.print_cards import _resample_to_dpi
+
+    path = tmp_path / "palette.png"
+    Image.new("P", (745, 1040)).save(path)
+
+    resampled = _resample_to_dpi(str(path), np.array([63.0, 88.0]), 1200)
+
+    assert isinstance(resampled, Image.Image)
+    assert resampled.mode == "RGBA"
