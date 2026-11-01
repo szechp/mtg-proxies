@@ -2989,7 +2989,28 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // retro branch above is what settles them -- so they are outlined here, after that
     // branch and before renderBottomInfo() draws them. The title / type / P-T half is
     // applied earlier, because drawText() has already rasterised those by this point.
-    if (frame === 'retro' && scry.layout !== 'token' && retroNeedsTextOutline(pristineFace, scry)) {
+    if (frame === 'retro' && scry.layout !== 'token'
+            && PALE_RETRO_FRAMES.has(getFrameNameForFace(pristineFace))) {
+        // Mono-white frame only. The outline-only treatment below still left both lines
+        // borderline unreadable at print size, so: the artist line gets the type line's
+        // treatment (outline plus packSeventh's shadow, softened), and the copyright line
+        // drops the white entirely for plain black -- on the pale parchment that reads
+        // better than any amount of outlining. Hybrids keep the outline-only treatment:
+        // their bottom lines run across the coloured half too, where black would vanish.
+        const top = global.card.bottomInfo?.top;
+        if (top) {
+            top.outlineWidth = PALE_RETRO_OUTLINE;
+            top.outlineColor = 'black';
+            top.shadowBlur = PALE_RETRO_SHADOW_BLUR;
+        }
+        const wizards = global.card.bottomInfo?.wizards;
+        if (wizards) {
+            wizards.color = 'black';
+            wizards.outlineWidth = 0;
+            wizards.shadowX = 0;
+            wizards.shadowY = 0;
+        }
+    } else if (frame === 'retro' && scry.layout !== 'token' && retroNeedsTextOutline(pristineFace, scry)) {
         for (const key of ['top', 'wizards']) {
             const region = global.card.bottomInfo?.[key];
             if (!region) continue;
