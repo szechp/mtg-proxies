@@ -3065,10 +3065,16 @@ def main() -> None:
             paper = PAPERS.get(args.media, Paper(warm=0.0))
             if args.warm is not None:
                 paper = dataclasses.replace(paper, warm=args.warm)
+            bleed_images = set(custom_images) | modeline_bleed_renders
             if paper == Paper(warm=0.0):
                 paper = None
             else:
+                before = images
                 images = prepare_images(images, paper)
+                # prepare_images writes each card to a new path, so the bleed set has to follow
+                # it: a render that no longer matches is printed as a plain scan, bleed and all,
+                # which swallows any --border_crop.
+                bleed_images = {new for old, new in zip(before, images, strict=True) if old in bleed_images}
 
             try:
                 if args.outfile.lower().endswith(".pdf"):
@@ -3092,7 +3098,7 @@ def main() -> None:
                         background_color=background_color,
                         cropmarks=args.cropmarks,
                         split_pages=args.split_pages,
-                        bleed_images=set(custom_images) | modeline_bleed_renders,
+                        bleed_images=bleed_images,
                     )
                 else:
                     print_cards_matplotlib(
