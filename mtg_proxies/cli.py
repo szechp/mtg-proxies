@@ -456,11 +456,12 @@ def papersize(string: str) -> np.ndarray:
 #   ``_bg<RGB>``                    — composite.py (e.g. ``_bg000000128``)
 #   ``_crop<N>``                    — print_cards.py per-card layout crop cache
 #   ``_bleed<pct>``                 — bleed.py
+#   ``_warm<strength>``             — warmth.py
 # NOTE: black_vignette.py (``_bv<…>``) is NOT yet in this list — its outputs would be
 # re-ingested on the next ``--custom-art`` pass. Add when the renderer is updated to
 # emit user-visible bv-suffixed caches.
 _PIPELINE_CACHE_SUFFIX_RE = re.compile(
-    r"(_norm(_cp[\d.eE+-]+)?|_shadow(_a[\d.eE+-]+)?|_bg\d{9}|_crop\d+|_bleed[\d.]+)$"
+    r"(_norm(_cp[\d.eE+-]+)?|_shadow(_a[\d.eE+-]+)?|_bg\d{9}|_crop\d+|_bleed[\d.]+|_warm[\d.]+)$"
 )
 
 
@@ -2304,6 +2305,17 @@ def main() -> None:
         ),
     )
     print_parser.add_argument(
+        "--warm",
+        type=_float_in_range(0.0, 3.0),
+        default=1.0,
+        metavar="STRENGTH",
+        help=(
+            "tint the cards toward cream card stock so they look like real cards next to them on"
+            " bright paper. Default 1, calibrated on glossy sticker paper; 0 turns it off."
+            " Other paper (e.g. matte sticker sheets) needs its own value. E.g. --warm 0.5"
+        ),
+    )
+    print_parser.add_argument(
         "--card-back",
         type=str,
         default=None,
@@ -3011,6 +3023,12 @@ def main() -> None:
                 bg_rgb = tuple(int(c) for c in (np.array(colors.to_rgb(args.background)) * 255).astype(int))
                 images = composite_against_bg(images, bg_color=bg_rgb, skip_paths=user_supplied)
 
+            # Last image step: everything printed goes through the printer, user art included.
+            if args.warm:
+                from mtg_proxies.warmth import warm_images
+
+                images = warm_images(images, args.warm)
+
             try:
                 if args.outfile.lower().endswith(".pdf"):
                     import matplotlib.colors as colors
@@ -3018,6 +3036,11 @@ def main() -> None:
                     background_color = args.background
                     if background_color is not None:
                         background_color = (np.array(colors.to_rgb(background_color)) * 255).astype(int)
+                        if args.warm:
+                            from mtg_proxies.warmth import warm_rgb
+
+                            rgb = np.array([[background_color]], dtype=np.uint8)
+                            background_color = warm_rgb(rgb, args.warm)[0, 0].astype(int)
 
                     print_cards_fpdf(
                         images,

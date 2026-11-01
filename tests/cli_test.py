@@ -7,6 +7,13 @@ import numpy as np
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _skip_default_warmth() -> object:
+    """`print` warms every card by default; these tests pass fake paths, so skip the image step."""
+    with patch("mtg_proxies.warmth.warm_images", side_effect=lambda paths, strength: list(paths)) as mock:
+        yield mock
+
+
 def test_parse_decklist_spec_accepts_pathlib_path(tmp_path: Path) -> None:
     """Regression: argparse `type=Path` (Windows path object) must work without AttributeError.
 
@@ -2971,3 +2978,26 @@ def test_main_cube_merges_ratings_first_set_wins_on_name_collision(tmp_path: Pat
 
     merged_ratings = build_cube.call_args.args[1]
     assert merged_ratings["shared card"]["ever_drawn_win_rate"] == pytest.approx(0.6)
+
+
+def test_main_print_warm(tmp_path: Path) -> None:
+    """`--warm` is on at strength 1 by default, `--warm 0` turns it off, other strengths pass through."""
+    from mtg_proxies.cli import main
+
+    out_file = tmp_path / "out.pdf"
+    for flags, expected in [([], 1.0), (["--warm", "0"], None), (["--warm", "0.5"], 0.5)]:
+        with (
+            patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), *flags]),
+            patch("mtg_proxies.cli.parse_decklist_spec", return_value=object()),
+            patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["a.png"]),
+            patch("mtg_proxies.warmth.warm_images", return_value=["a_w.png"]) as mock_w,
+            patch("mtg_proxies.cli.print_cards_fpdf") as mock_pdf,
+        ):
+            main()
+
+        if expected is None:
+            mock_w.assert_not_called()
+            assert mock_pdf.call_args.args[0] == ["a.png"]
+        else:
+            assert mock_w.call_args.args[1] == pytest.approx(expected)
+            assert mock_pdf.call_args.args[0] == ["a_w.png"]

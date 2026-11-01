@@ -463,6 +463,7 @@ and adds no detail the source doesn't have; it only keeps the enlargement step h
 | `--normalize` | off | Per-card auto-levels. |
 | `--shadow-lift` | off | Lift crushed shadow detail in dark art. |
 | `--vignette [k=v …]` | off | Pull near-black rim pixels to true black. Keys: `strength` (1.0), `edge` (0.05), `max-black` (40). |
+| `--warm STRENGTH` | `1` | Tint every card toward cream card stock so proxies on bright paper look like real cards. `1` is calibrated on glossy sticker paper; `0` turns it off (e.g. other printer or paper). |
 | `--card-back PATH` | — | Duplex layout: alternating front sheets and mirrored back sheets for long-edge flip. DFCs get their real back face. |
 | `--card-back-count N` | — | Legacy: append N copies of `--card-back` instead of duplex sheets. |
 
