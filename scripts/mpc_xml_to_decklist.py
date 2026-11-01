@@ -4,7 +4,7 @@
 ``print`` already takes an order.xml directly, but then every card is treated the
 same way. As a decklist, each card is an ordinary line pinned to its exact MPCFill
 render, so individual lines can be edited — add ``--scaled``, swap one to
-``#cardconjourer --retro-scaled``, or drop the directive for the Scryfall scan::
+``#cardconjurer --retro-scaled``, or drop the directive for the Scryfall scan::
 
     uv run python scripts/mpc_xml_to_decklist.py order.xml            # writes order.txt
     uv run python scripts/mpc_xml_to_decklist.py order.xml deck.txt

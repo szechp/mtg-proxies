@@ -5,9 +5,9 @@
 # (macOS, Linux, Windows). Windows users without GNU make can call the
 # script directly: `python scripts/setup.py`.
 #
-# Dependency note: MTGPics (the hi-res art source for `cardconjourer`) is
+# Dependency note: MTGPics (the hi-res art source for `cardconjurer`) is
 # NOT installed here. Its URL pattern is reimplemented directly in
-# mtg_proxies/cardconjourer/mtgpics.py, so there's no external tool to
+# mtg_proxies/cardconjurer/mtgpics.py, so there's no external tool to
 # fetch or set up.
 
 # `python` on Windows, `python3` everywhere else. Override with `make PYTHON=...`

@@ -52,7 +52,7 @@ def test_main(capsys: pytest.CaptureFixture) -> None:
 
     # Check output
     captured = capsys.readouterr()
-    assert "{print,convert,tokens,deck_value,cube,cardconjourer}" in captured.out
+    assert "{print,convert,tokens,deck_value,cube,cardconjurer}" in captured.out
     assert "Prepare a decklist for printing" in captured.out
     assert "Convert a decklist to text or arena format" in captured.out
     assert "Append the created tokens to a decklist" in captured.out
@@ -2831,7 +2831,7 @@ def test_localize_card_payload_single_face_attaches_localized_fields() -> None:
     assert payload["printed_type_line"] == "Kreatur — Engel"
     assert payload["printed_text"] == "Fliegend\nWachsamkeit"
     assert payload["lang"] == "de"
-    # The original dict must never be mutated — later code in _run_cardconjourer still
+    # The original dict must never be mutated — later code in _run_cardconjurer still
     # reads it for art resolution.
     assert "printed_name" not in card
     assert "lang" not in card

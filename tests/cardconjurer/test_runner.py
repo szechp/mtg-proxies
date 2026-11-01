@@ -1,4 +1,4 @@
-"""Unit tests for the cardconjourer runner: ND-JSON protocol, output bookkeeping.
+"""Unit tests for the cardconjurer runner: ND-JSON protocol, output bookkeeping.
 
 The actual node subprocess + harness rendering is covered by an end-to-end
 integration test (separate file). These tests pin down the pure-Python pieces:
@@ -15,14 +15,14 @@ from pathlib import Path
 
 def test_format_fallback_txt_empty() -> None:
     """No skipped cards → empty file content (still a valid empty decklist)."""
-    from mtg_proxies.cardconjourer.runner import format_fallback_txt
+    from mtg_proxies.cardconjurer.runner import format_fallback_txt
 
     assert format_fallback_txt([]) == ""
 
 
 def test_format_fallback_txt_single_card() -> None:
     """One skipped card → one line in standard "<count> <name>" decklist format."""
-    from mtg_proxies.cardconjourer.runner import format_fallback_txt
+    from mtg_proxies.cardconjurer.runner import format_fallback_txt
 
     rows = [{"count": 1, "name": "Urza's Saga", "reason": "layout 'saga'"}]
 
@@ -31,7 +31,7 @@ def test_format_fallback_txt_single_card() -> None:
 
 def test_format_fallback_txt_multiple_preserves_order() -> None:
     """Skipped cards round-trip in the order given (caller's slot order)."""
-    from mtg_proxies.cardconjourer.runner import format_fallback_txt
+    from mtg_proxies.cardconjurer.runner import format_fallback_txt
 
     rows = [
         {"count": 1, "name": "Jacob Hauken, Inspector", "reason": "layout 'transform'"},
@@ -50,7 +50,7 @@ def test_format_fallback_txt_multiple_preserves_order() -> None:
 
 def test_format_report_csv_columns() -> None:
     """report.csv carries one row per card with the audit fields the user reviews."""
-    from mtg_proxies.cardconjourer.runner import format_report_csv
+    from mtg_proxies.cardconjurer.runner import format_report_csv
 
     rows = [
         {"slot": 1, "name": "Murder",       "status": "ok",   "reason": "",                  "png": "0001-murder.png",  "ms": 1240},
@@ -71,7 +71,7 @@ def test_format_report_csv_columns() -> None:
 
 def test_format_report_csv_png_back_column() -> None:
     """Split-DFC rows carry the back-face PNG in its own column; plain rows leave it empty."""
-    from mtg_proxies.cardconjourer.runner import format_report_csv
+    from mtg_proxies.cardconjurer.runner import format_report_csv
 
     rows = [
         {"slot": 1, "name": "Etali, Primal Conqueror // Etali, Primal Sickness", "status": "ok",
@@ -90,7 +90,7 @@ def test_format_report_csv_png_back_column() -> None:
 
 def test_format_report_csv_quotes_commas_in_names() -> None:
     """Card names with commas (``Jacob Hauken, Inspector``) must round-trip via CSV quoting."""
-    from mtg_proxies.cardconjourer.runner import format_report_csv
+    from mtg_proxies.cardconjurer.runner import format_report_csv
 
     rows = [{"slot": 1, "name": "Jacob Hauken, Inspector", "status": "skip",
              "reason": "layout 'transform'", "png": "", "ms": 0}]
@@ -106,7 +106,7 @@ def test_format_report_csv_quotes_commas_in_names() -> None:
 # ND-JSON job builder
 def test_build_job_minimal() -> None:
     """Minimal job: slot + name + frame. No art_path, no upscale."""
-    from mtg_proxies.cardconjourer.runner import build_job
+    from mtg_proxies.cardconjurer.runner import build_job
 
     job = build_job(slot=1, name="Murder", frame="8th")
 
@@ -115,7 +115,7 @@ def test_build_job_minimal() -> None:
 
 def test_build_job_slot_zero_padding() -> None:
     """Slot is zero-padded to 4 digits even for low slots, for sort-friendliness."""
-    from mtg_proxies.cardconjourer.runner import build_job
+    from mtg_proxies.cardconjurer.runner import build_job
 
     assert build_job(slot=42, name="X", frame="8th")["slot"] == "0042"
     assert build_job(slot=9999, name="X", frame="8th")["slot"] == "9999"
@@ -126,7 +126,7 @@ def test_build_job_with_local_art_path() -> None:
 
     Used when ESRGAN upscale ran in Python and the local file replaces the URL.
     """
-    from mtg_proxies.cardconjourer.runner import build_job
+    from mtg_proxies.cardconjurer.runner import build_job
 
     job = build_job(slot=1, name="Murder", frame="8th", art_path="/tmp/upscaled.png")
 
@@ -135,42 +135,42 @@ def test_build_job_with_local_art_path() -> None:
 
 def test_build_job_with_frame_modern() -> None:
     """``frame="modern"`` rides through the same channel as 8th."""
-    from mtg_proxies.cardconjourer.runner import build_job
+    from mtg_proxies.cardconjurer.runner import build_job
 
     assert build_job(slot=1, name="Murder", frame="modern")["frame"] == "modern"
 
 
 def test_build_job_with_frame_retro() -> None:
     """``frame="retro"`` (Seventh Edition) rides through the same channel as 8th/modern."""
-    from mtg_proxies.cardconjourer.runner import build_job
+    from mtg_proxies.cardconjurer.runner import build_job
 
     assert build_job(slot=1, name="Murder", frame="retro")["frame"] == "retro"
 
 
 def test_build_job_with_frame_auto() -> None:
     """``frame="auto"`` rides through unchanged; the harness resolves it per-card."""
-    from mtg_proxies.cardconjourer.runner import build_job
+    from mtg_proxies.cardconjurer.runner import build_job
 
     assert build_job(slot=1, name="Murder", frame="auto")["frame"] == "auto"
 
 
 def test_build_job_with_frame_borderless() -> None:
     """``frame="borderless"`` rides through unchanged."""
-    from mtg_proxies.cardconjourer.runner import build_job
+    from mtg_proxies.cardconjurer.runner import build_job
 
     assert build_job(slot=1, name="Murder", frame="borderless")["frame"] == "borderless"
 
 
 def test_build_job_with_frame_m15_8th_single_face() -> None:
     """``frame="m15-8th"`` rides through the same channel as 8th/modern/retro for a single-faced card."""
-    from mtg_proxies.cardconjourer.runner import build_job
+    from mtg_proxies.cardconjurer.runner import build_job
 
     assert build_job(slot=1, name="Murder", frame="m15-8th")["frame"] == "m15-8th"
 
 
 def test_build_job_with_frame_m15_8th_transform_dfc_split() -> None:
     """``frame="m15-8th"`` with ``dfc_split=True`` on a transform card carries both through unchanged."""
-    from mtg_proxies.cardconjourer.runner import build_job
+    from mtg_proxies.cardconjurer.runner import build_job
 
     job = build_job(slot=1, name="Jacob Hauken, Inspector // Res Hauken",
                     frame="m15-8th", dfc_split=True)
@@ -181,7 +181,7 @@ def test_build_job_with_frame_m15_8th_transform_dfc_split() -> None:
 
 def test_build_job_with_frame_m15_8th_modal_dfc_split() -> None:
     """``frame="m15-8th"`` with ``dfc_split=True`` on a modal_dfc card carries both through unchanged."""
-    from mtg_proxies.cardconjourer.runner import build_job
+    from mtg_proxies.cardconjurer.runner import build_job
 
     job = build_job(slot=1, name="Growing Rites of Itlimoc // Itlimoc, Cradle of the Sun",
                     frame="m15-8th", dfc_split=True)
@@ -192,7 +192,7 @@ def test_build_job_with_frame_m15_8th_modal_dfc_split() -> None:
 
 def test_build_job_with_set_symbol_path() -> None:
     """``set_symbol_path`` is emitted into the job dict for the harness to upload."""
-    from mtg_proxies.cardconjourer.runner import build_job
+    from mtg_proxies.cardconjurer.runner import build_job
 
     job = build_job(slot=1, name="Murder", frame="8th", set_symbol_path="/abs/ltc-r.svg")
 
@@ -201,7 +201,7 @@ def test_build_job_with_set_symbol_path() -> None:
 
 def test_build_job_set_symbol_path_omitted_when_none() -> None:
     """No ``set_symbol_path`` key when caller passes None — keeps job dicts lean."""
-    from mtg_proxies.cardconjourer.runner import build_job
+    from mtg_proxies.cardconjurer.runner import build_job
 
     job = build_job(slot=1, name="Murder", frame="8th")
 
@@ -210,7 +210,7 @@ def test_build_job_set_symbol_path_omitted_when_none() -> None:
 
 def test_build_job_dfc_split() -> None:
     """``dfc_split=True`` marks the job so the harness renders the faces separately."""
-    from mtg_proxies.cardconjourer.runner import build_job
+    from mtg_proxies.cardconjurer.runner import build_job
 
     job = build_job(slot=1, name="Etali, Primal Conqueror // Etali, Primal Sickness",
                     frame="8th", dfc_split=True)
@@ -220,7 +220,7 @@ def test_build_job_dfc_split() -> None:
 
 def test_build_job_dfc_split_omitted_by_default() -> None:
     """No ``dfc_split`` key unless requested — keeps job dicts lean and the harness default-flip."""
-    from mtg_proxies.cardconjourer.runner import build_job
+    from mtg_proxies.cardconjurer.runner import build_job
 
     job = build_job(slot=1, name="Murder", frame="8th")
 
@@ -230,7 +230,7 @@ def test_build_job_dfc_split_omitted_by_default() -> None:
 # Response parser
 def test_parse_response_ok() -> None:
     """``status=ok`` rows carry the absolute PNG path the harness wrote."""
-    from mtg_proxies.cardconjourer.runner import parse_response
+    from mtg_proxies.cardconjurer.runner import parse_response
 
     line = '{"slot":"0001","status":"ok","out":"/abs/0001-murder.png","ms":1240}'
     parsed = parse_response(line)
@@ -240,7 +240,7 @@ def test_parse_response_ok() -> None:
 
 def test_parse_response_skip_carries_reason() -> None:
     """``status=skip`` rows include the harness's reason string for the report."""
-    from mtg_proxies.cardconjourer.runner import parse_response
+    from mtg_proxies.cardconjurer.runner import parse_response
 
     line = '{"slot":"0003","status":"skip","reason":"layout \'saga\' not supported"}'
     parsed = parse_response(line)
@@ -251,7 +251,7 @@ def test_parse_response_skip_carries_reason() -> None:
 
 def test_parse_response_strips_whitespace_and_ignores_blank_lines() -> None:
     """Trailing newlines / blank lines don't blow up the parser."""
-    from mtg_proxies.cardconjourer.runner import parse_response
+    from mtg_proxies.cardconjurer.runner import parse_response
 
     assert parse_response("") is None
     assert parse_response("   \n") is None
@@ -262,7 +262,7 @@ def test_parse_response_strips_whitespace_and_ignores_blank_lines() -> None:
 
 def test_parse_response_malformed_returns_none() -> None:
     """A non-JSON line is reported as None, not raised — keeps the runner alive."""
-    from mtg_proxies.cardconjourer.runner import parse_response
+    from mtg_proxies.cardconjurer.runner import parse_response
 
     assert parse_response("not json {") is None
 
@@ -271,7 +271,7 @@ def test_parse_response_malformed_returns_none() -> None:
 # ``run_harness`` callable so subprocess is mocked out in unit tests.
 def test_render_deck_writes_pngs_fallback_and_report(tmp_path: Path) -> None:
     """End-to-end pure-python: jobs out, responses in, files on disk."""
-    from mtg_proxies.cardconjourer.runner import render_deck
+    from mtg_proxies.cardconjurer.runner import render_deck
 
     cards = [
         (1, "Murder"),
@@ -324,7 +324,7 @@ def test_render_deck_writes_pngs_fallback_and_report(tmp_path: Path) -> None:
 
 def test_render_deck_creates_outdir(tmp_path: Path) -> None:
     """OUTDIR is created if it doesn't exist (mirrors mpcfill behavior)."""
-    from mtg_proxies.cardconjourer.runner import render_deck
+    from mtg_proxies.cardconjurer.runner import render_deck
 
     outdir = tmp_path / "fresh"  # doesn't exist
     assert not outdir.exists()
@@ -338,7 +338,7 @@ def test_render_deck_creates_outdir(tmp_path: Path) -> None:
 
 def test_format_fallback_txt_preserves_set_and_collector() -> None:
     """A row carrying set_code + collector_number writes the pinned ``Name (SET) CN`` form."""
-    from mtg_proxies.cardconjourer.runner import format_fallback_txt
+    from mtg_proxies.cardconjurer.runner import format_fallback_txt
 
     rows = [{"count": 1, "name": "The One Ring", "reason": "borderless",
              "set_code": "hoc", "collector_number": "44"}]
@@ -348,7 +348,7 @@ def test_format_fallback_txt_preserves_set_and_collector() -> None:
 
 def test_format_fallback_txt_without_pin_is_name_only() -> None:
     """Rows without set/cn still render the bare ``<count> <name>`` form (unchanged)."""
-    from mtg_proxies.cardconjourer.runner import format_fallback_txt
+    from mtg_proxies.cardconjurer.runner import format_fallback_txt
 
     rows = [{"count": 2, "name": "Urza's Saga", "reason": "saga"}]
 
@@ -357,7 +357,7 @@ def test_format_fallback_txt_without_pin_is_name_only() -> None:
 
 def test_format_fallback_txt_appends_modeline_after_pin() -> None:
     """A row with a modeline gets it appended verbatim after the (SET) CN pin."""
-    from mtg_proxies.cardconjourer.runner import format_fallback_txt
+    from mtg_proxies.cardconjurer.runner import format_fallback_txt
 
     rows = [{"count": 1, "name": "Elegy Acolyte", "reason": "incomplete translation",
              "set_code": "eoe", "collector_number": "97", "modeline": "#print --language de"}]
@@ -367,7 +367,7 @@ def test_format_fallback_txt_appends_modeline_after_pin() -> None:
 
 def test_format_fallback_txt_appends_modeline_without_pin() -> None:
     """A row with a modeline but no set/cn pin still appends the modeline after the bare name."""
-    from mtg_proxies.cardconjourer.runner import format_fallback_txt
+    from mtg_proxies.cardconjurer.runner import format_fallback_txt
 
     rows = [{"count": 1, "name": "Elegy Acolyte", "reason": "x", "modeline": "#print --language de"}]
 
@@ -376,7 +376,7 @@ def test_format_fallback_txt_appends_modeline_without_pin() -> None:
 
 def test_render_deck_threads_fallback_modeline_by_slot(tmp_path: Path) -> None:
     """`fallback_modeline_by_slot` reaches fallback.txt for the matching (1-based) slot only."""
-    from mtg_proxies.cardconjourer.runner import render_deck
+    from mtg_proxies.cardconjurer.runner import render_deck
 
     def skip_all(jobs: list[dict]) -> list[dict]:
         return [{"slot": j["slot"], "status": "skip", "reason": "test"} for j in jobs]
@@ -396,7 +396,7 @@ def test_render_deck_threads_fallback_modeline_by_slot(tmp_path: Path) -> None:
 
 def test_render_deck_fallback_preserves_pin_from_card_spec(tmp_path: Path) -> None:
     """A skipped card given as a 4-tuple (count, name, set, cn) keeps its pin in fallback.txt."""
-    from mtg_proxies.cardconjourer.runner import render_deck
+    from mtg_proxies.cardconjurer.runner import render_deck
 
     def skip_all(jobs: list[dict]) -> list[dict]:
         return [{"slot": j["slot"], "status": "skip", "reason": "test"} for j in jobs]
@@ -408,7 +408,7 @@ def test_render_deck_fallback_preserves_pin_from_card_spec(tmp_path: Path) -> No
 
 def test_render_deck_count_in_fallback_reflects_decklist(tmp_path: Path) -> None:
     """A ``2 Urza's Saga`` skipped card writes ``2 Urza's Saga`` to fallback.txt."""
-    from mtg_proxies.cardconjourer.runner import render_deck
+    from mtg_proxies.cardconjurer.runner import render_deck
 
     def skip_all(jobs: list[dict]) -> list[dict]:
         return [{"slot": j["slot"], "status": "skip", "reason": "test"} for j in jobs]
@@ -425,7 +425,7 @@ def test_spawn_node_harness_round_trips_jobs(tmp_path: Path) -> None:
     """Stub harness reads jobs from stdin, writes a response per job to stdout."""
     import shutil as _shutil
 
-    from mtg_proxies.cardconjourer.runner import spawn_node_harness
+    from mtg_proxies.cardconjurer.runner import spawn_node_harness
 
     if not _shutil.which("node"):
         import pytest as _pytest
@@ -467,7 +467,7 @@ def test_spawn_node_harness_surfaces_stderr_on_failure(tmp_path: Path) -> None:
 
     import pytest as _pytest
 
-    from mtg_proxies.cardconjourer.runner import spawn_node_harness
+    from mtg_proxies.cardconjurer.runner import spawn_node_harness
 
     if not _shutil.which("node"):
         _pytest.skip("node not on PATH")
@@ -493,7 +493,7 @@ def test_spawn_node_harness_surfaces_stderr_on_failure(tmp_path: Path) -> None:
 
 def test_slug_matches_harness_js() -> None:
     """Python slug helper must exactly match the JS slugify in harness.js."""
-    from mtg_proxies.cardconjourer.runner import slug
+    from mtg_proxies.cardconjurer.runner import slug
 
     assert slug("Ambition's Cost") == "ambition_s_cost"
     assert slug("Murderous Rider // Swift End") == "murderous_rider_swift_end"
@@ -509,7 +509,7 @@ def test_slug_matches_harness_js() -> None:
 
 def test_render_deck_skips_card_with_existing_png(tmp_path: Path) -> None:
     """If <outdir>/<slug>.png already exists, the card is reported ok and not enqueued."""
-    from mtg_proxies.cardconjourer.runner import render_deck
+    from mtg_proxies.cardconjurer.runner import render_deck
 
     outdir = tmp_path / "out"
     outdir.mkdir()
@@ -545,7 +545,7 @@ def test_render_deck_skips_card_with_existing_png(tmp_path: Path) -> None:
 
 def test_render_deck_redoes_when_png_deleted(tmp_path: Path) -> None:
     """User deletes a PNG to trigger re-render; that slot IS sent to the harness."""
-    from mtg_proxies.cardconjourer.runner import render_deck
+    from mtg_proxies.cardconjurer.runner import render_deck
 
     outdir = tmp_path / "out"
     outdir.mkdir()
@@ -572,7 +572,7 @@ def test_render_deck_redoes_when_png_deleted(tmp_path: Path) -> None:
 
 def test_render_deck_prepare_each_called_per_slot_with_merged_fields(tmp_path: Path) -> None:
     """`prepare_each(slot) -> dict` runs just-before-send and its result merges into the job."""
-    from mtg_proxies.cardconjourer.runner import render_deck
+    from mtg_proxies.cardconjurer.runner import render_deck
 
     prepare_calls: list[int] = []
 
@@ -613,7 +613,7 @@ def test_render_deck_prepare_each_called_per_slot_with_merged_fields(tmp_path: P
 
 def test_render_deck_prepare_each_skipped_for_existing_pngs(tmp_path: Path) -> None:
     """Pre-existing PNGs short-circuit before prepare_each fires — no wasted upscale work."""
-    from mtg_proxies.cardconjourer.runner import render_deck
+    from mtg_proxies.cardconjurer.runner import render_deck
 
     outdir = tmp_path / "out"
     outdir.mkdir()
@@ -650,7 +650,7 @@ def test_render_deck_prepare_each_skipped_for_existing_pngs(tmp_path: Path) -> N
 
 def test_render_deck_dfc_split_flag_on_jobs_and_both_pngs_copied(tmp_path: Path) -> None:
     """Split slots send ``dfc_split`` to the harness; ``out`` + ``out_back`` both land in outdir."""
-    from mtg_proxies.cardconjourer.runner import render_deck
+    from mtg_proxies.cardconjurer.runner import render_deck
 
     pngs_dir = tmp_path / "harness_out"
     pngs_dir.mkdir()
@@ -691,7 +691,7 @@ def test_render_deck_dfc_split_flag_on_jobs_and_both_pngs_copied(tmp_path: Path)
 
 def test_render_deck_dfc_split_cache_hit_requires_both_files(tmp_path: Path) -> None:
     """A split slot with only the front PNG on disk is re-sent; with both files it is skipped."""
-    from mtg_proxies.cardconjourer.runner import render_deck, slug
+    from mtg_proxies.cardconjurer.runner import render_deck, slug
 
     outdir = tmp_path / "out"
     outdir.mkdir()
@@ -724,7 +724,7 @@ def test_render_deck_dfc_split_cache_hit_requires_both_files(tmp_path: Path) -> 
 
 def test_render_deck_non_split_cache_hit_ignores_back_file(tmp_path: Path) -> None:
     """Without dfc_split_slots the cache-hit check is unchanged: front PNG alone skips the slot."""
-    from mtg_proxies.cardconjourer.runner import render_deck
+    from mtg_proxies.cardconjurer.runner import render_deck
 
     outdir = tmp_path / "out"
     outdir.mkdir()
@@ -747,7 +747,7 @@ def _prefix_harness(render_dir: Path) -> Callable[..., list[dict]]:
     its own ``node/output`` folder (CC_OUTPUT is never set in production) and render_deck
     copies from there, which is what makes the prefixed destination name possible.
     """
-    from mtg_proxies.cardconjourer.runner import slug
+    from mtg_proxies.cardconjurer.runner import slug
 
     render_dir.mkdir(parents=True, exist_ok=True)
 
@@ -764,7 +764,7 @@ def _prefix_harness(render_dir: Path) -> Callable[..., list[dict]]:
 
 def test_filename_prefix_applied_to_selected_slots(tmp_path: Path) -> None:
     """Only the flagged slots get the prefix; the rest keep their bare slug name."""
-    from mtg_proxies.cardconjourer.runner import render_deck
+    from mtg_proxies.cardconjurer.runner import render_deck
 
     outdir = tmp_path / "out"
     outdir.mkdir()
@@ -784,7 +784,7 @@ def test_filename_prefix_is_not_reapplied_on_a_cache_hit(tmp_path: Path) -> None
     A cache hit's ``out`` already points at the prefixed file in outdir, so prefixing the
     copy destination again compounds it on every run, leaving stale copies behind.
     """
-    from mtg_proxies.cardconjourer.runner import render_deck
+    from mtg_proxies.cardconjurer.runner import render_deck
 
     outdir = tmp_path / "out"
     outdir.mkdir()
@@ -803,7 +803,7 @@ def test_filename_prefix_is_not_reapplied_on_a_cache_hit(tmp_path: Path) -> None
 
 def test_filename_prefix_makes_a_prefixed_png_count_as_cached(tmp_path: Path) -> None:
     """The cache-hit check has to look for the prefixed name, or it re-renders every run."""
-    from mtg_proxies.cardconjourer.runner import render_deck, slug
+    from mtg_proxies.cardconjurer.runner import render_deck, slug
 
     outdir = tmp_path / "out"
     outdir.mkdir()

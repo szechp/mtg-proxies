@@ -201,7 +201,7 @@ def test_render_deck_post_processes_cache_hits_too(tmp_path: Path) -> None:
     re-running with the flag over an existing outdir silently kept serving the old
     un-scaled PNGs. Idempotency is the stamp's job now, so every ok PNG is offered.
     """
-    from mtg_proxies.cardconjourer.runner import render_deck, slug
+    from mtg_proxies.cardconjurer.runner import render_deck, slug
 
     outdir = tmp_path / "out"
     outdir.mkdir()

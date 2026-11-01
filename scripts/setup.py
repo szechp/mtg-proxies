@@ -11,7 +11,7 @@ now a thin wrapper around this — you can also call this script directly:
     python scripts/setup.py --check        # check deps + report; do nothing else
 
 Note: MTGPics is NOT installed by this script — its URL pattern is reimplemented
-directly in mtg_proxies/cardconjourer/mtgpics.py, so there's nothing to fetch
+directly in mtg_proxies/cardconjurer/mtgpics.py, so there's nothing to fetch
 or install. The hi-res art fetcher Just Works once the rest of the install
 finishes (the only runtime dep it has is ``requests``, which ``uv sync`` already
 provides).
@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-NODE_DIR = REPO_ROOT / "mtg_proxies" / "cardconjourer" / "node"
+NODE_DIR = REPO_ROOT / "mtg_proxies" / "cardconjurer" / "node"
 CC_LOCK = REPO_ROOT / "cardconjurer.lock"
 CC_CACHE = Path.home() / ".cache" / "mtg-proxies" / "cardconjurer"
 CC_REPO = "https://github.com/joshbirnholz/cardconjurer.git"

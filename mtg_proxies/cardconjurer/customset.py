@@ -9,7 +9,7 @@ letter pair lands cleanly regardless of ascenders, descenders, or width.
 
 This module is reached via the ``customset:XY`` prefix on the
 ``--set-symbol`` flag (or the matching modeline), e.g.
-``mtg-proxies cardconjourer --8th --set-symbol customset:An deck.txt out/``.
+``mtg-proxies cardconjurer --8th --set-symbol customset:An deck.txt out/``.
 
 Output SVGs are cached under ``<cc_root>/img/setSymbols/customset/`` — kept
 out of ``official/`` so they can't collide with real CC set codes.

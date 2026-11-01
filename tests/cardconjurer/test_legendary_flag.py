@@ -9,11 +9,11 @@ import pytest
 def _run_subcommand(tmp_path: Path, deck: object, *flags: str) -> dict:
     from mtg_proxies.cli import main
 
-    argv = ["mtg-proxies", "cardconjourer", "unused.txt", str(tmp_path / "out"), *flags]
+    argv = ["mtg-proxies", "cardconjurer", "unused.txt", str(tmp_path / "out"), *flags]
     with (
         patch("sys.argv", argv),
         patch("mtg_proxies.cli.parse_decklist_spec", return_value=deck),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as render,
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as render,
     ):
         render.return_value = {"ok": 0, "skipped": 0, "total": 2}
         main()
@@ -34,10 +34,10 @@ def test_deck_flag_reaches_every_job(tmp_path: Path, frame_flag: str | None) -> 
 
 
 def test_modeline_flag_is_per_card(tmp_path: Path) -> None:
-    """``#cardconjourer --legendary`` marks only its own slot."""
+    """``#cardconjurer --legendary`` marks only its own slot."""
     from mtg_proxies.decklists.decklist import Card, Decklist
 
-    deck = Decklist([Card(1, {"name": "A"}, "#cardconjourer --retro --legendary"), Card(1, {"name": "B"})])
+    deck = Decklist([Card(1, {"name": "A"}, "#cardconjurer --retro --legendary"), Card(1, {"name": "B"})])
     kwargs = _run_subcommand(tmp_path, deck, "--retro")
     assert kwargs["prepare_each"](1).get("legendary") is True
     assert "legendary" not in kwargs["prepare_each"](2)
@@ -55,7 +55,7 @@ def test_deck_flag_rejects_frames_with_their_own_crowns(tmp_path: Path, frame_fl
 
 def test_build_job_serializes_only_when_set() -> None:
     """The job key is omitted by default so stock renders stay byte-identical."""
-    from mtg_proxies.cardconjourer.runner import build_job
+    from mtg_proxies.cardconjurer.runner import build_job
 
     assert "legendary" not in build_job(1, "A", "retro")
     assert build_job(1, "A", "retro", legendary=True)["legendary"] is True
@@ -67,7 +67,7 @@ def test_print_dispatch_passes_legendary() -> None:
     from mtg_proxies.decklists.decklist import Card, Decklist
 
     deck = Decklist([Card(1, {"name": "Example", "layout": "normal", "image_uris": {"normal": "scan.png"}},
-                          "#cardconjourer --8th --legendary")])
-    with patch("mtg_proxies.cardconjourer.per_card.render_per_card_batch", return_value={}) as batch:
+                          "#cardconjurer --8th --legendary")])
+    with patch("mtg_proxies.cardconjurer.per_card.render_per_card_batch", return_value={}) as batch:
         _apply_per_card_modelines(deck, ["original.png"])
     assert batch.call_args.args[0][0].legendary is True

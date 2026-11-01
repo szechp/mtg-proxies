@@ -1,12 +1,12 @@
 """Batched per-card Card Conjurer rendering for the ``print`` modeline pass.
 
-The standalone ``cardconjourer`` subcommand renders a whole decklist at once.
-This module is the equivalent for ``print``-time ``#cardconjourer`` modelines:
+The standalone ``cardconjurer`` subcommand renders a whole decklist at once.
+This module is the equivalent for ``print``-time ``#cardconjurer`` modelines:
 collect every flagged card across the decklist, spawn the node harness once,
 and return a slot-id → PNG-path mapping the caller uses to swap slots.
 
 One subprocess per ``print`` invocation, regardless of how many cards carry
-``#cardconjourer`` — keeps the ~1-2 s engine-boot cost amortized.
+``#cardconjurer`` — keeps the ~1-2 s engine-boot cost amortized.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from . import runner as cc_runner
 
 
 @dataclass(slots=True)
-class CardConjourerRequest:
+class CardConjurerRequest:
     """One per-card render request.
 
     ``slot_id`` is the caller's match key for the returned PNG. It must be
@@ -56,7 +56,7 @@ def _default_run_harness(cache_root: Path, harness_path: Path) -> RunHarness:
 
     Tests inject their own ``run_harness``; production code calls this to get
     a closure suitable for :func:`render_per_card_batch`. The actual subprocess
-    work lives in :func:`mtg_proxies.cardconjourer.runner.spawn_node_harness` —
+    work lives in :func:`mtg_proxies.cardconjurer.runner.spawn_node_harness` —
     this is just the binding layer that asserts ``cache_root`` exists before
     we try to spawn against it.
     """
@@ -73,7 +73,7 @@ def _default_run_harness(cache_root: Path, harness_path: Path) -> RunHarness:
 
 
 def render_per_card_batch(
-    requests: list[CardConjourerRequest],
+    requests: list[CardConjurerRequest],
     *,
     cache_root: Path | None = None,
     harness_path: Path | None = None,

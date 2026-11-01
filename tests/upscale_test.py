@@ -147,7 +147,7 @@ def test_upscale_images_treats_rgb_cache_as_stale_and_reprocesses(tmp_path: Path
 def test_upscale_images_progress_false_disables_inner_tqdm(monkeypatch, tmp_path) -> None:
     """`progress=False` passes `disable=True` to the internal "Upscaling lowres images" tqdm.
 
-    The cardconjourer subcommand calls upscale_images one image at a time (for the
+    The cardconjurer subcommand calls upscale_images one image at a time (for the
     interleaved upscale → render flow). Without this knob, every per-card call
     prints its own `Upscaling lowres images: 100% 1/1` bar — useless noise on top
     of the outer "Rendering" bar.

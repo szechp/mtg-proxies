@@ -22,7 +22,7 @@ image_size = np.array([745, 1040])
 CARD_SIZE_MM = np.array([63.0, 88.0])
 
 # CardConjurer's "Include Template Margins" bleed (``loadMarginVersion``: marginX=0.044,
-# marginY=1/35). Cardconjourer renders carry this MPC bleed; the canvas is the card scaled by
+# marginY=1/35). Cardconjurer renders carry this MPC bleed; the canvas is the card scaled by
 # these factors per axis (creator-23.js sizeCanvas: width*(1+2*marginX), height*(1+2*marginY)).
 # On the negative-crop cutting flow we place the render at this size so the inner 63x88 card
 # rect lands exactly on the slot and the bleed spills into the inter-card gap.
@@ -30,7 +30,7 @@ _CC_MARGIN_SCALE = np.array([1 + 2 * 0.044, 1 + 2 / 35])
 
 # Every card is resampled (Lanczos) up to this resolution at its printed size before it is
 # embedded in the PDF. Sources range from ~300 dpi (Scryfall scans) through ~550-1200 dpi
-# (MPCFill renders) to ~770 dpi (cardconjourer), and left alone a PDF viewer or printer driver
+# (MPCFill renders) to ~770 dpi (cardconjurer), and left alone a PDF viewer or printer driver
 # enlarges them with whatever cheap filter it has, which softens small text. Doing it here with
 # a proper filter keeps it crisp, at the cost of much larger PDFs (~12 MP per card). Images
 # already at or above the target are embedded untouched.
@@ -59,7 +59,7 @@ def _warped_content_fraction(image_path: str | Path) -> float | None:
 
 
 def _strip_cc_margin(image: str | Path) -> Image.Image:
-    """Return a cardconjourer render cropped down to its exact card content (bleed removed).
+    """Return a cardconjurer render cropped down to its exact card content (bleed removed).
 
     CardConjurer's "Include Template Margins" grows the canvas anisotropically by
     ``_CC_MARGIN_SCALE`` (marginX=0.044, marginY=1/35) with the card centred. We strip exactly
@@ -82,7 +82,7 @@ def _border_cropped_image(image: Image.Image | str | Path, border_crop: int) -> 
     so there is no on-disk intermediate to cache, invalidate, or go stale. ``border_crop`` is
     split half-and-half across opposing edges so the black border stays uniform; the per-edge
     pixel counts are scaled from the canonical ``image_size`` to the source's actual resolution.
-    Accepts an already-open ``PIL.Image`` (e.g. a margin-stripped cardconjourer render) as well
+    Accepts an already-open ``PIL.Image`` (e.g. a margin-stripped cardconjurer render) as well
     as a path.
     """
     opened = not isinstance(image, Image.Image)
@@ -343,7 +343,7 @@ def print_cards_fpdf(
             margins with ink.
         cropmarks: Whether to add crop marks to the PDF.
         split_pages: If set, write a new PDF every N pages with `_<n>` suffix added to the filename.
-        bleed_images: Paths of custom-art / cardconjourer renders that carry CardConjurer's
+        bleed_images: Paths of custom-art / cardconjurer renders that carry CardConjurer's
             anisotropic template-margin bleed. On negative ``border_crop`` (the cutting flow) the
             raw render is placed so the inner card rect lands exactly on the slot and the bleed
             spills into the gap; on positive/zero crop the exact per-axis margin is stripped
@@ -429,7 +429,7 @@ def print_cards_fpdf(
 
         is_cc_bleed = bleed_images is not None and str(image) in bleed_images
 
-        # Cardconjourer renders carry CC's anisotropic template-margin bleed. On the positive/
+        # Cardconjurer renders carry CC's anisotropic template-margin bleed. On the positive/
         # zero-crop sticker flow, strip exactly that margin (per axis, from the raw render) so the
         # recovered card content has the true card aspect and places pixel-identically to a
         # no-bleed scan — no uniform-percent over-trim, no aspect stretch. On negative crop the
@@ -461,7 +461,7 @@ def print_cards_fpdf(
         if content_fraction is not None and content_fraction < 1.0:
             place_size = size / content_fraction
         elif is_cc_bleed and border_crop < 0:
-            # Cardconjourer render with CC template-margin bleed, on the cutting flow: scale by
+            # Cardconjurer render with CC template-margin bleed, on the cutting flow: scale by
             # the anisotropic margin so the inner card rect stays at the slot and the bleed
             # spills into the gap. (Positive/zero crop already stripped the margin above.)
             place_size = size * _CC_MARGIN_SCALE

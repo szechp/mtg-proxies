@@ -212,10 +212,10 @@ __marimo__/
 # Claude Code per-project state (Anthropic CLI)
 .claude/
 
-# Node deps + runtime artifacts (cardconjourer harness + spike)
+# Node deps + runtime artifacts (cardconjurer harness + spike)
 node_modules/
-mtg_proxies/cardconjourer/node/output/
-mtg_proxies/cardconjourer/node/inputs/
+mtg_proxies/cardconjurer/node/output/
+mtg_proxies/cardconjurer/node/inputs/
 spike/node_modules/
 spike/cardconjurer/
 spike/output/

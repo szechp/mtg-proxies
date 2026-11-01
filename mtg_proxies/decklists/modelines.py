@@ -116,8 +116,8 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     "no-upscale": {},
     "no-normalize": {},
     "no-shadow-lift": {},
-    # ``#cardconjourer`` — render this single card via the headless Card Conjurer engine
-    # (the ``cardconjourer`` subcommand also does the whole deck). Mutually-exclusive frame
+    # ``#cardconjurer`` — render this single card via the headless Card Conjurer engine
+    # (the ``cardconjurer`` subcommand also does the whole deck). Mutually-exclusive frame
     # selectors ``--8th`` / ``--modern`` / ``--m15-8th`` / ``--retro`` pick the style (retro =
     # Seventh Edition 1997 frame; its DFC split faces use the Classicshifted retro DFC packs;
     # m15-8th = M15Eighth hybrid, shares modern's geometry/crowns, uses the packM15Eighth* DFC
@@ -142,7 +142,7 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     # (e.g. render everything in German except one card, back in English). LANG is a
     # 2-3 letter lowercase Scryfall language code.
     # ``--dfc-split`` / ``--dfc-flip`` pick how a double-faced card (transform /
-    # modal_dfc) renders in the ``cardconjourer`` subcommand. Split (the default)
+    # modal_dfc) renders in the ``cardconjurer`` subcommand. Split (the default)
     # renders TWO separate full-size cards — front + back PNGs with the real DFC
     # furniture (transform icon by frame_effects, reverse-P/T reminder, MDFC
     # flipside bar). Flip merges both faces into one Kamigawa-flip card — use it
@@ -151,7 +151,7 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     # no-ops on single-faced cards; mutually exclusive on one segment.
     # ``--legendary`` opts into the non-stock legendary markers: the Arabian Nights gold
     # pinline on retro, the legend crown on 8th. No-op on the other frames.
-    "cardconjourer": {
+    "cardconjurer": {
         "--8th":        NO_VALUE,
         "--modern":     NO_VALUE,
         "--m15-8th":    NO_VALUE,
@@ -171,7 +171,7 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         "--language":   _lang_code,
     },
     # ``#print --language LANG`` — for a card whose Scryfall structured translation isn't
-    # trustworthy enough for cardconjourer to render (auto-appended by the ``cardconjourer``
+    # trustworthy enough for cardconjurer to render (auto-appended by the ``cardconjurer``
     # subcommand's own fallback.txt output — see its ``--language`` flag), pin THIS slot to
     # the real scanned print in LANG instead of the plain Scryfall (English) scan. No-op if no
     # print exists in LANG for this card — falls back to the normal Scryfall scan, same as if
@@ -180,6 +180,9 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         "--language": _lang_code,
     },
 }
+
+# Old verb spellings, rewritten to their current name on parse so existing decklists keep working.
+VERB_ALIASES: dict[str, str] = {"cardconjourer": "cardconjurer"}
 
 
 @dataclass(slots=True)
@@ -211,7 +214,7 @@ def split_modeline_trailer(line: str) -> tuple[str, str]:
         return line, ""
     trailer_raw = m.group(1)
     first_segment = _split_segments(trailer_raw.lstrip())
-    if not first_segment or first_segment[0].split()[0] not in VERB_REGISTRY:
+    if not first_segment or VERB_ALIASES.get(verb := first_segment[0].split()[0], verb) not in VERB_REGISTRY:
         return line, ""
     return line[: m.start()], trailer_raw
 
@@ -254,7 +257,7 @@ def parse_modeline_trailer(trailer: str) -> tuple[list[Directive], list[ParseWar
             continue
         if not tokens:
             continue
-        verb = tokens[0]
+        verb = VERB_ALIASES.get(tokens[0], tokens[0])
         if verb not in VERB_REGISTRY:
             warnings.append(ParseWarning("WARNING", f"Unknown modeline verb '#{verb}'; dropping segment."))
             continue
@@ -301,13 +304,13 @@ def parse_modeline_trailer(trailer: str) -> tuple[list[Directive], list[ParseWar
         if dropped:
             continue
 
-        # Mutex enforcement. The cardconjourer verb's frame selectors --8th /
+        # Mutex enforcement. The cardconjurer verb's frame selectors --8th /
         # --modern / --m15-8th / --retro / --borderless (including scaled variants)
         # select mutually exclusive frame families, as do
         # the DFC mode selectors --dfc-split / --dfc-flip: stacking flags from one
         # group leaves downstream resolution ambiguous. Drop all conflicting flags
         # with a warning rather than silently picking one.
-        if verb == "cardconjourer":
+        if verb == "cardconjurer":
             for group, what in (
                 (("--8th", "--modern", "--m15-8th", "--retro", "--borderless",
                   "--retro-scaled", "--8th-scaled"), "frame"),
@@ -323,7 +326,7 @@ def parse_modeline_trailer(trailer: str) -> tuple[list[Directive], list[ParseWar
                 if len(set_flags) > 1:
                     warnings.append(ParseWarning(
                         "WARNING",
-                        f"Conflicting {what} flags {set_flags} on #cardconjourer; "
+                        f"Conflicting {what} flags {set_flags} on #cardconjurer; "
                         f"dropping all of them (falls back to default)."
                     ))
                     for f in set_flags:

@@ -24,7 +24,7 @@ frame reaches the canvas edge and starts getting clipped, which caps the usable
 overlap at roughly 3.8 mm per side — see :func:`scale_for_margin`.
 
 Nothing here is specific to where the render came from. Card Conjurer output
-(``cardconjourer --retro-scaled``, ``#cardconjourer --retro-scaled``) and MPCFill
+(``cardconjurer --retro-scaled``, ``#cardconjurer --retro-scaled``) and MPCFill
 renders (``print --scaled``, ``#mpcfill --scaled``) both go through it: any card
 with a black border is measured the same way, and one without (borderless,
 extended art) fails :func:`measure_frame_box` and is left alone.

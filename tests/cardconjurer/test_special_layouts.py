@@ -7,7 +7,7 @@ file adds real-engine smoke renders (gated on the pinned Card Conjurer cache bei
 that drive the actual harness end to end, proving the routing decisions produce real,
 complete-text PNGs and that ``--dfc-flip`` is correctly ignored for planeswalker DFCs.
 
-Fixtures under ``mtg_proxies/cardconjourer/node/inputs/`` are verbatim Scryfall API responses
+Fixtures under ``mtg_proxies/cardconjurer/node/inputs/`` are verbatim Scryfall API responses
 for real printed cards, fetched once and checked in — no network access at test time:
   * ``bonecrusher_giant.json``      — adventure (Bonecrusher Giant // Stomp)
   * ``abigale_poet_laureate.json``  — prepare (Abigale, Poet Laureate // Heroic Stanza)
@@ -30,10 +30,10 @@ import pytest
 
 _HERE = Path(__file__).resolve()
 _REPO_ROOT = _HERE.parents[2]
-_CARDCONJOURER_NODE = _REPO_ROOT / "mtg_proxies" / "cardconjourer" / "node"
-_SPECIAL_LAYOUTS_JS = _CARDCONJOURER_NODE / "special_layouts.js"
-_HARNESS_JS = _CARDCONJOURER_NODE / "harness.js"
-_INPUTS_DIR = _CARDCONJOURER_NODE / "inputs"
+_CARDCONJURER_NODE = _REPO_ROOT / "mtg_proxies" / "cardconjurer" / "node"
+_SPECIAL_LAYOUTS_JS = _CARDCONJURER_NODE / "special_layouts.js"
+_HARNESS_JS = _CARDCONJURER_NODE / "harness.js"
+_INPUTS_DIR = _CARDCONJURER_NODE / "inputs"
 
 _NODE_AVAILABLE = shutil.which("node") is not None
 _CC_CACHE = Path.home() / ".cache" / "mtg-proxies" / "cardconjurer"
@@ -376,7 +376,7 @@ pytestmark_engine = pytest.mark.skipif(
 
 def _run_harness_jobs(jobs: list[dict[str, Any]], tmp_path: Path) -> list[dict[str, Any]]:
     """Spawn the real harness against the pinned CC cache with a scratch output dir."""
-    from mtg_proxies.cardconjourer.runner import spawn_node_harness
+    from mtg_proxies.cardconjurer.runner import spawn_node_harness
 
     output_dir = tmp_path / "output"
     output_dir.mkdir()

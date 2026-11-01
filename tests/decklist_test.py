@@ -651,200 +651,212 @@ def test_modeline_parse_empty_trailer() -> None:
     assert directives == []
 
 
-def test_modeline_parse_cardconjourer_8th() -> None:
-    """`#cardconjourer --8th` registers as a no-value-flag directive."""
+def test_modeline_parse_cardconjurer_8th() -> None:
+    """`#cardconjurer --8th` registers as a no-value-flag directive."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#cardconjourer --8th")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --8th")
 
     assert len(directives) == 1
-    assert directives[0].verb == "cardconjourer"
+    assert directives[0].verb == "cardconjurer"
     assert directives[0].flags == {"--8th": True}
     assert warnings == []
 
 
-def test_modeline_parse_cardconjourer_upscale() -> None:
+def test_modeline_parse_cardconjurer_upscale() -> None:
     """`--upscale` opts this card in to ESRGAN upres before rendering."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#cardconjourer --8th --upscale")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --8th --upscale")
 
     assert len(directives) == 1
     assert directives[0].flags == {"--8th": True, "--upscale": True}
     assert warnings == []
 
 
-def test_modeline_parse_cardconjourer_unknown_flag_warns() -> None:
+def test_modeline_parse_cardconjurer_unknown_flag_warns() -> None:
     """An unrecognised flag drops the whole segment with a warning, like other verbs."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#cardconjourer --bogus")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --bogus")
 
     assert directives == []
     assert len(warnings) == 1
     assert "--bogus" in warnings[0].message
 
 
-def test_modeline_parse_cardconjourer_modern() -> None:
-    """`#cardconjourer --modern` registers as a no-value-flag directive."""
+def test_modeline_parse_cardconjurer_modern() -> None:
+    """`#cardconjurer --modern` registers as a no-value-flag directive."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#cardconjourer --modern")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --modern")
 
     assert len(directives) == 1
     assert directives[0].flags == {"--modern": True}
     assert warnings == []
 
 
-def test_modeline_parse_cardconjourer_set_symbol_code() -> None:
+def test_modeline_old_cardconjourer_spelling_still_parses() -> None:
+    """The pre-rename `#cardconjourer` verb still splits off and parses as `cardconjurer`."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer, split_modeline_trailer
+
+    main, trailer = split_modeline_trailer("1 Murder #cardconjourer --modern")
+    directives, warnings = parse_modeline_trailer(trailer)
+
+    assert main == "1 Murder"
+    assert [(d.verb, d.flags) for d in directives] == [("cardconjurer", {"--modern": True})]
+    assert warnings == []
+
+
+def test_modeline_parse_cardconjurer_set_symbol_code() -> None:
     """`--set-symbol VALUE` captures the raw string (resolution happens later)."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#cardconjourer --set-symbol LTC")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --set-symbol LTC")
 
     assert len(directives) == 1
     assert directives[0].flags == {"--set-symbol": "LTC"}
     assert warnings == []
 
 
-def test_modeline_parse_cardconjourer_set_symbol_path() -> None:
+def test_modeline_parse_cardconjurer_set_symbol_path() -> None:
     """`--set-symbol VALUE` accepts a path verbatim — no validation at parse time."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#cardconjourer --set-symbol ./sym.png")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --set-symbol ./sym.png")
 
     assert len(directives) == 1
     assert directives[0].flags == {"--set-symbol": "./sym.png"}
     assert warnings == []
 
 
-def test_modeline_parse_cardconjourer_modern_with_set_symbol() -> None:
+def test_modeline_parse_cardconjurer_modern_with_set_symbol() -> None:
     """Combined `--modern --set-symbol LTC` parses both flags."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#cardconjourer --modern --set-symbol LTC")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --modern --set-symbol LTC")
 
     assert len(directives) == 1
     assert directives[0].flags == {"--modern": True, "--set-symbol": "LTC"}
     assert warnings == []
 
 
-def test_modeline_parse_cardconjourer_custom_art() -> None:
+def test_modeline_parse_cardconjurer_custom_art() -> None:
     """`--custom-art PATH` captures the raw path string (validation happens later)."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#cardconjourer --custom-art ./my_art.jpg")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --custom-art ./my_art.jpg")
 
     assert len(directives) == 1
     assert directives[0].flags == {"--custom-art": "./my_art.jpg"}
     assert warnings == []
 
 
-def test_modeline_parse_cardconjourer_custom_art_quoted_path_with_spaces() -> None:
+def test_modeline_parse_cardconjurer_custom_art_quoted_path_with_spaces() -> None:
     """Paths with spaces work when quoted — shlex tokenization preserves the value."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer('#cardconjourer --custom-art "./My Art.png"')
+    directives, warnings = parse_modeline_trailer('#cardconjurer --custom-art "./My Art.png"')
 
     assert len(directives) == 1
     assert directives[0].flags == {"--custom-art": "./My Art.png"}
     assert warnings == []
 
 
-def test_modeline_parse_cardconjourer_dfc_split() -> None:
+def test_modeline_parse_cardconjurer_dfc_split() -> None:
     """`--dfc-split` registers as a no-value flag (render DFC faces as two separate cards)."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#cardconjourer --dfc-split")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --dfc-split")
 
     assert len(directives) == 1
-    assert directives[0].verb == "cardconjourer"
+    assert directives[0].verb == "cardconjurer"
     assert directives[0].flags == {"--dfc-split": True}
     assert warnings == []
 
 
-def test_modeline_parse_cardconjourer_dfc_split_stacks_with_frame() -> None:
-    """`--dfc-split` composes with other cardconjourer flags on the same segment."""
+def test_modeline_parse_cardconjurer_dfc_split_stacks_with_frame() -> None:
+    """`--dfc-split` composes with other cardconjurer flags on the same segment."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#cardconjourer --8th --dfc-split --font-size -4")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --8th --dfc-split --font-size -4")
 
     assert len(directives) == 1
     assert directives[0].flags == {"--8th": True, "--dfc-split": True, "--font-size": -4}
     assert warnings == []
 
 
-def test_modeline_parse_cardconjourer_dfc_flip() -> None:
+def test_modeline_parse_cardconjurer_dfc_flip() -> None:
     """`--dfc-flip` registers as a no-value flag (force the Kamigawa-flip merge for this card)."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#cardconjourer --dfc-flip")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --dfc-flip")
 
     assert len(directives) == 1
     assert directives[0].flags == {"--dfc-flip": True}
     assert warnings == []
 
 
-def test_modeline_parse_cardconjourer_language() -> None:
+def test_modeline_parse_cardconjurer_language() -> None:
     """`--language de` captures a validated 2-3 lowercase-letter Scryfall language code."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#cardconjourer --language de")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --language de")
 
     assert len(directives) == 1
     assert directives[0].flags == {"--language": "de"}
     assert warnings == []
 
 
-def test_modeline_parse_cardconjourer_language_rejects_uppercase() -> None:
+def test_modeline_parse_cardconjurer_language_rejects_uppercase() -> None:
     """`--language DEU` (wrong case, 3 letters but not a real Scryfall shape) is rejected."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#cardconjourer --language DEU")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --language DEU")
 
     assert len(directives) == 1
     assert directives[0].flags == {}
     assert any("does not look like a language code" in w.message for w in warnings)
 
 
-def test_modeline_parse_cardconjourer_language_rejects_full_name() -> None:
+def test_modeline_parse_cardconjurer_language_rejects_full_name() -> None:
     """`--language german` (a full language name, not a code) is rejected at parse time."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#cardconjourer --language german")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --language german")
 
     assert len(directives) == 1
     assert directives[0].flags == {}
     assert any("does not look like a language code" in w.message for w in warnings)
 
 
-def test_modeline_parse_cardconjourer_retro() -> None:
+def test_modeline_parse_cardconjurer_retro() -> None:
     """`--retro` registers as a no-value flag (Seventh-Edition retro frame)."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#cardconjourer --retro")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --retro")
 
     assert len(directives) == 1
     assert directives[0].flags == {"--retro": True}
     assert warnings == []
 
 
-def test_modeline_parse_cardconjourer_borderless() -> None:
+def test_modeline_parse_cardconjurer_borderless() -> None:
     """`--borderless` registers as a no-value flag (borderless / full-art frame)."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#cardconjourer --borderless")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --borderless")
 
     assert len(directives) == 1
     assert directives[0].flags == {"--borderless": True}
     assert warnings == []
 
 
-def test_modeline_parse_cardconjourer_mutex_borderless_vs_modern_warns_and_clears() -> None:
+def test_modeline_parse_cardconjurer_mutex_borderless_vs_modern_warns_and_clears() -> None:
     """`--borderless --modern` on one segment is conflicting; both dropped with a warning."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#cardconjourer --borderless --modern")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --borderless --modern")
 
     assert len(directives) == 1
     assert "--borderless" not in directives[0].flags
@@ -852,11 +864,11 @@ def test_modeline_parse_cardconjourer_mutex_borderless_vs_modern_warns_and_clear
     assert any("Conflicting frame flags" in w.message for w in warnings)
 
 
-def test_modeline_parse_cardconjourer_mutex_retro_vs_modern_warns_and_clears() -> None:
+def test_modeline_parse_cardconjurer_mutex_retro_vs_modern_warns_and_clears() -> None:
     """`--retro --modern` on one segment is conflicting; both dropped with a warning."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#cardconjourer --retro --modern")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --retro --modern")
 
     assert len(directives) == 1
     assert "--retro" not in directives[0].flags
@@ -864,22 +876,22 @@ def test_modeline_parse_cardconjourer_mutex_retro_vs_modern_warns_and_clears() -
     assert any("Conflicting frame flags" in w.message for w in warnings)
 
 
-def test_modeline_parse_cardconjourer_mutex_all_three_frames_warns_and_clears() -> None:
+def test_modeline_parse_cardconjurer_mutex_all_three_frames_warns_and_clears() -> None:
     """`--8th --modern --retro` stacked drops all three frame flags."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#cardconjourer --8th --modern --retro")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --8th --modern --retro")
 
     assert len(directives) == 1
     assert directives[0].flags == {}
     assert any("Conflicting frame flags" in w.message for w in warnings)
 
 
-def test_modeline_parse_cardconjourer_mutex_dfc_split_flip_warns_and_clears() -> None:
+def test_modeline_parse_cardconjurer_mutex_dfc_split_flip_warns_and_clears() -> None:
     """`--dfc-split --dfc-flip` on one segment is conflicting; both dropped with a warning."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#cardconjourer --dfc-split --dfc-flip")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --dfc-split --dfc-flip")
 
     assert len(directives) == 1
     assert "--dfc-split" not in directives[0].flags
@@ -887,11 +899,11 @@ def test_modeline_parse_cardconjourer_mutex_dfc_split_flip_warns_and_clears() ->
     assert any("Conflicting" in w.message for w in warnings)
 
 
-def test_modeline_parse_cardconjourer_mutex_frames_warns_and_clears() -> None:
-    """`#cardconjourer --8th --modern` is conflicting; both flags dropped with a warning."""
+def test_modeline_parse_cardconjurer_mutex_frames_warns_and_clears() -> None:
+    """`#cardconjurer --8th --modern` is conflicting; both flags dropped with a warning."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#cardconjourer --8th --modern")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --8th --modern")
 
     # The directive survives — only the conflicting frame flags are stripped.
     assert len(directives) == 1
@@ -904,9 +916,9 @@ def test_modeline_parse_unbalanced_quote_warns_and_drops() -> None:
     """An unterminated quote in a segment is reported as malformed; later segments survive."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer('#cardconjourer --custom-art "./broken #upscale')
+    directives, warnings = parse_modeline_trailer('#cardconjurer --custom-art "./broken #upscale')
 
-    # The broken cardconjourer segment is dropped; #upscale (no flags) is parsed.
+    # The broken cardconjurer segment is dropped; #upscale (no flags) is parsed.
     assert any("Malformed modeline segment" in w.message for w in warnings)
 
 

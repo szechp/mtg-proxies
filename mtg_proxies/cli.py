@@ -36,14 +36,14 @@ from mtg_proxies.tokens import get_tokens
 
 _mpcfill_log = logging.getLogger("mtg_proxies.mpcfill.cli")
 
-# 0 by default: cardconjourer / MPCFill custom-art renders carry a known bleed margin that the
+# 0 by default: cardconjurer / MPCFill custom-art renders carry a known bleed margin that the
 # print step itself handles (placed exactly at 63x88, bleed into the gap on negative crop / the
 # margin stripped on positive crop). Pre-trimming here as well double-counts the bleed and zooms
 # the card, so custom art is passed to print untouched. The flag is kept for the rare hand-made
 # image but is otherwise unused — a non-zero value is ignored with a warning.
 DEFAULT_CUSTOM_ART_BLEED_CROP_PERCENT = 0.0
 BASIC_LAND_NAMES = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
-# Prepended to the output filename of legendary cards rendered by `cardconjourer`.
+# Prepended to the output filename of legendary cards rendered by `cardconjurer`.
 LEGENDARY_FILENAME_PREFIX = "legendary_"
 # ``--<frame>-scaled`` flags, mapped to the frame each one renders in. The 8th and retro
 # frames sit within 0.06 mm of each other once scaled at the same overlap (8th's colour
@@ -140,10 +140,10 @@ def resolve_upscale_scope(args: argparse.Namespace) -> Literal["auto", "all"] | 
 
 
 def _resolve_cc_frame(flags: dict) -> str:
-    """Map a ``#cardconjourer`` directive's flags to the harness's frame string.
+    """Map a ``#cardconjurer`` directive's flags to the harness's frame string.
 
     Mirrors the CLI's ``--modern`` / ``--retro`` / ``--8th`` / ``--m15-8th`` precedence. Bare
-    ``#cardconjourer`` (no frame flag) resolves to ``"auto"``, matching the
+    ``#cardconjurer`` (no frame flag) resolves to ``"auto"``, matching the
     subcommand's no-flag default: the harness then derives each card's frame from
     its Scryfall ``frame`` value. The modeline parser's mutex already drops
     conflicting frame flags, so at most one of these is set.
@@ -641,7 +641,7 @@ def _apply_per_card_modelines(
         target_lists[key[0]][key[1]] = value
 
     def _mark_bleed_render(path: str) -> None:
-        """Flag an mpcfill/cardconjourer render as a final bleed-carrying image.
+        """Flag an mpcfill/cardconjurer render as a final bleed-carrying image.
 
         It carries the same MPC bleed as ``--custom-art`` renders, so it must be scaled the same
         way at print time (recorded in ``bleed_renders`` → print's ``bleed_images``). It's also a
@@ -722,32 +722,32 @@ def _apply_per_card_modelines(
                 # the slow/often-hanging ESRGAN 4x pass).
                 _mark_bleed_render(str(out_front))
 
-    # Pass 1b: #cardconjourer swaps. All flagged cards go through the headless CC
+    # Pass 1b: #cardconjurer swaps. All flagged cards go through the headless CC
     # harness in a single batched subprocess (~1-2s engine boot amortizes across
     # the whole deck). Per-card frame is `--modern` / `--8th` (bare
-    # `#cardconjourer` defaults to 8th, matching the standalone subcommand's
+    # `#cardconjurer` defaults to 8th, matching the standalone subcommand's
     # required-flag contract). ``--set-symbol VALUE`` is resolved per-card via
     # ``resolve_set_symbol`` against the cached CC engine. Misses fall back to
     # the Scryfall scan.
-    if any(any(d.verb == "cardconjourer" for d in dl) for dl in parsed):
-        from mtg_proxies.cardconjourer.per_card import (
-            CardConjourerRequest,
+    if any(any(d.verb == "cardconjurer" for d in dl) for dl in parsed):
+        from mtg_proxies.cardconjurer.per_card import (
+            CardConjurerRequest,
             _default_cache_root,
             render_per_card_batch,
         )
-        from mtg_proxies.cardconjourer.set_symbol import resolve_set_symbol
+        from mtg_proxies.cardconjurer.set_symbol import resolve_set_symbol
 
         cc_cache_root = _default_cache_root()
-        cc_requests: list[CardConjourerRequest] = []
+        cc_requests: list[CardConjurerRequest] = []
         cc_slots_by_id: dict[str, list[SlotKey]] = {}
         for card_idx, (card, directives) in enumerate(zip(decklist.cards, parsed, strict=True)):
             for directive in directives:
-                if directive.verb != "cardconjourer":
+                if directive.verb != "cardconjurer":
                     continue
                 front_slots = slot_map[card_idx]["front"]
                 if not front_slots:
                     _mpcfill_log.warning(
-                        "#cardconjourer on %r has no front-face slot for --faces=%s; directive ignored.",
+                        "#cardconjurer on %r has no front-face slot for --faces=%s; directive ignored.",
                         card["name"],
                         faces,
                     )
@@ -756,10 +756,10 @@ def _apply_per_card_modelines(
                 upscale = bool(directive.flags.get("--upscale"))
                 if directive.flags.get("--dfc-split"):
                     # The print layout has no slot for a second face yet; the
-                    # flag only works in the `cardconjourer` subcommand.
+                    # flag only works in the `cardconjurer` subcommand.
                     _mpcfill_log.warning(
-                        "#cardconjourer --dfc-split on %r is not supported in `print` "
-                        "(use the `cardconjourer` subcommand); rendering the flip merge instead.",
+                        "#cardconjurer --dfc-split on %r is not supported in `print` "
+                        "(use the `cardconjurer` subcommand); rendering the flip merge instead.",
                         card["name"],
                     )
                 sym_value = directive.flags.get("--set-symbol")
@@ -771,7 +771,7 @@ def _apply_per_card_modelines(
                         )
                     except FileNotFoundError as exc:
                         _mpcfill_log.warning(
-                            "#cardconjourer --set-symbol on %r: %s; falling back to frame default.",
+                            "#cardconjurer --set-symbol on %r: %s; falling back to frame default.",
                             card["name"],
                             exc,
                         )
@@ -781,13 +781,13 @@ def _apply_per_card_modelines(
                     art_path = Path(art_value).expanduser().resolve()
                     if not art_path.is_file():
                         _mpcfill_log.warning(
-                            "#cardconjourer --custom-art on %r: file not found at %s; falling back to Scryfall art.",
+                            "#cardconjurer --custom-art on %r: file not found at %s; falling back to Scryfall art.",
                             card["name"],
                             art_path,
                         )
                     elif art_path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
                         _mpcfill_log.warning(
-                            "#cardconjourer --custom-art on %r: unsupported extension %s; falling back to Scryfall art.",
+                            "#cardconjurer --custom-art on %r: unsupported extension %s; falling back to Scryfall art.",
                             card["name"],
                             art_path.suffix,
                         )
@@ -795,7 +795,7 @@ def _apply_per_card_modelines(
                         resolved_art = str(art_path)
                 slot_id = f"{card_idx + 1:04d}"
                 cc_requests.append(
-                    CardConjourerRequest(
+                    CardConjurerRequest(
                         slot_id=slot_id,
                         name=card["name"],
                         frame=frame,
@@ -1376,7 +1376,7 @@ def _localize_card_payload(card: dict, localized: dict, lang: str) -> dict:
     ``flavor_text`` from ``localized`` (a print of the same oracle_id chosen by
     :func:`mtg_proxies.scryfall.get_localized_prints`, purely for its localized text —
     never for art/frame/set) onto a COPY of ``card``. ``card`` itself is never mutated:
-    later code in ``_run_cardconjourer`` (art resolution, DFC art compositing, etc.)
+    later code in ``_run_cardconjurer`` (art resolution, DFC art compositing, etc.)
     still reads the original English dict for that same slot.
 
     Faces are matched positionally (``card_faces[i]``). If the face counts of ``card``
@@ -1423,14 +1423,14 @@ def _localize_card_payload(card: dict, localized: dict, lang: str) -> dict:
     return payload
 
 
-def _run_cardconjourer(args: argparse.Namespace) -> None:
-    """Orchestrate the `cardconjourer` subcommand end-to-end.
+def _run_cardconjurer(args: argparse.Namespace) -> None:
+    """Orchestrate the `cardconjurer` subcommand end-to-end.
 
     Uses ``parse_decklist_spec`` to resolve each line to a Scryfall card dict
     (so pinned ``Name (SET) CN`` lines round-trip correctly), writes each
     resolved dict to a temp inputs dir under the slug the harness's
     ``fetchScryfall`` reads, then spawns the node harness from
-    ``mtg_proxies/cardconjourer/node/harness.js`` with the cached CC engine at
+    ``mtg_proxies/cardconjurer/node/harness.js`` with the cached CC engine at
     ``~/.cache/mtg-proxies/cardconjurer`` (cloned via ``make cardconjurer``).
     Writes per-card PNGs to OUTDIR plus ``fallback.txt`` (decklist format for
     skipped cards) and ``report.csv``.
@@ -1439,7 +1439,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     import os
     import tempfile
 
-    from mtg_proxies.cardconjourer import runner as cc_runner
+    from mtg_proxies.cardconjurer import runner as cc_runner
 
     # No explicit frame flag → "auto": the harness derives each card's frame from its
     # Scryfall ``frame`` value, skipping frames with no CC equivalent to fallback.txt.
@@ -1514,13 +1514,13 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     # ~1430x1058 hi-res art crops — way better than Scryfall art_crop's
     # ~626x457 for older cards, no GPU upscale needed). On MTGPics miss
     # (older / promo / non-mainstream sets), fall back to Scryfall art_crop
-    # — RAW by default (cardconjourer's renderer scales to fit the art
+    # — RAW by default (cardconjurer's renderer scales to fit the art
     # window anyway), or upscaled via Real-ESRGAN if --upscale is set.
     #
     # ``prepare_each(slot)`` is invoked by render_deck/_run right before
     # each job is sent to the harness — interleaved so PNGs appear in the
     # outdir as cards finish, not after the whole deck.
-    from mtg_proxies.cardconjourer import mtgpics as _mtgpics
+    from mtg_proxies.cardconjurer import mtgpics as _mtgpics
 
     mtgpics_cache_root = _mtgpics.default_cache_root()
     mtgpics_stats = {"hits": 0, "misses": 0}
@@ -1553,13 +1553,13 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         if args.upscale_target_width:
             upscale_kwargs["target_width"] = args.upscale_target_width
 
-    # Check each card's modeline for ``#cardconjourer --scryfall`` (per-card
+    # Check each card's modeline for ``#cardconjurer --scryfall`` (per-card
     # opt-out of MTGPics on watermark-affected scans without flipping the
-    # whole-deck ``--scryfall`` flag), ``#cardconjourer --skip`` (per-card
+    # whole-deck ``--scryfall`` flag), ``#cardconjurer --skip`` (per-card
     # opt-out of CC rendering entirely — the card lands in fallback.txt and is
-    # rendered via the normal Scryfall scan), ``#cardconjourer --set-symbol
+    # rendered via the normal Scryfall scan), ``#cardconjurer --set-symbol
     # VALUE`` (per-card set-symbol override beating the deck-wide ``--set-symbol``
-    # flag for that slot only), and ``#cardconjourer --language LANG`` (per-card
+    # flag for that slot only), and ``#cardconjurer --language LANG`` (per-card
     # language override beating the deck-wide ``--language`` flag).
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
     slot_scryfall_override: dict[int, bool] = {}
@@ -1582,7 +1582,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
             continue
         directives, _warnings = parse_modeline_trailer(card.modeline)
         for d in directives:
-            if d.verb == "cardconjourer":
+            if d.verb == "cardconjurer":
                 requested_frame = _resolve_cc_frame(d.flags)
                 if requested_frame != "auto":
                     slot_frame[slot_int] = requested_frame
@@ -1612,10 +1612,10 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                 if art_val:
                     art_p = Path(art_val).expanduser().resolve()
                     if not art_p.is_file():
-                        print(f"[cardconjourer] --custom-art on slot {slot_int}: file not found at {art_p}; ignoring.")
+                        print(f"[cardconjurer] --custom-art on slot {slot_int}: file not found at {art_p}; ignoring.")
                     elif art_p.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
                         print(
-                            f"[cardconjourer] --custom-art on slot {slot_int}: "
+                            f"[cardconjurer] --custom-art on slot {slot_int}: "
                             f"unsupported extension {art_p.suffix}; ignoring."
                         )
                     else:
@@ -1638,7 +1638,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     for slot_int in sorted(slot_dfc_split_request - dfc_split_slots):
         card = slot_to_card[slot_int]
         print(
-            f"[cardconjourer] --dfc-split on {card['name']!r} ignored: "
+            f"[cardconjurer] --dfc-split on {card['name']!r} ignored: "
             f"layout {card.card.get('layout')!r} is not a splittable DFC"
         )
 
@@ -1656,7 +1656,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     # path per slot. Resolution happens here (not inside _prepare_each) so a
     # missing file / unknown set code errors before any subprocess work begins.
     cc_cache = Path.home() / ".cache" / "mtg-proxies" / "cardconjurer"
-    from mtg_proxies.cardconjourer.set_symbol import (
+    from mtg_proxies.cardconjurer.set_symbol import (
         cc_symbol_exists,
         resolve_set_symbol,
         substitute_symbol_for_card,
@@ -1685,14 +1685,14 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                     sub_path, sub_set = substitute
                     resolved_set_symbol_by_slot[slot_int] = sub_path
                     print(
-                        f"[cardconjourer] no set icon for {own_set.upper()} "
+                        f"[cardconjurer] no set icon for {own_set.upper()} "
                         f"({card['name']!r}) — using {sub_set} instead."
                     )
             continue
         try:
             resolved = resolve_set_symbol(override, rarity, cc_cache)
         except FileNotFoundError as exc:
-            print(f"[cardconjourer] --set-symbol error on slot {slot_int}: {exc}")
+            print(f"[cardconjurer] --set-symbol error on slot {slot_int}: {exc}")
             raise SystemExit(2) from exc
         if resolved is not None:
             resolved_set_symbol_by_slot[slot_int] = resolved
@@ -1733,7 +1733,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
 
         for lang, oracle_ids in oracle_ids_by_lang.items():
             print(
-                f"[cardconjourer] --language {lang}: scanning Scryfall's all_cards database for "
+                f"[cardconjurer] --language {lang}: scanning Scryfall's all_cards database for "
                 f"{len(oracle_ids)} card{'s' if len(oracle_ids) != 1 else ''} (one-time download "
                 "per machine, then cached)…"
             )
@@ -1748,7 +1748,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                     slot_skip.add(slot_int)
                     fallback_modeline_by_slot[slot_int] = f"#print --language {lang}"
                     print(
-                        f"[cardconjourer] --language {lang}: {slot_to_card[slot_int]['name']!r} has a "
+                        f"[cardconjurer] --language {lang}: {slot_to_card[slot_int]['name']!r} has a "
                         f"{lang} print but incomplete structured text on Scryfall; routing to "
                         "fallback.txt for the real scanned card instead of fabricated text."
                     )
@@ -1759,12 +1759,12 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         if lang and slot_int not in fallback_modeline_by_slot:
             localized = localized_by_slot.get(slot_int)
             if localized is None:
-                print(f"[cardconjourer] --language {lang}: no print found for {card['name']!r}; rendering English.")
+                print(f"[cardconjurer] --language {lang}: no print found for {card['name']!r}; rendering English.")
             else:
                 payload = _localize_card_payload(card.card, localized, lang)
                 if payload is card.card:
                     print(
-                        f"[cardconjourer] --language {lang}: face count of the {lang} print of "
+                        f"[cardconjurer] --language {lang}: face count of the {lang} print of "
                         f"{card['name']!r} doesn't match the English print; rendering English."
                     )
                 elif not _has_any_localized_field(localized):
@@ -1773,7 +1773,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                     # byte-for-byte English content, just tagged with the new ``lang``. Warn
                     # the same way as the other two "still English" cases above.
                     print(
-                        f"[cardconjourer] --language {lang}: matched {lang} print of {card['name']!r} "
+                        f"[cardconjurer] --language {lang}: matched {lang} print of {card['name']!r} "
                         "has no localized text on any field; rendering English."
                     )
         # Keep an unambiguous per-slot payload as well as the legacy name cache.
@@ -1803,7 +1803,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         if args.legendary or slot_int in slot_legendary:
             extras["legendary"] = True
 
-        # Per-card ``#cardconjourer --custom-art PATH`` wins over every art source below. This is
+        # Per-card ``#cardconjurer --custom-art PATH`` wins over every art source below. This is
         # the escape hatch for borderless cards with no full-bleed MTGPics art: supply your own
         # full-art image and the card renders borderless from it instead of skipping to fallback.txt.
         custom_art = slot_custom_art.get(slot_int)
@@ -1918,7 +1918,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
     # injectable run_harness on render_deck. The cache-existence check is
     # inside the closure so it fires only when the real harness runs (tests
     # mocking ``render_deck`` never reach it).
-    harness_path = Path(__file__).resolve().parent / "cardconjourer" / "node" / "harness.js"
+    harness_path = Path(__file__).resolve().parent / "cardconjurer" / "node" / "harness.js"
     # (cc_cache is defined earlier alongside the set-symbol resolver.)
 
     # Ensure outdir exists up-front so the streaming copy below can write into
@@ -1932,7 +1932,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
 
         from tqdm import tqdm
 
-        # Pre-skip cards whose modeline carries ``#cardconjourer --skip``.
+        # Pre-skip cards whose modeline carries ``#cardconjurer --skip``.
         # These never reach the harness — synthesize a skip response so
         # render_deck routes them into fallback.txt for the normal Scryfall
         # scan pipeline.
@@ -1943,7 +1943,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                 skip_responses.append({
                     "slot": job["slot"],
                     "status": "skip",
-                    "reason": "modeline #cardconjourer --skip",
+                    "reason": "modeline #cardconjurer --skip",
                 })
             else:
                 harness_jobs.append(job)
@@ -1954,7 +1954,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
 
         if not cc_cache.is_dir():
             _die(
-                f"[cardconjourer] Card Conjurer source not found at "
+                f"[cardconjurer] Card Conjurer source not found at "
                 f"{cc_cache}. Run `make cardconjurer` first.",
                 code=2,
             )
@@ -2042,7 +2042,7 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
                             try:
                                 shutil.copyfile(src, dst)
                             except OSError as exc:
-                                tqdm.write(f"[cardconjourer] copy failed for {src.name}: {exc}")
+                                tqdm.write(f"[cardconjurer] copy failed for {src.name}: {exc}")
                 bar.update(1)
                 bar.set_postfix_str(f"ok={ok_count} skip={len(responses) - ok_count}", refresh=False)
 
@@ -2057,14 +2057,14 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
             proc.kill()
             proc.wait()
             print(
-                "[cardconjourer] harness hung after stdin close — killed",
+                "[cardconjurer] harness hung after stdin close — killed",
                 file=sys.stderr,
             )
         if proc.returncode != 0:
             # stderr was already forwarded by _drain_stderr; the user has seen it.
             # Re-flag here so the run doesn't silently end with half the deck missing.
             print(
-                f"[cardconjourer] harness exited {proc.returncode} — partial render "
+                f"[cardconjurer] harness exited {proc.returncode} — partial render "
                 f"({len(responses)}/{len(jobs)} cards processed before the crash)",
                 file=sys.stderr,
             )
@@ -2111,20 +2111,20 @@ def _run_cardconjourer(args: argparse.Namespace) -> None:
         post_process=post_process_cb,
         filename_prefix_by_slot=filename_prefix_by_slot,
     )
-    print(f"[cardconjourer] {summary['ok']}/{summary['total']} rendered, {summary['skipped']} skipped")
+    print(f"[cardconjurer] {summary['ok']}/{summary['total']} rendered, {summary['skipped']} skipped")
     if frame_scale_stats["scaled"]:
         print(
-            f"[cardconjourer] frame scaling: {frame_scale_stats['scaled']} frames grown "
+            f"[cardconjurer] frame scaling: {frame_scale_stats['scaled']} frames grown "
             f"~{frame_scale_stats['scale']:.3f}x for {DEFAULT_OVERLAP_MM:g} mm overlap per side"
         )
     if args.scryfall:
         suffix = " (upscaled)" if args.upscale else ""
-        print(f"[cardconjourer] art source: Scryfall art_crop only (--scryfall){suffix}")
+        print(f"[cardconjurer] art source: Scryfall art_crop only (--scryfall){suffix}")
     else:
         total_art = mtgpics_stats["hits"] + mtgpics_stats["misses"]
         if total_art:
             print(
-                f"[cardconjourer] art sources: {mtgpics_stats['hits']}/{total_art} MTGPics, "
+                f"[cardconjurer] art sources: {mtgpics_stats['hits']}/{total_art} MTGPics, "
                 f"{mtgpics_stats['misses']} Scryfall fallback"
                 + (" (upscaled)" if args.upscale else "")
             )
@@ -2226,11 +2226,11 @@ def main() -> None:
         default=False,
         help=(
             "grow the frame of every MPCFill render (order.xml fronts and #mpcfill lines) for the"
-            " sticker workflow, like cardconjourer --retro-scaled but by a smaller amount tuned on"
+            " sticker workflow, like cardconjurer --retro-scaled but by a smaller amount tuned on"
             " MPC prints (~1.3 mm wider frame in total). Renders with no black border"
             " (borderless, extended art) are left as-is. Applies to every frame style, modern"
             " included; to scale only some cards, use #mpcfill --scaled per line instead."
-            " Scryfall scans and #cardconjourer renders are untouched."
+            " Scryfall scans and #cardconjurer renders are untouched."
         ),
     )
     print_parser.add_argument(
@@ -2488,8 +2488,8 @@ def main() -> None:
         " --archetypes for not carrying any curated archetype tag",
     )
 
-    cardconjourer_parser = subparsers.add_parser(
-        "cardconjourer",
+    cardconjurer_parser = subparsers.add_parser(
+        "cardconjurer",
         help="Render an 8th-edition, modern, M15Eighth, or retro frame for each card via headless Card Conjurer",
         description=(
             "For each card in DECKLIST, render a fresh PNG via the headless Card Conjurer engine"
@@ -2505,16 +2505,16 @@ def main() -> None:
             " file path or a CC set code shorthand."
         ),
     )
-    cardconjourer_parser.add_argument(
+    cardconjurer_parser.add_argument(
         "decklist", type=Path, help="path to a decklist in text/arena format"
     )
-    cardconjourer_parser.add_argument(
+    cardconjurer_parser.add_argument(
         "outdir", type=Path, help="output directory (will be created if missing)"
     )
     # Optional: with no flag, each card's frame is chosen automatically from its resolved
     # Scryfall ``frame`` (2015→modern, 2003→8th, 1997/1993→retro); frames with no Card
     # Conjurer equivalent (Future Sight, unknown) skip to fallback.txt for the Scryfall scan.
-    frame_group = cardconjourer_parser.add_mutually_exclusive_group(required=False)
+    frame_group = cardconjurer_parser.add_mutually_exclusive_group(required=False)
     frame_group.add_argument(
         "--8th", dest="frame_8th", action="store_true",
         help="render every card in the 8th-edition (2003) frame style"
@@ -2548,7 +2548,7 @@ def main() -> None:
             " skipped to fallback.txt for their normal scan. DFCs render modern."
         ),
     )
-    cardconjourer_parser.add_argument(
+    cardconjurer_parser.add_argument(
         "--retro-scaled", dest="retro_scaled", action="store_true", default=False,
         help=(
             f"grow the retro frame inside the card so it overlaps what it has to cover by"
@@ -2561,7 +2561,7 @@ def main() -> None:
             " downstream changes. Implies --retro; conflicts with the other frame flags."
         ),
     )
-    cardconjourer_parser.add_argument(
+    cardconjurer_parser.add_argument(
         "--8th-scaled", dest="eighth_scaled", action="store_true", default=False,
         help=(
             f"the same treatment as --retro-scaled, on the 8th-Edition frame: grow the"
@@ -2572,18 +2572,18 @@ def main() -> None:
             " --retro-scaled."
         ),
     )
-    cardconjourer_parser.add_argument(
+    cardconjurer_parser.add_argument(
         "--legendary", dest="legendary", action="store_true", default=False,
         help=(
             "mark legendary cards on frames that have no stock legend marker: the Arabian"
             " Nights gold pinline on --retro / --retro-scaled, CC's legend crown on --8th /"
             " --8th-scaled. Without it both frames render legendaries like stock. Also"
-            " available per card as `#cardconjourer --legendary`. Conflicts with --modern,"
+            " available per card as `#cardconjurer --legendary`. Conflicts with --modern,"
             " --m15-8th and --borderless, which already have their own crowns."
         ),
     )
     # No --auto flag: auto is simply the absence of an explicit frame flag (the default).
-    cardconjourer_parser.add_argument(
+    cardconjurer_parser.add_argument(
         "--set-symbol", dest="set_symbol", default=None, metavar="VALUE",
         help=(
             "override the rendered set symbol. Accepts a file path"
@@ -2595,7 +2595,7 @@ def main() -> None:
             " engine's per-card set icon."
         ),
     )
-    cardconjourer_parser.add_argument(
+    cardconjurer_parser.add_argument(
         "--scryfall", action="store_true", default=False,
         help=(
             "skip MTGPics entirely and use Scryfall's art_crop directly. Useful when"
@@ -2603,25 +2603,25 @@ def main() -> None:
             " burned in that the renderer would carry into the final card."
         ),
     )
-    cardconjourer_parser.add_argument(
+    cardconjurer_parser.add_argument(
         "--dfc-flip", dest="dfc_flip", action="store_true", default=False,
         help=(
             "render transform / modal_dfc cards as a single Kamigawa-flip merge (both"
             " faces on one card) instead of the default two separate full-size cards"
             " (<slug>.png + <slug>_back.png with transform icon, reverse-P/T reminder,"
             " MDFC flipside bar). Useful for short-text DFCs you want on one physical"
-            " card. Per-card control via the `#cardconjourer --dfc-flip` /"
+            " card. Per-card control via the `#cardconjurer --dfc-flip` /"
             " `--dfc-split` modelines; per-card --dfc-split overrides this flag."
         ),
     )
-    cardconjourer_parser.add_argument(
+    cardconjurer_parser.add_argument(
         "--upscale", action="store_true", default=False,
         help=(
             "before rendering, run each card's Scryfall art_crop through Real-ESRGAN."
             " Same model and cache as `mtg-proxies print --upscale`."
         ),
     )
-    cardconjourer_parser.add_argument(
+    cardconjurer_parser.add_argument(
         "--upscale-model", default=None, metavar="PATH",
         help=(
             "path to a local .pth upscaling model (default: RealESRNet_x4plus)."
@@ -2630,7 +2630,7 @@ def main() -> None:
             " artifacts than the conservative MSE-trained default."
         ),
     )
-    cardconjourer_parser.add_argument(
+    cardconjurer_parser.add_argument(
         "--upscale-target-width", type=int, default=None, metavar="PX",
         help=(
             "downsample the upscaled art to PX wide before handing it to the"
@@ -2640,18 +2640,21 @@ def main() -> None:
     )
     from mtg_proxies.decklists.modelines import _lang_code
 
-    cardconjourer_parser.add_argument(
+    cardconjurer_parser.add_argument(
         "--language", dest="language", default=None, metavar="LANG", type=_lang_code,
         help=(
             "render name/type/rules text from a print of the same card in this Scryfall"
             " language (e.g. 'de'), looked up independently of whichever print was chosen"
             " for art/frame. Cards with no print in LANG render in English (one console note"
             " each); frame/color/land/legendary/artifact selection is unaffected either way."
-            " Per-card override via the `#cardconjourer --language LANG` modeline."
+            " Per-card override via the `#cardconjurer --language LANG` modeline."
         ),
     )
 
-    args = parser.parse_args()
+    argv = sys.argv[1:]
+    if argv[:1] == ["cardconjourer"]:  # pre-rename misspelling: still runs, but stays out of --help
+        argv[0] = "cardconjurer"
+    args = parser.parse_args(argv)
 
     match args.command:
         case "print":
@@ -2664,7 +2667,7 @@ def main() -> None:
             modeline_skip_normalize: set[str] = set()
             modeline_skip_shadow_lift: set[str] = set()
             modeline_skip_upscale: set[str] = set()
-            # Paths of mpcfill/cardconjourer modeline renders — they carry the MPC bleed and must be
+            # Paths of mpcfill/cardconjurer modeline renders — they carry the MPC bleed and must be
             # placed like --custom-art (scaled, bleed into the gap), so they're unioned into both
             # ``user_supplied`` (skip composite/transforms) and the print step's ``bleed_images``.
             modeline_bleed_renders: set[str] = set()
@@ -2800,7 +2803,7 @@ def main() -> None:
                     print(f"Error: custom art folder '{args.custom_art}' does not exist", file=sys.stderr)
                     raise SystemExit(1)
 
-                # Custom art (cardconjourer / MPCFill renders) carries a known bleed that the print
+                # Custom art (cardconjurer / MPCFill renders) carries a known bleed that the print
                 # step places exactly (63x88 + bleed into the gap). Pass it raw — pre-trimming here
                 # would double-count the bleed and zoom the card into the cut area.
                 if args.custom_art_bleed_crop != 0:
@@ -2874,7 +2877,7 @@ def main() -> None:
                 user_supplied.update(custom_images)
             if args.card_back is not None:
                 user_supplied.add(args.card_back)
-            # mpcfill/cardconjourer modeline renders are final, bleed-carrying images: skip the
+            # mpcfill/cardconjurer modeline renders are final, bleed-carrying images: skip the
             # bulk transforms + the background composite so their paths stay stable for bleed_images.
             user_supplied |= modeline_bleed_renders
 
@@ -3381,5 +3384,5 @@ def main() -> None:
                 write_cube_txt(args.txt_out, selected)
                 print(f"Wrote {len(selected)} cards to {Path(args.txt_out).resolve()}")
 
-        case "cardconjourer":
-            _run_cardconjourer(args)
+        case "cardconjurer":
+            _run_cardconjurer(args)

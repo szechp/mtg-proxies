@@ -1,4 +1,4 @@
-"""Tests for the MTGPics hi-res art fetcher (cardconjourer-side)."""
+"""Tests for the MTGPics hi-res art fetcher (cardconjurer-side)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 
 def test_fetch_mtgpics_art_builds_correct_url() -> None:
     """The URL pattern is ``https://www.mtgpics.com/pics/art/{set}/{collector}.jpg``."""
-    from mtg_proxies.cardconjourer.mtgpics import _art_url
+    from mtg_proxies.cardconjurer.mtgpics import _art_url
 
     assert _art_url("soc", "128") == "https://www.mtgpics.com/pics/art/soc/128.jpg"
     # Set codes are lowercased for the URL.
@@ -21,7 +21,7 @@ def test_fetch_mtgpics_art_builds_correct_url() -> None:
 
 def test_fetch_mtgpics_art_returns_path_on_200(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Successful 200 fetch writes the bytes to the cache and returns the local Path."""
-    from mtg_proxies.cardconjourer import mtgpics
+    from mtg_proxies.cardconjurer import mtgpics
 
     # Plausible-sized body (real MTGPics art crops are 100-500 KB). The fetcher
     # treats anything under ~4 KB as a "we don't have this" placeholder.
@@ -43,7 +43,7 @@ def test_fetch_mtgpics_art_returns_path_on_200(monkeypatch: pytest.MonkeyPatch, 
 
 def test_fetch_mtgpics_art_returns_none_on_404(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """404 means MTGPics doesn't have this card — caller falls back to Scryfall."""
-    from mtg_proxies.cardconjourer import mtgpics
+    from mtg_proxies.cardconjurer import mtgpics
 
     fake_response = MagicMock()
     fake_response.status_code = 404
@@ -60,7 +60,7 @@ def test_fetch_mtgpics_art_returns_none_when_response_is_too_small(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """MTGPics returns a 200 with a tiny placeholder when the card is unknown — treat as miss."""
-    from mtg_proxies.cardconjourer import mtgpics
+    from mtg_proxies.cardconjurer import mtgpics
 
     fake_response = MagicMock()
     fake_response.status_code = 200
@@ -73,7 +73,7 @@ def test_fetch_mtgpics_art_returns_none_when_response_is_too_small(
 
 def test_fetch_mtgpics_art_uses_cache_on_repeat(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Cached file is returned without re-hitting the network."""
-    from mtg_proxies.cardconjourer import mtgpics
+    from mtg_proxies.cardconjurer import mtgpics
 
     # Pre-seed the cache.
     cached = tmp_path / "soc" / "128.jpg"
@@ -94,7 +94,7 @@ def test_fetch_mtgpics_art_network_failure_returns_none(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Network exception during fetch returns None — caller falls back to Scryfall."""
-    from mtg_proxies.cardconjourer import mtgpics
+    from mtg_proxies.cardconjurer import mtgpics
 
     fake_requests = MagicMock()
     fake_requests.get = MagicMock(side_effect=OSError("connection refused"))

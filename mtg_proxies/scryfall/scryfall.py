@@ -74,7 +74,7 @@ def get_image(image_uri: str, *, silent: bool = False) -> str:
             card, or a local bulk-data cache (``_BULK_CACHE_TTL`` = 24h) that
             predates the real scan landing on Scryfall. There is no real
             artwork to fetch; callers should fall back to their own default
-            (the cardconjourer harness's raw Scryfall art fetch, etc.) rather
+            (the cardconjurer harness's raw Scryfall art fetch, etc.) rather
             than downloading and captioning a "coming soon" placeholder image.
     """
     if "errors.scryfall.com" in image_uri:

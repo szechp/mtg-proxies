@@ -46,7 +46,7 @@ Create a high quality printable PDF from your decklist or a list of cards you wa
   Use ManaStack and Archidekt deck IDs directly as input instead of local files. Archidekt decks must be public.
 
 - **Headless 8th-edition / retro frame rendering**  
-  `mtg-proxies cardconjourer DECKLIST OUTDIR` renders every supported card via a headless [Card Conjurer](https://cardconjurer.com) Node harness, producing PNGs ready to feed back into `print --custom-art OUTDIR`. With no frame flag each card's frame is chosen automatically from its Scryfall data (2015→modern, 2003→8th, 1997/1993→retro; frames with no equivalent skip to the scan); pass `--8th` / `--modern` / `--m15-8th` / `--retro` to force one style for the whole deck (`--m15-8th` is a hybrid modern-M15 body with 8th-Edition styling, never auto-selected). Re-runs skip cards whose PNG is already in OUTDIR (delete to force a redo). **Hi-res art is fetched from [MTGPics](https://www.mtgpics.com) by default** (~1430×1058 native crops, no GPU upscale needed); cards missing from MTGPics fall back to Scryfall's `art_crop` raw. Optional `--upscale [--upscale-model PATH]` runs the Scryfall fallback through Real-ESRGAN when MTGPics doesn't have a card. Per-card opt-in via `#cardconjourer --8th` modeline is also supported. The Card Conjurer source is lazy-cloned on demand — see `make cardconjurer`.
+  `mtg-proxies cardconjurer DECKLIST OUTDIR` renders every supported card via a headless [Card Conjurer](https://cardconjurer.com) Node harness, producing PNGs ready to feed back into `print --custom-art OUTDIR`. With no frame flag each card's frame is chosen automatically from its Scryfall data (2015→modern, 2003→8th, 1997/1993→retro; frames with no equivalent skip to the scan); pass `--8th` / `--modern` / `--m15-8th` / `--retro` to force one style for the whole deck (`--m15-8th` is a hybrid modern-M15 body with 8th-Edition styling, never auto-selected). Re-runs skip cards whose PNG is already in OUTDIR (delete to force a redo). **Hi-res art is fetched from [MTGPics](https://www.mtgpics.com) by default** (~1430×1058 native crops, no GPU upscale needed); cards missing from MTGPics fall back to Scryfall's `art_crop` raw. Optional `--upscale [--upscale-model PATH]` runs the Scryfall fallback through Real-ESRGAN when MTGPics doesn't have a card. Per-card opt-in via `#cardconjurer --8th` modeline is also supported. The Card Conjurer source is lazy-cloned on demand — see `make cardconjurer`.
 
 - **MPCFill render fetch by identifier**  
   Use `#mpcfill --identifier <drive_id> [--bleed-crop PCT] [--scaled]` on a decklist line to swap that slot to a specific [MPCFill](https://mpcfill.com) community render.
@@ -274,7 +274,7 @@ To render the generated tokens with Card Conjurer, use a copy of the decklist:
 ```bash
 cp deck.txt deck-with-tokens.txt
 mtg-proxies tokens deck-with-tokens.txt
-mtg-proxies cardconjourer deck-with-tokens.txt token-images/
+mtg-proxies cardconjurer deck-with-tokens.txt token-images/
 ```
 
 Single-face generated tokens are rendered with Card Conjurer's native Original
@@ -321,7 +321,7 @@ treatment to that one card. Several verbs can stack on one line:
 ```
 1 Caves of Koilos (DRC) 148  #mpcfill --identifier 1nUk_jZc6JtMxr-WrFlqHO5MGNkAS--XS --scaled
 1 Birds of Paradise (RVR) 133 #upscale
-1 Exploration (DMR) 339      #cardconjourer --retro-scaled --legendary
+1 Exploration (DMR) 339      #cardconjurer --retro-scaled --legendary
 4 Mountain (RVR) 271         #normalize #shadow-lift
 1 Sol Ring (C21) 263         #no-upscale
 ```
@@ -334,7 +334,7 @@ Rules:
 - An unknown verb further along the line, or an unknown flag, drops that verb's segment. An
   invalid flag value drops just that flag. All of these print a warning, and the card itself
   still prints normally.
-- Conflicting `#cardconjourer` frame flags (say `--retro --modern`) are all dropped with a
+- Conflicting `#cardconjurer` frame flags (say `--retro --modern`) are all dropped with a
   warning. A scaled flag next to its own base frame (`--retro --retro-scaled`) is fine.
 
 ### Verbs
@@ -344,8 +344,8 @@ Rules:
 | `#mpcfill` | `--identifier ID` (required) | Swap this card to a specific [MPCFill](https://mpcfill.com) render, by its Google Drive id. A failed fetch falls back to the Scryfall scan with a warning. The render skips the bulk upscale / normalize / shadow-lift passes. |
 | | `--bleed-crop PCT` | Trim each edge of the render before printing (0–50, default **0.7**). The default lines MPCFill renders up with Card Conjurer renders on the same 63×88 mm slot. |
 | | `--scaled` | Grow the render's frame for the sticker workflow (see [Sticker workflow](#sticker-workflow-scaled-frames)). |
-| `#cardconjourer` | see [table below](#cardconjourer-flags) | Render this card with the headless Card Conjurer engine instead of using the Scryfall scan. |
-| `#print` | `--language LANG` | Use the real scanned print of this card in language `LANG` (e.g. `de`) instead of the English scan. If no such print exists, the normal scan is used. The `cardconjourer` subcommand writes this into its `fallback.txt` for cards whose translation it can't render. |
+| `#cardconjurer` | see [table below](#cardconjurer-flags) | Render this card with the headless Card Conjurer engine instead of using the Scryfall scan. |
+| `#print` | `--language LANG` | Use the real scanned print of this card in language `LANG` (e.g. `de`) instead of the English scan. If no such print exists, the normal scan is used. The `cardconjurer` subcommand writes this into its `fallback.txt` for cards whose translation it can't render. |
 | `#upscale` | `--upscale-model PATH` | Run this card through Real-ESRGAN. Bare `#upscale` does nothing extra when `--upscale` is already on deck-wide. With `--upscale-model` it always runs, using that model, even under `--upscale all`. |
 | `#normalize` | — | Run auto-levels on this card. No-op when `--normalize` is on deck-wide. |
 | `#shadow-lift` | — | Lift crushed shadows on this card. No-op when `--shadow-lift` is on deck-wide. |
@@ -354,14 +354,14 @@ Rules:
 | `#no-shadow-lift` | — | Exclude this card from the deck-wide `--shadow-lift`. |
 
 Only `print` acts on `#mpcfill`, `#print`, `#upscale`, `#normalize`, `#shadow-lift` and the
-`#no-*` verbs. The `cardconjourer` subcommand reads `#cardconjourer` only.
+`#no-*` verbs. The `cardconjurer` subcommand reads `#cardconjurer` only.
 
-### `#cardconjourer` flags
+### `#cardconjurer` flags
 
-`#cardconjourer` is honored in both places that render with Card Conjurer, but not every flag is
+`#cardconjurer` is honored in both places that render with Card Conjurer, but not every flag is
 honored in both:
 
-| Flag | In `print` | In `cardconjourer` subcommand | Meaning |
+| Flag | In `print` | In `cardconjurer` subcommand | Meaning |
 |---|:-:|:-:|---|
 | *(no frame flag)* | ✓ | ✓ | `print`: frame chosen automatically from the card's Scryfall frame. Subcommand: keeps the deck-wide frame. |
 | `--8th` / `--modern` / `--m15-8th` / `--retro` / `--borderless` | ✓ | ✓ | Force a frame for this card (overrides the deck-wide one in the subcommand). |
@@ -388,8 +388,8 @@ The canvas keeps its size and still prints at 63×88 mm; the black border absorb
 
 | What you print | How to scale it |
 |---|---|
-| A whole deck rendered with Card Conjurer | `mtg-proxies cardconjourer deck.txt out/ --retro-scaled` (or `--8th-scaled`) |
-| Single Card Conjurer cards in a `print` run | `#cardconjourer --retro-scaled` / `--8th-scaled` on those lines |
+| A whole deck rendered with Card Conjurer | `mtg-proxies cardconjurer deck.txt out/ --retro-scaled` (or `--8th-scaled`) |
+| Single Card Conjurer cards in a `print` run | `#cardconjurer --retro-scaled` / `--8th-scaled` on those lines |
 | Every MPCFill render in a `print` run (`order.xml` fronts and `#mpcfill` lines) | `mtg-proxies print cards.xml out.pdf --scaled` |
 | Single MPCFill cards | `#mpcfill --identifier ID --scaled` on those lines |
 
@@ -493,13 +493,13 @@ explaining why.
 commented section. The rest of the file is preserved verbatim; re-runs replace only that
 section. Needs Scryfall token data (cards printed or reprinted since Tenth Edition).
 
-### cardconjourer
+### cardconjurer
 
-`mtg-proxies cardconjourer DECKLIST OUTDIR [options]` — render every card with the headless
+`mtg-proxies cardconjurer DECKLIST OUTDIR [options]` — render every card with the headless
 [Card Conjurer](https://cardconjurer.com) engine into `OUTDIR/<NNNN>-<slug>.png`. Cards it can't
 render go to `OUTDIR/fallback.txt` (a decklist you can `print`); `report.csv` records each
 outcome. Re-runs skip PNGs already in OUTDIR; delete one to force a re-render. Per-card
-`#cardconjourer` flags are in the [table above](#cardconjourer-flags).
+`#cardconjurer` flags are in the [table above](#cardconjurer-flags).
 
 | Flag | Description |
 |---|---|
@@ -520,7 +520,7 @@ through their native layouts. Generated tokens use Card Conjurer's Old Bordered 
 
 ```bash
 make cardconjurer                                   # one-time lazy clone of the Card Conjurer source
-mtg-proxies cardconjourer --8th deck.txt ./cc-out   # PNGs + fallback.txt + report.csv
+mtg-proxies cardconjurer --8th deck.txt ./cc-out   # PNGs + fallback.txt + report.csv
 mtg-proxies print deck.txt out.pdf --custom-art ./cc-out
 ```
 
@@ -534,7 +534,7 @@ refresh.
 model keeps the dots as detail. A GAN-trained model smooths them:
 
 ```bash
-mtg-proxies cardconjourer --8th --upscale \
+mtg-proxies cardconjurer --8th --upscale \
   --upscale-model ~/models/RealESRGAN_x4plus_anime_6B.pth deck.txt ./cc-out
 ```
 
@@ -587,4 +587,4 @@ docstring.
 - [Scryfall](https://scryfall.com/) for their [excellent API](https://scryfall.com/docs/api).
 - [spandrel](https://github.com/chaiNNer-org/spandrel) for ESRGAN model loading.
 - [openmodeldb.info](https://openmodeldb.info) for community upscaling models.
-- [Card Conjurer](https://cardconjurer.com) (joshbirnholz fork) for the renderer powering `cardconjourer`.
+- [Card Conjurer](https://cardconjurer.com) (joshbirnholz fork) for the renderer powering `cardconjurer`.

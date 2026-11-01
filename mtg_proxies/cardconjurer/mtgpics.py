@@ -3,7 +3,7 @@
 Scryfall's ``art_crop`` tops out at ~626x457 px for older cards and ~1500x1050
 for newer hi-res printings. MTGPics hosts community-uploaded scans cropped to
 the art window at ~1430x1058 for most cards — significantly better than what
-Scryfall offers, and on par with what the cardconjourer ``--upscale`` path
+Scryfall offers, and on par with what the cardconjurer ``--upscale`` path
 produces via Real-ESRGAN, but without the GPU dependency or the dot-amplification
 artifacts the upscaler introduces on scanned source art.
 
@@ -16,7 +16,7 @@ the card (404, or a tiny placeholder body). Cache layout:
 
     <cache_root>/<set_lower>/<collector_number>.jpg
 
-The caller (cardconjourer's per-card prepare_each) uses None as the signal to
+The caller (cardconjurer's per-card prepare_each) uses None as the signal to
 fall back to Scryfall's ``art_crop`` instead.
 """
 

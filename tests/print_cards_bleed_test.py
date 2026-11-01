@@ -1,6 +1,6 @@
-"""Bleed-into-gap placement for cardconjourer / custom-art renders.
+"""Bleed-into-gap placement for cardconjurer / custom-art renders.
 
-Cardconjourer renders carry CardConjurer's "Include Template Margins" bleed (anisotropic:
+Cardconjurer renders carry CardConjurer's "Include Template Margins" bleed (anisotropic:
 ``marginX=0.044``, ``marginY=1/35``). On the negative ``--border_crop`` cutting flow the card
 content must land **exactly** on the 63x88 mm slot while the bleed extends *into the gap*
 between cards — so a slightly-off cut never reveals the black background. On positive/zero
@@ -124,7 +124,7 @@ def test_custom_art_not_scaled_on_positive_crop(tmp_path: Path) -> None:
 def test_custom_art_no_aspect_stretch_on_positive_crop(tmp_path: Path) -> None:
     """Positive crop: the placed image keeps the TRUE card aspect — no stretch.
 
-    A real cardconjourer render is the card content grown by CC's anisotropic margin
+    A real cardconjurer render is the card content grown by CC's anisotropic margin
     (``_MARGIN_SCALE_*``). print_cards strips exactly that margin, so the image handed to fpdf
     has the card's own aspect ratio (it draws stretched to the slot, so a wrong aspect here
     would stretch the card). This is the regression guard against the uniform-percent over-trim.

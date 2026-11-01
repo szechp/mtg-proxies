@@ -3081,7 +3081,7 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
     //
     // Feed it a deep clone, not `scry` itself: when the JSON payload carries
     // `lang`/`printed_name`/`printed_type_line`/`printed_text` (from `mtg-proxies
-    // cardconjourer --language`), processScryfallCard swaps those onto whatever object
+    // cardconjurer --language`), processScryfallCard swaps those onto whatever object
     // it's given (card.name = card.printed_name || card.name, etc.). renderFace's own
     // frame/land-color/legendary/artifact detectors do raw English-keyword matching
     // against type_line/oracle_text and must keep reading pristine English — so `scry`
@@ -3195,7 +3195,7 @@ async function main() {
 }
 
 // ---------------------------------------------------------------------------
-// ND-JSON mode (production, driven by mtg_proxies.cardconjourer.runner).
+// ND-JSON mode (production, driven by mtg_proxies.cardconjurer.runner).
 //
 // Reads one job per line on stdin:
 //   {"slot": "0001", "name": "Murder", "frame": "8th", "art_path": "/abs/.png"?}

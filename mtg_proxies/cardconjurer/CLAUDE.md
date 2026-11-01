@@ -1,16 +1,16 @@
 <!-- bmad:context -->
 <!-- Verified 2026-09-15 against 03b18c1. Managed by bmad-project-context; edits inside this block are replaced on refresh. Split from the root AGENTS.md block, scoped to this subtree. -->
 
-## mtg_proxies/cardconjourer/
+## mtg_proxies/cardconjurer/
 
-Headless Card Conjurer frame rendering, orchestrated from `cli.py`'s `_run_cardconjourer` (per-deck Node harness invocation via `node/harness.js`, slot-prefixed PNG outputs, `fallback.txt` + `report.csv`).
+Headless Card Conjurer frame rendering, orchestrated from `cli.py`'s `_run_cardconjurer` (per-deck Node harness invocation via `node/harness.js`, slot-prefixed PNG outputs, `fallback.txt` + `report.csv`).
 
 ## DFC handling
 
 - Transform/modal_dfc cards render as two separate PNGs BY DEFAULT (`<slug>.png` + `<slug>_back.png`, `out`/`out_back` in the harness response, `png_back` column in `report.csv`), using CC's real DFC frame packs: transform title icon mapped from Scryfall `frame_effects`, gray reverse-P/T reminder on transform fronts, MDFC flipside bar tinted with the other face's color and filled with its name + mana/type, legendary crowns via the engine's autoFrame builders.
-- `--dfc-flip` (deck-wide flag, or `#cardconjourer --dfc-flip` per-card modeline; per-card `--dfc-split` overrides the deck flag) merges both faces into one Kamigawa-flip card instead.
+- `--dfc-flip` (deck-wide flag, or `#cardconjurer --dfc-flip` per-card modeline; per-card `--dfc-split` overrides the deck flag) merges both faces into one Kamigawa-flip card instead.
 - `reversible_card` always stays on the flip path; saga-faced and planeswalker-faced DFCs skip to `fallback.txt`.
-- In `print`, `#cardconjourer --dfc-split` is warned-and-ignored — flip only.
+- In `print`, `#cardconjurer --dfc-split` is warned-and-ignored — flip only.
 
 ## Frame styles
 
@@ -18,7 +18,7 @@ Headless Card Conjurer frame rendering, orchestrated from `cli.py`'s `_run_cardc
 - `--8th` (2003), `--modern` (M15), `--m15-8th`, `--retro` (Seventh Edition 1997) are mutually exclusive (CLI group + modeline mutex).
 - `--m15-8th`: a modern M15 card body restyled with 8th-Edition trim — shares modern's size/legend-crown/P-T-box geometry via engine-native `autoFrameUnified('M15Eighth')` and the `makeM15EighthFrameByLetter` crown builder; transform/MDFC split faces use `packM15Eighth*` DFC packs. Never auto-selected — no Scryfall `frame` value maps to it. Its bottom-info line drops the real-card copyright/legal text and shows a compact `(SET) NUMBER` print-staging tag instead, right-aligned to mirror the artist icon's left-margin gap, capped before the P/T box on creatures/vehicles — a long copyright string was found to collide with long artist names there.
 - `--retro`: engine-native `autoFrameUnified('Seventh')`, per-color land frames, tombstone icon via `frame_effects`, no legend crowns; transform/MDFC split faces use the Classicshifted retro DFC packs with native crowns, transform icon/indicator, and pre-colored flipside bars.
-- No frame flag → style is `auto` (default for both the subcommand and a bare `#cardconjourer` modeline): the harness picks each card's frame from its resolved Scryfall `frame` (`SCRYFALL_FRAME_TO_STYLE`: 2015→modern, 2003→8th, 1997/1993→retro); frames with no CC equivalent (`future`, unknown) skip to `fallback.txt` for the raw scan. Resolved per-card in `runOneJob` (harness.js), only when `job.frame === 'auto'` — an explicit frame flag fully overrides it and renders every card in that frame, never skipping on frame. DFCs in auto render modern (real DFCs are 2015-frame); the 8th/retro/m15-8th DFC packs are reachable only via the explicit flags.
+- No frame flag → style is `auto` (default for both the subcommand and a bare `#cardconjurer` modeline): the harness picks each card's frame from its resolved Scryfall `frame` (`SCRYFALL_FRAME_TO_STYLE`: 2015→modern, 2003→8th, 1997/1993→retro); frames with no CC equivalent (`future`, unknown) skip to `fallback.txt` for the raw scan. Resolved per-card in `runOneJob` (harness.js), only when `job.frame === 'auto'` — an explicit frame flag fully overrides it and renders every card in that frame, never skipping on frame. DFCs in auto render modern (real DFCs are 2015-frame); the 8th/retro/m15-8th DFC packs are reachable only via the explicit flags.
 - Single-face generated tokens use Card Conjurer's native Original Tokens (Old Bordered) pack and its own loaded frame version, regardless of the deck frame. Keep tokens out of normal-card auto-framing, font-size overrides, and frame-specific text/bottom-info adjustments; the token version owns its fonts, geometry, text, and P/T layout. Unsupported double-faced token layouts retain their Scryfall token scan. The CLI supplies Scryfall's art-only crop for supported tokens, not the full token scan.
 
 ## Adventure / Prepare / planeswalker layouts

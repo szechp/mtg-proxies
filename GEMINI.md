@@ -8,7 +8,7 @@ A high-quality Magic: The Gathering (MtG) proxy generator that creates printable
 - **Architecture:** 
   - A CLI tool built with `argparse`.
   - Core logic in `mtg_proxies/` for scan fetching, image processing (normalization, shadow lifting, vignetting), and PDF generation (`fpdf2`).
-  - Headless Node.js harness in `mtg_proxies/cardconjourer/node/` for rendering 2003/retro frames via a local Card Conjurer engine.
+  - Headless Node.js harness in `mtg_proxies/cardconjurer/node/` for rendering 2003/retro frames via a local Card Conjurer engine.
   - Integration with Scryfall (bulk data), MTGPics (hi-res art), and MPCFill (community renders).
 
 ## Building and Running
@@ -40,7 +40,7 @@ The main entry point is `mtg-proxies` (defined in `pyproject.toml`).
   ```
 - **Render Retro Frames:**
   ```bash
-  mtg-proxies cardconjourer --8th decklist.txt ./output_dir
+  mtg-proxies cardconjurer --8th decklist.txt ./output_dir
   ```
 - **Append Tokens:**
   ```bash
@@ -54,7 +54,7 @@ The main entry point is `mtg-proxies` (defined in `pyproject.toml`).
   - `ruff format .` for formatting (Ruff is the primary linter/formatter).
 - **Manual Setup:** 
   - `uv sync` for Python deps.
-  - `npm install` in `mtg_proxies/cardconjourer/node/`.
+  - `npm install` in `mtg_proxies/cardconjurer/node/`.
   - `make cardconjurer` to clone the Card Conjurer source.
 
 ## Development Conventions
@@ -72,7 +72,7 @@ The main entry point is `mtg-proxies` (defined in `pyproject.toml`).
 ## Key Directories
 
 - `mtg_proxies/`: Core Python package.
-- `mtg_proxies/cardconjourer/`: Integration with the Card Conjurer rendering engine.
+- `mtg_proxies/cardconjurer/`: Integration with the Card Conjurer rendering engine.
 - `scripts/`: Cross-platform setup and utility scripts.
 - `tests/`: Comprehensive test suite using `pytest`.
 - `custom-art/`: Example folder for custom art assets.

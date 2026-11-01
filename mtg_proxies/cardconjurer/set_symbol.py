@@ -169,7 +169,7 @@ def resolve_set_symbol(value: str | None, rarity: str, cc_root: Path) -> str | N
     if value.startswith(_CUSTOMSET_PREFIX):
         # Lazy import — keeps fontTools out of the import path for callers
         # that never use customset.
-        from mtg_proxies.cardconjourer.customset import ensure_customset
+        from mtg_proxies.cardconjurer.customset import ensure_customset
         return ensure_customset(value[len(_CUSTOMSET_PREFIX):], rarity, cc_root)
     if _looks_like_path(value):
         try:

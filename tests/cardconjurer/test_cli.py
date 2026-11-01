@@ -1,4 +1,4 @@
-"""CLI integration for ``mtg-proxies cardconjourer``."""
+"""CLI integration for ``mtg-proxies cardconjurer``."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 
-def test_main_help_lists_cardconjourer_subcommand(capsys: pytest.CaptureFixture) -> None:
+def test_main_help_lists_cardconjurer_subcommand(capsys: pytest.CaptureFixture) -> None:
     """Top-level help mentions the new subcommand."""
     from mtg_proxies.cli import main
 
@@ -16,14 +16,14 @@ def test_main_help_lists_cardconjourer_subcommand(capsys: pytest.CaptureFixture)
         main()
 
     captured = capsys.readouterr()
-    assert "cardconjourer" in captured.out
+    assert "cardconjurer" in captured.out
 
 
-def test_main_cardconjourer_help_mentions_frame_flags(capsys: pytest.CaptureFixture) -> None:
-    """`mtg-proxies cardconjourer --help` documents --8th, --modern, --upscale, --set-symbol."""
+def test_main_cardconjurer_help_mentions_frame_flags(capsys: pytest.CaptureFixture) -> None:
+    """`mtg-proxies cardconjurer --help` documents --8th, --modern, --upscale, --set-symbol."""
     from mtg_proxies.cli import main
 
-    with patch("sys.argv", ["mtg-proxies", "cardconjourer", "--help"]), pytest.raises(SystemExit):
+    with patch("sys.argv", ["mtg-proxies", "cardconjurer", "--help"]), pytest.raises(SystemExit):
         main()
 
     out = capsys.readouterr().out
@@ -34,7 +34,7 @@ def test_main_cardconjourer_help_mentions_frame_flags(capsys: pytest.CaptureFixt
     assert "automatically" in out  # documents the no-flag auto-frame default
 
 
-def test_main_cardconjourer_no_flag_defaults_to_auto(tmp_path: Path) -> None:
+def test_main_cardconjurer_no_flag_defaults_to_auto(tmp_path: Path) -> None:
     """No frame flag is valid: render_deck is called with frame='auto' (per-card from Scryfall)."""
     from mtg_proxies.cli import main
 
@@ -42,8 +42,8 @@ def test_main_cardconjourer_no_flag_defaults_to_auto(tmp_path: Path) -> None:
     deck.write_text("1 Murder\n")
 
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", str(deck), str(tmp_path / "out")]),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
         main()
@@ -51,8 +51,8 @@ def test_main_cardconjourer_no_flag_defaults_to_auto(tmp_path: Path) -> None:
     assert mock_render.call_args.kwargs["frame"] == "auto"
 
 
-def test_main_cardconjourer_invokes_render_deck(tmp_path: Path) -> None:
-    """`cardconjourer --8th deck.txt OUTDIR` calls render_deck with parsed cards + frame=8th."""
+def test_main_cardconjurer_invokes_render_deck(tmp_path: Path) -> None:
+    """`cardconjurer --8th deck.txt OUTDIR` calls render_deck with parsed cards + frame=8th."""
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"
@@ -60,8 +60,8 @@ def test_main_cardconjourer_invokes_render_deck(tmp_path: Path) -> None:
     outdir = tmp_path / "out"
 
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(outdir)]),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "--8th", str(deck), str(outdir)]),
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 2, "skipped": 0, "total": 2}
         main()
@@ -80,7 +80,24 @@ def test_main_cardconjourer_invokes_render_deck(tmp_path: Path) -> None:
     assert kwargs.get("upscale", False) is False
 
 
-def test_main_cardconjourer_upscale_flag_propagates(tmp_path: Path) -> None:
+def test_main_old_cardconjourer_spelling_still_runs(tmp_path: Path) -> None:
+    """The pre-rename `cardconjourer` subcommand is an alias for `cardconjurer`."""
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text("1 Murder\n")
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
+        main()
+
+    mock_render.assert_called_once()
+
+
+def test_main_cardconjurer_upscale_flag_propagates(tmp_path: Path) -> None:
     """``--upscale`` enables the ESRGAN pass for cards where MTGPics misses."""
     from PIL import Image
 
@@ -93,12 +110,12 @@ def test_main_cardconjourer_upscale_flag_propagates(tmp_path: Path) -> None:
     Image.new("RGB", (10, 10)).save(art_jpg, format="JPEG")
 
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", "--upscale", str(deck), str(outdir)]),
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "--8th", "--upscale", str(deck), str(outdir)]),
         # MTGPics miss → Scryfall fallback path → upscale runs.
-        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=None),
+        patch("mtg_proxies.cardconjurer.mtgpics.fetch_mtgpics_art", return_value=None),
         patch("mtg_proxies.scryfall.get_image", return_value=str(art_jpg)),
         patch("mtg_proxies.upscale.upscale_images", return_value=[str(tmp_path / "art_4x.png")]),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
         main()
@@ -106,7 +123,7 @@ def test_main_cardconjourer_upscale_flag_propagates(tmp_path: Path) -> None:
     assert mock_render.call_args.kwargs.get("upscale") is True
 
 
-def test_main_cardconjourer_upscale_interleaves_via_prepare_each(tmp_path: Path) -> None:
+def test_main_cardconjurer_upscale_interleaves_via_prepare_each(tmp_path: Path) -> None:
     """`--upscale` passes a `prepare_each` callable to render_deck instead of pre-batching.
 
     Interleaved flow: render_deck/_run calls `prepare_each(slot)` right before each
@@ -129,12 +146,12 @@ def test_main_cardconjourer_upscale_interleaves_via_prepare_each(tmp_path: Path)
     upscaled.write_bytes(b"PNG-bytes")
 
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", "--upscale", str(deck), str(outdir)]),
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "--8th", "--upscale", str(deck), str(outdir)]),
         # MTGPics miss → Scryfall fallback path → upscale runs on the Scryfall art.
-        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=None),
+        patch("mtg_proxies.cardconjurer.mtgpics.fetch_mtgpics_art", return_value=None),
         patch("mtg_proxies.scryfall.get_image", return_value=str(downloaded)),
         patch("mtg_proxies.upscale.upscale_images", return_value=[str(upscaled)]) as mock_upscale,
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
         main()
@@ -155,7 +172,7 @@ def test_main_cardconjourer_upscale_interleaves_via_prepare_each(tmp_path: Path)
         assert Path(upscale_paths[0]).is_file()
 
 
-def test_main_cardconjourer_no_upscale_still_passes_prepare_each(tmp_path: Path) -> None:
+def test_main_cardconjurer_no_upscale_still_passes_prepare_each(tmp_path: Path) -> None:
     """Even without --upscale, prepare_each is now ALWAYS passed (MTGPics is the new default).
 
     Without the upscale flag: MTGPics is still tried; on a hit ``art_path`` is the
@@ -169,9 +186,9 @@ def test_main_cardconjourer_no_upscale_still_passes_prepare_each(tmp_path: Path)
     outdir = tmp_path / "out"
 
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(outdir)]),
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "--8th", str(deck), str(outdir)]),
         patch("mtg_proxies.upscale.upscale_images") as mock_upscale,
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
         main()
@@ -181,7 +198,7 @@ def test_main_cardconjourer_no_upscale_still_passes_prepare_each(tmp_path: Path)
     mock_upscale.assert_not_called()
 
 
-def test_main_cardconjourer_mtgpics_hit_returns_native_art_path(tmp_path: Path) -> None:
+def test_main_cardconjurer_mtgpics_hit_returns_native_art_path(tmp_path: Path) -> None:
     """MTGPics hit on prepare_each(1) returns the local hi-res file path as art_path."""
     from mtg_proxies.cli import main
 
@@ -193,9 +210,9 @@ def test_main_cardconjourer_mtgpics_hit_returns_native_art_path(tmp_path: Path) 
     mtgpics_path.write_bytes(b"x" * 10000)
 
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(outdir)]),
-        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=mtgpics_path) as mock_mtgp,
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "--8th", str(deck), str(outdir)]),
+        patch("mtg_proxies.cardconjurer.mtgpics.fetch_mtgpics_art", return_value=mtgpics_path) as mock_mtgp,
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
         main()
@@ -206,7 +223,7 @@ def test_main_cardconjourer_mtgpics_hit_returns_native_art_path(tmp_path: Path) 
         mock_mtgp.assert_called_once()
 
 
-def test_main_cardconjourer_mtgpics_miss_falls_back_to_raw_scryfall(tmp_path: Path) -> None:
+def test_main_cardconjurer_mtgpics_miss_falls_back_to_raw_scryfall(tmp_path: Path) -> None:
     """MTGPics miss + no --upscale → fall back to Scryfall art_crop, raw (no upscale)."""
     from mtg_proxies.cli import main
 
@@ -215,11 +232,11 @@ def test_main_cardconjourer_mtgpics_miss_falls_back_to_raw_scryfall(tmp_path: Pa
     outdir = tmp_path / "out"
 
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(outdir)]),
-        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=None),
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "--8th", str(deck), str(outdir)]),
+        patch("mtg_proxies.cardconjurer.mtgpics.fetch_mtgpics_art", return_value=None),
         patch("mtg_proxies.scryfall.get_image", return_value="/tmp/scryfall.jpg") as mock_scry,
         patch("mtg_proxies.upscale.upscale_images") as mock_upscale,
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
         main()
@@ -231,7 +248,7 @@ def test_main_cardconjourer_mtgpics_miss_falls_back_to_raw_scryfall(tmp_path: Pa
         mock_upscale.assert_not_called()
 
 
-def test_main_cardconjourer_scryfall_flag_skips_mtgpics(tmp_path: Path) -> None:
+def test_main_cardconjurer_scryfall_flag_skips_mtgpics(tmp_path: Path) -> None:
     """`--scryfall` skips MTGPics entirely; fetch_mtgpics_art is never called."""
     from mtg_proxies.cli import main
 
@@ -240,10 +257,10 @@ def test_main_cardconjourer_scryfall_flag_skips_mtgpics(tmp_path: Path) -> None:
     outdir = tmp_path / "out"
 
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", "--scryfall", str(deck), str(outdir)]),
-        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art") as mock_mtgp,
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "--8th", "--scryfall", str(deck), str(outdir)]),
+        patch("mtg_proxies.cardconjurer.mtgpics.fetch_mtgpics_art") as mock_mtgp,
         patch("mtg_proxies.scryfall.get_image", return_value="/tmp/scryfall.jpg") as mock_scry,
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
         main()
@@ -256,17 +273,17 @@ def test_main_cardconjourer_scryfall_flag_skips_mtgpics(tmp_path: Path) -> None:
         mock_scry.assert_called_once()
 
 
-def test_main_cardconjourer_skip_cc_modeline_routes_to_fallback(tmp_path: Path) -> None:
-    """``#cardconjourer --skip`` modeline → card never reaches the harness, synthesized as skip."""
+def test_main_cardconjurer_skip_cc_modeline_routes_to_fallback(tmp_path: Path) -> None:
+    """``#cardconjurer --skip`` modeline → card never reaches the harness, synthesized as skip."""
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"
-    deck.write_text("1 Murder #cardconjourer --skip\n")
+    deck.write_text("1 Murder #cardconjurer --skip\n")
     outdir = tmp_path / "out"
 
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(outdir)]),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "--8th", str(deck), str(outdir)]),
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 0, "skipped": 1, "total": 1}
         main()
@@ -293,16 +310,16 @@ def test_main_cardconjourer_skip_cc_modeline_routes_to_fallback(tmp_path: Path) 
 # ---------------------------------------------------------------------------
 
 
-def test_main_cardconjourer_modern_propagates_frame(tmp_path: Path) -> None:
-    """`cardconjourer --modern deck.txt OUTDIR` reaches render_deck with frame='modern'."""
+def test_main_cardconjurer_modern_propagates_frame(tmp_path: Path) -> None:
+    """`cardconjurer --modern deck.txt OUTDIR` reaches render_deck with frame='modern'."""
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"
     deck.write_text("1 Murder\n")
 
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--modern", str(deck), str(tmp_path / "out")]),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "--modern", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
         main()
@@ -310,16 +327,16 @@ def test_main_cardconjourer_modern_propagates_frame(tmp_path: Path) -> None:
     assert mock_render.call_args.kwargs.get("frame") == "modern"
 
 
-def test_main_cardconjourer_borderless_propagates_frame(tmp_path: Path) -> None:
-    """`cardconjourer --borderless deck.txt OUTDIR` reaches render_deck with frame='borderless'."""
+def test_main_cardconjurer_borderless_propagates_frame(tmp_path: Path) -> None:
+    """`cardconjurer --borderless deck.txt OUTDIR` reaches render_deck with frame='borderless'."""
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"
     deck.write_text("1 Murder\n")
 
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--borderless", str(deck), str(tmp_path / "out")]),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "--borderless", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
         main()
@@ -327,13 +344,13 @@ def test_main_cardconjourer_borderless_propagates_frame(tmp_path: Path) -> None:
     assert mock_render.call_args.kwargs.get("frame") == "borderless"
 
 
-def test_main_cardconjourer_borderless_and_modern_mutex(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
+def test_main_cardconjurer_borderless_and_modern_mutex(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
     """`--borderless` and `--modern` are mutually exclusive at the argparse level."""
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"
     deck.write_text("1 Murder\n")
-    argv = ["mtg-proxies", "cardconjourer", "--borderless", "--modern", str(deck), str(tmp_path / "out")]
+    argv = ["mtg-proxies", "cardconjurer", "--borderless", "--modern", str(deck), str(tmp_path / "out")]
 
     with patch("sys.argv", argv), pytest.raises(SystemExit):
         main()
@@ -342,22 +359,22 @@ def test_main_cardconjourer_borderless_and_modern_mutex(capsys: pytest.CaptureFi
 
 
 def test_resolve_cc_frame_borderless_modeline() -> None:
-    """A per-card `#cardconjourer --borderless` modeline resolves to 'borderless'."""
+    """A per-card `#cardconjurer --borderless` modeline resolves to 'borderless'."""
     from mtg_proxies.cli import _resolve_cc_frame
 
     assert _resolve_cc_frame({"--borderless": True}) == "borderless"
 
 
-def test_main_cardconjourer_retro_propagates_frame(tmp_path: Path) -> None:
-    """`cardconjourer --retro deck.txt OUTDIR` reaches render_deck with frame='retro'."""
+def test_main_cardconjurer_retro_propagates_frame(tmp_path: Path) -> None:
+    """`cardconjurer --retro deck.txt OUTDIR` reaches render_deck with frame='retro'."""
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"
     deck.write_text("1 Murder\n")
 
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--retro", str(deck), str(tmp_path / "out")]),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "--retro", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
         main()
@@ -365,13 +382,13 @@ def test_main_cardconjourer_retro_propagates_frame(tmp_path: Path) -> None:
     assert mock_render.call_args.kwargs.get("frame") == "retro"
 
 
-def test_main_cardconjourer_retro_and_modern_mutex(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
+def test_main_cardconjurer_retro_and_modern_mutex(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
     """`--retro` and `--modern` are mutually exclusive at the argparse level."""
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"
     deck.write_text("1 Murder\n")
-    argv = ["mtg-proxies", "cardconjourer", "--retro", "--modern", str(deck), str(tmp_path / "out")]
+    argv = ["mtg-proxies", "cardconjurer", "--retro", "--modern", str(deck), str(tmp_path / "out")]
 
     with patch("sys.argv", argv), pytest.raises(SystemExit):
         main()
@@ -380,33 +397,33 @@ def test_main_cardconjourer_retro_and_modern_mutex(capsys: pytest.CaptureFixture
     assert "not allowed" in err or "argument" in err
 
 
-def test_main_cardconjourer_help_mentions_retro(capsys: pytest.CaptureFixture) -> None:
-    """`cardconjourer --help` documents the --retro frame flag."""
+def test_main_cardconjurer_help_mentions_retro(capsys: pytest.CaptureFixture) -> None:
+    """`cardconjurer --help` documents the --retro frame flag."""
     from mtg_proxies.cli import main
 
-    with patch("sys.argv", ["mtg-proxies", "cardconjourer", "--help"]), pytest.raises(SystemExit):
+    with patch("sys.argv", ["mtg-proxies", "cardconjurer", "--help"]), pytest.raises(SystemExit):
         main()
 
     assert "--retro" in capsys.readouterr().out
 
 
 def test_resolve_cc_frame_retro_modeline() -> None:
-    """A per-card `#cardconjourer` modeline resolves each frame flag; bare → 'auto'."""
+    """A per-card `#cardconjurer` modeline resolves each frame flag; bare → 'auto'."""
     from mtg_proxies.cli import _resolve_cc_frame
 
     assert _resolve_cc_frame({"--retro": True}) == "retro"
     assert _resolve_cc_frame({"--modern": True}) == "modern"
     assert _resolve_cc_frame({"--8th": True}) == "8th"
-    assert _resolve_cc_frame({}) == "auto"  # bare #cardconjourer → per-card auto frame
+    assert _resolve_cc_frame({}) == "auto"  # bare #cardconjurer → per-card auto frame
 
 
-def test_main_cardconjourer_modern_and_8th_mutex(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
+def test_main_cardconjurer_modern_and_8th_mutex(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
     """`--modern` and `--8th` are mutually exclusive."""
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"
     deck.write_text("1 Murder\n")
-    argv = ["mtg-proxies", "cardconjourer", "--modern", "--8th", str(deck), str(tmp_path / "out")]
+    argv = ["mtg-proxies", "cardconjurer", "--modern", "--8th", str(deck), str(tmp_path / "out")]
 
     with patch("sys.argv", argv), pytest.raises(SystemExit):
         main()
@@ -420,16 +437,16 @@ def test_main_cardconjourer_modern_and_8th_mutex(capsys: pytest.CaptureFixture, 
 # ---------------------------------------------------------------------------
 
 
-def test_main_cardconjourer_m15_8th_propagates_frame(tmp_path: Path) -> None:
-    """`cardconjourer --m15-8th deck.txt OUTDIR` reaches render_deck with frame='m15-8th'."""
+def test_main_cardconjurer_m15_8th_propagates_frame(tmp_path: Path) -> None:
+    """`cardconjurer --m15-8th deck.txt OUTDIR` reaches render_deck with frame='m15-8th'."""
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"
     deck.write_text("1 Murder\n")
 
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--m15-8th", str(deck), str(tmp_path / "out")]),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "--m15-8th", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
         main()
@@ -437,13 +454,13 @@ def test_main_cardconjourer_m15_8th_propagates_frame(tmp_path: Path) -> None:
     assert mock_render.call_args.kwargs.get("frame") == "m15-8th"
 
 
-def test_main_cardconjourer_m15_8th_and_modern_mutex(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
+def test_main_cardconjurer_m15_8th_and_modern_mutex(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
     """`--m15-8th` and `--modern` are mutually exclusive at the argparse level."""
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"
     deck.write_text("1 Murder\n")
-    argv = ["mtg-proxies", "cardconjourer", "--m15-8th", "--modern", str(deck), str(tmp_path / "out")]
+    argv = ["mtg-proxies", "cardconjurer", "--m15-8th", "--modern", str(deck), str(tmp_path / "out")]
 
     with patch("sys.argv", argv), pytest.raises(SystemExit):
         main()
@@ -452,22 +469,22 @@ def test_main_cardconjourer_m15_8th_and_modern_mutex(capsys: pytest.CaptureFixtu
     assert "not allowed" in err or "argument" in err
 
 
-def test_main_cardconjourer_help_mentions_m15_8th(capsys: pytest.CaptureFixture) -> None:
-    """`cardconjourer --help` documents the --m15-8th frame flag."""
+def test_main_cardconjurer_help_mentions_m15_8th(capsys: pytest.CaptureFixture) -> None:
+    """`cardconjurer --help` documents the --m15-8th frame flag."""
     from mtg_proxies.cli import main
 
-    with patch("sys.argv", ["mtg-proxies", "cardconjourer", "--help"]), pytest.raises(SystemExit):
+    with patch("sys.argv", ["mtg-proxies", "cardconjurer", "--help"]), pytest.raises(SystemExit):
         main()
 
     assert "--m15-8th" in capsys.readouterr().out
 
 
 def test_resolve_cc_frame_m15_8th_modeline() -> None:
-    """A per-card `#cardconjourer --m15-8th` modeline resolves to 'm15-8th'."""
+    """A per-card `#cardconjurer --m15-8th` modeline resolves to 'm15-8th'."""
     from mtg_proxies.cli import _resolve_cc_frame
 
     assert _resolve_cc_frame({"--m15-8th": True}) == "m15-8th"
-    assert _resolve_cc_frame({}) == "auto"  # bare #cardconjourer never resolves to m15-8th
+    assert _resolve_cc_frame({}) == "auto"  # bare #cardconjurer never resolves to m15-8th
 
 
 def _make_cc_root_with_ltc(tmp_path: Path) -> Path:
@@ -485,7 +502,7 @@ def _make_cc_root_with_ltc(tmp_path: Path) -> Path:
     return cc_root
 
 
-def test_main_cardconjourer_set_symbol_path_reaches_prepare_each(tmp_path: Path) -> None:
+def test_main_cardconjurer_set_symbol_path_reaches_prepare_each(tmp_path: Path) -> None:
     """`--set-symbol PATH` (existing file) lands in the job's extras via prepare_each."""
     from mtg_proxies.cli import main
 
@@ -497,11 +514,11 @@ def test_main_cardconjourer_set_symbol_path_reaches_prepare_each(tmp_path: Path)
     with (
         patch(
             "sys.argv",
-            ["mtg-proxies", "cardconjourer", "--8th", "--set-symbol", str(sym), str(deck), str(tmp_path / "out")],
+            ["mtg-proxies", "cardconjurer", "--8th", "--set-symbol", str(sym), str(deck), str(tmp_path / "out")],
         ),
-        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=None),
+        patch("mtg_proxies.cardconjurer.mtgpics.fetch_mtgpics_art", return_value=None),
         patch("mtg_proxies.scryfall.get_image", return_value="/tmp/scryfall.jpg"),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
         main()
@@ -511,7 +528,7 @@ def test_main_cardconjourer_set_symbol_path_reaches_prepare_each(tmp_path: Path)
         assert extras.get("set_symbol_path") == str(sym.resolve())
 
 
-def test_main_cardconjourer_set_symbol_works_on_modern(tmp_path: Path) -> None:
+def test_main_cardconjurer_set_symbol_works_on_modern(tmp_path: Path) -> None:
     """`--modern --set-symbol PATH` propagates the same way as `--8th --set-symbol`."""
     from mtg_proxies.cli import main
 
@@ -523,11 +540,11 @@ def test_main_cardconjourer_set_symbol_works_on_modern(tmp_path: Path) -> None:
     with (
         patch(
             "sys.argv",
-            ["mtg-proxies", "cardconjourer", "--modern", "--set-symbol", str(sym), str(deck), str(tmp_path / "out")],
+            ["mtg-proxies", "cardconjurer", "--modern", "--set-symbol", str(sym), str(deck), str(tmp_path / "out")],
         ),
-        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=None),
+        patch("mtg_proxies.cardconjurer.mtgpics.fetch_mtgpics_art", return_value=None),
         patch("mtg_proxies.scryfall.get_image", return_value="/tmp/scryfall.jpg"),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
         main()
@@ -538,7 +555,7 @@ def test_main_cardconjourer_set_symbol_works_on_modern(tmp_path: Path) -> None:
         assert mock_render.call_args.kwargs.get("frame") == "modern"
 
 
-def test_main_cardconjourer_set_symbol_code_resolves_via_cc_cache(
+def test_main_cardconjurer_set_symbol_code_resolves_via_cc_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`--set-symbol LTC` resolves to ltc-r.svg against the cached CC engine for a rare card.
@@ -558,14 +575,14 @@ def test_main_cardconjourer_set_symbol_code_resolves_via_cc_cache(
     deck.write_text("1 Murder\n")
 
     argv = [
-        "mtg-proxies", "cardconjourer", "--modern", "--set-symbol", "LTC",
+        "mtg-proxies", "cardconjurer", "--modern", "--set-symbol", "LTC",
         str(deck), str(tmp_path / "out"),
     ]
     with (
         patch("sys.argv", argv),
-        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=None),
+        patch("mtg_proxies.cardconjurer.mtgpics.fetch_mtgpics_art", return_value=None),
         patch("mtg_proxies.scryfall.get_image", return_value="/tmp/scryfall.jpg"),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
         main()
@@ -578,7 +595,7 @@ def test_main_cardconjourer_set_symbol_code_resolves_via_cc_cache(
         assert any(sym.endswith(f"ltc-{c}.svg") for c in "curm"), sym
 
 
-def test_main_cardconjourer_set_symbol_missing_file_exits(
+def test_main_cardconjurer_set_symbol_missing_file_exits(
     capsys: pytest.CaptureFixture, tmp_path: Path
 ) -> None:
     """`--set-symbol /missing.png` errors out cleanly before any subprocess spawn."""
@@ -588,12 +605,12 @@ def test_main_cardconjourer_set_symbol_missing_file_exits(
     deck.write_text("1 Murder\n")
 
     argv = [
-        "mtg-proxies", "cardconjourer", "--8th", "--set-symbol", "/nope/missing.png",
+        "mtg-proxies", "cardconjurer", "--8th", "--set-symbol", "/nope/missing.png",
         str(deck), str(tmp_path / "out"),
     ]
     with (
         patch("sys.argv", argv),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 0, "skipped": 0, "total": 0}
         with pytest.raises(SystemExit):
@@ -608,11 +625,11 @@ def test_main_cardconjourer_set_symbol_missing_file_exits(
 # ---------------------------------------------------------------------------
 
 
-def test_cardconjourer_fonts_are_bundled_in_repo() -> None:
+def test_cardconjurer_fonts_are_bundled_in_repo() -> None:
     """The 12 fonts the harness registers must ship in the repo so a fresh checkout doesn't
     fall back to arial when the user hasn't run ``make cardconjurer``.
     """
-    fonts_dir = Path(__file__).resolve().parents[2] / "mtg_proxies" / "cardconjourer" / "node" / "fonts"
+    fonts_dir = Path(__file__).resolve().parents[2] / "mtg_proxies" / "cardconjurer" / "node" / "fonts"
     expected = [
         "matrix.ttf",
         "matrix-b.ttf",
@@ -636,17 +653,17 @@ def test_cardconjourer_fonts_are_bundled_in_repo() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_main_cardconjourer_help_mentions_dfc_flip(capsys: pytest.CaptureFixture) -> None:
-    """`mtg-proxies cardconjourer --help` documents --dfc-flip (split is the default)."""
+def test_main_cardconjurer_help_mentions_dfc_flip(capsys: pytest.CaptureFixture) -> None:
+    """`mtg-proxies cardconjurer --help` documents --dfc-flip (split is the default)."""
     from mtg_proxies.cli import main
 
-    with patch("sys.argv", ["mtg-proxies", "cardconjourer", "--help"]), pytest.raises(SystemExit):
+    with patch("sys.argv", ["mtg-proxies", "cardconjurer", "--help"]), pytest.raises(SystemExit):
         main()
 
     assert "--dfc-flip" in capsys.readouterr().out
 
 
-def test_main_cardconjourer_dfc_split_is_default(tmp_path: Path) -> None:
+def test_main_cardconjurer_dfc_split_is_default(tmp_path: Path) -> None:
     """Without any flag, every transform/modal_dfc slot renders split; normal cards don't."""
     from mtg_proxies.cli import main
 
@@ -657,8 +674,8 @@ def test_main_cardconjourer_dfc_split_is_default(tmp_path: Path) -> None:
     )
 
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(tmp_path / "out")]),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "--8th", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 2, "skipped": 0, "total": 2}
         main()
@@ -666,7 +683,7 @@ def test_main_cardconjourer_dfc_split_is_default(tmp_path: Path) -> None:
     assert mock_render.call_args.kwargs.get("dfc_split_slots") == {2}
 
 
-def test_main_cardconjourer_dfc_flip_deck_flag_disables_split(tmp_path: Path) -> None:
+def test_main_cardconjurer_dfc_flip_deck_flag_disables_split(tmp_path: Path) -> None:
     """Deck-wide --dfc-flip routes every DFC back to the Kamigawa-flip merge."""
     from mtg_proxies.cli import main
 
@@ -674,8 +691,8 @@ def test_main_cardconjourer_dfc_flip_deck_flag_disables_split(tmp_path: Path) ->
     deck.write_text("1 Delver of Secrets // Insectile Aberration\n")
 
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", "--dfc-flip", str(deck), str(tmp_path / "out")]),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "--8th", "--dfc-flip", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
         main()
@@ -683,19 +700,19 @@ def test_main_cardconjourer_dfc_flip_deck_flag_disables_split(tmp_path: Path) ->
     assert mock_render.call_args.kwargs.get("dfc_split_slots") == set()
 
 
-def test_main_cardconjourer_dfc_flip_modeline_excludes_one_card(tmp_path: Path) -> None:
-    """`#cardconjourer --dfc-flip` keeps that card on the flip merge while others split."""
+def test_main_cardconjurer_dfc_flip_modeline_excludes_one_card(tmp_path: Path) -> None:
+    """`#cardconjurer --dfc-flip` keeps that card on the flip merge while others split."""
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"
     deck.write_text(
-        "1 Delver of Secrets // Insectile Aberration #cardconjourer --dfc-flip\n"
+        "1 Delver of Secrets // Insectile Aberration #cardconjurer --dfc-flip\n"
         "1 Malakir Rebirth // Malakir Mire\n"
     )
 
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(tmp_path / "out")]),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "--8th", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 2, "skipped": 0, "total": 2}
         main()
@@ -703,19 +720,19 @@ def test_main_cardconjourer_dfc_flip_modeline_excludes_one_card(tmp_path: Path) 
     assert mock_render.call_args.kwargs.get("dfc_split_slots") == {2}
 
 
-def test_main_cardconjourer_dfc_split_modeline_overrides_deck_flip(tmp_path: Path) -> None:
+def test_main_cardconjurer_dfc_split_modeline_overrides_deck_flip(tmp_path: Path) -> None:
     """Per-card `--dfc-split` wins over the deck-wide --dfc-flip flag."""
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"
     deck.write_text(
-        "1 Delver of Secrets // Insectile Aberration #cardconjourer --dfc-split\n"
+        "1 Delver of Secrets // Insectile Aberration #cardconjurer --dfc-split\n"
         "1 Malakir Rebirth // Malakir Mire\n"
     )
 
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", "--dfc-flip", str(deck), str(tmp_path / "out")]),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "--8th", "--dfc-flip", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 2, "skipped": 0, "total": 2}
         main()
@@ -723,16 +740,16 @@ def test_main_cardconjourer_dfc_split_modeline_overrides_deck_flip(tmp_path: Pat
     assert mock_render.call_args.kwargs.get("dfc_split_slots") == {1}
 
 
-def test_main_cardconjourer_dfc_modelines_noop_on_normal_card(tmp_path: Path) -> None:
+def test_main_cardconjurer_dfc_modelines_noop_on_normal_card(tmp_path: Path) -> None:
     """DFC modelines on a single-faced card are ignored — no slot marked."""
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"
-    deck.write_text("1 Murder #cardconjourer --dfc-split\n")
+    deck.write_text("1 Murder #cardconjurer --dfc-split\n")
 
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(tmp_path / "out")]),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "--8th", str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
         main()
@@ -740,12 +757,12 @@ def test_main_cardconjourer_dfc_modelines_noop_on_normal_card(tmp_path: Path) ->
     assert mock_render.call_args.kwargs.get("dfc_split_slots") == set()
 
 
-def test_main_cardconjourer_dfc_split_prepare_each_returns_per_face_art(tmp_path: Path) -> None:
+def test_main_cardconjurer_dfc_split_prepare_each_returns_per_face_art(tmp_path: Path) -> None:
     """Split slots resolve each face's art separately (no flip composite, no MTGPics)."""
     from mtg_proxies.cli import main
 
     deck = tmp_path / "d.txt"
-    deck.write_text("1 Delver of Secrets // Insectile Aberration #cardconjourer --dfc-split\n")
+    deck.write_text("1 Delver of Secrets // Insectile Aberration #cardconjurer --dfc-split\n")
 
     fetched: list[str] = []
 
@@ -756,11 +773,11 @@ def test_main_cardconjourer_dfc_split_prepare_each_returns_per_face_art(tmp_path
         return str(p)
 
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(tmp_path / "out")]),
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "--8th", str(deck), str(tmp_path / "out")]),
         patch("mtg_proxies.scryfall.get_image", side_effect=fake_get_image),
-        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art") as mock_mtgpics,
+        patch("mtg_proxies.cardconjurer.mtgpics.fetch_mtgpics_art") as mock_mtgpics,
         patch("mtg_proxies.cli._composite_dfc_art") as mock_composite,
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as mock_render,
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
         main()

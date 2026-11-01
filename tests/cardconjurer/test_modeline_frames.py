@@ -14,18 +14,18 @@ def test_modeline_frame_overrides_deck(tmp_path: Path, frame: str, deck_frame: s
     from mtg_proxies.decklists.decklist import Card, Decklist
 
     deck = Decklist([
-        Card(1, {"name": "Override", "layout": "normal"}, f"#cardconjourer --{frame} --scryfall"),
-        Card(1, {"name": "Bare", "layout": "normal"}, "#cardconjourer"),
-        Card(1, {"name": "Modifier", "layout": "normal"}, "#cardconjourer --scryfall"),
+        Card(1, {"name": "Override", "layout": "normal"}, f"#cardconjurer --{frame} --scryfall"),
+        Card(1, {"name": "Bare", "layout": "normal"}, "#cardconjurer"),
+        Card(1, {"name": "Modifier", "layout": "normal"}, "#cardconjurer --scryfall"),
         Card(1, {"name": "Plain", "layout": "normal"}),
     ])
-    argv = ["mtg-proxies", "cardconjourer", "unused.txt", str(tmp_path / "out")]
+    argv = ["mtg-proxies", "cardconjurer", "unused.txt", str(tmp_path / "out")]
     if deck_frame:
         argv.append(f"--{deck_frame}")
     with (
         patch("sys.argv", argv),
         patch("mtg_proxies.cli.parse_decklist_spec", return_value=deck),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as render,
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as render,
     ):
         render.return_value = {"ok": 0, "skipped": 0, "total": 4}
         main()
@@ -47,13 +47,13 @@ def test_frame_override_survives_custom_art_and_scaling(tmp_path: Path) -> None:
     art.touch()
     deck = Decklist([
         Card(1, {"name": "Override", "type_line": "Legendary Creature"},
-             f"#cardconjourer --modern --custom-art {art}"),
+             f"#cardconjurer --modern --custom-art {art}"),
         Card(1, {"name": "Default"}),
     ])
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "unused.txt", str(tmp_path / "out"), "--retro-scaled"]),
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "unused.txt", str(tmp_path / "out"), "--retro-scaled"]),
         patch("mtg_proxies.cli.parse_decklist_spec", return_value=deck),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as render,
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as render,
         patch("mtg_proxies.frame_scale.enlarge_frame", return_value=1.0) as scale,
     ):
         render.return_value = {"ok": 0, "skipped": 0, "total": 2}
@@ -81,7 +81,7 @@ def test_frame_reaches_serialized_harness_job(tmp_path: Path, frame: str) -> Non
     art.touch()
     (tmp_path / ".cache/mtg-proxies/cardconjurer").mkdir(parents=True)
     deck = Decklist([
-        Card(1, {"name": "Override"}, f"#cardconjourer --{frame} --custom-art {art}"),
+        Card(1, {"name": "Override"}, f"#cardconjurer --{frame} --custom-art {art}"),
         Card(1, {"name": "Default"}),
     ])
     process = MagicMock()
@@ -92,7 +92,7 @@ def test_frame_reaches_serialized_harness_job(tmp_path: Path, frame: str) -> Non
     )
     process.stderr = io.StringIO()
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "unused.txt", str(tmp_path / "out"), "--8th"]),
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "unused.txt", str(tmp_path / "out"), "--8th"]),
         patch("pathlib.Path.home", return_value=tmp_path),
         patch("mtg_proxies.cli.parse_decklist_spec", return_value=deck),
         patch("subprocess.Popen", return_value=process),
@@ -113,14 +113,14 @@ def test_borderless_override_fetches_full_bleed_art(tmp_path: Path) -> None:
     art = tmp_path / "portrait.png"
     Image.new("RGB", (100, 140)).save(art)
     deck = Decklist([
-        Card(1, {"name": "Override", "set": "tst", "collector_number": "1"}, "#cardconjourer --borderless"),
+        Card(1, {"name": "Override", "set": "tst", "collector_number": "1"}, "#cardconjurer --borderless"),
     ])
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "unused.txt", str(tmp_path / "out"), "--retro"]),
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "unused.txt", str(tmp_path / "out"), "--retro"]),
         patch("mtg_proxies.cli.parse_decklist_spec", return_value=deck),
-        patch("mtg_proxies.cardconjourer.set_symbol.cc_symbol_exists", return_value=True),
-        patch("mtg_proxies.cardconjourer.mtgpics.fetch_mtgpics_art", return_value=art) as fetch,
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as render,
+        patch("mtg_proxies.cardconjurer.set_symbol.cc_symbol_exists", return_value=True),
+        patch("mtg_proxies.cardconjurer.mtgpics.fetch_mtgpics_art", return_value=art) as fetch,
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as render,
     ):
         render.return_value = {"ok": 0, "skipped": 0, "total": 1}
         main()
@@ -137,13 +137,13 @@ def test_scaled_modeline_scales_only_eligible_cards(tmp_path: Path, selector: st
     from mtg_proxies.decklists.decklist import Card, Decklist
 
     deck = Decklist([
-        Card(1, {"name": "Override"}, f"#cardconjourer --{selector}-scaled"),
+        Card(1, {"name": "Override"}, f"#cardconjurer --{selector}-scaled"),
         Card(1, {"name": "Plain"}),
     ])
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "unused.txt", str(tmp_path / "out"), deck_flag]),
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "unused.txt", str(tmp_path / "out"), deck_flag]),
         patch("mtg_proxies.cli.parse_decklist_spec", return_value=deck),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as render,
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as render,
         patch("mtg_proxies.frame_scale.enlarge_frame", return_value=1.0) as scale,
     ):
         def render_stub(*args: object, **kwargs: object) -> dict:
@@ -166,14 +166,14 @@ def test_scaled_parser_accepts_matching_base_and_rejects_other_frames(selector: 
     """Scaled flags imply frames and share the base-frame conflict rules."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer(f"#cardconjourer --{selector} --{selector}-scaled")
+    directives, warnings = parse_modeline_trailer(f"#cardconjurer --{selector} --{selector}-scaled")
     assert not warnings
     assert directives[0].flags[f"--{selector}-scaled"]
     for other in ("modern", "borderless", "m15-8th", "8th" if selector == "retro" else "retro"):
-        directives, warnings = parse_modeline_trailer(f"#cardconjourer --{selector}-scaled --{other}")
+        directives, warnings = parse_modeline_trailer(f"#cardconjurer --{selector}-scaled --{other}")
         assert warnings
         assert not directives[0].flags
-    directives, warnings = parse_modeline_trailer("#cardconjourer --retro-scaled --8th-scaled")
+    directives, warnings = parse_modeline_trailer("#cardconjurer --retro-scaled --8th-scaled")
     assert warnings
     assert not directives[0].flags
 
@@ -181,11 +181,11 @@ def test_scaled_parser_accepts_matching_base_and_rejects_other_frames(selector: 
 @pytest.mark.parametrize("frame", ["retro", "8th"])
 def test_print_batch_scales_a_separate_copy(tmp_path: Path, frame: str) -> None:
     """Print-time scaling leaves the harness source available to unscaled slots."""
-    from mtg_proxies.cardconjourer.per_card import CardConjourerRequest, render_per_card_batch
+    from mtg_proxies.cardconjurer.per_card import CardConjurerRequest, render_per_card_batch
 
     source = tmp_path / "render.png"
     source.write_bytes(b"rendered")
-    requests = [CardConjourerRequest("0001", "Example", frame, frame_overlap_mm=0.5)]
+    requests = [CardConjurerRequest("0001", "Example", frame, frame_overlap_mm=0.5)]
     with patch("mtg_proxies.frame_scale.enlarge_frame") as scale:
         outputs = render_per_card_batch(requests, run_harness=lambda jobs: [
             {"slot": "0001", "status": "ok", "out": str(source)},
@@ -206,8 +206,8 @@ def test_print_dispatch_passes_scaling_request(frame: str) -> None:
     from mtg_proxies.frame_scale import DEFAULT_OVERLAP_MM
 
     deck = Decklist([Card(1, {"name": "Example", "layout": "normal", "image_uris": {"normal": "scan.png"}},
-                          f"#cardconjourer --{frame}-scaled")])
-    with patch("mtg_proxies.cardconjourer.per_card.render_per_card_batch", return_value={}) as batch:
+                          f"#cardconjurer --{frame}-scaled")])
+    with patch("mtg_proxies.cardconjurer.per_card.render_per_card_batch", return_value={}) as batch:
         _apply_per_card_modelines(deck, ["original.png"])
     request = batch.call_args.args[0][0]
     assert request.frame == frame
@@ -220,11 +220,11 @@ def test_stacked_directives_keep_frame_and_scaling_consistent(tmp_path: Path, la
     from mtg_proxies.cli import main
     from mtg_proxies.decklists.decklist import Card, Decklist
 
-    deck = Decklist([Card(1, {"name": "Example"}, f"#cardconjourer --retro-scaled #cardconjourer {last}")])
+    deck = Decklist([Card(1, {"name": "Example"}, f"#cardconjurer --retro-scaled #cardconjurer {last}")])
     with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "unused.txt", str(tmp_path / "out")]),
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "unused.txt", str(tmp_path / "out")]),
         patch("mtg_proxies.cli.parse_decklist_spec", return_value=deck),
-        patch("mtg_proxies.cardconjourer.runner.render_deck") as render,
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as render,
         patch("mtg_proxies.frame_scale.enlarge_frame", return_value=1.0) as scale,
     ):
         render.return_value = {"ok": 0, "skipped": 0, "total": 1}
@@ -241,11 +241,11 @@ def test_stacked_directives_keep_frame_and_scaling_consistent(tmp_path: Path, la
 
 def test_print_scaling_warns_on_unmeasurable_frame(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """Failed enlargement reports the affected card instead of silently succeeding."""
-    from mtg_proxies.cardconjourer.per_card import CardConjourerRequest, render_per_card_batch
+    from mtg_proxies.cardconjurer.per_card import CardConjurerRequest, render_per_card_batch
 
     source = tmp_path / "render.png"
     source.write_bytes(b"rendered")
     with patch("mtg_proxies.frame_scale.enlarge_frame", return_value=None):
-        render_per_card_batch([CardConjourerRequest("0001", "Example", "retro", frame_overlap_mm=0.5)],
+        render_per_card_batch([CardConjurerRequest("0001", "Example", "retro", frame_overlap_mm=0.5)],
                               run_harness=lambda jobs: [{"slot": "0001", "status": "ok", "out": str(source)}])
     assert "could not be applied to 'Example'" in caplog.text
