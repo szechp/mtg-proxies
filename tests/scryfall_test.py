@@ -1318,3 +1318,18 @@ def test_get_localized_prints_omits_oracle_ids_with_no_print_in_language(
     result = scryfall.get_localized_prints({"oracle-1", "unknown-oracle-id"}, "de")
 
     assert result == {}
+
+
+def test_recommend_print_avoids_expeditions_unless_preferred(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mtg_proxies.scryfall import scryfall
+
+    # The art-style nudge alone was enough to put Arid Mesa on its ZNE print.
+    expedition = _test_card(
+        "zne", highres_image=True, set_code="zne", set_type="masterpiece", illustration_id="illo-oil"
+    )
+    regular = _test_card("mh2", highres_image=True, set_code="mh2")
+    monkeypatch.setattr(scryfall, "_illustration_style_delta", lambda: {"illo-oil": 8})
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [expedition, regular])
+
+    assert scryfall.recommend_print(card_name="Test Card")["id"] == "mh2"
+    assert scryfall.recommend_print(card_name="Test Card", preferred_sets=["ZNE"])["id"] == "zne"

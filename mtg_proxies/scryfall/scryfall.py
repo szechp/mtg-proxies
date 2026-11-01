@@ -48,6 +48,14 @@ _SCRYFALL_HEADERS = {"User-Agent": _USER_AGENT, "Accept": "*/*"}
 # filters but still look out-of-universe. Drop an entry when the underlying
 # issue is fixed upstream (e.g. Scryfall reclassifies the set) or when the
 # artist no longer produces such prints.
+# Set codes the "standard" art preference never picks unless nothing else exists or
+# the user names the set (``--set``). The Expeditions are ornate masterpiece-frame
+# reprints that otherwise tie the regular print on every scoring axis and can win
+# on the art-style nudge (Arid Mesa resolved to ZNE). Scryfall's ``masterpiece``
+# set_type is too broad to use instead: it also covers Retro Artifacts (wanted under
+# --retro), the Mystical Archive, Special Guests and more.
+_BLOCKED_SETS = frozenset({"exp", "zne"})
+
 _NONSTANDARD_ART_OVERRIDES = frozenset({
     # J22 (Jumpstart 2022) "Anime Border" basic land treatments. Promo_types
     # don't flag these; the artist+set tuple is the only stable signal.
@@ -525,6 +533,8 @@ def _standard_art_penalty(card: dict, preferred_sets: list[str] | None = None) -
     if any(keyword in set_name for keyword in keywords):
         penalty += 256
     if not in_preferred_set and (card.get("set") == "sld" or "secret lair" in set_name):
+        penalty += 256
+    if not in_preferred_set and card.get("set") in _BLOCKED_SETS:
         penalty += 256
     if card.get("set") == "plst" or set_name == "the list":
         penalty += 24
