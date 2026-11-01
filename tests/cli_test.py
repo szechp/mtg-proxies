@@ -3009,3 +3009,28 @@ def test_main_print_paper(tmp_path: Path) -> None:
         else:
             assert mock_p.call_args.args[1] == expected, flags
             assert mock_pdf.call_args.args[0] == ["a_p.png"]
+
+
+def test_mpcfill_dfc_drops_scryfall_back_face_in_flat_layout() -> None:
+    from mtg_proxies.cli import _build_slot_map, _mpcfill_front_only
+    from mtg_proxies.decklists.decklist import Decklist
+
+    def dfc(name: str) -> dict:
+        return {
+            "name": name,
+            "layout": "modal_dfc",
+            "card_faces": [{"image_uris": {"png": "front"}}, {"image_uris": {"png": "back"}}],
+        }
+
+    decklist = Decklist()
+    decklist.append_card(1, dfc("Swapped"), " #mpcfill --identifier 1bnoXedsOrXtMKhJmoCfVQEDGEtD6GrjP")
+    decklist.append_card(1, dfc("Plain"))
+    decklist.append_card(1, dfc("No id"), " #mpcfill")
+
+    assert _mpcfill_front_only(decklist) == {0}
+    flat = _build_slot_map(decklist, "all")
+    assert flat[0] == {"front": [("flat", 0)], "back": []}
+    assert flat[1] == {"front": [("flat", 1)], "back": [("flat", 2)]}
+    assert flat[2] == {"front": [("flat", 3)], "back": [("flat", 4)]}
+    # Duplex keeps the back: it prints behind the render on its own sheet.
+    assert _build_slot_map(decklist, "all", duplex=True)[0]["back"] == [("backs", 0)]

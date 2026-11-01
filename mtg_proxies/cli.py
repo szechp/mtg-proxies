@@ -32,7 +32,7 @@ from mtg_proxies.frame_scale import DEFAULT_OVERLAP_MM, MPC_OVERLAP_MM
 from mtg_proxies.mpcfill.cache import default_cache_root
 from mtg_proxies.mpcfill.order_xml import is_order_xml
 from mtg_proxies.print_cards import CARD_SIZE_MM
-from mtg_proxies.scans import fetch_scans_paired, fetch_scans_scryfall_flagged
+from mtg_proxies.scans import _include_face, fetch_scans_paired, fetch_scans_scryfall_flagged
 from mtg_proxies.tokens import get_tokens
 
 _mpcfill_log = logging.getLogger("mtg_proxies.mpcfill.cli")
@@ -522,6 +522,27 @@ def _normalize_custom_art_images(
 SlotKey = tuple[str, int]
 
 
+def _mpcfill_front_only(decklist: Decklist) -> set[int]:
+    """Return the indices of DFC cards whose ``#mpcfill --identifier`` render replaces the whole card.
+
+    An MPCFill render is one image, and a DFC line in the decklist names one face, so the
+    render replaces the card outright -- printing the Scryfall back face next to it too
+    put that face on the sheet a second time (a Pathway listed as both of its faces came
+    out as four cards). Non-duplex only: in duplex the back slot sits on its own sheet,
+    behind the front, and is wanted.
+    """
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    out: set[int] = set()
+    for card_idx, card in enumerate(decklist.cards):
+        if not card.modeline or len(card.card.get("card_faces") or []) < 2:
+            continue
+        directives, _ = parse_modeline_trailer(card.modeline)
+        if any(d.verb == "mpcfill" and d.flags.get("--identifier") for d in directives):
+            out.add(card_idx)
+    return out
+
+
 def _build_slot_map(
     decklist: Decklist,
     faces: Literal["all", "front", "back"],
@@ -545,7 +566,8 @@ def _build_slot_map(
     slot_map: list[dict[str, list[SlotKey]]] = []
     flat_idx = 0
     duplex_idx = 0
-    for card in decklist.cards:
+    front_only = set() if duplex else _mpcfill_front_only(decklist)
+    for card_idx, card in enumerate(decklist.cards):
         per: dict[str, list[SlotKey]] = {"front": [], "back": []}
         try:
             face_uris = list(card.image_uris)
@@ -563,8 +585,7 @@ def _build_slot_map(
             duplex_idx += card.count
         else:
             for face_i in range(len(face_uris)):
-                include = faces == "all" or (faces == "front" and face_i == 0) or (faces == "back" and face_i > 0)
-                if not include:
+                if not _include_face(faces, face_i, card_idx in front_only):
                     continue
                 key = "front" if face_i == 0 else "back"
                 for _ in range(card.count):
@@ -604,12 +625,12 @@ def _apply_per_card_modelines(
     the parallel ``backs`` list — both produced by ``fetch_scans_paired``.
 
     Pass 1 — source selection (``#mpcfill``): for each card with a ``#mpcfill`` directive,
-    swap the front-face slot(s) with an MPCFill render. If the card is a DFC AND has back
-    slots in the map (DFC in non-duplex, or DFC in duplex), also try matching the back-face
-    render keyed on the back-face name; misses fall back to Scryfall. Single-faced cards in
-    duplex mode have empty back-slot lists, so the user-supplied generic card-back stays
-    untouched. ``#mpcfill --scaled`` (or ``global_mpc_scaled``, from ``print --scaled``)
-    swaps in a frame-grown copy of the render; one with no measurable frame stays as-is.
+    swap the front-face slot(s) with an MPCFill render. In non-duplex mode a DFC carrying
+    one has no back slot at all (see ``_mpcfill_front_only``); in duplex its back slot keeps
+    the Scryfall back face. Single-faced cards in duplex mode have empty back-slot lists, so
+    the user-supplied generic card-back stays untouched. ``#mpcfill --scaled`` (or
+    ``global_mpc_scaled``, from ``print --scaled``) swaps in a frame-grown copy of the
+    render; one with no measurable frame stays as-is.
 
     Pass 2 — per-card transforms (``#upscale`` / ``#normalize`` / ``#shadow-lift``): when
     the corresponding global flag is OFF, gather slots from flagged cards and run the
@@ -2758,12 +2779,16 @@ def main() -> None:
                     art_preference="standard",
                     allow_low_res=True,
                 )
+                # Must match ``_build_slot_map``'s own front-only set, or modeline slots shift.
+                front_only = _mpcfill_front_only(decklist) if isinstance(decklist, Decklist) else set()
                 if duplex_mode:
                     fronts, backs, front_flags, back_flags = fetch_scans_paired(decklist, args.card_back)
                 elif upscale_scope is not None:
-                    images, highres_flags = fetch_scans_scryfall_flagged(decklist, faces=args.faces)
+                    images, highres_flags = fetch_scans_scryfall_flagged(
+                        decklist, faces=args.faces, front_only=front_only
+                    )
                 else:
-                    images = fetch_scans_scryfall(decklist, faces=args.faces)
+                    images = fetch_scans_scryfall(decklist, faces=args.faces, front_only=front_only)
 
                 # Per-card #verb modelines (#mpcfill / #upscale / #normalize / #shadow-lift,
                 # plus #no-* opt-outs and #upscale --upscale-model PATH overrides).
