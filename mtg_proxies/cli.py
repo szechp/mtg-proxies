@@ -1,4 +1,5 @@
 import argparse
+import dataclasses
 import logging
 import random
 import re
@@ -456,12 +457,12 @@ def papersize(string: str) -> np.ndarray:
 #   ``_bg<RGB>``                    — composite.py (e.g. ``_bg000000128``)
 #   ``_crop<N>``                    — print_cards.py per-card layout crop cache
 #   ``_bleed<pct>``                 — bleed.py
-#   ``_warm<strength>``             — warmth.py
+#   ``_paper_w<w>_s<s>_g<g>``       — paper.py
 # NOTE: black_vignette.py (``_bv<…>``) is NOT yet in this list — its outputs would be
 # re-ingested on the next ``--custom-art`` pass. Add when the renderer is updated to
 # emit user-visible bv-suffixed caches.
 _PIPELINE_CACHE_SUFFIX_RE = re.compile(
-    r"(_norm(_cp[\d.eE+-]+)?|_shadow(_a[\d.eE+-]+)?|_bg\d{9}|_crop\d+|_bleed[\d.]+|_warm[\d.]+)$"
+    r"(_norm(_cp[\d.eE+-]+)?|_shadow(_a[\d.eE+-]+)?|_bg\d{9}|_crop\d+|_bleed[\d.]+|_paper_w[\d.]+_s[\d.]+_g[\d.]+)$"
 )
 
 
@@ -2305,14 +2306,24 @@ def main() -> None:
         ),
     )
     print_parser.add_argument(
+        "--media",
+        choices=["glossy", "matte", "none"],
+        default="glossy",
+        help=(
+            "prepare the cards for the paper so they look like real cards: glossy (default) gets a"
+            " cream card-stock tint and a little more saturation; matte also gets deeper shadows, print"
+            " it with the driver's matte media setting. none leaves the images as they are (e.g. when"
+            " printing from another computer)."
+        ),
+    )
+    print_parser.add_argument(
         "--warm",
         type=_float_in_range(0.0, 3.0),
-        default=1.0,
+        default=None,
         metavar="STRENGTH",
         help=(
-            "tint the cards toward cream card stock so they look like real cards next to them on"
-            " bright paper. Default 1, calibrated on glossy sticker paper; 0 turns it off."
-            " Other paper (e.g. matte sticker sheets) needs its own value. E.g. --warm 0.5"
+            "override the cream card-stock tint of --media (glossy 1.5, matte 1; 0 = no tint)."
+            " E.g. --warm 1"
         ),
     )
     print_parser.add_argument(
@@ -3024,10 +3035,15 @@ def main() -> None:
                 images = composite_against_bg(images, bg_color=bg_rgb, skip_paths=user_supplied)
 
             # Last image step: everything printed goes through the printer, user art included.
-            if args.warm:
-                from mtg_proxies.warmth import warm_images
+            from mtg_proxies.paper import PAPERS, Paper, prepare_images
 
-                images = warm_images(images, args.warm)
+            paper = PAPERS.get(args.media, Paper(warm=0.0))
+            if args.warm is not None:
+                paper = dataclasses.replace(paper, warm=args.warm)
+            if paper == Paper(warm=0.0):
+                paper = None
+            else:
+                images = prepare_images(images, paper)
 
             try:
                 if args.outfile.lower().endswith(".pdf"):
@@ -3036,11 +3052,11 @@ def main() -> None:
                     background_color = args.background
                     if background_color is not None:
                         background_color = (np.array(colors.to_rgb(background_color)) * 255).astype(int)
-                        if args.warm:
-                            from mtg_proxies.warmth import warm_rgb
+                        if paper is not None:
+                            from mtg_proxies.paper import prepare_rgb
 
                             rgb = np.array([[background_color]], dtype=np.uint8)
-                            background_color = warm_rgb(rgb, args.warm)[0, 0].astype(int)
+                            background_color = prepare_rgb(rgb, paper)[0, 0].astype(int)
 
                     print_cards_fpdf(
                         images,

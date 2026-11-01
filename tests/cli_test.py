@@ -8,9 +8,9 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _skip_default_warmth() -> object:
-    """`print` warms every card by default; these tests pass fake paths, so skip the image step."""
-    with patch("mtg_proxies.warmth.warm_images", side_effect=lambda paths, strength: list(paths)) as mock:
+def _skip_default_paper_prep() -> object:
+    """`print` prepares every card for glossy paper by default; these tests pass fake paths, so skip it."""
+    with patch("mtg_proxies.paper.prepare_images", side_effect=lambda paths, *a, **kw: list(paths)) as mock:
         yield mock
 
 
@@ -2980,24 +2980,32 @@ def test_main_cube_merges_ratings_first_set_wins_on_name_collision(tmp_path: Pat
     assert merged_ratings["shared card"]["ever_drawn_win_rate"] == pytest.approx(0.6)
 
 
-def test_main_print_warm(tmp_path: Path) -> None:
-    """`--warm` is on at strength 1 by default, `--warm 0` turns it off, other strengths pass through."""
+def test_main_print_paper(tmp_path: Path) -> None:
+    """`--media` picks the preset (glossy by default), `--warm` overrides its tint, `none` skips the step."""
     from mtg_proxies.cli import main
+    from mtg_proxies.paper import PAPERS, Paper
 
     out_file = tmp_path / "out.pdf"
-    for flags, expected in [([], 1.0), (["--warm", "0"], None), (["--warm", "0.5"], 0.5)]:
+    cases = [
+        ([], PAPERS["glossy"]),
+        (["--media", "matte"], PAPERS["matte"]),
+        (["--media", "glossy", "--warm", "1"], Paper(warm=1.0, saturation=PAPERS["glossy"].saturation)),
+        (["--media", "none"], None),
+        (["--media", "none", "--warm", "1"], Paper(warm=1.0)),
+    ]
+    for flags, expected in cases:
         with (
             patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), *flags]),
             patch("mtg_proxies.cli.parse_decklist_spec", return_value=object()),
             patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["a.png"]),
-            patch("mtg_proxies.warmth.warm_images", return_value=["a_w.png"]) as mock_w,
+            patch("mtg_proxies.paper.prepare_images", return_value=["a_p.png"]) as mock_p,
             patch("mtg_proxies.cli.print_cards_fpdf") as mock_pdf,
         ):
             main()
 
         if expected is None:
-            mock_w.assert_not_called()
+            mock_p.assert_not_called()
             assert mock_pdf.call_args.args[0] == ["a.png"]
         else:
-            assert mock_w.call_args.args[1] == pytest.approx(expected)
-            assert mock_pdf.call_args.args[0] == ["a_w.png"]
+            assert mock_p.call_args.args[1] == expected, flags
+            assert mock_pdf.call_args.args[0] == ["a_p.png"]
