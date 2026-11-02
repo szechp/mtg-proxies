@@ -196,6 +196,66 @@ def _is_full_bleed_art(path: str | Path) -> bool:
     return h > w
 
 
+# Card Conjurer's canvas is 2010 px wide, so no art window can use more pixels than that:
+# the upscaled Scryfall art_crop is Lanczos-downsampled to this width (not to the 745 px
+# full-card default of `print --upscale`, which would throw most of the 4x gain away).
+CC_UPSCALE_TARGET_WIDTH = 2010
+# Card Conjurer art upscales use the MtG-art-tuned model by default (see ``upscale.MODELS``):
+# the only one that didn't turn modern scans' halftone rosettes into streaks.
+CC_DEFAULT_UPSCALE_MODEL = "mtg"
+_CC_UPSCALE_SRC_CACHE = Path.home() / ".cache" / "mtg-proxies" / "upscale-src"
+
+
+def _cc_upscale_scryfall_art(
+    paths: list[str], *, model_path: str | Path | None = None, target_width: int | None = None
+) -> list[str]:
+    """Upscale Scryfall ``art_crop`` files for a Card Conjurer render.
+
+    Only ever called on Scryfall scans — MTGPics and custom art are already hi-res. Art
+    crops at least ``target_width`` wide pass through unchanged. JPEGs are transcoded to
+    PNG under a persistent cache dir first (the upscaler writes RGBA next to its input,
+    which JPEG can't hold), so the upscale cache survives across runs.
+
+    Args:
+        paths: Local Scryfall art_crop files.
+        model_path: Built-in model name or ``.pth`` path; defaults to :data:`CC_DEFAULT_UPSCALE_MODEL`.
+        target_width: Output width; defaults to :data:`CC_UPSCALE_TARGET_WIDTH`.
+
+    Returns:
+        The paths with each upscaled entry replaced by its upscaled PNG.
+    """
+    from PIL import Image
+
+    from mtg_proxies.upscale import upscale_images
+
+    target_width = target_width or CC_UPSCALE_TARGET_WIDTH
+    sources: list[str] = []
+    highres: list[bool] = []
+    for src in paths:
+        src_path = Path(src)
+        with Image.open(src_path) as im:
+            highres.append(im.width >= target_width)
+            if src_path.suffix.lower() != ".png":
+                dst = _CC_UPSCALE_SRC_CACHE / (src_path.stem + ".png")
+                if not dst.is_file():
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    tmp = dst.with_suffix(".png.tmp")
+                    im.convert("RGB").save(tmp, format="PNG")
+                    tmp.replace(dst)
+                src_path = dst
+        sources.append(str(src_path))
+    if all(highres):
+        return list(paths)
+    out = upscale_images(
+        sources,
+        highres,
+        model_path=model_path or CC_DEFAULT_UPSCALE_MODEL,
+        target_width=target_width,
+        progress=False,
+    )
+    return [o if not h else p for o, h, p in zip(out, highres, paths, strict=True)]
+
+
 def _borderless_art_or_skip(name: str, fetch_mtgpics: Callable[[], object | None]) -> dict:
     """Resolve borderless art (full-bleed MTGPics only) or a skip signal.
 
@@ -761,6 +821,37 @@ def _apply_per_card_modelines(
         from mtg_proxies.cardconjurer.set_symbol import resolve_set_symbol
 
         cc_cache_root = _default_cache_root()
+        cc_auto_upscale: list[bool] = []  # resolved on first use: CUDA probe imports torch
+
+        def _cc_upscaled_art(card: Card, flags: dict) -> str | None:
+            # Same rule as the cardconjurer subcommand: only the Scryfall art_crop is upscaled,
+            # on by default with a CUDA GPU, `--upscale` / `--no-upscale` override per card.
+            # DFCs (flip-merged in the harness) and borderless renders keep the harness's art.
+            # `print --upscale-model` is for whole-card scans and doesn't apply here; a per-card
+            # `#cardconjurer --upscale-model` does (and implies --upscale).
+            if flags.get("--no-upscale"):
+                return None
+            if not flags.get("--upscale") and not flags.get("--upscale-model"):
+                if not cc_auto_upscale:
+                    from mtg_proxies.upscale import cuda_available
+
+                    cc_auto_upscale.append(cuda_available())
+                if not cc_auto_upscale[0]:
+                    return None
+            if card.card.get("layout") in _DFC_LAYOUTS or _will_render_borderless(
+                card.card, _resolve_cc_frame(flags)
+            ):
+                return None
+            art_url = (card.card.get("image_uris") or {}).get("art_crop")
+            if not art_url:
+                return None
+            try:
+                local = scryfall.get_image(art_url, silent=True)
+            except ValueError:
+                return None
+            [art] = _cc_upscale_scryfall_art([local], model_path=flags.get("--upscale-model"))
+            return None if art == local else art
+
         cc_requests: list[CardConjurerRequest] = []
         cc_slots_by_id: dict[str, list[SlotKey]] = {}
         for card_idx, (card, directives) in enumerate(zip(decklist.cards, parsed, strict=True)):
@@ -816,6 +907,8 @@ def _apply_per_card_modelines(
                         )
                     else:
                         resolved_art = str(art_path)
+                if resolved_art is None:
+                    resolved_art = _cc_upscaled_art(card, directive.flags)
                 slot_id = f"{card_idx + 1:04d}"
                 cc_requests.append(
                     CardConjurerRequest(
@@ -1535,9 +1628,8 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
     # Per-card art resolution. For each card we try MTGPics first (native
     # ~1430x1058 hi-res art crops — way better than Scryfall art_crop's
     # ~626x457 for older cards, no GPU upscale needed). On MTGPics miss
-    # (older / promo / non-mainstream sets), fall back to Scryfall art_crop
-    # — RAW by default (cardconjurer's renderer scales to fit the art
-    # window anyway), or upscaled via Real-ESRGAN if --upscale is set.
+    # (older / promo / non-mainstream sets), fall back to Scryfall art_crop,
+    # upscaled via Real-ESRGAN when a CUDA GPU is available (see _wants_upscale).
     #
     # ``prepare_each(slot)`` is invoked by render_deck/_run right before
     # each job is sent to the harness — interleaved so PNGs appear in the
@@ -1547,33 +1639,46 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
     mtgpics_cache_root = _mtgpics.default_cache_root()
     mtgpics_stats = {"hits": 0, "misses": 0}
 
-    transcode_dir: Path | None = None
+    # Upscaling applies to Scryfall art_crop fallbacks only (MTGPics / custom art are
+    # already hi-res). Per slot: ``#cardconjurer --upscale`` / ``--no-upscale`` modeline,
+    # then the deck-wide ``--upscale`` / ``--no-upscale`` flag, then auto = on iff a CUDA
+    # GPU is usable. Auto is resolved lazily so decks that never hit the fallback don't
+    # pay for importing torch.
     upscale_kwargs: dict = {}
-    if args.upscale:
-        from PIL import Image as _PILImage
+    if args.upscale_model:
+        upscale_kwargs["model_path"] = args.upscale_model
+    if args.upscale_target_width:
+        upscale_kwargs["target_width"] = args.upscale_target_width
+    slot_upscale: dict[int, bool] = {}
+    slot_upscale_model: dict[int, str] = {}
+    upscale_stats = {"upscaled": 0}
+    deck_upscale: dict[str, bool | None] = {
+        "value": True if args.upscale is None and args.upscale_model else args.upscale
+    }
 
+    def _wants_upscale(slot_int: int) -> bool:
+        if slot_int in slot_upscale:
+            return slot_upscale[slot_int]
+        if deck_upscale["value"] is None:
+            from mtg_proxies.upscale import cuda_available
 
-        # Scryfall art_crops are JPEGs. The upscaler always emits RGBA (it
-        # adds an alpha channel for the rounded-corner blend) and PIL refuses
-        # to save RGBA as JPEG. Transcode to PNG so the upscaler's derived
-        # output path is .png and saves cleanly. Cache in a temp dir.
-        transcode_dir = Path(tempfile.mkdtemp(prefix="cc-upscale-src-"))
+            deck_upscale["value"] = cuda_available()
+            if not deck_upscale["value"]:
+                print(
+                    "[cardconjurer] no CUDA GPU: Scryfall art fallbacks stay un-upscaled "
+                    "(force with --upscale or a per-card `#cardconjurer --upscale`)."
+                )
+        return bool(deck_upscale["value"])
 
-        def _ensure_png(src: str) -> str:
-            src_path = Path(src)
-            if src_path.suffix.lower() == ".png":
-                return src
-            assert transcode_dir is not None
-            dst = transcode_dir / (src_path.stem + ".png")
-            if not dst.is_file():
-                with _PILImage.open(src_path) as im:
-                    im.convert("RGB").save(dst, format="PNG")
-            return str(dst)
-
-        if args.upscale_model:
-            upscale_kwargs["model_path"] = args.upscale_model
-        if args.upscale_target_width:
-            upscale_kwargs["target_width"] = args.upscale_target_width
+    def _maybe_upscale(slot_int: int, paths: list[str]) -> list[str]:
+        if not _wants_upscale(slot_int):
+            return paths
+        kwargs = upscale_kwargs
+        if slot_int in slot_upscale_model:
+            kwargs = {**upscale_kwargs, "model_path": slot_upscale_model[slot_int]}
+        out = _cc_upscale_scryfall_art(paths, **kwargs)
+        upscale_stats["upscaled"] += sum(o != p for o, p in zip(out, paths, strict=True))
+        return out
 
     # Check each card's modeline for ``#cardconjurer --scryfall`` (per-card
     # opt-out of MTGPics on watermark-affected scans without flipping the
@@ -1617,6 +1722,12 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
                     slot_scryfall_override[slot_int] = True
                 if d.flags.get("--skip"):
                     slot_skip.add(slot_int)
+                if d.flags.get("--upscale-model"):
+                    slot_upscale_model[slot_int] = d.flags["--upscale-model"]
+                if d.flags.get("--upscale") or d.flags.get("--upscale-model"):
+                    slot_upscale[slot_int] = True
+                elif d.flags.get("--no-upscale"):
+                    slot_upscale[slot_int] = False
                 if d.flags.get("--dfc-split"):
                     slot_dfc_split_request.add(slot_int)
                 if d.flags.get("--dfc-flip"):
@@ -1874,11 +1985,7 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
                         # of crashing the whole batch.
                         _warn(f"Note: {card['name']!r} DFC art unavailable ({exc}); using harness default.")
                     else:
-                        if args.upscale:
-                            from mtg_proxies import upscale as _upscale_mod
-                            [f_local, b_local] = _upscale_mod.upscale_images(
-                                [_ensure_png(f_local), _ensure_png(b_local)], progress=False, **upscale_kwargs
-                            )
+                        [f_local, b_local] = _maybe_upscale(slot_int, [f_local, b_local])
 
                         if slot_int in dfc_split_slots:
                             return {**extras, "art_path": str(f_local), "art_path_back": str(b_local)}
@@ -1903,7 +2010,7 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
                     return {**extras, "art_path": str(mtgp)}
             mtgpics_stats["misses"] += 1
 
-        # 2) Fallback: Scryfall art_crop. Raw by default, upscaled with --upscale.
+        # 2) Fallback: Scryfall art_crop, upscaled per _wants_upscale.
         uris = card.card.get("image_uris") or {}
         art_url = uris.get("art_crop")
         if not art_url:
@@ -1923,14 +2030,7 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
             # harness's own default Scryfall fetch instead of crashing the whole batch.
             _warn(f"Note: {card['name']!r} art unavailable ({exc}); using harness default.")
             return extras
-        if args.upscale:
-            local_png = _ensure_png(local)
-            from mtg_proxies import upscale as _upscale_mod
-            # progress=False silences upscale_images' internal "Upscaling lowres
-            # images: 100% 1/1" bar; the outer "Rendering" bar is the one the
-            # user cares about and it would otherwise flicker on every card.
-            [upscaled] = _upscale_mod.upscale_images([local_png], progress=False, **upscale_kwargs)
-            return {**extras, "art_path": upscaled}
+        [local] = _maybe_upscale(slot_int, [local])
         return {**extras, "art_path": local}
 
     prepare_each_cb = _prepare_each
@@ -2125,7 +2225,7 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
         cards,
         args.outdir,
         frame=frame,
-        upscale=args.upscale,
+        upscale=bool(args.upscale),
         run_harness=_run,
         prepare_each=prepare_each_cb,
         dfc_split_slots=dfc_split_slots,
@@ -2139,16 +2239,15 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
             f"[cardconjurer] frame scaling: {frame_scale_stats['scaled']} frames grown "
             f"~{frame_scale_stats['scale']:.3f}x for {DEFAULT_OVERLAP_MM:g} mm overlap per side"
         )
+    upscaled_note = f" ({upscale_stats['upscaled']} upscaled)" if upscale_stats["upscaled"] else ""
     if args.scryfall:
-        suffix = " (upscaled)" if args.upscale else ""
-        print(f"[cardconjurer] art source: Scryfall art_crop only (--scryfall){suffix}")
+        print(f"[cardconjurer] art source: Scryfall art_crop only (--scryfall){upscaled_note}")
     else:
         total_art = mtgpics_stats["hits"] + mtgpics_stats["misses"]
         if total_art:
             print(
                 f"[cardconjurer] art sources: {mtgpics_stats['hits']}/{total_art} MTGPics, "
-                f"{mtgpics_stats['misses']} Scryfall fallback"
-                + (" (upscaled)" if args.upscale else "")
+                f"{mtgpics_stats['misses']} Scryfall fallback{upscaled_note}"
             )
 
 
@@ -2276,8 +2375,11 @@ def main() -> None:
     print_parser.add_argument(
         "--upscale-model",
         default=None,
-        metavar="PATH",
-        help="path to a local .pth upscaling model (default: RealESRNet_x4plus); implies --upscale auto",
+        metavar="NAME|PATH",
+        help=(
+            "upscale model: a built-in name (net, mtg, anime) or a path to a local .pth file"
+            " (default: net = RealESRNet_x4plus); implies --upscale auto"
+        ),
     )
     print_parser.add_argument(
         "--upscale-target-width",
@@ -2658,27 +2760,28 @@ def main() -> None:
         ),
     )
     cardconjurer_parser.add_argument(
-        "--upscale", action="store_true", default=False,
+        "--upscale", action=argparse.BooleanOptionalAction, default=None,
         help=(
-            "before rendering, run each card's Scryfall art_crop through Real-ESRGAN."
-            " Same model and cache as `mtg-proxies print --upscale`."
+            "run Scryfall art_crop fallbacks (MTGPics misses, DFC faces, tokens) through"
+            " Real-ESRGAN before rendering; MTGPics and custom art are never upscaled."
+            " Default: on when a CUDA GPU is available. Per card:"
+            " `#cardconjurer --upscale` / `--no-upscale` / `--upscale-model NAME|PATH`."
         ),
     )
     cardconjurer_parser.add_argument(
-        "--upscale-model", default=None, metavar="PATH",
+        "--upscale-model", default=None, metavar="NAME|PATH",
         help=(
-            "path to a local .pth upscaling model (default: RealESRNet_x4plus)."
-            " Useful for swapping in a GAN-trained variant (e.g."
-            " RealESRGAN_x4plus.pth) that better suppresses JPEG / halftone"
-            " artifacts than the conservative MSE-trained default."
+            f"art upscale model: a built-in name (mtg, net, anime; default: {CC_DEFAULT_UPSCALE_MODEL})"
+            " or a path to a local .pth file. mtg = Real-ESRGAN tuned on MtG art crops"
+            " (removes print rosettes, faithful, a bit soft); net = RealESRNet (crisper on"
+            " bold old art, streaks on modern scans); anime = flattest, repaints painterly art."
         ),
     )
     cardconjurer_parser.add_argument(
         "--upscale-target-width", type=int, default=None, metavar="PX",
         help=(
             "downsample the upscaled art to PX wide before handing it to the"
-            " renderer. Default: unset, keep the model's full 4× output. Useful"
-            " when the chosen model emits oversized intermediates."
+            f" renderer. Default: {CC_UPSCALE_TARGET_WIDTH} (Card Conjurer's canvas width)."
         ),
     )
     from mtg_proxies.decklists.modelines import _lang_code

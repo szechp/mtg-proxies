@@ -15,7 +15,35 @@ if TYPE_CHECKING:
 # Lanczos downsample to ``target_width``, producing clean print-ready output that
 # matches the artist's painted intent rather than over-sharpening it.
 _MODEL_URL = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.1/RealESRNet_x4plus.pth"
-_MODEL_CACHE = Path.home() / ".cache" / "mtg-proxies" / "RealESRNet_x4plus.pth"
+_MODEL_DIR = Path.home() / ".cache" / "mtg-proxies"
+_MODEL_CACHE = _MODEL_DIR / "RealESRNet_x4plus.pth"
+
+# Built-in models, selectable by short name wherever a model path is accepted
+# (``--upscale-model``, ``#upscale --upscale-model``, ``#cardconjurer --upscale-model``);
+# downloaded into ``_MODEL_DIR`` on first use. Picked by a side-by-side on six Scryfall
+# art crops (1993-2022 scans):
+#   net   — the default above; crisp on bold old art, but turns the halftone rosettes of
+#           modern scans into vertical streaks and grids.
+#   mtg   — RealESRGAN_x2plus fine-tuned on MtG art crops (rullaf, BSD-3) with rosette
+#           removal; the only one that stayed artifact-free and faithful on every card,
+#           slightly soft. 2x only — a second pass softened detail further, so don't chain it.
+#           Pinned to a repo commit so the weights can't change under the cache key.
+#   anime — RealESRGAN_x4plus_anime_6B; flattens halftones fully but repaints painterly
+#           art as cel-shaded (plastic faces, invented strokes).
+MODELS: dict[str, tuple[str, str]] = {
+    "net": (_MODEL_URL, _MODEL_CACHE.name),
+    "mtg": (
+        (
+            "https://huggingface.co/rullaf/RealESRGAN_MtG/resolve/2424115f18e44d2152fc9b1561359e09b969b2ca/"
+            "RealESRGAN_x2plus_mtg_v1.pth"
+        ),
+        "RealESRGAN_x2plus_mtg_v1.pth",
+    ),
+    "anime": (
+        "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth",
+        "RealESRGAN_x4plus_anime_6B.pth",
+    ),
+}
 
 # Default target width after upscaling: matches Scryfall highres PNG width (≈298 DPI on a
 # 2.5" card, the right size for desktop printing). The AI sharpening survives the Lanczos
@@ -23,22 +51,87 @@ _MODEL_CACHE = Path.home() / ".cache" / "mtg-proxies" / "RealESRNet_x4plus.pth"
 DEFAULT_TARGET_WIDTH = 745
 
 
-def _download_model() -> Path:
-    if _MODEL_CACHE.exists():
-        return _MODEL_CACHE
-    _MODEL_CACHE.parent.mkdir(parents=True, exist_ok=True)
+# NixOS exposes the NVIDIA userspace driver only here; pip-installed torch dlopens
+# ``libcuda.so.1`` through the default search path and silently falls back to CPU.
+_NIXOS_LIBCUDA = Path("/run/opengl-driver/lib/libcuda.so.1")
+
+# Inputs above this many pixels are inferred in overlapping tiles so a big art crop doesn't
+# exhaust VRAM on 8 GB cards: a 626x457 Scryfall art_crop (~286k px) peaks at ~3.6 GB untiled
+# with RealESRNet on a 3060 Ti, and memory grows with area. The pad is the context border each
+# tile is inferred with; RRDB's receptive field is wide, so 96 px is needed to keep seams
+# invisible (measured max seam error: 16 px → 9/255, 64 px → 2/255, 96 px → 0.13/255).
+_MAX_UNTILED_PIXELS = 320_000
+_TILE = 448
+_TILE_PAD = 96
+
+# Loaded models, keyed by (model path, device) — one load per process, not one per call.
+_LOADED_MODELS: dict[tuple[str, str], object] = {}
+
+
+def _preload_nixos_libcuda() -> None:
+    """Load NixOS's ``libcuda.so.1`` so torch's later dlopen finds it.
+
+    Setting ``LD_LIBRARY_PATH`` from inside the running process has no effect on the
+    loader, but a soname that is already loaded is reused. No-op everywhere else.
+    """
+    if not _NIXOS_LIBCUDA.exists():
+        return
+    import contextlib
+    import ctypes
+
+    with contextlib.suppress(OSError):
+        ctypes.CDLL(str(_NIXOS_LIBCUDA), mode=ctypes.RTLD_GLOBAL)
+
+
+def cuda_available() -> bool:
+    """Return True when torch can use a CUDA device (loads NixOS's driver lib first)."""
+    _preload_nixos_libcuda()
+    try:
+        import torch
+    except ImportError:
+        return False
+    return torch.cuda.is_available()
+
+
+def _infer(model: object, tensor: object, scale: int) -> object:
+    """Run ``model`` on a 1x3xHxW tensor, tiling above :data:`_MAX_UNTILED_PIXELS`."""
+    import torch
+
+    _, _, h, w = tensor.shape
+    if h * w <= _MAX_UNTILED_PIXELS:
+        return model(tensor)
+    out = torch.zeros((1, 3, h * scale, w * scale), dtype=tensor.dtype, device=tensor.device)
+    for y in range(0, h, _TILE):
+        for x in range(0, w, _TILE):
+            # Infer each tile with a context border so the seams don't show, then keep
+            # only the tile's own region of the output.
+            y0, x0 = max(y - _TILE_PAD, 0), max(x - _TILE_PAD, 0)
+            y1, x1 = min(y + _TILE + _TILE_PAD, h), min(x + _TILE + _TILE_PAD, w)
+            tile_out = model(tensor[:, :, y0:y1, x0:x1])
+            ty, tx = (y - y0) * scale, (x - x0) * scale
+            th, tw = (min(y + _TILE, h) - y) * scale, (min(x + _TILE, w) - x) * scale
+            out[:, :, y * scale : y * scale + th, x * scale : x * scale + tw] = tile_out[
+                :, :, ty : ty + th, tx : tx + tw
+            ]
+    return out
+
+
+def _download_model(url: str = _MODEL_URL, dest: Path = _MODEL_CACHE) -> Path:
+    if dest.exists():
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
     # Stream into a temp file and rename atomically so an interrupted download does not
     # leave a corrupt .pth at the cache path that future runs would load. tqdm reports
     # bytes-per-second + ETA so the run doesn't look frozen on a slow connection.
-    tmp_path = _MODEL_CACHE.with_suffix(_MODEL_CACHE.suffix + ".tmp")
+    tmp_path = dest.with_suffix(dest.suffix + ".tmp")
     try:
-        with requests.get(_MODEL_URL, stream=True, timeout=30) as response:
+        with requests.get(url, stream=True, timeout=30) as response:
             response.raise_for_status()
             total = int(response.headers.get("content-length", 0)) or None
             with (
                 tmp_path.open("wb") as fh,
                 tqdm(
-                    desc=f"Downloading {_MODEL_CACHE.name}",
+                    desc=f"Downloading {dest.name}",
                     total=total,
                     unit="B",
                     unit_scale=True,
@@ -50,7 +143,7 @@ def _download_model() -> Path:
                         continue
                     fh.write(chunk)
                     bar.update(len(chunk))
-        tmp_path.replace(_MODEL_CACHE)
+        tmp_path.replace(dest)
     except BaseException:
         # ``BaseException`` (not ``Exception``) so a ctrl-C mid-download also drops the
         # tempfile — model downloads can take minutes on a slow connection, and a partial
@@ -58,7 +151,7 @@ def _download_model() -> Path:
         # to raise an opaque torch deserialization error on the next run.
         tmp_path.unlink(missing_ok=True)
         raise
-    return _MODEL_CACHE
+    return dest
 
 
 def _attach_alpha_from_source(upscaled_rgb: Image.Image, source_rgba: Image.Image) -> Image.Image:
@@ -141,9 +234,10 @@ def upscale_images(
         image_paths: List of absolute paths to card image files.
         highres_flags: Per-image boolean flags from Scryfall metadata. If None,
             all images are treated as needing upscaling.
-        model_path: Path to a local ``.pth`` model file. Defaults to
-            RealESRNet_x4plus (downloaded on first use) — MSE-trained, faithful to
-            the source painterly art, no GAN hallucination.
+        model_path: A built-in model name from :data:`MODELS` (``net`` / ``mtg`` /
+            ``anime``, downloaded on first use) or a path to a local ``.pth`` file.
+            Defaults to ``net`` (RealESRNet_x4plus) — MSE-trained, faithful to the
+            source painterly art, no GAN hallucination.
         target_width: Final width in pixels to downscale upscaled cards to. The
             AI sharpening survives the Lanczos downsample. Defaults to
             :data:`DEFAULT_TARGET_WIDTH` (745, matches Scryfall highres). Higher
@@ -159,8 +253,10 @@ def upscale_images(
     # Resolve model identity up-front so cache lookups can be model-aware. For the default
     # case use the would-be cache path so we don't trigger the download just to compute a
     # hash — the actual download is still deferred until we know we need to run the model.
-    resolved_model_path: Path = Path(model_path) if model_path else _MODEL_CACHE
+    named = MODELS.get(str(model_path or "net"))
+    resolved_model_path: Path = _MODEL_DIR / named[1] if named else Path(model_path).expanduser()
     model_id = _model_identity_hash(resolved_model_path)
+    _preload_nixos_libcuda()
     try:
         import numpy as np
         import torch
@@ -210,19 +306,22 @@ def upscale_images(
     ]
 
     if needs_upscale:
-        if model_path:
-            if not resolved_model_path.is_file():
-                raise FileNotFoundError(f"Upscale model not found: {resolved_model_path}")
-        else:
-            resolved_model_path = _download_model()
+        if named:
+            resolved_model_path = _download_model(named[0], resolved_model_path)
+        elif not resolved_model_path.is_file():
+            raise FileNotFoundError(f"Upscale model not found: {resolved_model_path}")
         # Print status lines so the gap between shadow-lift finishing and the first card
         # being processed isn't perceived as a hang (model loading + first-inference
         # warmup can take 10-30 s on CPU for a 64 MB checkpoint).
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        device_label = torch.cuda.get_device_name(0) if device.type == "cuda" else "CPU"
-        print(f"Loading upscale model {resolved_model_path.name} onto {device_label}…")
-        model = ModelLoader().load_from_file(str(resolved_model_path))
-        model = model.eval().to(device)
+        model_key = (str(resolved_model_path), device.type)
+        model = _LOADED_MODELS.get(model_key)
+        if model is None:
+            device_label = torch.cuda.get_device_name(0) if device.type == "cuda" else "CPU"
+            print(f"Loading upscale model {resolved_model_path.name} onto {device_label}…")
+            model = ModelLoader().load_from_file(str(resolved_model_path))
+            model = model.eval().to(device)
+            _LOADED_MODELS[model_key] = model
 
         for path in tqdm(needs_upscale, desc="Upscaling lowres images", disable=not progress):
             # Open RGBA so the rounded-corner transparency Scryfall provides survives the
@@ -237,7 +336,7 @@ def upscale_images(
             tensor = torch.from_numpy(np.array(rgb_input)).permute(2, 0, 1).float() / 255.0
             tensor = tensor.unsqueeze(0).to(device)
             with torch.inference_mode():
-                output = model(tensor)
+                output = _infer(model, tensor, model.scale)
             result = (output.squeeze(0).permute(1, 2, 0).clamp(0, 1) * 255).byte().cpu().numpy()
             upscaled_rgb = Image.fromarray(result)
             # Downscale to ``target_width`` so PDF sizes stay sane while AI sharpening is
@@ -250,6 +349,8 @@ def upscale_images(
             del tensor, output, result, upscaled_rgb, upscaled_rgba, rgba
             if device.type == "cuda":
                 torch.cuda.empty_cache()
+    elif not progress:
+        pass
     elif lowres_paths:
         print(f"All {len(lowres_paths)} lowres images already upscaled (cached).")
     else:

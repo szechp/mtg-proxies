@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -792,3 +792,121 @@ def test_main_cardconjurer_dfc_split_prepare_each_returns_per_face_art(tmp_path:
     assert extras["art_path_back"] == str(tmp_path / "art2.jpg")
     mock_composite.assert_not_called()
     mock_mtgpics.assert_not_called()
+
+
+def _prepare_each_for(
+    tmp_path: Path, deck_line: str, extra_argv: list[str], *, mtgpics: Path | None = None, cuda: bool = False
+) -> tuple[dict, MagicMock]:
+    """Run the cardconjurer subcommand on one card and return (prepare_each(1), upscale mock)."""
+    from PIL import Image
+
+    from mtg_proxies.cli import main
+
+    deck = tmp_path / "d.txt"
+    deck.write_text(deck_line + "\n")
+    art_jpg = tmp_path / "art_crop_front_abc.jpg"
+    Image.new("RGB", (626, 457)).save(art_jpg, format="JPEG")
+    upscaled = tmp_path / "art_crop_front_abc_4x.png"
+
+    def _fake_upscale(paths: list[str], highres: list[bool], **_kw: object) -> list[str]:
+        return [p if h else str(upscaled) for p, h in zip(paths, highres, strict=True)]
+
+    with (
+        patch("sys.argv", ["mtg-proxies", "cardconjurer", "--8th", *extra_argv, str(deck), str(tmp_path / "out")]),
+        patch("mtg_proxies.upscale.cuda_available", return_value=cuda),
+        patch("mtg_proxies.cardconjurer.mtgpics.fetch_mtgpics_art", return_value=mtgpics),
+        patch("mtg_proxies.scryfall.get_image", return_value=str(art_jpg)),
+        patch("mtg_proxies.upscale.upscale_images", side_effect=_fake_upscale) as mock_upscale,
+        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
+    ):
+        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
+        main()
+        extras = mock_render.call_args.kwargs["prepare_each"](1)
+    return extras, mock_upscale
+
+
+def test_cc_upscale_auto_on_with_cuda(tmp_path: Path) -> None:
+    """No flag + CUDA GPU → the Scryfall fallback art is upscaled."""
+    extras, mock_upscale = _prepare_each_for(tmp_path, "1 Murder", [], cuda=True)
+    mock_upscale.assert_called_once()
+    assert extras["art_path"].endswith("_4x.png")
+
+
+def test_cc_upscale_never_touches_mtgpics_art(tmp_path: Path) -> None:
+    """MTGPics art is already hi-res: never upscaled, even with --upscale."""
+    mtgp = tmp_path / "mtgp.jpg"
+    mtgp.write_bytes(b"x" * 10000)
+    extras, mock_upscale = _prepare_each_for(tmp_path, "1 Murder", ["--upscale"], mtgpics=mtgp, cuda=True)
+    mock_upscale.assert_not_called()
+    assert extras["art_path"] == str(mtgp)
+
+
+def test_cc_upscale_never_touches_custom_art(tmp_path: Path) -> None:
+    """`#cardconjurer --custom-art` is user art: never upscaled."""
+    art = tmp_path / "mine.png"
+    art.write_bytes(b"png")
+    extras, mock_upscale = _prepare_each_for(
+        tmp_path, f"1 Murder #cardconjurer --custom-art {art}", ["--upscale"], cuda=True
+    )
+    mock_upscale.assert_not_called()
+    assert extras["art_path"] == str(art)
+
+
+def test_cc_upscale_modeline_opt_out_beats_deck_flag(tmp_path: Path) -> None:
+    """`#cardconjurer --no-upscale` wins over the deck-wide --upscale."""
+    _, mock_upscale = _prepare_each_for(tmp_path, "1 Murder #cardconjurer --no-upscale", ["--upscale"], cuda=True)
+    mock_upscale.assert_not_called()
+
+
+def test_cc_upscale_modeline_opt_in_without_cuda(tmp_path: Path) -> None:
+    """`#cardconjurer --upscale` forces the upscale for that card even when auto is off (no GPU)."""
+    extras, mock_upscale = _prepare_each_for(tmp_path, "1 Murder #cardconjurer --upscale", [], cuda=False)
+    mock_upscale.assert_called_once()
+    assert extras["art_path"].endswith("_4x.png")
+
+
+def test_cc_upscale_deck_opt_out(tmp_path: Path) -> None:
+    """--no-upscale turns the auto default off even with a GPU."""
+    extras, mock_upscale = _prepare_each_for(tmp_path, "1 Murder", ["--no-upscale"], cuda=True)
+    mock_upscale.assert_not_called()
+    assert extras["art_path"].endswith(".jpg")
+
+
+def test_cc_upscale_helper_skips_wide_art_and_caches_transcode(tmp_path: Path) -> None:
+    """Art crops already at the target width pass through; JPEGs land in the persistent PNG cache."""
+    from PIL import Image
+
+    from mtg_proxies import cli
+
+    wide = tmp_path / "wide.jpg"
+    Image.new("RGB", (cli.CC_UPSCALE_TARGET_WIDTH, 100)).save(wide, format="JPEG")
+    with patch("mtg_proxies.upscale.upscale_images") as mock_upscale:
+        assert cli._cc_upscale_scryfall_art([str(wide)]) == [str(wide)]
+    mock_upscale.assert_not_called()
+
+    small = tmp_path / "small.jpg"
+    Image.new("RGB", (626, 457)).save(small, format="JPEG")
+    with patch("mtg_proxies.upscale.upscale_images", return_value=["/up.png"]) as mock_upscale:
+        assert cli._cc_upscale_scryfall_art([str(small)]) == ["/up.png"]
+    [src] = mock_upscale.call_args.args[0]
+    assert Path(src) == cli._CC_UPSCALE_SRC_CACHE / "small.png"
+    assert mock_upscale.call_args.kwargs["target_width"] == cli.CC_UPSCALE_TARGET_WIDTH
+
+
+def test_cc_upscale_defaults_to_mtg_model(tmp_path: Path) -> None:
+    """The cardconjurer art upscale uses the MtG-tuned model unless told otherwise."""
+    _, mock_upscale = _prepare_each_for(tmp_path, "1 Murder", [], cuda=True)
+    assert mock_upscale.call_args.kwargs["model_path"] == "mtg"
+
+
+def test_cc_upscale_modeline_model_overrides_and_implies_upscale(tmp_path: Path) -> None:
+    """`#cardconjurer --upscale-model net` picks the model for that card and turns the upscale on."""
+    extras, mock_upscale = _prepare_each_for(tmp_path, "1 Murder #cardconjurer --upscale-model net", [], cuda=False)
+    assert mock_upscale.call_args.kwargs["model_path"] == "net"
+    assert extras["art_path"].endswith("_4x.png")
+
+
+def test_cc_upscale_deck_model_flag(tmp_path: Path) -> None:
+    """Deck-wide `--upscale-model anime` applies to every fallback card."""
+    _, mock_upscale = _prepare_each_for(tmp_path, "1 Murder", ["--upscale-model", "anime"], cuda=True)
+    assert mock_upscale.call_args.kwargs["model_path"] == "anime"

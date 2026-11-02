@@ -674,6 +674,37 @@ def test_modeline_parse_cardconjurer_upscale() -> None:
     assert warnings == []
 
 
+def test_modeline_parse_cardconjurer_no_upscale() -> None:
+    """`--no-upscale` opts this card out of the default fallback-art upscale."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjurer --8th --no-upscale")
+
+    assert directives[0].flags == {"--8th": True, "--no-upscale": True}
+    assert warnings == []
+
+
+def test_modeline_parse_cardconjurer_upscale_model() -> None:
+    """`--upscale-model NAME` takes a value (built-in name or path)."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjurer --upscale-model net")
+
+    assert directives[0].flags == {"--upscale-model": "net"}
+    assert warnings == []
+
+
+def test_modeline_parse_cardconjurer_upscale_conflict_drops_both() -> None:
+    """`--upscale --no-upscale` together is ambiguous: both dropped with a warning."""
+    from mtg_proxies.decklists.modelines import parse_modeline_trailer
+
+    directives, warnings = parse_modeline_trailer("#cardconjurer --upscale --no-upscale")
+
+    assert directives[0].flags == {}
+    assert len(warnings) == 1
+    assert "upscale" in warnings[0].message
+
+
 def test_modeline_parse_cardconjurer_unknown_flag_warns() -> None:
     """An unrecognised flag drops the whole segment with a warning, like other verbs."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer

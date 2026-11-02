@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import numpy as np
+import pytest
 from PIL import Image
 
 
@@ -211,3 +212,60 @@ def test_save_atomic_writes_valid_png_despite_tmp_suffix(tmp_path: Path) -> None
     with Image.open(final) as reread:
         assert reread.format == "PNG"
         assert reread.mode == "RGBA"
+
+
+def test_infer_tiled_matches_untiled() -> None:
+    """Tiled inference over a large input reproduces the single-pass output exactly."""
+    import torch
+
+    from mtg_proxies import upscale
+
+    def model(t: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.interpolate(t, scale_factor=2, mode="nearest")
+
+    tensor = torch.rand(1, 3, upscale._TILE + 37, 2 * upscale._TILE + 5)
+    assert tensor.shape[2] * tensor.shape[3] > upscale._MAX_UNTILED_PIXELS
+    assert torch.equal(upscale._infer(model, tensor, 2), model(tensor))
+
+
+@pytest.mark.parametrize("name", ["mtg", "net", "anime"])
+def test_named_model_downloads_from_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    """A built-in model name resolves to its registry URL + cache file, downloaded on demand."""
+    from PIL import Image
+
+    from mtg_proxies import upscale
+
+    src = tmp_path / "card.png"
+    Image.new("RGBA", (8, 8)).save(src)
+    monkeypatch.setattr(upscale, "_MODEL_DIR", tmp_path / "models")
+    calls: list[tuple[str, Path]] = []
+
+    def fake_download(url: str, dest: Path) -> Path:
+        calls.append((url, dest))
+        raise RuntimeError("stop before loading")
+
+    monkeypatch.setattr(upscale, "_download_model", fake_download)
+    with pytest.raises(RuntimeError, match="stop before loading"):
+        upscale.upscale_images([str(src)], model_path=name, progress=False)
+
+    url, filename = upscale.MODELS[name]
+    assert calls == [(url, tmp_path / "models" / filename)]
+
+
+def test_unknown_model_name_is_treated_as_missing_path(tmp_path: Path) -> None:
+    """Anything that isn't a built-in name is a path, and a missing path fails loudly."""
+    from PIL import Image
+
+    from mtg_proxies import upscale
+
+    src = tmp_path / "card.png"
+    Image.new("RGBA", (8, 8)).save(src)
+    with pytest.raises(FileNotFoundError, match="mtgg"):
+        upscale.upscale_images([str(src)], model_path="mtgg", progress=False)
+
+
+def test_mtg_model_is_pinned_to_a_commit() -> None:
+    """The HF download must not float on ``main``: new weights would silently reuse the old cache key."""
+    from mtg_proxies import upscale
+
+    assert "/resolve/main/" not in upscale.MODELS["mtg"][0]

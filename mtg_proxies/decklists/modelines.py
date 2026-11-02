@@ -121,8 +121,11 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     # selectors ``--8th`` / ``--modern`` / ``--m15-8th`` / ``--retro`` pick the style (retro =
     # Seventh Edition 1997 frame; its DFC split faces use the Classicshifted retro DFC packs;
     # m15-8th = M15Eighth hybrid, shares modern's geometry/crowns, uses the packM15Eighth* DFC
-    # packs); ``--upscale`` pre-runs
-    # the art through Real-ESRGAN. ``--scryfall`` skips MTGPics for this card (use Scryfall
+    # packs); ``--upscale`` / ``--no-upscale`` force Real-ESRGAN on/off for this card's
+    # Scryfall ``art_crop`` fallback (default: on when a CUDA GPU is available; MTGPics and
+    # custom art are never upscaled). ``--upscale-model NAME|PATH`` picks the model for this
+    # card (built-in ``mtg`` (default) / ``net`` / ``anime``, or a ``.pth`` path) and implies
+    # ``--upscale``. ``--scryfall`` skips MTGPics for this card (use Scryfall
     # art_crop directly) — useful per-card override when MTGPics's scan has a burned-in
     # artist signature / watermark. ``--skip`` opts the card out of CC rendering entirely
     # (routed straight into ``fallback.txt`` so the normal Scryfall scan is used).
@@ -161,6 +164,8 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         "--8th-scaled": NO_VALUE,
         "--legendary":  NO_VALUE,
         "--upscale":    NO_VALUE,
+        "--no-upscale": NO_VALUE,
+        "--upscale-model": _path_str,
         "--scryfall":   NO_VALUE,
         "--skip":       NO_VALUE,
         "--dfc-split":  NO_VALUE,
@@ -307,7 +312,7 @@ def parse_modeline_trailer(trailer: str) -> tuple[list[Directive], list[ParseWar
         # Mutex enforcement. The cardconjurer verb's frame selectors --8th /
         # --modern / --m15-8th / --retro / --borderless (including scaled variants)
         # select mutually exclusive frame families, as do
-        # the DFC mode selectors --dfc-split / --dfc-flip: stacking flags from one
+        # the DFC mode selectors --dfc-split / --dfc-flip and --upscale / --no-upscale: stacking flags from one
         # group leaves downstream resolution ambiguous. Drop all conflicting flags
         # with a warning rather than silently picking one.
         if verb == "cardconjurer":
@@ -315,6 +320,7 @@ def parse_modeline_trailer(trailer: str) -> tuple[list[Directive], list[ParseWar
                 (("--8th", "--modern", "--m15-8th", "--retro", "--borderless",
                   "--retro-scaled", "--8th-scaled"), "frame"),
                 (("--dfc-split", "--dfc-flip"), "DFC mode"),
+                (("--upscale", "--no-upscale"), "upscale"),
             ):
                 set_flags = [f for f in group if parsed_flags.get(f)]
                 # A scaled selector may accompany its matching base frame, just
