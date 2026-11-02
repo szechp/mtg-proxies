@@ -1459,7 +1459,6 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
     skipped cards) and ``report.csv``.
     """
     import json as _json
-    import os
     import tempfile
 
     from mtg_proxies.cardconjurer import runner as cc_runner
@@ -1997,7 +1996,7 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
             text=True,
             bufsize=1,
             env={
-                **os.environ,
+                **cc_runner.node_env(),
                 "CC_ROOT": str(cc_cache),
                 "CC_INPUTS": str(harness_inputs_dir),
             },

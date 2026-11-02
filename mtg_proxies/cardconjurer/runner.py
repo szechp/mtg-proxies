@@ -74,6 +74,7 @@ def slug(name: str) -> str:
     """
     return re.sub(r"^_+|_+$", "", re.sub(r"[^a-z0-9]+", "_", name.lower()))
 
+
 # A ``run_harness`` callable receives:
 #   - the list of job dicts (one per non-skipped card; basic fields only)
 #   - an optional ``prepare_each(slot_int) -> dict`` callable; if non-None, the
@@ -187,6 +188,48 @@ def format_fallback_txt(rows: Iterable[FallbackRow]) -> str:
     return "".join(out)
 
 
+_NODE_DIR = Path(__file__).resolve().parent / "node"
+# GC-rooted symlink to nixpkgs' util-linux.lib (created on first run on NixOS).
+# nix suffixes non-default outputs onto --out-link, so ".nix-util-linux" lands as "-lib".
+_NIX_OUT_LINK = _NODE_DIR / ".nix-util-linux"
+_NIX_LIBUUID_LINK = _NODE_DIR / ".nix-util-linux-lib"
+
+
+def node_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """Return an env for spawning the node harness, with NixOS library fixups.
+
+    node-canvas's prebuilt binary bundles cairo/pango/etc. but links the system
+    ``libuuid.so.1``, which NixOS doesn't expose in any default search path. On
+    NixOS, pin ``nixpkgs#util-linux.lib`` once via ``nix build --out-link`` (the
+    symlink doubles as a GC root, so garbage collection can't break it) and
+    prepend its ``lib`` to ``LD_LIBRARY_PATH``. Everywhere else, and if the nix
+    build fails, the env passes through unchanged.
+
+    Args:
+        base: Environment to extend; defaults to ``os.environ``.
+
+    Returns:
+        A new environment dict.
+    """
+    env = dict(os.environ if base is None else base)
+    if not Path("/etc/NIXOS").exists():
+        return env
+    if not _NIX_LIBUUID_LINK.exists():
+        try:
+            subprocess.run(
+                ["nix", "build", "nixpkgs#util-linux.lib", "--out-link", str(_NIX_OUT_LINK)],
+                check=True,
+                capture_output=True,
+                timeout=300,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            _log.warning("could not fetch libuuid via nix (%s); node-canvas may fail to load", e)
+            return env
+    lib = str(_NIX_LIBUUID_LINK / "lib")
+    env["LD_LIBRARY_PATH"] = os.pathsep.join(p for p in (lib, env.get("LD_LIBRARY_PATH")) if p)
+    return env
+
+
 def spawn_node_harness(
     jobs: list[dict[str, Any]],
     *,
@@ -214,9 +257,9 @@ def spawn_node_harness(
     """
     if timeout is None:
         timeout = max(60.0, len(jobs) * 30.0)
-    env = None
+    env = node_env()
     if cache_root is not None:
-        env = {**os.environ, "CC_ROOT": str(cache_root)}
+        env["CC_ROOT"] = str(cache_root)
     proc = subprocess.Popen(
         [node_bin, str(harness_path)],
         stdin=subprocess.PIPE,
@@ -236,14 +279,10 @@ def spawn_node_harness(
         proc.kill()
         out, err = proc.communicate()
         raise RuntimeError(
-            f"Card Conjurer harness timed out after {timeout}s (jobs={len(jobs)}). "
-            f"stderr tail:\n{(err or '')[-1000:]}"
+            f"Card Conjurer harness timed out after {timeout}s (jobs={len(jobs)}). stderr tail:\n{(err or '')[-1000:]}"
         ) from None
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"Card Conjurer harness exited {proc.returncode}.\n"
-            f"stderr tail:\n{(err or '')[-1000:]}"
-        )
+        raise RuntimeError(f"Card Conjurer harness exited {proc.returncode}.\nstderr tail:\n{(err or '')[-1000:]}")
 
     responses: list[dict[str, Any]] = []
     for line in out.splitlines():
@@ -341,7 +380,11 @@ def render_deck(
         expected_back = outdir / f"{prefix}{slug(name)}_back.png"
         if _cached(expected) and (not split or _cached(expected_back)):
             resp: dict[str, Any] = {
-                "slot": slot_str, "status": "ok", "out": str(expected), "ms": 0, "cached": True,
+                "slot": slot_str,
+                "status": "ok",
+                "out": str(expected),
+                "ms": 0,
+                "cached": True,
             }
             if split:
                 resp["out_back"] = str(expected_back)
@@ -371,7 +414,8 @@ def render_deck(
         if slot in responses_by_slot:
             _log.warning(
                 "duplicate response for slot %s — keeping later, dropping earlier (status=%s reason=%s)",
-                slot, responses_by_slot[slot].get("status"),
+                slot,
+                responses_by_slot[slot].get("status"),
                 responses_by_slot[slot].get("reason", ""),
             )
         responses_by_slot[slot] = r
@@ -410,19 +454,31 @@ def render_deck(
                     post_process(dst_back)
                 back_name = dst_back.name
             report_rows.append({
-                "slot": slot_str, "name": name, "status": "ok",
-                "reason": "", "png": dst.name, "png_back": back_name, "ms": r.get("ms", 0),
+                "slot": slot_str,
+                "name": name,
+                "status": "ok",
+                "reason": "",
+                "png": dst.name,
+                "png_back": back_name,
+                "ms": r.get("ms", 0),
             })
             ok += 1
         else:
             fallback_rows.append({
-                "count": count, "name": name, "reason": r.get("reason", ""),
-                "set_code": set_code, "collector_number": cn,
+                "count": count,
+                "name": name,
+                "reason": r.get("reason", ""),
+                "set_code": set_code,
+                "collector_number": cn,
                 "modeline": (fallback_modeline_by_slot or {}).get(i + 1, ""),
             })
             report_rows.append({
-                "slot": slot_str, "name": name, "status": "skip",
-                "reason": r.get("reason", ""), "png": "", "ms": 0,
+                "slot": slot_str,
+                "name": name,
+                "status": "skip",
+                "reason": r.get("reason", ""),
+                "png": "",
+                "ms": 0,
             })
             skipped += 1
 

@@ -216,6 +216,7 @@ __marimo__/
 node_modules/
 mtg_proxies/cardconjurer/node/output/
 mtg_proxies/cardconjurer/node/inputs/
+mtg_proxies/cardconjurer/node/.nix-util-linux*
 spike/node_modules/
 spike/cardconjurer/
 spike/output/
