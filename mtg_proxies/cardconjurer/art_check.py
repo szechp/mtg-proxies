@@ -19,9 +19,10 @@ Anything else falls back to Scryfall's art. The image is never edited: cropping 
 change the composition the card was printed with. Verdicts are cached next to the MTGPics file
 (``<file>.check.json``) so each image is checked once.
 
-Tested on 54 Lord of the Rings MTGPics images (32 carry overlay text) and 54 deliberately wrong
-pairings: every wrong pairing and every image with text is rejected; one clean image with very
-fine line art (There and Back Again) is also rejected and simply uses Scryfall's art.
+Tested on 117 MTGPics images and 351 deliberately wrong pairings: no wrong pairing is accepted,
+and of the right ones only the genuinely wrong image (MTGPics' Teferi, Hero of Dominaria is another
+card's art) and one portrait cut far tighter than the print (Lazav, which carries overlay text
+anyway) fail the match. Every image with overlay text among 54 Lord of the Rings ones is rejected.
 """
 
 from __future__ import annotations
