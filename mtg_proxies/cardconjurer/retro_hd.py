@@ -61,6 +61,13 @@ _BEVEL_THICKNESS = {
     "Artifact": "Medium",
     "Colorless": "Medium",
 }
+# Per-channel gain on the frame (texture + bevels, not the textbox) per identity. The template's
+# white parchment (mean ~(222, 211, 184), luma ~210) is far paler than WotC's own retro-frame
+# white -- the Secret Lair 1997-frame reprints (e.g. SLD 7137 Fiend Hunter, 7138 Glowrider)
+# measure ~(180, 175, 134), luma ~170, a warm khaki -- and white title/type text with a thin
+# shadow only reads on the latter. Scaling every pixel keeps the template's texture intact.
+_FRAME_TINT = {"W": (0.809, 0.828, 0.727)}
+
 _IRREGULAR_TEXTBOX = {"B", "G"}  # Proxyshop default: ragged black / green textboxes, no textbox bevels
 
 # Land pinline colours (cardinfo.land_color_map).
@@ -235,6 +242,9 @@ def compose_variant(t: _Template, code: str) -> np.ndarray:
         mask = t.mask_of(t.find("Card Frame", "Bevels", "Masks", f"{SIZE} {group}"))
         _blend(out, t.fill_color(fill), mask * frame_mask * (fill.opacity / 255), fill.blend_mode.name)
 
+    if (gain := _FRAME_TINT.get(identity)) is not None:
+        out[..., :3] *= np.asarray(gain, np.float32)
+
     # Textbox texture, clipped to its shape (ragged for black / green, raster for black).
     textbox_name = recipe.get("textbox", identity)
     irregular = identity in _IRREGULAR_TEXTBOX and not is_land
@@ -288,12 +298,16 @@ def compose_variant(t: _Template, code: str) -> np.ndarray:
         _over(out, land_rgb, t.mask_of(t.find("Pinlines", "Art Masks", SIZE)))
         _over(out, own_rgb, t.mask_of(t.find("Pinlines", "Textbox Masks", SIZE)))
 
-    # Black border under everything except the art window, like packSeventh's frame images
-    # (the template keeps its border in a separate group).
-    art_window = t.mask_of(t.find("Art Frames", SIZE)) * (1 - out[..., 3])
+    # Black border under everything, like packSeventh's frame images (the template keeps its
+    # border in a separate group); then the art window is cut at the template's art reference
+    # box. Proxyshop places the art in exactly that box, over the inner half of the 6px black
+    # art outline, so 3px of outline shows on every side; cutting the frame there and fitting
+    # the art to the same box (harness RETRO_HD_ART_BOUNDS) reproduces it.
     border = np.zeros_like(out)
-    border[..., 3] = 1 - art_window
+    border[..., 3] = 1
     _over(border, out[..., :3], out[..., 3])
+    art_window = t.mask_of(t.find("Art Frames", SIZE))
+    border[..., 3] *= 1 - art_window
     return border
 
 

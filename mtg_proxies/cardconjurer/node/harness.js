@@ -348,6 +348,9 @@ const RETRO_HD_TEXT = {
     // Power / Toughness: centred on 1755, baseline 2625 (packSeventh's size, which matches).
     pt: { x: (1755 - 137) / HD_W, width: 0.1367, ...hdLine(2625, 121) },
 };
+// Art Frames/Normal, the box Proxyshop fits the art into: (229,279)-(1782,1525) in card pixels.
+// retro_hd.py cuts the frame's art window at the same box (3px of the black outline left visible).
+const RETRO_HD_ART_BOUNDS = { x: 229 / HD_W, y: 279 / HD_H, width: (1782 - 229) / HD_W, height: (1525 - 279) / HD_H };
 const RETRO_HD_BOTTOM = {
     // Artist: "Illus. <artist>", 78px, centred, baseline 2592.
     top: { x: 0.1, width: 0.8, ...hdLine(2592, 78) },
@@ -1875,6 +1878,7 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
                                    retroHd }) {
     await ensurePackLoaded(packFile);
     if (specialLayout?.planeswalker) resetPlaneswalkerState(frame);
+    if (retroHd) global.card.artBounds = { ...RETRO_HD_ART_BOUNDS };
 
     // Per-render selector reset. These default to 8th at load time
     // (SELECTOR_OVERRIDES + the force-reset after engine init), but per-card frame
@@ -2967,7 +2971,9 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     // 215 against 168 on a 7ED scan), dropping glyph-vs-background contrast from about
     // +83 to +17. Keeping the white and outlining it in black restores the contrast while
     // staying closer to the printed card than recolouring the text outright.
-    if (frame === 'retro' && scry.layout !== 'token' && retroNeedsTextOutline(pristineFace, scry)) {
+    // Not on --retro-hd: its white frame is tinted to WotC's own retro-frame white (see
+    // retro_hd._FRAME_TINT), which white text with packSeventh's plain shadow reads on.
+    if (frame === 'retro' && !retroHd && scry.layout !== 'token' && retroNeedsTextOutline(pristineFace, scry)) {
         for (const key of ['title', 'type', 'pt']) {
             const textObject = global.card.text?.[key];
             if (!textObject) continue;
@@ -3152,7 +3158,7 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     // retro branch above is what settles them -- so they are outlined here, after that
     // branch and before renderBottomInfo() draws them. The title / type / P-T half is
     // applied earlier, because drawText() has already rasterised those by this point.
-    if (frame === 'retro' && scry.layout !== 'token'
+    if (frame === 'retro' && !retroHd && scry.layout !== 'token'
             && PALE_RETRO_FRAMES.has(getFrameNameForFace(pristineFace))) {
         // Mono-white frame only. The outline-only treatment below still left both lines
         // borderline unreadable at print size, so: the artist line gets the type line's
@@ -3173,7 +3179,7 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
             wizards.shadowX = 0;
             wizards.shadowY = 0;
         }
-    } else if (frame === 'retro' && scry.layout !== 'token' && retroNeedsTextOutline(pristineFace, scry)) {
+    } else if (frame === 'retro' && !retroHd && scry.layout !== 'token' && retroNeedsTextOutline(pristineFace, scry)) {
         for (const key of ['top', 'wizards']) {
             const region = global.card.bottomInfo?.[key];
             if (!region) continue;
