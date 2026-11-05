@@ -127,8 +127,8 @@ def build_job(
     separate full-size cards (``<slug>.png`` + ``<slug>_back.png``, response
     carries ``out`` + ``out_back``) instead of the default Kamigawa-flip merge.
 
-    ``legendary`` opts into the non-stock legendary markers: the Arabian Nights gold
-    pinline on retro, the legend crown on 8th. No-op on the other frames.
+    ``legendary`` opts into CC's legend crown on the 8th frame, which has no stock
+    legend marker. No-op on the other frames (retro has its own crown; see ``no_crown``).
 
     ``no_crown`` leaves the battlement legend crown off a retro legendary (drawn by
     default; see ``retro_crown.py``). No-op on the other frames.

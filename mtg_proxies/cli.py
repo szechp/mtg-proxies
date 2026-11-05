@@ -1596,8 +1596,9 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
             )
             raise SystemExit(2)
 
-    # ``--legendary`` only has something to draw on retro (gold pinline) and 8th (legend
-    # crown); modern and m15-8th already carry crowns, borderless has no marker.
+    # ``--legendary`` only draws something on 8th (CC's legend crown); retro accepts it as a
+    # no-op (its legendaries get the battlement crown by default), modern and m15-8th already
+    # carry crowns, borderless has no marker.
     if args.legendary and frame in {"modern", "m15-8th", "borderless"}:
         print(
             f"Error: --legendary only applies to the retro and 8th frames, not --{frame}.",
@@ -2727,11 +2728,12 @@ def main() -> None:
     cardconjurer_parser.add_argument(
         "--legendary", dest="legendary", action="store_true", default=False,
         help=(
-            "mark legendary cards on frames that have no stock legend marker: the Arabian"
-            " Nights gold pinline on --retro / --retro-scaled, CC's legend crown on --8th /"
-            " --8th-scaled. Without it both frames render legendaries like stock. Also"
-            " available per card as `#cardconjurer --legendary`. Conflicts with --modern,"
-            " --m15-8th and --borderless, which already have their own crowns."
+            "give legendary cards CC's legend crown on --8th / --8th-scaled, whose frame has"
+            " no stock legend marker. Without it 8th renders legendaries like stock. A no-op on"
+            " --retro / --retro-scaled, whose legendaries get the battlement crown by default"
+            " (see --no-crown). Also available per card as `#cardconjurer --legendary`."
+            " Conflicts with --modern, --m15-8th and --borderless, which already have their"
+            " own crowns."
         ),
     )
     cardconjurer_parser.add_argument(
@@ -2739,8 +2741,8 @@ def main() -> None:
         help=(
             "leave out the battlement legend crown that --retro / --retro-scaled draw on every"
             " legendary card (the Seventh Edition frame has no stock crown; ours is drawn from"
-            " the frame's own bevel and texture, and follows hybrid, two-colour, land and"
-            " --legendary pinlines). No-op on other frames. Also available per card as"
+            " the frame's own bevel, pinline and texture, and follows hybrid, two-colour and"
+            " land frames). No-op on other frames. Also available per card as"
             " `#cardconjurer --no-crown`."
         ),
     )

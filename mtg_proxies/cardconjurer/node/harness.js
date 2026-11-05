@@ -95,7 +95,7 @@ const MANA_COMMANDER_OUTLINE = 0.0013;
 // variants real cards use. Which one applies is decided by the mana cost, not the
 // colour count: a hybrid cost is castable with EITHER colour, so the whole frame
 // splits down the middle; a cost demanding BOTH stays gold and shows its colours in
-// the pinline and textbox only.
+// the textbox only (the pinline stays stock).
 const RETRO_HYBRID_PAIR = /\{([WUBRG])\/([WUBRG])\}/;
 const WUBRG = ['W', 'U', 'B', 'R', 'G'];
 const RETRO_COLOR_FRAME = {
@@ -121,7 +121,7 @@ const RETRO_HYBRID_PIPS = ['wu', 'wb', 'ub', 'ur', 'br', 'bg', 'rg', 'rw', 'gw',
 // splits down the middle -- and since the halves are ordered WUBRG, white is always the
 // LEFT half, which is exactly where the title, type, artist and copyright lines start.
 // The AND variant does not qualify: it keeps the gold frame and shows its colours only in
-// the pinline and textbox, so the text still sits on gold.
+// the textbox, so the text still sits on gold.
 function retroNeedsTextOutline(face, scry) {
     if (PALE_RETRO_FRAMES.has(getFrameNameForFace(face))) return true;
     const twoTone = retroTwoTone(face, scry);
@@ -177,8 +177,8 @@ async function addRetroLayer(frameName, maskName, additionalMasks = []) {
 // the 'Pinline' mask, committed under assets/retro-crown/.
 //
 // Rather than pick one crown per card, replay the card's frame stack: every Seventh frame
-// layer already on the card (autoFrame's base, the hybrid split, the two-colour gold accents,
-// the --legendary gold pinline) gets its crown counterpart on top. autoFrame builds the base
+// layer already on the card (autoFrame's base, the hybrid split, land frames) gets its crown
+// counterpart on top. autoFrame builds the base
 // from one frame image under five masks (Border, Textbox Pinline, Frame, Rules, Pinline);
 // each mask maps to its crown equivalent via RETRO_CROWN_MASK below, and a layer with any
 // mask that never reaches the crown band is skipped. So whatever combination the frame is,
@@ -2684,7 +2684,6 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
 
     // Two-colour cards get the modern two-tone treatment. Which variant applies is
     // decided by the mana cost, not the colour count -- see RETRO_HYBRID_PAIR above.
-    // Runs before the legendary trim so that trim lands on top of the two-tone.
     if (!dfcFace && frame === 'retro' && scry.layout !== 'flip' && scry.layout !== 'token') {
         const twoTone = retroTwoTone(pristineFace, scry);
         if (twoTone) {
@@ -2696,36 +2695,22 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
                 await addRetroLayer(RETRO_COLOR_FRAME[second], null, [RETRO_RIGHT_HALF]);
             } else {
                 // Requires both colours: stays gold, with the two colours showing only in
-                // the pinline and the textbox, using the muted land-frame art.
-                for (const maskName of ['Pinline', 'Rules']) {
-                    await addRetroLayer(RETRO_COLOR_LAND_FRAME[first], maskName);
-                    await addRetroLayer(RETRO_COLOR_LAND_FRAME[second], maskName, [RETRO_RIGHT_HALF]);
-                }
+                // the textbox, using the muted land-frame art. The pinline stays stock
+                // (black): a two-tone pinline was tried and dropped along with the
+                // --legendary gold pinline, as neither is on a real Seventh-Edition card.
+                await addRetroLayer(RETRO_COLOR_LAND_FRAME[first], 'Rules');
+                await addRetroLayer(RETRO_COLOR_LAND_FRAME[second], 'Rules', [RETRO_RIGHT_HALF]);
             }
         }
     }
 
-    // Legendary look, opt-in via --legendary. The retro frame had no legend marker of its
-    // own -- pre-8th cards signalled it only in the type line -- so stock retro draws none;
-    // with the flag, legendaries get the Arabian Nights gold pinline over their base frame
-    // rather than an invented icon. One layer for every
-    // colour: the earlier per-colour opacity table looked fine on screen but muddy in
-    // print, and a single full-strength gold pinline reads cleanly on all of them.
-    //
-    // Runs after the two-colour treatment above, so on a two-colour legendary this gold
-    // pinline replaces the two-tone one while the two-tone textbox stays.
-    if (legendary && !dfcFace && frame === 'retro' && scry.layout !== 'token'
-        && /Legendary/.test(pristineFace.type_line || scry.type_line || '')
-        // Planeswalkers are out of scope for now: packSeventh has no loyalty-box
-        // geometry, so they need deciding separately.
-        && !/Planeswalker/.test(pristineFace.type_line || scry.type_line || '')) {
-        await addRetroLayer('Arabian Nights Land Frame', 'Pinline');
-    }
+    // No legendary pinline on retro: the Arabian Nights gold pinline that --legendary used
+    // to add here was removed -- it is not on any real Seventh-Edition card, and it fought
+    // the frame's own pinline. Retro legendaries are marked by the battlement crown below.
 
     // Battlement legend crown on retro legendaries, on by default (`--no-crown` opts out).
     // Runs last among the frame layers so it can replay the finished stack -- see
-    // addRetroLegendCrown. Same scope as the gold pinline above: single-faced packSeventh
-    // cards only (DFC faces carry Classicshifted's own crown; planeswalkers use a pack
+    // addRetroLegendCrown. Single-faced packSeventh cards only (DFC faces carry Classicshifted's own crown; planeswalkers use a pack
     // with different geometry).
     if (crown && !dfcFace && frame === 'retro' && scry.layout !== 'token' && scry.layout !== 'flip'
         && /Legendary/.test(pristineFace.type_line || scry.type_line || '')

@@ -10,7 +10,7 @@ as a layer that is transparent everywhere except the crown band (the rows above 
 frame's first field row), and the harness replays the card's frame stack with these layers:
 each Seventh frame layer gets its crown counterpart, under the same masks, with Seventh's
 ``Pinline`` mask swapped for :func:`crown_pinline_mask`. That way every frame combination
-(hybrid splits, two-colour gold accents, land stripes, the ``--legendary`` gold pinline) carries
+(hybrid splits, two-colour gold frames, land stripes) carries
 up into the crown with no per-combination art. Nothing below the stock top edge changes.
 
 Geometry. The outline is a polygon. Each outline edge owns the quad between it and its inward
