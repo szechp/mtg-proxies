@@ -164,6 +164,28 @@ def _resolve_cc_frame(flags: dict) -> str:
 
 
 
+def _mtgpics_rejection(card: dict, mtgpics_path: Path) -> str | None:
+    """Return why the MTGPics image may not stand in for this card's art, or None when it may.
+
+    The card's own Scryfall ``art_crop`` is the reference (see ``cardconjurer/art_check.py``);
+    when it cannot be fetched the MTGPics image is used unverified, as before.
+    """
+    from mtg_proxies import scryfall as _scryfall
+    from mtg_proxies.cardconjurer import art_check
+
+    uris = card.get("image_uris") or {}
+    art_url = uris.get("art_crop")
+    if not art_url:
+        return None
+    try:
+        reference = Path(_scryfall.get_image(art_url))
+        verdict = art_check.check_mtgpics_art(mtgpics_path, reference, card)
+    except Exception as exc:  # a failed check must never break a render
+        _warn(f"Note: art check skipped for {card.get('name')!r}: {exc}")
+        return None
+    return None if verdict.ok else verdict.reason
+
+
 def _require_retro_hd_frames() -> None:
     """Exit with build instructions when the ``--retro-hd`` frames have not been built."""
     from mtg_proxies.cardconjurer import retro_hd
@@ -1665,7 +1687,7 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
     from mtg_proxies.cardconjurer import mtgpics as _mtgpics
 
     mtgpics_cache_root = _mtgpics.default_cache_root()
-    mtgpics_stats = {"hits": 0, "misses": 0}
+    mtgpics_stats = {"hits": 0, "misses": 0, "rejected": 0}
 
     # Upscaling applies to Scryfall art_crop fallbacks only (MTGPics / custom art are
     # already hi-res). Per slot: ``#cardconjurer --upscale`` / ``--no-upscale`` modeline,
@@ -2044,8 +2066,12 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
             if set_code and cn:
                 mtgp = _mtgpics.fetch_mtgpics_art(set_code, cn, cache_root=mtgpics_cache_root)
                 if mtgp is not None:
-                    mtgpics_stats["hits"] += 1
-                    return {**extras, "art_path": str(mtgp)}
+                    rejection = _mtgpics_rejection(card.card, Path(mtgp))
+                    if rejection is None:
+                        mtgpics_stats["hits"] += 1
+                        return {**extras, "art_path": str(mtgp)}
+                    mtgpics_stats["rejected"] += 1
+                    _warn(f"Note: {card['name']!r}: MTGPics art not used ({rejection}); using Scryfall's art.")
             mtgpics_stats["misses"] += 1
 
         # 2) Fallback: Scryfall art_crop, upscaled per _wants_upscale.
@@ -2286,6 +2312,8 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
             print(
                 f"[cardconjurer] art sources: {mtgpics_stats['hits']}/{total_art} MTGPics, "
                 f"{mtgpics_stats['misses']} Scryfall fallback{upscaled_note}"
+                + (f" ({mtgpics_stats['rejected']} MTGPics images rejected: wrong art or overlay text)"
+                   if mtgpics_stats["rejected"] else "")
             )
 
 

@@ -12,6 +12,10 @@ Headless Card Conjurer frame rendering, orchestrated from `cli.py`'s `_run_cardc
 - `reversible_card` always stays on the flip path; saga-faced and planeswalker-faced DFCs skip to `fallback.txt`.
 - In `print`, `#cardconjurer --dfc-split` is warned-and-ignored — flip only.
 
+## Art sources
+
+- MTGPics (`mtgpics.py`) is tried first for single-faced cards, then Scryfall's `art_crop`. Every MTGPics image is vetted against the card's own `art_crop` first (`art_check.py`, called from `cli.py`'s `_mtgpics_rejection`): Scryfall's crop must be found inside it (luminance NCC at 128px over 10 scales: accept ≥0.90 whatever the colour grading, 0.78–0.90 only with a mean colour gap ≤0.06; measured wrong pairings peak at 0.77) and, when the optional `art-check` extra (rapidocr-onnxruntime) is installed, it must carry no overlay text (WotC / MEE / Magic / LOTR wording, web addresses, "Artist:", or the artist's / card's name spelled out; short fragments and painted signatures are ignored). A rejected image is never edited — the card uses Scryfall's art (upscaled as usual) and the run prints a `Note:` with the reason. Verdicts are cached as `<image>.check.json` (`CHECK_VERSION`); a verdict reached without OCR is redone once OCR is installed. Borderless renders (full-bleed MTGPics art only) are not vetted.
+
 ## Frame styles
 
 - Set symbols come from CC's local official library per card set (no 8ED hardcode); `--set-symbol` overrides.
