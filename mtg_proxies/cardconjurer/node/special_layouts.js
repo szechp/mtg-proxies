@@ -68,6 +68,14 @@ function resolveSpecialLayout(scry, requestedFrame = 'auto') {
         };
     }
 
+    // Classic chapter sagas (Scryfall layout 'saga': History of Benalia, Urza's Saga) render on
+    // retro through CC's own saga engine (versionSaga.js: chapter split, I/II/III badges,
+    // dividers) with the Classicshifted saga frames; --retro-hd swaps in the HD template's saga
+    // frames. Other frames still skip them; transform sagas (layout 'transform') still skip.
+    if (scry.layout === 'saga' && requestedFrame === 'retro') {
+        return { kind: 'saga', frame: 'retro', pack: 'packClassicshiftedSaga.js', forceSplit: false };
+    }
+
     const faces = Array.isArray(scry.card_faces) ? scry.card_faces : [];
     if (DFC_LAYOUTS.has(scry.layout) && faces.some(isPlaneswalkerFace)) {
         const retroTransform = requestedFrame === 'retro' && scry.layout === 'transform';

@@ -371,10 +371,26 @@ function applyRetroHdLayout(regions, layout) {
 // template's land textbox, with its pinline outline, is larger than packSeventh's rules box,
 // which would clip that outline off the two-colour textbox.
 const SEVENTH_MASK_SRC = { '/img/frames/seventh/regular/rules.svg': 'rules.png' };
+// Saga (packClassicshiftedSaga + versionSaga.js) images under --retro-hd: the Classicshifted saga
+// frames become the template's saga composites, the chapter divider its own divider, and CC's
+// generic chapter hexagon a transparent pixel -- the template's own numbered badges are drawn by
+// drawRetroHdSagaBadges instead.
+const SAGA_FRAME_SRC = /^\/img\/frames\/custom\/classicshifted\/saga\/([a-z]+)\.png$/;
+const SAGA_EXTRA_SRC = {
+    '/img/frames/saga/sagaDivider.png': 'saga/divider.png',
+    '/img/frames/saga/sagaChapter.png': null,
+};
+const TRANSPARENT_PNG = createCanvas(1, 1).toDataURL('image/png');
 function retroHdFrame(src) {
     if (!retroHdFrames) return null;
+    if (src in SAGA_EXTRA_SRC && SAGA_EXTRA_SRC[src] === null) return TRANSPARENT_PNG;
+    const saga = SAGA_FRAME_SRC.exec(src);
+    if (saga) {
+        const file = path.join(retroHdFrames, 'saga', saga[1] + '.png');
+        return fs.existsSync(file) ? file : null;
+    }
     const match = SEVENTH_FRAME_SRC.exec(src);
-    const name = match ? match[1] + '.png' : SEVENTH_MASK_SRC[src];
+    const name = match ? match[1] + '.png' : (SEVENTH_MASK_SRC[src] || SAGA_EXTRA_SRC[src]);
     if (!name) return null;
     const file = path.join(retroHdFrames, name);
     return fs.existsSync(file) ? file : null;
@@ -1280,6 +1296,140 @@ function equalizePlaneswalkerAbilities(boxTop, boxHeight) {
     global.planeswalkerEdited();
 }
 
+// --- Retro sagas -------------------------------------------------------------------------------
+// CC's saga engine (versionSaga.js) splits the chapters on import, then sizes each chapter box
+// by its word count and auto-shrinks each one on its own -- the same mixed-size problem
+// equalizePlaneswalkerAbilities fixes. equalizeSagaChapters picks one shared size the same way,
+// sizes each chapter box to its content and spreads the slack evenly.
+const SAGA_CHAPTER_PAD = 0.9;
+function equalizeSagaChapters(boxTop, boxBottom) {
+    const text = global.card.text;
+    const count = global.card.saga?.count || 0;
+    if (count < 1 || typeof global.sagaEdited !== 'function') return;
+    const cardWidth = global.card.width, cardHeight = global.card.height;
+    const chapters = [...Array(count).keys()].map((i) => text['ability' + i]);
+    const texts = chapters.map((c) => c?.text || '');
+    const widths = chapters.map((c) => (c?.width || 0.33) * cardWidth);
+    const spanPx = (boxBottom - boxTop) * cardHeight;
+    const startPx = Math.round((chapters[0]?.size || 0.0305) * cardHeight * 1.15);
+    let fontPx = 40;
+    let lines = texts.map((t, i) => countWrappedLines(t, widths[i], fontPx));
+    for (let px = startPx; px >= 40; px--) {
+        const candidate = texts.map((t, i) => countWrappedLines(t, widths[i], px));
+        if (candidate.reduce((sum, n) => sum + (n + SAGA_CHAPTER_PAD) * px, 0) <= spanPx) {
+            fontPx = px;
+            lines = candidate;
+            break;
+        }
+    }
+    const content = lines.map((n) => (n + SAGA_CHAPTER_PAD) * fontPx);
+    const slack = Math.max(0, spanPx - content.reduce((a, b) => a + b, 0)) / count;
+    text.ability0.y = boxTop;
+    for (let i = 0; i < 4; i++) {
+        querySelector(`#saga-height-${i}`).value = i < count ? Math.round(content[i] + slack) : 0;
+        if (text['ability' + i]) text['ability' + i].size = fontPx / cardHeight;
+    }
+    global.sagaEdited();
+}
+
+// --retro-hd saga geometry, in card pixels (the template's Saga layers, crop offset (87, 79)):
+// chapter box (233,280)-(912,2111) with text from x 283; art (1007,278)-(1783,2114); type line
+// 587px lower than a normal card's (Proxyshop's position_type_line); reminder box
+// (238,2285)-(1779,2479); divider spans x 244-905.
+const RETRO_HD_SAGA = {
+    chapterTop: 280 / HD_H, chapterBottom: (2111 - 10) / HD_H,
+    chapterX: 283 / HD_W, chapterWidth: (895 - 283) / HD_W,
+    art: { x: 1007 / HD_W, y: 278 / HD_H, width: (1783 - 1007) / HD_W, height: (2114 - 278) / HD_H },
+    typeBaseline: 1641 + 587,
+    reminder: { x: 258 / HD_W, y: 2285 / HD_H, width: 1500 / HD_W, height: 194 / HD_H, size: 60 / HD_H },
+    divider: { x: 244 / HD_W, width: 661 / HD_W },
+};
+
+// The saga reminder line, as the template prints it: the oracle text before the first chapter
+// (CC's extractSagaReminderText only knows the standard lore-counter sentence and returns null for
+// e.g. Read ahead), with Read ahead's long reminder swapped for Proxyshop's abridged one.
+function sagaReminder(oracle) {
+    const head = String(oracle || '').split(/\n(?=[IVX]+(?:, [IVX]+)* \u2014)/)[0];
+    const reminder = /^[IVX]+(?:, [IVX]+)* \u2014/.test(head) ? '' : head.trim();
+    if (/^Read ahead\b/.test(reminder)) {
+        return 'Read ahead (Choose a chapter and start with that many lore counters. Skipped chapters don\'t trigger.)';
+    }
+    return reminder;
+}
+
+// Lay out a --retro-hd saga after its frame is added: packClassicshiftedSaga ships modern fonts
+// (Beleren), no bottom info and Classicshifted geometry, so every region moves onto the
+// template's saga geometry with packSeventh's fonts and artist line, and the chapters are sized
+// evenly.
+function layoutRetroSaga(scry) {
+    const text = global.card.text;
+    const g = RETRO_HD_SAGA;
+    text.title.font = 'goudymedieval';
+    text.title.size = 0.041;
+    delete text.type.font;
+    global.card.bottomInfo = {
+        top: { text: 'Illus. {elemidinfo-artist}', x: 0.1, y: 1908 / 2100, width: 0.8, height: 0.0267, oneLine: true,
+               size: 0.0267, align: 'center', shadowX: 0.0021, shadowY: 0.0015, color: 'white' },
+        wizards: { name: 'wizards', text: '{elemidinfo-number}', x: 0.1, y: 1933 / 2100, width: 0.8, height: 0.0172,
+                   oneLine: true, size: 0.0172, align: 'center', shadowX: 0.0014, shadowY: 0.001, color: 'white' },
+    };
+    applyRetroHdLayout(text, { title: RETRO_HD_TEXT.title, mana: RETRO_HD_TEXT.mana });
+    Object.assign(text.type, { x: RETRO_HD_TEXT.type.x, width: RETRO_HD_TEXT.type.width, ...hdLine(g.typeBaseline, 96) });
+    Object.assign(text.reminder, g.reminder);
+    delete text.reminder.shadowColor;
+    const reminder = sagaReminder(scry.oracle_text);
+    text.reminder.text = reminder ? `{i}${reminder}{/i}` : '';
+    for (let i = 0; i < 4; i++) Object.assign(text['ability' + i], { x: g.chapterX, width: g.chapterWidth });
+    global.card.artBounds = { ...g.art };
+    global.autoFitArt();
+    global.card.setSymbolBounds = { ...global.card.setSymbolBounds, x: 0.9, y: 0.5739 + 587 / HD_H, width: 0.12, height: 0.0372 };
+    if (typeof global.resetSetSymbol === 'function') global.resetSetSymbol();
+    global.card.saga.x = g.divider.x;
+    global.card.saga.width = g.divider.width;
+    equalizeSagaChapters(g.chapterTop, g.chapterBottom);
+}
+
+// Draw the template's numbered chapter badges (I-VI) on CC's saga canvas, centred on each chapter;
+// a multi-chapter ability ("I, II -- ...") stacks its badges around the chapter's centre.
+const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI'];
+const _sagaBadgeCache = new Map();
+async function drawRetroHdSagaBadges() {
+    const saga = global.card.saga, ctx = global.sagaContext;
+    if (!saga || !ctx) return;
+    const dir = path.join(RETRO_HD_ROOT, 'frames', 'saga');
+    const extras = JSON.parse(fs.readFileSync(path.join(dir, 'extras.json'), 'utf8'));
+    let chapter = 0;
+    for (let i = 0; i < saga.count; i++) {
+        const ability = global.card.text['ability' + i];
+        const n = parseInt(saga.abilities[i]) || 0;
+        const centre = ability.y + ability.height / 2;
+        for (let j = 0; j < n; j++, chapter++) {
+            const numeral = ROMAN[chapter];
+            if (!numeral) continue;
+            if (!_sagaBadgeCache.has(numeral)) {
+                _sagaBadgeCache.set(numeral, await loadImage(path.join(dir, numeral.toLowerCase() + '.png')));
+            }
+            const [x, , w, h] = extras[numeral];
+            const y = centre * HD_H + (j - (n - 1) / 2) * h * 1.02 - h / 2;
+            ctx.drawImage(_sagaBadgeCache.get(numeral), global.scaleX(x / HD_W), global.scaleY(y / HD_H),
+                global.scaleWidth(w / HD_W), global.scaleHeight(h / HD_H));
+        }
+    }
+}
+
+async function redrawRetroSaga(retroHd) {
+    if (typeof global.sagaEdited !== 'function') return;
+    if (retroHd && global.sagaContext) global.sagaContext.fillStyle = 'rgba(0,0,0,0)';  // CC's numerals off
+    global.sagaEdited();
+    if (!retroHd) return;
+    // CC draws a divider above every chapter; the template only has them between chapters.
+    const first = global.card.text.ability0;
+    const dividerHalf = 0.0029 / 2 + 0.001;
+    global.sagaContext.clearRect(0, global.scaleY(first.y - dividerHalf), global.sagaCanvas.width,
+        global.scaleHeight(2 * dividerHalf));
+    await drawRetroHdSagaBadges();
+}
+
 function estimateStationLines(text, boxWidthFraction, fontSizeFraction) {
     const cardWidth = global.card.width || 1500;
     const cardHeight = global.card.height || 2100;
@@ -1980,7 +2130,7 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     // dfc_split faces build their frames manually from the DFC pack below —
     // 'false' makes any stray engine-scheduled autoFrame() a no-op so it can't
     // overwrite them with the regular (non-DFC) frame art.
-    if (dfcFace || specialLayout?.planeswalker || isToken) autoFrameTarget = 'false';
+    if (dfcFace || specialLayout?.planeswalker || specialLayout?.kind === 'saga' || isToken) autoFrameTarget = 'false';
 
     querySelector('#autoFrame').value = autoFrameTarget;
     querySelector('#lockSetSymbolURL').checked  = harnessOwnsSetSymbol;
@@ -1999,7 +2149,7 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     // same call by changeCardIndex's dedicated `card.version.includes('planeswalker')`
     // branch, so the stubs are discarded right after — nothing depends on them.
     const planeswalkerImportStubKeys = [];
-    if (specialLayout?.planeswalker) {
+    if (specialLayout?.planeswalker || specialLayout?.kind === 'saga') {
         for (const key of ['rules', 'rules2', 'pt', 'pt2', 'defense']) {
             if (!global.card.text[key]) {
                 global.card.text[key] = { text: '', x: 0, y: 0, width: 0.0001, height: 0.0001, size: 0.0001, oneLine: true };
@@ -2233,7 +2383,15 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
         leftRegion.width = Math.max(0.2, leftRegion.width - reserve);
     };
 
-    if (specialLayout?.planeswalker) {
+    if (specialLayout?.kind === 'saga') {
+        // packClassicshiftedSaga ships White/Blue/Black/Red/Green/Multicolored/Land frames.
+        const sagaFrame = getFrameNameForFace(pristineFace);
+        if (!await addFrameByName([sagaFrame, 'Multicolored Frame'])) {
+            throw new Error(`saga: no frame for ${sagaFrame}`);
+        }
+        layoutRetroSaga(scry);
+        reserveRight(global.card.text.title, global.card.text.mana);
+    } else if (specialLayout?.planeswalker) {
         const baseName = getFrameNameForFace(pristineFace);
         const occurrence = specialLayout.frameOccurrence || 0;
         const added = await addFrameByName(
@@ -3004,6 +3162,8 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     // Margin loading resizes every registered canvas, including the two
     // planeswalker version canvases. Rebuild their loyalty icons and alternating
     // ability backgrounds at the final dimensions after all image assets loaded.
+    // Sagas likewise: chapter dividers and badges live on CC's saga canvas.
+    if (specialLayout?.kind === 'saga') await redrawRetroSaga(true);
     if (specialLayout?.planeswalker && typeof global.planeswalkerEdited === 'function') {
         global.planeswalkerEdited();
     }
@@ -3052,7 +3212,9 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
         }
     }
 
-    if (retroHd && !specialLayout?.planeswalker) applyRetroHdLayout(global.card.text, RETRO_HD_TEXT);
+    if (retroHd && !specialLayout?.planeswalker && specialLayout?.kind !== 'saga') {
+        applyRetroHdLayout(global.card.text, RETRO_HD_TEXT);
+    }
 
     // Restored immediately after: the `mana` Map is process-global and shared by every
     // card in the run, so leaving it scaled would shrink hybrid pips on non-retro cards
@@ -3315,7 +3477,9 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
                                         legendary = false, crown = true, retroHd = false } = {}) {
     const special = resolveSpecialLayout(scry, frame);
     if (special?.kind === 'invalid') throw new Error(special.reason);
-    const skipReason = shouldSkip(scry);
+    // Sagas render only under --retro-hd (the HD template's saga frames); plain --retro and every
+    // other frame keep falling back to the Scryfall scan.
+    const skipReason = (special?.kind === 'saga' && retroHd) ? null : shouldSkip(scry);
     if (skipReason) {
         throw new Error(`${skipReason} not supported on ${frame} frame — fall back to Scryfall image`);
     }

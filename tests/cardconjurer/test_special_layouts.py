@@ -471,3 +471,25 @@ def test_engine_cross_card_state_does_not_leak_between_renders(tmp_path: Path) -
     assert len(set(outputs)) == len(outputs), "each card must write a distinct file"
     for out in outputs:
         assert Path(out).stat().st_size > 0
+
+
+_SAGA = {
+    "name": "History of Benalia",
+    "layout": "saga",
+    "type_line": "Enchantment — Saga",
+    "mana_cost": "{1}{W}{W}",
+    "oracle_text": "(As this Saga enters and after your draw step, add a lore counter. Sacrifice after III.)\n"
+    "I, II — Create a 2/2 white Knight creature token with vigilance.\n"
+    "III — Knights you control get +2/+1 until end of turn.",
+}
+
+
+def test_saga_on_retro_routes_to_the_saga_engine() -> None:
+    """Classic sagas render on retro (the harness further limits them to --retro-hd)."""
+    result = _call("resolveSpecialLayout", _SAGA, "retro")
+    assert result == {"kind": "saga", "frame": "retro", "pack": "packClassicshiftedSaga.js", "forceSplit": False}
+
+
+@pytest.mark.parametrize("frame", ["modern", "8th", "m15-8th", "borderless"])
+def test_saga_on_other_frames_keeps_the_scan_fallback(frame: str) -> None:
+    assert _call("resolveSpecialLayout", _SAGA, frame) is None

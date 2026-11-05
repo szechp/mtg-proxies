@@ -270,11 +270,20 @@ def _texture_override(identity: str, template_texture: np.ndarray) -> np.ndarray
     return out
 
 
-def compose_variant(t: _Template, code: str) -> np.ndarray:
-    """Composite one packSeventh-equivalent frame image (full template canvas, float RGBA)."""
+def compose_variant(t: _Template, code: str, size: str = SIZE) -> np.ndarray:
+    """Composite one frame image (full template canvas, float RGBA).
+
+    Args:
+        t: The template.
+        code: packSeventh frame code (:data:`VARIANTS`).
+        size: The template's frame size: "Normal" for ordinary cards, "Saga" for sagas (chapter
+            textbox on the left, tall art window on the right, reminder box at the bottom).
+    """
+    SIZE = size  # shadows the module default for this composite
     recipe = VARIANTS[code]
     identity = recipe["identity"]
-    is_land = "land" in recipe
+    saga = size == "Saga"
+    is_land = "land" in recipe and not saga  # Proxyshop: sagas have no pinlines
     out = np.zeros((t.height, t.width, 4), np.float32)
 
     # Frame texture, clipped to the frame shape (art window and textbox are cut out of it).
@@ -298,7 +307,7 @@ def compose_variant(t: _Template, code: str) -> np.ndarray:
 
     # Textbox texture, clipped to its shape (ragged for black / green, raster for black).
     textbox_name = recipe.get("textbox", identity)
-    irregular = identity in _IRREGULAR_TEXTBOX and not is_land
+    irregular = identity in _IRREGULAR_TEXTBOX and not is_land and not saga
     if identity == "B" and irregular:
         black = t.rgba(t.find("Card Frame", "Textbox", f"B {SIZE}"))
         _over(out, black[..., :3], black[..., 3])
@@ -310,18 +319,24 @@ def compose_variant(t: _Template, code: str) -> np.ndarray:
 
     # Textbox bevels (none on irregular textboxes; colourless ones are adjustment layers).
     if not irregular and identity != "Colorless":
-        bevel_identity = "Land" if is_land else identity
-        thickness = "Land" if is_land else _BEVEL_THICKNESS[identity]
+        bevel_identity = "Land" if "land" in recipe else identity
+        thickness = "Land" if is_land else _BEVEL_THICKNESS.get(identity, "Medium")
         sized = t.find("Card Frame", "Textbox Bevels", "Masks", SIZE)
         for corner in ("TR", "BL"):
             mask = t.mask_of(next(layer for layer in sized if layer.name == f"{thickness} {corner}"))
             group = t.find("Card Frame", "Textbox Bevels", bevel_identity, corner)
             fills = [layer for layer in group if layer.kind == "solidcolorfill"]
-            if is_land:  # land bevels hold one fill per colour; Proxyshop enables the land's own
+            if "land" in recipe:  # land bevels hold one fill per colour; Proxyshop enables the land's own
                 land_color = "Gold" if recipe["land"] == "Land" else recipe["land"]
                 fills = [layer for layer in fills if layer.name == land_color]
             for fill in fills:
                 _blend(out, t.fill_color(fill), mask * (fill.opacity / 255), fill.blend_mode.name)
+        # White, blue and red sagas also carry the template's chapter-box lines (Proxyshop
+        # enables the size's sub-group of their textbox bevel when the card has no pinlines).
+        if saga and identity in {"W", "U", "R"}:
+            for layer in t.find("Card Frame", "Textbox Bevels", identity, size):
+                img = t.rgba(layer)
+                _over(out, img[..., :3], img[..., 3])
 
     # Outlines: art box, textbox (rectangular textboxes only), bevel and card outlines, corners.
     outlines = [*t.find("Outlines", "Art Outlines", SIZE)]
@@ -360,6 +375,35 @@ def compose_variant(t: _Template, code: str) -> np.ndarray:
     art_window = t.mask_of(t.find("Art Frames", SIZE))
     border[..., 3] *= 1 - art_window
     return border
+
+
+SAGA_CODES = ["w", "u", "b", "r", "g", "m", "l"]  # packClassicshiftedSaga's frames
+SAGA_EXTRAS = ["I", "II", "III", "IV", "V", "VI", "Divider"]
+
+
+def build_saga_extras(t: _Template, out_dir: Path) -> list[Path]:
+    """Write the template's saga chapter badges (I-VI) and chapter divider as tight crops.
+
+    ``saga/extras.json`` records each crop's top-left in card pixels, so the harness can place
+    them; the badges are drawn per chapter, centred on the chapter's text.
+    """
+    import json
+
+    saga_dir = out_dir / "frames" / "saga"
+    saga_dir.mkdir(parents=True, exist_ok=True)
+    positions, written = {}, []
+    for name in SAGA_EXTRAS:
+        layer = t.find("Saga", name)
+        x0, y0, x1, y1 = layer.bbox
+        img = card_area(t.rgba(layer))
+        cx0, cy0 = x0 - CARD_BOX[0], y0 - CARD_BOX[1]
+        crop = img.crop((cx0, cy0, cx0 + (x1 - x0), cy0 + (y1 - y0)))
+        path = saga_dir / f"{name.lower()}.png"
+        crop.save(path, optimize=True)
+        positions[name] = [cx0, cy0, x1 - x0, y1 - y0]
+        written.append(path)
+    (saga_dir / "extras.json").write_text(json.dumps(positions, indent=1))
+    return written
 
 
 def card_area(full: np.ndarray) -> Image.Image:
@@ -428,6 +472,21 @@ def _build_frame(code: str, out_dir: Path) -> list[Path]:
     return [frame_path, crown_path]
 
 
+def _build_saga_frame(code: str, out_dir: Path) -> list[Path]:
+    """Worker task: one saga frame image (no crown: the battlement crown is normal-frame only)."""
+    assert _worker_template is not None
+    path = out_dir / "frames" / "saga" / f"{code}.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    card_area(compose_variant(_worker_template, code, "Saga")).save(path, optimize=True)
+    return [path]
+
+
+def _build_saga_extras(out_dir: Path) -> list[Path]:
+    """Worker task: saga chapter badges and divider."""
+    assert _worker_template is not None
+    return build_saga_extras(_worker_template, out_dir)
+
+
 def _build_masks(out_dir: Path) -> list[Path]:
     """Worker task: the HD packSeventh mask replacements."""
     assert _worker_template is not None
@@ -472,7 +531,9 @@ def build(
     Args:
         psd_path: The template; downloaded into the cache when omitted.
         out_dir: Where ``frames/`` and ``crown/`` go.
-        codes: packSeventh frame codes to build (default: all of :data:`VARIANTS`).
+        codes: Frame codes to build: packSeventh codes (:data:`VARIANTS`), ``saga-<code>`` for a
+            saga frame (:data:`SAGA_CODES`), ``saga-extras`` for the chapter badges and divider.
+            Default: all of them.
         jobs: Worker processes (default: :func:`default_jobs`).
 
     Returns:
@@ -485,13 +546,19 @@ def build(
     psd = psd_path or download_template()
     (out_dir / "frames").mkdir(parents=True, exist_ok=True)
     (out_dir / "crown").mkdir(parents=True, exist_ok=True)
-    codes = codes or list(VARIANTS)
+    codes = codes or [*VARIANTS, *(f"saga-{c}" for c in SAGA_CODES), "saga-extras"]
     jobs = jobs or default_jobs(len(codes) + 1)
     sys.stdout.write(f"building {len(codes)} frames + masks with {jobs} worker(s)\n")
     written: list[Path] = []
     with ProcessPoolExecutor(max_workers=jobs, initializer=_init_worker, initargs=(psd,)) as pool:
         futures = [pool.submit(_build_masks, out_dir)]
-        futures += [pool.submit(_build_frame, code, out_dir) for code in codes]
+        for code in codes:
+            if code == "saga-extras":
+                futures.append(pool.submit(_build_saga_extras, out_dir))
+            elif code.startswith("saga-"):
+                futures.append(pool.submit(_build_saga_frame, code.removeprefix("saga-"), out_dir))
+            else:
+                futures.append(pool.submit(_build_frame, code, out_dir))
         for future in as_completed(futures):
             paths = future.result()
             written += paths
