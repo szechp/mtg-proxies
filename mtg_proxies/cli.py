@@ -153,7 +153,7 @@ def _resolve_cc_frame(flags: dict) -> str:
         return "modern"
     if flags.get("--m15-8th"):
         return "m15-8th"
-    if flags.get("--retro") or flags.get("--retro-scaled"):
+    if flags.get("--retro") or flags.get("--retro-scaled") or flags.get("--retro-hd"):
         return "retro"
     if flags.get("--borderless"):
         return "borderless"
@@ -161,6 +161,21 @@ def _resolve_cc_frame(flags: dict) -> str:
         return "8th"
     return "auto"
 
+
+
+
+def _require_retro_hd_frames() -> None:
+    """Exit with build instructions when the ``--retro-hd`` frames have not been built."""
+    from mtg_proxies.cardconjurer import retro_hd
+
+    if not (retro_hd.FRAMES_DIR / "w.png").is_file():
+        print(
+            f"Error: --retro-hd frames are not built yet (looked in {retro_hd.FRAMES_DIR}). Build them once with:\n"
+            "  uv sync --extra retro-hd\n"
+            "  uv run python -m mtg_proxies.cardconjurer.retro_hd",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
 
 _DFC_LAYOUTS = {"transform", "modal_dfc", "reversible_card"}
 
@@ -920,6 +935,7 @@ def _apply_per_card_modelines(
                         art_path=resolved_art,
                         legendary=bool(directive.flags.get("--legendary")),
                         no_crown=bool(directive.flags.get("--no-crown")),
+                        retro_hd=bool(directive.flags.get("--retro-hd")),
                         frame_overlap_mm=(
                             DEFAULT_OVERLAP_MM
                             if directive.flags.get("--retro-scaled") or directive.flags.get("--8th-scaled")
@@ -1596,6 +1612,16 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
             )
             raise SystemExit(2)
 
+    # ``--retro-hd`` is retro with Gavin Bowers' frame art: it selects retro like --retro-scaled
+    # does, refuses any other frame, and needs the frames built locally first.
+    if args.retro_hd:
+        if frame == "auto":
+            frame = "retro"
+        elif frame != "retro":
+            print(f"Error: --retro-hd renders in the retro frame, which conflicts with --{frame}.", file=sys.stderr)
+            raise SystemExit(2)
+        _require_retro_hd_frames()
+
     # ``--legendary`` only draws something on 8th (CC's legend crown); retro accepts it as a
     # no-op (its legendaries get the battlement crown by default), modern and m15-8th already
     # carry crowns, borderless has no marker.
@@ -1703,6 +1729,7 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
     slot_scaled: set[int] = set()
     slot_legendary: set[int] = set()
     slot_no_crown: set[int] = set()
+    slot_retro_hd: set[int] = set()
     card_payload_by_slot: dict[int, dict] = {}
     for slot_int, card in slot_to_card.items():
         effective_lang = args.language
@@ -1723,6 +1750,8 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
                     slot_legendary.add(slot_int)
                 if d.flags.get("--no-crown"):
                     slot_no_crown.add(slot_int)
+                if d.flags.get("--retro-hd"):
+                    slot_retro_hd.add(slot_int)
                 if d.flags.get("--scryfall"):
                     slot_scryfall_override[slot_int] = True
                 if d.flags.get("--skip"):
@@ -1942,6 +1971,8 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
             extras["legendary"] = True
         if args.no_crown or slot_int in slot_no_crown:
             extras["no_crown"] = True
+        if args.retro_hd or slot_int in slot_retro_hd:
+            extras["retro_hd"] = True
 
         # Per-card ``#cardconjurer --custom-art PATH`` wins over every art source below. This is
         # the escape hatch for borderless cards with no full-bleed MTGPics art: supply your own
@@ -2744,6 +2775,19 @@ def main() -> None:
             " the frame's own bevel, pinline and texture, and follows hybrid, two-colour and"
             " land frames). No-op on other frames. Also available per card as"
             " `#cardconjurer --no-crown`."
+        ),
+    )
+    cardconjurer_parser.add_argument(
+        "--retro-hd", dest="retro_hd", action="store_true", default=False,
+        help=(
+            "retro with high-detail frame art from Gavin Bowers' Proxyshop Retro template (smooth"
+            " textures, modern colour grading, crisp bevels) in place of Card Conjurer's Seventh"
+            " Edition scans. Everything else is --retro: text, white-frame readability, hybrid and"
+            " two-colour frames, the battlement crown. Implies --retro and combines with"
+            " --retro-scaled. Single-faced, non-planeswalker cards only; the rest render plain"
+            " retro. Needs the frames built once: `uv sync --extra retro-hd && uv run python -m"
+            " mtg_proxies.cardconjurer.retro_hd`. Also available per card as"
+            " `#cardconjurer --retro-hd`."
         ),
     )
     # No --auto flag: auto is simply the absence of an explicit frame flag (the default).

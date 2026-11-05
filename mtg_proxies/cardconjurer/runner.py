@@ -99,6 +99,7 @@ def build_job(
     dfc_split: bool = False,
     legendary: bool = False,
     no_crown: bool = False,
+    retro_hd: bool = False,
 ) -> dict[str, Any]:
     """Build one ND-JSON job dict for the node harness.
 
@@ -132,6 +133,9 @@ def build_job(
 
     ``no_crown`` leaves the battlement legend crown off a retro legendary (drawn by
     default; see ``retro_crown.py``). No-op on the other frames.
+
+    ``retro_hd`` swaps the retro frame art for the high-detail frames built by
+    ``retro_hd.py``. No-op on the other frames.
     """
     job: dict[str, Any] = {
         "slot": f"{slot:04d}",
@@ -152,6 +156,8 @@ def build_job(
         job["legendary"] = True
     if no_crown:
         job["no_crown"] = True
+    if retro_hd:
+        job["retro_hd"] = True
     return job
 
 

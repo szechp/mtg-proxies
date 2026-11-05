@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import dataclass
 from functools import cache
 from itertools import pairwise
 from pathlib import Path
@@ -38,55 +39,129 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-# Seventh frame geometry, in the 1500x2100 space its frame images are authored in.
-WIDTH, HEIGHT = 1500, 2100
-X_LEFT, X_RIGHT = 80, 1430  # outer left edge, outer right edge (exclusive)
-Y_EDGE = 83  # outer top edge of the stock frame
-BEVEL = 9  # stock bevel width
-REGULAR_DEPTH = 11  # bevel + 2px black line: first field row is Y_EDGE + 11
-LAND_DEPTH = 17  # land frames add a 4px coloured stripe and a second 2px black line
-PINLINE_DEPTH = (BEVEL, 17)  # Seventh's 'Pinline' mask spans depth 9-16 (rows 92-99)
 # Rows the layer runs past the crown band into the stock field. They are pixel-identical copies
 # of the frame, so they change nothing -- but Card Conjurer draws layers scaled, and without the
 # overlap the layer's antialiased bottom edge lets the stock pinline ghost through the blocks.
 OVERLAP = 4
 
-# Crown shape, measured from a hand-made reference crown.
-RISE = 18  # height of the raised blocks above the stock edge
-STEP_RUN = 10  # horizontal run of each slanted step
-END_BLOCK_WIDTH = 178  # the two end blocks, measured along their base
-MID_BLOCK_WIDTH = 182  # the two middle blocks
-Y_TOP = Y_EDGE - RISE
-Y_SIDE_END = Y_EDGE + 80  # side edges of the outline run past every band
-
 ASSET_DIR = Path(__file__).resolve().parent / "node" / "assets" / "retro-crown"
 PINLINE_MASK_NAME = "pinline.png"
+
+
+@dataclass(frozen=True)
+class FrameGeometry:
+    """Where a retro frame family's top edge is, and the crown drawn on it.
+
+    All values are in the pixel space the family's frame images are authored in. ``*_depth``
+    values count from the outer edge inward: ``regular_depth`` / ``land_depth`` is where the
+    field starts on regular / land frames, ``seam_depth`` how far the dark top-left miter seam
+    runs, and ``pinline_depth`` the band Seventh's 'Pinline' mask covers.
+    """
+
+    width: int
+    height: int
+    x_left: int  # outer left edge
+    x_right: int  # outer right edge (exclusive)
+    y_edge: int  # outer top edge
+    seam_depth: int
+    regular_depth: int
+    land_depth: int
+    pinline_depth: tuple[int, int]
+    rise: int  # crown: height of the raised blocks above the edge
+    step_run: int  # crown: horizontal run of each slanted step
+    end_block: int  # crown: width of the two end blocks along their base
+    mid_block: int  # crown: width of the two middle blocks
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        """(height, width) of a frame image."""
+        return (self.height, self.width)
+
+    @property
+    def y_top(self) -> int:
+        """Top of the raised blocks."""
+        return self.y_edge - self.rise
+
+
+# Card Conjurer's packSeventh frames (img/frames/seventh/regular, 1500x2100): 9px bevel + 2px black
+# line; land frames add a 4px coloured stripe and a second 2px black line. Crown shape measured from
+# a hand-made reference crown.
+SEVENTH = FrameGeometry(
+    width=1500,
+    height=2100,
+    x_left=80,
+    x_right=1430,
+    y_edge=83,
+    seam_depth=9,
+    regular_depth=11,
+    land_depth=17,
+    pinline_depth=(9, 17),
+    rise=18,
+    step_run=10,
+    end_block=178,
+    mid_block=182,
+)
+
+# --retro-hd frames composited from Gavin Bowers' Retro template (2010x2814, retro_hd.py): 3px black
+# outline + 11px bevel + 3px black line; land frames add an 8px pinline and a second 3px black line;
+# the black miter seam runs through the whole edge. Crown shape is SEVENTH's, scaled by 2010/1500.
+HD_GEOMETRY = FrameGeometry(
+    width=2010,
+    height=2814,
+    x_left=93,
+    x_right=1917,
+    y_edge=109,
+    seam_depth=17,
+    regular_depth=17,
+    land_depth=28,
+    pinline_depth=(12, 23),
+    rise=24,
+    step_run=13,
+    end_block=239,
+    mid_block=244,
+)
+
+# The committed (Seventh) assets' geometry as module constants.
+WIDTH, HEIGHT = SEVENTH.width, SEVENTH.height
+X_LEFT, X_RIGHT = SEVENTH.x_left, SEVENTH.x_right
+Y_EDGE = SEVENTH.y_edge
+BEVEL = SEVENTH.seam_depth
+REGULAR_DEPTH = SEVENTH.regular_depth
+LAND_DEPTH = SEVENTH.land_depth
+PINLINE_DEPTH = SEVENTH.pinline_depth
+RISE = SEVENTH.rise
+STEP_RUN = SEVENTH.step_run
+END_BLOCK_WIDTH = SEVENTH.end_block
+MID_BLOCK_WIDTH = SEVENTH.mid_block
+Y_TOP = SEVENTH.y_top
 
 Point = tuple[float, float]
 
 
-def outline() -> tuple[list[Point], list[str]]:
+def outline(geometry: FrameGeometry = SEVENTH) -> tuple[list[Point], list[str]]:
     """Return the crown outline as an open chain plus the bevel face of each edge.
 
     The chain runs up the left side, across the battlements, and down the right side, so its
     inward normal is ``(-uy, ux)`` for every edge direction ``(ux, uy)``. Faces are ``"left"``,
     ``"top"`` (every horizontal or slanted edge) and ``"right"``.
     """
-    notch = (X_RIGHT - X_LEFT - 2 * END_BLOCK_WIDTH - 2 * MID_BLOCK_WIDTH) / 3
-    edges = [X_LEFT, X_LEFT + END_BLOCK_WIDTH]
-    edges += [edges[-1] + notch, edges[-1] + notch + MID_BLOCK_WIDTH]
-    edges += [edges[-1] + notch, edges[-1] + notch + MID_BLOCK_WIDTH]
-    edges += [edges[-1] + notch, X_RIGHT]
+    g = geometry
+    notch = (g.x_right - g.x_left - 2 * g.end_block - 2 * g.mid_block) / 3
+    edges = [g.x_left, g.x_left + g.end_block]
+    edges += [edges[-1] + notch, edges[-1] + notch + g.mid_block]
+    edges += [edges[-1] + notch, edges[-1] + notch + g.mid_block]
+    edges += [edges[-1] + notch, g.x_right]
     blocks = [(edges[i], edges[i + 1]) for i in range(0, 8, 2)]
 
-    top: list[Point] = [(X_LEFT, Y_TOP)]
+    top: list[Point] = [(g.x_left, g.y_top)]
     for i, (start, end) in enumerate(blocks):
         if i > 0:
-            top += [(start, Y_EDGE), (start + STEP_RUN, Y_TOP)]
+            top += [(start, g.y_edge), (start + g.step_run, g.y_top)]
         if i < len(blocks) - 1:
-            top += [(end - STEP_RUN, Y_TOP), (end, Y_EDGE)]
-    top.append((X_RIGHT, Y_TOP))
-    chain = [(X_LEFT, Y_SIDE_END), *top, (X_RIGHT, Y_SIDE_END)]
+            top += [(end - g.step_run, g.y_top), (end, g.y_edge)]
+    top.append((g.x_right, g.y_top))
+    side_end = g.y_edge + g.land_depth + 4 * OVERLAP + 60  # side edges run past every band
+    chain = [(g.x_left, side_end), *top, (g.x_right, side_end)]
     faces = ["left"] + ["top"] * (len(top) - 1) + ["right"]
     return chain, faces
 
@@ -120,22 +195,23 @@ def _contains(poly: list[Point], px: np.ndarray, py: np.ndarray) -> np.ndarray:
     return inside
 
 
-class _Geometry:
-    """Per-pixel edge ownership and depth for one edge depth (11 regular, 17 land)."""
+class _Ownership:
+    """Per-pixel edge ownership and depth for one frame geometry and edge depth."""
 
-    def __init__(self, depth: int) -> None:
-        self.rows = Y_EDGE + depth + OVERLAP
-        py, px = np.mgrid[0 : self.rows, 0:WIDTH].astype(np.float64) + 0.5
-        self.chain, self.faces = outline()
-        inner_bevel = _offset(self.chain, BEVEL)
+    def __init__(self, geometry: FrameGeometry, depth: int) -> None:
+        g = geometry
+        self.rows = g.y_edge + depth + OVERLAP
+        py, px = np.mgrid[0 : self.rows, 0 : g.width].astype(np.float64) + 0.5
+        self.chain, self.faces = outline(g)
+        inner_seam = _offset(self.chain, g.seam_depth)
         inner_field = _offset(self.chain, depth)
         outer = _offset(self.chain, -1)  # 1px keyline just outside the edge
         inside = _contains(self.chain, px, py)
         self.ring = inside & ~_contains(inner_field, px, py)
         self.field = inside & ~self.ring
         self.keyline = _contains(outer, px, py) & ~inside
-        self.owner = np.full((self.rows, WIDTH), -1)
-        self.depth = np.zeros((self.rows, WIDTH))
+        self.owner = np.full((self.rows, g.width), -1)
+        self.depth = np.zeros((self.rows, g.width))
         band = self.ring | self.keyline
         for i in range(len(self.chain) - 1):
             quad = [outer[i], outer[i + 1], inner_field[i + 1], inner_field[i]]
@@ -145,42 +221,48 @@ class _Geometry:
             length = np.hypot(x1 - x0, y1 - y0)
             self.depth[mask] = ((px[mask] - x0) * -(y1 - y0) + (py[mask] - y0) * (x1 - x0)) / length
         self.depth_px = np.clip(np.floor(self.depth).astype(int), -1, depth - 1)
-        self.yy, self.xx = np.mgrid[0 : self.rows, 0:WIDTH]
-        first_field_row = Y_EDGE + depth
+        self.yy, self.xx = np.mgrid[0 : self.rows, 0 : g.width]
+        first_field_row = g.y_edge + depth
         self.y_mirror = np.where(self.yy < first_field_row, 2 * first_field_row - 1 - self.yy, self.yy)
-        # The stock frame has a dark miter seam where its top and left bevels meet; keep it.
-        seam = Image.new("L", (WIDTH, self.rows), 0)
-        ImageDraw.Draw(seam).line([self.chain[1], inner_bevel[1]], fill=255, width=1)
-        self.seam = (np.asarray(seam) > 0) & self.ring & (self.depth < BEVEL)
+        # The stock frame has a dark miter seam where its top and left edges meet; keep it.
+        seam = Image.new("L", (g.width, self.rows), 0)
+        ImageDraw.Draw(seam).line([self.chain[1], inner_seam[1]], fill=255, width=1)
+        self.seam = (np.asarray(seam) > 0) & self.ring & (self.depth < g.seam_depth)
 
 
 @cache
-def _geometry(depth: int) -> _Geometry:
-    return _Geometry(depth)
+def _ownership(geometry: FrameGeometry, depth: int) -> _Ownership:
+    return _Ownership(geometry, depth)
 
 
-def edge_depth(frame: np.ndarray) -> int:
-    """Return the depth from the outer top edge to the first field row of a Seventh frame.
+def edge_depth(frame: np.ndarray, geometry: FrameGeometry = SEVENTH) -> int:
+    """Return the depth from the outer top edge to the first field row of a retro frame.
 
-    Regular frames: 9px bevel + 2px black line = 11. Land frames add a 4px coloured stripe and
-    a second 2px black line = 17, detected from that second black line at depth 15-16.
+    Land frames are told apart by their second black line, just above ``land_depth``, with the
+    coloured stripe between it and the regular frame's field row.
 
     Args:
-        frame: HxWx4 uint8 array of a Seventh frame image at 1500x2100.
+        frame: HxWx4 uint8 array of a frame image in ``geometry``'s space.
+        geometry: The frame family.
 
     Returns:
-        11 or 17.
+        ``geometry.regular_depth`` or ``geometry.land_depth``.
     """
-    rows = frame[Y_EDGE : Y_EDGE + 20, 600:900, :3].astype(int).sum(-1).mean(1)
-    land_stripe = rows[15] < 40 and rows[16] < 40 and rows[11:15].min() > 60
-    return LAND_DEPTH if land_stripe else REGULAR_DEPTH
+    g = geometry
+    mid = slice(g.width * 2 // 5, g.width * 3 // 5)
+    rows = frame[g.y_edge : g.y_edge + g.land_depth + 2, mid, :3].astype(int).sum(-1).mean(1)
+    second_line = rows[g.land_depth - 2] < 40 and rows[g.land_depth - 1] < 40
+    stripe = rows[g.regular_depth : g.land_depth - 3].min() > 60
+    return g.land_depth if second_line and stripe else g.regular_depth
 
 
-def make_crown_layer(frame: np.ndarray) -> np.ndarray:
-    """Build the crown layer for one Seventh frame image.
+def make_crown_layer(frame: np.ndarray, geometry: FrameGeometry = SEVENTH) -> np.ndarray:
+    """Build the crown layer for one retro frame image.
 
     Args:
-        frame: HxWx4 uint8 array of a Seventh frame image at 1500x2100.
+        frame: HxWx4 uint8 array of a frame image in ``geometry``'s space.
+        geometry: The frame family (:data:`SEVENTH` for Card Conjurer's packSeventh,
+            :data:`HD_GEOMETRY` for ``--retro-hd``).
 
     Returns:
         A same-shape RGBA layer: transparent except the crown band, which holds the frame's own
@@ -188,43 +270,45 @@ def make_crown_layer(frame: np.ndarray) -> np.ndarray:
         unchanged from the frame. Laid over the frame it was made from, it adds the crown
         without changing any pixel below the stock top edge.
     """
+    g = geometry
     src = np.ascontiguousarray(frame, dtype=np.uint8)
-    if src.shape != (HEIGHT, WIDTH, 4):
-        raise ValueError(f"expected a {WIDTH}x{HEIGHT} RGBA frame, got shape {src.shape}")
-    g = _geometry(edge_depth(src))
+    if src.shape != (*g.shape, 4):
+        raise ValueError(f"expected a {g.width}x{g.height} RGBA frame, got shape {src.shape}")
+    own = _ownership(g, edge_depth(src, g))
     out = np.zeros_like(src)
-    band = out[: g.rows]
-    band[g.field] = src[g.y_mirror[g.field], g.xx[g.field]]
-    for i, face in enumerate(g.faces):
-        mask = g.owner == i
+    band = out[: own.rows]
+    band[own.field] = src[own.y_mirror[own.field], own.xx[own.field]]
+    for i, face in enumerate(own.faces):
+        mask = own.owner == i
         if not mask.any():
             continue
-        depth = g.depth_px[mask]
+        depth = own.depth_px[mask]
         if face == "top":
-            band[mask] = src[Y_EDGE + depth, g.xx[mask]]
+            band[mask] = src[g.y_edge + depth, own.xx[mask]]
         elif face == "left":
-            band[mask] = src[g.y_mirror[mask], X_LEFT + depth]
+            band[mask] = src[own.y_mirror[mask], g.x_left + depth]
         else:
-            band[mask] = src[g.y_mirror[mask], X_RIGHT - 1 - depth]
+            band[mask] = src[own.y_mirror[mask], g.x_right - 1 - depth]
     # The keyline only exists on frames that have one (colourless's tinted outline); on
     # black-bordered frames it is left transparent so the border shows through.
-    keyline = g.keyline & (band[..., :3].astype(int).sum(-1) < 30)
+    keyline = own.keyline & (band[..., :3].astype(int).sum(-1) < 30)
     band[keyline] = 0
-    seam = g.seam & (band[..., 3] > 0)
+    seam = own.seam & (band[..., 3] > 0)
     band[seam, :3] = 15
     return out
 
 
-def crown_pinline_mask() -> np.ndarray:
+def crown_pinline_mask(geometry: FrameGeometry = SEVENTH) -> np.ndarray:
     """Return the crown's counterpart of Seventh's ``Pinline`` mask (HxW uint8, 255 = inside).
 
-    It is the same depth band as the stock mask (9-16 below the edge), following the
+    It is the same depth band as the stock mask (``geometry.pinline_depth``), following the
     battlements, so pinline overlays continue up the crown: the black line on regular frames,
     the black / coloured stripe / black band on land frames.
     """
-    g = _geometry(PINLINE_DEPTH[1])
-    mask = np.zeros((HEIGHT, WIDTH), np.uint8)
-    mask[: g.rows][g.ring & (g.depth >= PINLINE_DEPTH[0])] = 255
+    g = geometry
+    own = _ownership(g, g.pinline_depth[1])
+    mask = np.zeros(g.shape, np.uint8)
+    mask[: own.rows][own.ring & (own.depth >= g.pinline_depth[0])] = 255
     return mask
 
 

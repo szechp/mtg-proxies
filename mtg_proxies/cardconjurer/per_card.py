@@ -39,6 +39,7 @@ class CardConjurerRequest:
     frame_overlap_mm: float | None = None
     legendary: bool = False
     no_crown: bool = False
+    retro_hd: bool = False
 
 
 RunHarness = Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
@@ -106,6 +107,7 @@ def render_per_card_batch(
             art_path=req.art_path,
             legendary=req.legendary,
             no_crown=req.no_crown,
+            retro_hd=req.retro_hd,
         )
         for req in requests
     ]

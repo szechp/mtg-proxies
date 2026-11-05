@@ -184,6 +184,7 @@ async function addRetroLayer(frameName, maskName, additionalMasks = []) {
 // mask that never reaches the crown band is skipped. So whatever combination the frame is,
 // the crown matches it, and nothing below the stock top edge changes.
 const RETRO_CROWN_DIR = path.join(ROOT, 'assets', 'retro-crown');
+const RETRO_CROWN_PINLINE_MASK = 'pinline.png';
 const RETRO_CROWN_SRC = /\/img\/frames\/seventh\/regular\/([A-Za-z]+)\.png$/;
 // Stock mask name -> what the crown layer uses instead:
 //   'drop'  -- no mask (the crown layer is already transparent outside the crown)
@@ -194,15 +195,15 @@ const RETRO_CROWN_SRC = /\/img\/frames\/seventh\/regular\/([A-Za-z]+)\.png$/;
 const RETRO_CROWN_MASK = {
     'Frame': 'drop',
     'Right Half': 'keep',
-    'Pinline': { name: 'Crown Pinline', src: 'file://' + path.join(RETRO_CROWN_DIR, 'pinline.png') },
+    'Pinline': { name: 'Crown Pinline' },  // src: <crown dir>/RETRO_CROWN_PINLINE_MASK
 };
 
-async function addRetroLegendCrown() {
+async function addRetroLegendCrown(crownDir = RETRO_CROWN_DIR) {
     const bottomUp = (global.card.frames || []).slice().reverse();
     for (const layer of bottomUp) {
         const match = RETRO_CROWN_SRC.exec(layer.src || '');
         if (!match) continue;
-        const crownPath = path.join(RETRO_CROWN_DIR, match[1] + '.png');
+        const crownPath = path.join(crownDir, match[1] + '.png');
         if (!fs.existsSync(crownPath)) continue;
         const masks = [];
         let reachesCrown = true;
@@ -210,7 +211,9 @@ async function addRetroLegendCrown() {
             const rule = RETRO_CROWN_MASK[mask.name];
             if (rule === undefined) { reachesCrown = false; break; }
             if (rule === 'keep') masks.push({ name: mask.name, src: mask.src });
-            else if (rule !== 'drop') masks.push({ ...rule });
+            else if (rule !== 'drop') {
+                masks.push({ ...rule, src: 'file://' + path.join(crownDir, RETRO_CROWN_PINLINE_MASK) });
+            }
         }
         if (!reachesCrown) continue;
         const crownLayer = {
@@ -315,8 +318,22 @@ console.error('[harness] fonts:', _fontLoaded, 'loaded,', _fontFailed, 'failed (
 //    web-root paths like '/img/frames/8th/b.png'.
 // ---------------------------------------------------------------------------
 const pendingImages = [];
+// --retro-hd: while a retro-HD card is being built, packSeventh's frame images resolve to the
+// composites retro_hd.py built from Gavin Bowers' Retro template. Same geometry, different art --
+// see retro_hd.py. Set (and cleared) by renderFace; null = stock frames.
+const RETRO_HD_ROOT = process.env.CC_RETRO_HD || path.join(os.homedir(), '.cache', 'mtg-proxies', 'retro-hd');
+const SEVENTH_FRAME_SRC = /^\/img\/frames\/seventh\/regular\/([A-Za-z]+)\.png$/;
+let retroHdFrames = null;
+function retroHdFrame(src) {
+    const match = retroHdFrames && SEVENTH_FRAME_SRC.exec(src);
+    if (!match) return null;
+    const file = path.join(retroHdFrames, match[1] + '.png');
+    return fs.existsSync(file) ? file : null;
+}
 function resolveSrc(src) {
     if (!src) return null;
+    const hd = retroHdFrame(src);
+    if (hd) return hd;
     if (src.startsWith('data:'))                    return src;
     if (src.startsWith('http://') || src.startsWith('https://')) return src;
     if (src.startsWith('file://'))                  return src.slice(7);
@@ -1784,20 +1801,32 @@ function installRedrawDeferral() {
 // upload the matching art, autoframe, drain images, draw, save.
 async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath, fontSizeDelta = 0,
                              dfcFace = null, frameNameSuffix = '', specialLayout = null, legendary = false,
-                             crown = true }) {
+                             crown = true, retroHd = false }) {
     resetCanvases();
     installRedrawDeferral();
     deferRedraws = true;
+    // --retro-hd swaps packSeventh's frame art for single-faced, non-planeswalker retro cards
+    // only: DFC faces use the Classicshifted packs, and packPlaneswalkerSeventh lays its own
+    // loyalty furniture over the same images, which the HD art does not have.
+    const hd = retroHd && frame === 'retro' && !dfcFace && !specialLayout?.planeswalker;
+    if (hd && !fs.existsSync(path.join(RETRO_HD_ROOT, 'frames', 'w.png'))) {
+        throw new Error(`--retro-hd frames not built in ${RETRO_HD_ROOT} -- run `
+            + '`uv sync --extra retro-hd && uv run python -m mtg_proxies.cardconjurer.retro_hd`');
+    }
+    retroHdFrames = hd ? path.join(RETRO_HD_ROOT, 'frames') : null;
     try {
         return await buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath,
-                                        fontSizeDelta, dfcFace, frameNameSuffix, specialLayout, legendary, crown });
+                                        fontSizeDelta, dfcFace, frameNameSuffix, specialLayout, legendary, crown,
+                                        retroHd: hd });
     } finally {
         deferRedraws = false;
+        retroHdFrames = null;
     }
 }
 
 async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath,
-                                   fontSizeDelta, dfcFace, frameNameSuffix, specialLayout, legendary, crown }) {
+                                   fontSizeDelta, dfcFace, frameNameSuffix, specialLayout, legendary, crown,
+                                   retroHd }) {
     await ensurePackLoaded(packFile);
     if (specialLayout?.planeswalker) resetPlaneswalkerState(frame);
 
@@ -2745,7 +2774,7 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     if (crown && !dfcFace && frame === 'retro' && scry.layout !== 'token' && scry.layout !== 'flip'
         && /Legendary/.test(pristineFace.type_line || scry.type_line || '')
         && !/Planeswalker/.test(pristineFace.type_line || scry.type_line || '')) {
-        await addRetroLegendCrown();
+        await addRetroLegendCrown(retroHd ? path.join(RETRO_HD_ROOT, 'crown') : RETRO_CROWN_DIR);
     }
 
     // DFC indicator (small icon at top-left next to title) — pack8thTransform
@@ -3160,7 +3189,7 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
 }
 
 async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fontSizeDelta = 0, dfcSplit = false,
-                                        legendary = false, crown = true } = {}) {
+                                        legendary = false, crown = true, retroHd = false } = {}) {
     const special = resolveSpecialLayout(scry, frame);
     if (special?.kind === 'invalid') throw new Error(special.reason);
     const skipReason = shouldSkip(scry);
@@ -3259,6 +3288,7 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
     }
     return await renderFace({
         packFile, processed, faceIdx: 0, scry, outName: slug, frame, setSymbolPath, fontSizeDelta, legendary, crown,
+        retroHd,
         specialLayout: special?.kind === 'planeswalker'
             ? { ...special, planeswalker: true, side: 'single' }
             : special,
@@ -3399,7 +3429,9 @@ async function runOneJob(job) {
         const slug = slugify(job.name);
         const legendary = !!job.legendary;
         const crown = !job.no_crown;
-        const result = await renderCard(scry, slug, { frame, setSymbolPath, fontSizeDelta, dfcSplit, legendary, crown });
+        const retroHd = !!job.retro_hd;
+        const result = await renderCard(scry, slug,
+            { frame, setSymbolPath, fontSizeDelta, dfcSplit, legendary, crown, retroHd });
         const response = {
             slot:   job.slot,
             status: 'ok',

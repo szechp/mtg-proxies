@@ -156,6 +156,8 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     # (retro legendaries get the battlement crown by default).
     # ``--no-crown`` leaves the battlement legend crown off a retro legendary (it is on by
     # default). No-op on the other frames.
+    # ``--retro-hd`` renders the card retro with Gavin Bowers' high-detail frame art
+    # (implies --retro; ignored when another frame flag is set on the same segment).
     "cardconjurer": {
         "--8th":        NO_VALUE,
         "--modern":     NO_VALUE,
@@ -166,6 +168,7 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         "--8th-scaled": NO_VALUE,
         "--legendary":  NO_VALUE,
         "--no-crown":   NO_VALUE,
+        "--retro-hd":   NO_VALUE,
         "--upscale":    NO_VALUE,
         "--no-upscale": NO_VALUE,
         "--upscale-model": _path_str,
