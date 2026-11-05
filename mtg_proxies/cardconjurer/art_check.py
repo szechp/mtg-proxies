@@ -39,7 +39,7 @@ from PIL import Image
 
 _log = logging.getLogger(__name__)
 
-CHECK_VERSION = 3
+CHECK_VERSION = 4
 MATCH_WIDTH = 128  # px the MTGPics image is reduced to for matching
 # Luminance correlation at the best position: at or above SURE_NCC the structure is the same artwork
 # whatever its colour grading (MTGPics scans are often brighter or more saturated than the print);
@@ -49,6 +49,17 @@ MIN_NCC = 0.78
 SURE_NCC = 0.90
 MAX_COLOUR_GAP = 0.06  # mean per-channel colour difference allowed below SURE_NCC (0..1)
 MIN_TEXT_CONFIDENCE = 0.8
+# Fallback bands of the reference (top, bottom, left, right fractions trimmed off), tried when the
+# whole reference does not match: images cut tighter than the print (16:9 wallpapers, portraits).
+_TRIMS = (
+    (0.1, 0.1, 0, 0),
+    (0.2, 0.2, 0, 0),
+    (0.15, 0.15, 0, 0),
+    (0.3, 0, 0, 0),
+    (0, 0.3, 0, 0),
+    (0, 0, 0.2, 0),
+    (0, 0, 0, 0.2),
+)
 
 _OVERLAY_WORDS = re.compile(
     r"WIZARD|COAST|GATHERING|WOTC|TOLKIEN|MIDDLE.?EARTH|LORD.{0,6}RINGS|UNIVERSES ?BEYOND|©|\(C\)|\bMEE\b"
@@ -69,35 +80,34 @@ def _letters(text: str) -> str:
     return re.sub(r"[^A-Z]", "", unicodedata.normalize("NFKD", text).upper())
 
 
+def _resized(im: Image.Image, width: int) -> np.ndarray:
+    height = max(1, round(width * im.height / im.width))
+    return np.asarray(im.resize((width, height), Image.BILINEAR), np.float32) / 255
+
+
 def _rgb(path: Path, width: int) -> np.ndarray:
     with Image.open(path) as im:
-        rgb = im.convert("RGB")
-        height = max(1, round(width * rgb.height / rgb.width))
-        return np.asarray(rgb.resize((width, height), Image.BILINEAR), np.float32) / 255
+        return _resized(im.convert("RGB"), width)
 
 
-def match_score(candidate: Path, reference: Path) -> tuple[float, float]:
-    """Find ``reference`` (Scryfall's art crop) inside ``candidate`` (an MTGPics image).
+def _accepts(ncc: float, gap: float) -> bool:
+    return ncc >= SURE_NCC or (ncc >= MIN_NCC and gap <= MAX_COLOUR_GAP)
 
-    Returns:
-        (correlation, colour gap) at the best scale and position: luminance normalized
-        cross-correlation (1 = identical) and the mean per-channel colour difference of the
-        matched region (0 = identical). (-1, 1) when the reference never fits inside.
-    """
+
+def _best_match(big_rgb: np.ndarray, ref: Image.Image) -> tuple[float, float]:
+    """Best (correlation, colour gap) of ``ref`` slid over ``big_rgb`` across a range of scales."""
     from numpy.lib.stride_tricks import sliding_window_view
 
-    big_rgb = _rgb(candidate, MATCH_WIDTH)
     big = big_rgb.mean(-1)
     big_h, big_w = big.shape
-    with Image.open(reference) as ref:
-        aspect = ref.height / ref.width
+    aspect = ref.height / ref.width
     best = (-1.0, 1.0)
     for frac in np.linspace(0.55, 1.0, 10):
         tw = round(MATCH_WIDTH * frac)
         th = round(tw * aspect)
         if th > big_h or tw > big_w or th < 4:
             continue
-        tmpl_rgb = _rgb(reference, tw)[:th, :tw]
+        tmpl_rgb = _resized(ref, tw)[:th, :tw]
         tmpl = tmpl_rgb.mean(-1)
         tmpl = (tmpl - tmpl.mean()) / (tmpl.std() + 1e-6)
         windows = sliding_window_view(big, (th, tw))
@@ -109,6 +119,39 @@ def match_score(candidate: Path, reference: Path) -> tuple[float, float]:
             region = big_rgb[y : y + th, x : x + tw]
             gap = float(np.abs(region.mean((0, 1)) - tmpl_rgb.mean((0, 1))).mean())
             best = (float(ncc[y, x]), gap)
+    return best
+
+
+def match_score(candidate: Path, reference: Path) -> tuple[float, float]:
+    """Find ``reference`` (Scryfall's art crop) inside ``candidate`` (an MTGPics image).
+
+    Some MTGPics images are cut tighter than the printed art (16:9 wallpapers lose the top and
+    bottom, some portrait versions a side), so the reference never fits inside whole. When the
+    whole reference does not match, bands of it with up to 30% trimmed off are tried as well
+    (:data:`_TRIMS`).
+
+    Returns:
+        (correlation, colour gap) at the best scale and position: luminance normalized
+        cross-correlation (1 = identical) and the mean per-channel colour difference of the
+        matched region (0 = identical). (-1, 1) when the reference never fits inside.
+    """
+    big_rgb = _rgb(candidate, MATCH_WIDTH)
+    with Image.open(reference) as im:
+        ref = im.convert("RGB")
+    best = _best_match(big_rgb, ref)
+    if _accepts(*best):
+        return best
+    for top, bottom, left, right in _TRIMS:
+        box = (
+            round(ref.width * left),
+            round(ref.height * top),
+            round(ref.width * (1 - right)),
+            round(ref.height * (1 - bottom)),
+        )
+        score = _best_match(big_rgb, ref.crop(box))
+        if _accepts(*score):
+            return score
+        best = max(best, score)
     return best
 
 
@@ -180,7 +223,7 @@ def check_mtgpics_art(candidate: Path, reference: Path, card: dict) -> Verdict:
         pass
 
     ncc, gap = match_score(candidate, reference)
-    if ncc < MIN_NCC or (ncc < SURE_NCC and gap > MAX_COLOUR_GAP):
+    if not _accepts(ncc, gap):
         verdict = Verdict(False, f"does not match Scryfall's art (correlation {ncc:.2f}, colour gap {gap:.3f})")
     else:
         texts = overlay_text(candidate, card.get("artist", ""), card.get("name", ""))

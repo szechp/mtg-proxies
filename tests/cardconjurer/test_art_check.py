@@ -30,6 +30,19 @@ def test_scryfall_crop_is_found_inside_the_full_art(tmp_path: Path) -> None:
     assert gap < 0.03
 
 
+@pytest.mark.parametrize(
+    "cut",
+    [(0, 180, 1400, 820), (300, 0, 1400, 1000)],  # 16:9 wallpaper (top/bottom lost); right part only
+)
+def test_art_cut_tighter_than_the_print_still_matches(tmp_path: Path, cut: tuple[int, int, int, int]) -> None:
+    from mtg_proxies.cardconjurer.art_check import _accepts, match_score
+
+    full = _painting(1)
+    print_crop = full.resize((626, 447))  # Scryfall's crop: the whole painting
+    score = match_score(_save(full.crop(cut), tmp_path / "m.jpg"), _save(print_crop, tmp_path / "s.jpg"))
+    assert _accepts(*score), score
+
+
 def test_different_art_does_not_match(tmp_path: Path) -> None:
     from mtg_proxies.cardconjurer.art_check import match_score
 
