@@ -393,7 +393,7 @@ _TB_LEFT, _TB_TOP, _TB_RIGHT, _TB_BOTTOM = 290, 1754, 1894, 2583
 _ADV_DIVIDER = 1095
 _ADV_RULE_Y = 1979
 _ADV_INSET = (352 - _TB_LEFT, 2000, _ADV_DIVIDER - 1031, 2520)  # (left margin, top, right margin, bottom)
-_ADV_LINE = 4
+_ADV_LINE = 3  # same as the template's textbox outline
 
 
 def adventure_spell_panel(t: _Template, code: str, side: str) -> np.ndarray:
@@ -422,9 +422,16 @@ def adventure_spell_panel(t: _Template, code: str, side: str) -> np.ndarray:
     tb = t.rgba(t.find("Card Frame", "Textbox", recipe.get("textbox", identity)))
     _over(out, tb[..., :3], tb[..., 3] * inset)
     lines = np.zeros_like(panel)
-    half = _ADV_LINE // 2
-    lines[_TB_TOP:_TB_BOTTOM, _ADV_DIVIDER - half : _ADV_DIVIDER + half] = 1  # divider between the halves
-    lines[_ADV_RULE_Y - half : _ADV_RULE_Y + half, x0:x1] = 1  # rule under the spell's type line
+    lo, hi = _ADV_LINE // 2, _ADV_LINE - _ADV_LINE // 2
+    lines[_TB_TOP:_TB_BOTTOM, _ADV_DIVIDER - lo : _ADV_DIVIDER + hi] = 1  # divider between the halves
+    lines[_ADV_RULE_Y - lo : _ADV_RULE_Y + hi, x0:x1] = 1  # rule under the spell's type line
+    # Redraw the textbox's own 3px outline along the panel's outer edges (the panel covers its
+    # inner 2px): template outline at x 289-291 / 1892-1894, y 1753-1755 / 2581-2583.
+    lines[1753:1756, 289:1895] *= 0
+    lines[1753:1756, x0 - 1 : x1 + 1] = 1
+    lines[2581:2584, x0 - 1 : x1 + 1] = 1
+    outer_x = 289 if side == "left" else 1892
+    lines[1753:2584, outer_x : outer_x + 3] = 1
     _over(out, np.zeros(3, np.float32), lines)
     return out
 
