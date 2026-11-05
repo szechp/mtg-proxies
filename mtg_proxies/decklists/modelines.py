@@ -154,6 +154,8 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     # no-ops on single-faced cards; mutually exclusive on one segment.
     # ``--legendary`` opts into the non-stock legendary markers: the Arabian Nights gold
     # pinline on retro, the legend crown on 8th. No-op on the other frames.
+    # ``--no-crown`` leaves the battlement legend crown off a retro legendary (it is on by
+    # default). No-op on the other frames.
     "cardconjurer": {
         "--8th":        NO_VALUE,
         "--modern":     NO_VALUE,
@@ -163,6 +165,7 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         "--retro-scaled": NO_VALUE,
         "--8th-scaled": NO_VALUE,
         "--legendary":  NO_VALUE,
+        "--no-crown":   NO_VALUE,
         "--upscale":    NO_VALUE,
         "--no-upscale": NO_VALUE,
         "--upscale-model": _path_str,

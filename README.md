@@ -367,6 +367,7 @@ honored in both:
 | `--8th` / `--modern` / `--m15-8th` / `--retro` / `--borderless` | ✓ | ✓ | Force a frame for this card (overrides the deck-wide one in the subcommand). |
 | `--retro-scaled` / `--8th-scaled` | ✓ | ✓ | That frame, grown by 0.75 mm per side for the sticker workflow. Implies the base frame. |
 | `--legendary` | ✓ | ✓ | Legend marker on frames that have none stock: gold pinline on retro, crown on 8th. |
+| `--no-crown` | ✓ | ✓ | Leave the battlement legend crown off this retro legendary (on by default). |
 | `--set-symbol VALUE` | ✓ | ✓ | File path, CC set code (`LTC`), or `customset:An`. |
 | `--custom-art PATH` | ✓ | ✓ | Use a local image (png/jpg/jpeg/webp) as the art instead of MTGPics/Scryfall. |
 | `--upscale` | ✓ | — | Run the art through Real-ESRGAN first. In the subcommand use the deck-wide `--upscale`. |
@@ -509,6 +510,7 @@ outcome. Re-runs skip PNGs already in OUTDIR; delete one to force a re-render. P
 | `--8th` / `--modern` / `--m15-8th` / `--retro` / `--borderless` | Force one frame for the whole deck (mutually exclusive). `--m15-8th` is a modern body with 8th-Edition trim and is never auto-selected. `--borderless` needs full-bleed MTGPics art. |
 | `--retro-scaled` / `--8th-scaled` | That frame, grown 0.75 mm per side ([sticker workflow](#sticker-workflow-scaled-frames)). Implies the base frame. |
 | `--legendary` | Legend marker on retro (gold pinline) and 8th (crown). Off = stock, no marker. |
+| `--no-crown` | Leave the battlement legend crown off retro legendaries. Retro draws it by default: the frame's top edge rises into the border as four raised blocks, built from the frame's own bevel and texture, so it matches hybrid, two-colour, land and `--legendary` pinlines. |
 | `--set-symbol VALUE` | Override the set symbol: file path, CC set code, or `customset:An`. |
 | `--scryfall` | Skip MTGPics, use Scryfall's `art_crop`. |
 | `--dfc-flip` | Render DFCs as one Kamigawa-flip card instead of two full cards. |

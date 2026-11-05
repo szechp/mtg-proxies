@@ -98,6 +98,7 @@ def build_job(
     font_size: int | None = None,
     dfc_split: bool = False,
     legendary: bool = False,
+    no_crown: bool = False,
 ) -> dict[str, Any]:
     """Build one ND-JSON job dict for the node harness.
 
@@ -128,6 +129,9 @@ def build_job(
 
     ``legendary`` opts into the non-stock legendary markers: the Arabian Nights gold
     pinline on retro, the legend crown on 8th. No-op on the other frames.
+
+    ``no_crown`` leaves the battlement legend crown off a retro legendary (drawn by
+    default; see ``retro_crown.py``). No-op on the other frames.
     """
     job: dict[str, Any] = {
         "slot": f"{slot:04d}",
@@ -146,6 +150,8 @@ def build_job(
         job["dfc_split"] = True
     if legendary:
         job["legendary"] = True
+    if no_crown:
+        job["no_crown"] = True
     return job
 
 

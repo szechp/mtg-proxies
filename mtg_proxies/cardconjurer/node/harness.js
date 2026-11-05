@@ -171,6 +171,64 @@ async function addRetroLayer(frameName, maskName, additionalMasks = []) {
 }
 
 
+// Battlement legend crown for retro (Seventh) legendaries. Seventh predates crowns, so the
+// art is ours: mtg_proxies/cardconjurer/retro_crown.py generates one layer per Seventh frame
+// image (transparent except the crown band above the stock top edge) plus a crown version of
+// the 'Pinline' mask, committed under assets/retro-crown/.
+//
+// Rather than pick one crown per card, replay the card's frame stack: every Seventh frame
+// layer already on the card (autoFrame's base, the hybrid split, the two-colour gold accents,
+// the --legendary gold pinline) gets its crown counterpart on top. autoFrame builds the base
+// from one frame image under five masks (Border, Textbox Pinline, Frame, Rules, Pinline);
+// each mask maps to its crown equivalent via RETRO_CROWN_MASK below, and a layer with any
+// mask that never reaches the crown band is skipped. So whatever combination the frame is,
+// the crown matches it, and nothing below the stock top edge changes.
+const RETRO_CROWN_DIR = path.join(ROOT, 'assets', 'retro-crown');
+const RETRO_CROWN_SRC = /\/img\/frames\/seventh\/regular\/([A-Za-z]+)\.png$/;
+// Stock mask name -> what the crown layer uses instead:
+//   'drop'  -- no mask (the crown layer is already transparent outside the crown)
+//   'keep'  -- same mask (full-card masks such as the hybrid's right half)
+//   object  -- a crown-specific replacement
+// Masks not listed (Border, Rules, Textbox Pinline, Dual Land) skip the layer: Border only
+// paints the black around the frame, the others sit far below the crown band.
+const RETRO_CROWN_MASK = {
+    'Frame': 'drop',
+    'Right Half': 'keep',
+    'Pinline': { name: 'Crown Pinline', src: 'file://' + path.join(RETRO_CROWN_DIR, 'pinline.png') },
+};
+
+async function addRetroLegendCrown() {
+    const bottomUp = (global.card.frames || []).slice().reverse();
+    for (const layer of bottomUp) {
+        const match = RETRO_CROWN_SRC.exec(layer.src || '');
+        if (!match) continue;
+        const crownPath = path.join(RETRO_CROWN_DIR, match[1] + '.png');
+        if (!fs.existsSync(crownPath)) continue;
+        const masks = [];
+        let reachesCrown = true;
+        for (const mask of layer.masks || []) {
+            const rule = RETRO_CROWN_MASK[mask.name];
+            if (rule === undefined) { reachesCrown = false; break; }
+            if (rule === 'keep') masks.push({ name: mask.name, src: mask.src });
+            else if (rule !== 'drop') masks.push({ ...rule });
+        }
+        if (!reachesCrown) continue;
+        const crownLayer = {
+            name: layer.name.replace(/ Frame$/, '') + ' Crown',
+            src: 'file://' + crownPath,
+            masks,
+        };
+        for (const key of ['bounds', 'opacity', 'mode', 'preserveAlpha']) {
+            if (key in layer) crownLayer[key] = layer[key];
+        }
+        // addFrame(_, frameObj) only loads the images; registering the layer is the
+        // caller's job. unshift = on top, so walking bottom-up keeps the stack order.
+        global.card.frames.unshift(crownLayer);
+        await global.addFrame([], crownLayer);
+    }
+}
+
+
 // Retro (Seventh) draws every white-on-frame string -- title, type, P/T, the artist
 // line and the copyright line -- in white with a hard ~4px drop shadow (packSeventh.js:
 // color:'white', shadowX:0.002, shadowY:0.0015). That matches a real Seventh-Edition
@@ -1707,7 +1765,8 @@ function assertCompleteSpecialText(kind, face) {
 // Render a single face: load the pack, import + select the indicated face,
 // upload the matching art, autoframe, drain images, draw, save.
 async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath, fontSizeDelta = 0,
-                             dfcFace = null, frameNameSuffix = '', specialLayout = null, legendary = false }) {
+                             dfcFace = null, frameNameSuffix = '', specialLayout = null, legendary = false,
+                             crown = true }) {
     resetCanvases();
     await ensurePackLoaded(packFile);
     if (specialLayout?.planeswalker) resetPlaneswalkerState(frame);
@@ -2663,6 +2722,17 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         await addRetroLayer('Arabian Nights Land Frame', 'Pinline');
     }
 
+    // Battlement legend crown on retro legendaries, on by default (`--no-crown` opts out).
+    // Runs last among the frame layers so it can replay the finished stack -- see
+    // addRetroLegendCrown. Same scope as the gold pinline above: single-faced packSeventh
+    // cards only (DFC faces carry Classicshifted's own crown; planeswalkers use a pack
+    // with different geometry).
+    if (crown && !dfcFace && frame === 'retro' && scry.layout !== 'token' && scry.layout !== 'flip'
+        && /Legendary/.test(pristineFace.type_line || scry.type_line || '')
+        && !/Planeswalker/.test(pristineFace.type_line || scry.type_line || '')) {
+        await addRetroLegendCrown();
+    }
+
     // DFC indicator (small icon at top-left next to title) — pack8thTransform
     // packs include this as a separate availableFrames entry ('Up Arrow', etc.)
     // but autoFrame doesn't add it automatically. We add it for transform /
@@ -3074,7 +3144,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
 }
 
 async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fontSizeDelta = 0, dfcSplit = false,
-                                        legendary = false } = {}) {
+                                        legendary = false, crown = true } = {}) {
     const special = resolveSpecialLayout(scry, frame);
     if (special?.kind === 'invalid') throw new Error(special.reason);
     const skipReason = shouldSkip(scry);
@@ -3172,7 +3242,7 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
         packFile = ['pack8thLegendCrowns.js', 'pack8th.js'];
     }
     return await renderFace({
-        packFile, processed, faceIdx: 0, scry, outName: slug, frame, setSymbolPath, fontSizeDelta, legendary,
+        packFile, processed, faceIdx: 0, scry, outName: slug, frame, setSymbolPath, fontSizeDelta, legendary, crown,
         specialLayout: special?.kind === 'planeswalker'
             ? { ...special, planeswalker: true, side: 'single' }
             : special,
@@ -3312,7 +3382,8 @@ async function runOneJob(job) {
         const fontSizeDelta = (job.font_size != null) ? parseInt(job.font_size) : 0;
         const slug = slugify(job.name);
         const legendary = !!job.legendary;
-        const result = await renderCard(scry, slug, { frame, setSymbolPath, fontSizeDelta, dfcSplit, legendary });
+        const crown = !job.no_crown;
+        const result = await renderCard(scry, slug, { frame, setSymbolPath, fontSizeDelta, dfcSplit, legendary, crown });
         const response = {
             slot:   job.slot,
             status: 'ok',

@@ -919,6 +919,7 @@ def _apply_per_card_modelines(
                         set_symbol_path=resolved_sym,
                         art_path=resolved_art,
                         legendary=bool(directive.flags.get("--legendary")),
+                        no_crown=bool(directive.flags.get("--no-crown")),
                         frame_overlap_mm=(
                             DEFAULT_OVERLAP_MM
                             if directive.flags.get("--retro-scaled") or directive.flags.get("--8th-scaled")
@@ -1700,6 +1701,7 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
     slot_frame: dict[int, str] = {}
     slot_scaled: set[int] = set()
     slot_legendary: set[int] = set()
+    slot_no_crown: set[int] = set()
     card_payload_by_slot: dict[int, dict] = {}
     for slot_int, card in slot_to_card.items():
         effective_lang = args.language
@@ -1718,6 +1720,8 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
                     slot_scaled.add(slot_int)
                 if d.flags.get("--legendary"):
                     slot_legendary.add(slot_int)
+                if d.flags.get("--no-crown"):
+                    slot_no_crown.add(slot_int)
                 if d.flags.get("--scryfall"):
                     slot_scryfall_override[slot_int] = True
                 if d.flags.get("--skip"):
@@ -1935,6 +1939,8 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
             extras["font_size"] = fs_delta
         if args.legendary or slot_int in slot_legendary:
             extras["legendary"] = True
+        if args.no_crown or slot_int in slot_no_crown:
+            extras["no_crown"] = True
 
         # Per-card ``#cardconjurer --custom-art PATH`` wins over every art source below. This is
         # the escape hatch for borderless cards with no full-bleed MTGPics art: supply your own
@@ -2681,8 +2687,9 @@ def main() -> None:
         "--retro", dest="frame_retro", action="store_true",
         help=(
             "render every card in the retro (Seventh Edition, 1997) frame style — per-color"
-            " land frames, tombstone icon, no legend crowns (authentic). Transform / MDFC"
-            " split faces use the Classicshifted retro DFC frame packs."
+            " land frames, tombstone icon, and a battlement legend crown on legendaries"
+            " (not stock -- Seventh Edition had none; --no-crown leaves it off). Transform /"
+            " MDFC split faces use the Classicshifted retro DFC frame packs."
         ),
     )
     frame_group.add_argument(
@@ -2725,6 +2732,16 @@ def main() -> None:
             " --8th-scaled. Without it both frames render legendaries like stock. Also"
             " available per card as `#cardconjurer --legendary`. Conflicts with --modern,"
             " --m15-8th and --borderless, which already have their own crowns."
+        ),
+    )
+    cardconjurer_parser.add_argument(
+        "--no-crown", dest="no_crown", action="store_true", default=False,
+        help=(
+            "leave out the battlement legend crown that --retro / --retro-scaled draw on every"
+            " legendary card (the Seventh Edition frame has no stock crown; ours is drawn from"
+            " the frame's own bevel and texture, and follows hybrid, two-colour, land and"
+            " --legendary pinlines). No-op on other frames. Also available per card as"
+            " `#cardconjurer --no-crown`."
         ),
     )
     # No --auto flag: auto is simply the absence of an explicit frame flag (the default).
