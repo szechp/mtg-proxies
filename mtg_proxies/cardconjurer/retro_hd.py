@@ -77,6 +77,13 @@ _BEVEL_THICKNESS = {
 # shadow only reads on the latter. Scaling every pixel keeps the template's texture intact.
 _FRAME_TINT = {"W": (0.809, 0.828, 0.727)}
 
+# Per-channel affine tone match (spread scale, then shift the mean) on the frame, per identity:
+# (template mean, target mean, spread scale), in 0-255. The template's gold has the same texture
+# as WotC's 1997-frame reprints (e.g. INR 428 Edgar Markov) and almost the same mean, but brighter
+# highlights and a touch more saturation: measured template (144, 124, 74), sd (55, 57, 50) vs
+# reprint (137, 121, 77), sd (52, 53, 45).
+_FRAME_TONE = {"Gold": ((144, 124, 74), (137, 121, 77), (0.940, 0.928, 0.896))}
+
 _IRREGULAR_TEXTBOX = {"B", "G"}  # Proxyshop default: ragged black / green textboxes, no textbox bevels
 
 # Land pinline colours (cardinfo.land_color_map).
@@ -285,6 +292,9 @@ def compose_variant(t: _Template, code: str) -> np.ndarray:
 
     if (gain := _FRAME_TINT.get(identity)) is not None:
         out[..., :3] *= np.asarray(gain, np.float32)
+    if (tone := _FRAME_TONE.get(identity)) is not None:
+        src_mean, dst_mean, scale = (np.asarray(v, np.float32) for v in tone)
+        out[..., :3] = np.clip((out[..., :3] - src_mean / 255) * scale + dst_mean / 255, 0, 1)
 
     # Textbox texture, clipped to its shape (ragged for black / green, raster for black).
     textbox_name = recipe.get("textbox", identity)
