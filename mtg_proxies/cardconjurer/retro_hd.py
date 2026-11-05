@@ -44,6 +44,15 @@ PSD_SIZE = 839_310_942
 CACHE_DIR = Path.home() / ".cache" / "mtg-proxies" / "retro-hd"
 FRAMES_DIR = CACHE_DIR / "frames"
 CROWN_DIR = CACHE_DIR / "crown"
+# Optional replacement frame textures, by identity: CACHE_DIR/textures/<stem>.(png|jpg|jpeg|webp).
+# Not shipped (bring your own); when present, the file replaces the template's texture for that
+# identity, scaled to cover the frame and tone-matched to the template's own texture.
+TEXTURES_DIR = CACHE_DIR / "textures"
+TEXTURE_OVERRIDES = {"Gold": "gold"}
+# How much of the template texture's contrast (per-channel spread) the replacement takes on:
+# 0 keeps the replacement's own contrast, 1 matches the template exactly. The mean (brightness
+# and hue) is always matched, so the frame sits at the same depth as the other retro colours.
+TEXTURE_CONTRAST_MATCH = 0.5
 
 # The template canvas is the card plus bleed; this box is the card area Card Conjurer draws
 # frame images into (2010x2814, packSeventh's native size).
@@ -224,6 +233,36 @@ def _blend(dst: np.ndarray, rgb: np.ndarray, alpha: np.ndarray, mode: str) -> No
     dst[..., :3] = r * a + b * (1 - a)
 
 
+def _texture_override(identity: str, template_texture: np.ndarray) -> np.ndarray | None:
+    """Return a user-supplied replacement for ``identity``'s frame texture, or None.
+
+    The image is scaled to cover the canvas (centre crop) and tone-matched to the template's
+    texture: per-channel mean matched exactly, spread blended by :data:`TEXTURE_CONTRAST_MATCH`.
+    """
+    stem = TEXTURE_OVERRIDES.get(identity)
+    if stem is None:
+        return None
+    path = next(
+        (p for p in sorted(TEXTURES_DIR.glob(f"{stem}.*")) if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}),
+        None,
+    )
+    if path is None:
+        return None
+    h, w = template_texture.shape[:2]
+    img = Image.open(path).convert("RGB")
+    scale = max(w / img.width, h / img.height)
+    img = img.resize((round(img.width * scale), round(img.height * scale)), Image.LANCZOS)
+    left, top = (img.width - w) // 2, (img.height - h) // 2
+    arr = np.asarray(img.crop((left, top, left + w, top + h)), np.float32) / 255
+    ref = template_texture[..., :3][template_texture[..., 3] > 0.5]
+    src = arr.reshape(-1, 3)
+    src_mean, src_std = src.mean(0), src.std(0) + 1e-6
+    std = src_std + (ref.std(0) - src_std) * TEXTURE_CONTRAST_MATCH
+    out = np.ones((h, w, 4), np.float32)
+    out[..., :3] = np.clip((arr - src_mean) / src_std * std + ref.mean(0), 0, 1)
+    return out
+
+
 def compose_variant(t: _Template, code: str) -> np.ndarray:
     """Composite one packSeventh-equivalent frame image (full template canvas, float RGBA)."""
     recipe = VARIANTS[code]
@@ -234,6 +273,8 @@ def compose_variant(t: _Template, code: str) -> np.ndarray:
     # Frame texture, clipped to the frame shape (art window and textbox are cut out of it).
     frame_mask = t.mask_of(t.find("Card Frame", "Frame Texture", "Masks", SIZE))
     tex = t.rgba(t.find("Card Frame", "Frame Texture", identity))
+    if (replacement := _texture_override(identity, tex)) is not None:
+        tex = replacement
     _over(out, tex[..., :3], tex[..., 3] * frame_mask)
 
     # Outer and art bevels: colour fills through the size's light / dark bevel masks.
