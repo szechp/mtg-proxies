@@ -3473,8 +3473,58 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     return outPath;
 }
 
+// --retro-hd adventures (and Omens / prepare cards): the template does not split the card into
+// two panels -- Proxyshop's RetroTemplate.adventure_rules_text renders a normal retro card and
+// writes the inset spell into the rules text, old-card style ("X can go on an adventure. You may
+// cast this card as a red Adventure instant named Y for {R}. It has ..."). Flatten the Scryfall
+// card the same way so it takes the ordinary retro path. Only fix: "a"/"an" by the card type's
+// first letter (Proxyshop writes "an land" for adventure lands such as Lindblum).
+const COLOR_WORDS = { W: 'white', U: 'blue', B: 'black', R: 'red', G: 'green' };
+function listToText(words) {
+    if (words.length <= 1) return words.join('');
+    if (words.length === 2) return `${words[0]} and ${words[1]}`;
+    return `${words.slice(0, -1).join(', ')}, and ${words[words.length - 1]}`;
+}
+function flattenAdventureForRetroHd(scry) {
+    const [main, spell] = scry.card_faces || [];
+    if (!main || !spell) return scry;
+    const spellType = (spell.type_line || '').split(' ')[0].toLowerCase();
+    const cardType = ((main.type_line || '').split('\u2014')[0].trim().split(' ').pop() || 'card').toLowerCase();
+    const aAn = /^[aeiou]/.test(cardType) ? 'an' : 'a';
+    const colors = ['W', 'U', 'B', 'R', 'G'].filter((c) => (spell.mana_cost || '').includes(c));
+    const maybeColors = `a ${colors.length ? listToText(colors.map((c) => COLOR_WORDS[c])) : 'colorless'}`;
+    const spellText = (spell.oracle_text || '').replace(/\s\([^)]*\)/g, '');
+    let text;
+    if ((main.oracle_text || '').includes('prepared')) {
+        text = `When this ${cardType} becomes prepared, create a copy of its spell in exile. `
+            + `While it's prepared, you may cast that spell. Doing so unprepares it. `
+            + `This card's spell is ${spell.name}. It's ${maybeColors} ${spellType} for ${spell.mana_cost} `
+            + `with "${spellText}"`;
+    } else if ((spell.type_line || '').includes('Omen')) {
+        text = `${main.name} can be heralded by an omen. You may cast this card as ${maybeColors} Omen `
+            + `${spellType} named ${spell.name} for ${spell.mana_cost}. It has "${spellText} `
+            + `Then shuffle this card into its owner's library."`;
+    } else {
+        text = `${main.name} can go on an adventure. You may cast this card as ${maybeColors} Adventure `
+            + `${spellType} named ${spell.name} for ${spell.mana_cost}. It has "${spellText} `
+            + `Then exile this card. You may cast it as ${aAn} ${cardType} for as long as it remains exiled."`;
+    }
+    const flat = { ...scry, layout: 'normal' };
+    delete flat.card_faces;
+    Object.assign(flat, {
+        name: main.name, mana_cost: main.mana_cost, type_line: main.type_line,
+        oracle_text: main.oracle_text ? `${text}\n${main.oracle_text}` : text,
+        power: main.power, toughness: main.toughness, flavor_text: main.flavor_text,
+    });
+    if (!flat.image_uris && main.image_uris) flat.image_uris = main.image_uris;
+    return flat;
+}
+
 async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fontSizeDelta = 0, dfcSplit = false,
                                         legendary = false, crown = true, retroHd = false } = {}) {
+    if (retroHd && frame === 'retro' && ['adventure', 'prepare'].includes(scry.layout)) {
+        scry = flattenAdventureForRetroHd(scry);
+    }
     const special = resolveSpecialLayout(scry, frame);
     if (special?.kind === 'invalid') throw new Error(special.reason);
     // Sagas render only under --retro-hd (the HD template's saga frames); plain --retro and every
@@ -3695,6 +3745,12 @@ async function runOneJob(job) {
         // skips to fallback.txt so the raw Scryfall scan is used. An explicit style always
         // renders, even for old/oddball frames.
         let frame = special && special.kind !== 'invalid' ? special.frame : requestedFrame;
+        // --retro-hd flattens adventures / prepare cards into an ordinary retro card (see
+        // flattenAdventureForRetroHd), so they keep the retro frame instead of normalizing to the
+        // modern inset pack.
+        if (job.retro_hd && requestedFrame === 'retro' && ['adventure', 'prepare'].includes(scry.layout)) {
+            frame = 'retro';
+        }
         if (!special && frame === 'auto') {
             const resolved = frameFromScryfall(scry);
             if (!resolved) {

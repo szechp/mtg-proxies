@@ -164,17 +164,19 @@ def build_job(
 def parse_response(line: str) -> dict[str, Any] | None:
     """Parse one ND-JSON line from the harness's stdout.
 
-    Returns the parsed dict, or ``None`` for blank lines / malformed JSON.
-    Malformed lines are tolerated so a transient harness hiccup doesn't kill
-    the whole deck render; the caller logs and continues.
+    Returns the parsed dict, or ``None`` for blank lines, malformed JSON, and JSON that is not
+    an object. Card Conjurer's own engine code occasionally logs to stdout, and a bare number or
+    quoted string is valid JSON, so only an object counts as a response; everything else is
+    tolerated as noise so it can't kill the whole deck render.
     """
     text = line.strip()
     if not text:
         return None
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
     except json.JSONDecodeError:
         return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def format_fallback_txt(rows: Iterable[FallbackRow]) -> str:
