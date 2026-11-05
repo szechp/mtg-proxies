@@ -3043,8 +3043,12 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
                 // the textbox, using the muted land-frame art. The pinline stays stock
                 // (black): a two-tone pinline was tried and dropped along with the
                 // --legendary gold pinline, as neither is on a real Seventh-Edition card.
-                await addRetroLayer(RETRO_COLOR_LAND_FRAME[first], 'Rules');
-                await addRetroLayer(RETRO_COLOR_LAND_FRAME[second], 'Rules', [RETRO_RIGHT_HALF]);
+                // Not on --retro-hd adventures / prepare cards: their split textbox has no
+                // two-tone version (the land frames all map to the one adventure land frame).
+                if (!scry._adventure) {
+                    await addRetroLayer(RETRO_COLOR_LAND_FRAME[first], 'Rules');
+                    await addRetroLayer(RETRO_COLOR_LAND_FRAME[second], 'Rules', [RETRO_RIGHT_HALF]);
+                }
             }
         }
     }
