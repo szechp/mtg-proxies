@@ -324,6 +324,7 @@ const pendingImages = [];
 const RETRO_HD_ROOT = process.env.CC_RETRO_HD || path.join(os.homedir(), '.cache', 'mtg-proxies', 'retro-hd');
 const SEVENTH_FRAME_SRC = /^\/img\/frames\/seventh\/regular\/([A-Za-z]+)\.png$/;
 let retroHdFrames = null;
+let retroHdAdventure = false;  // the card being built is a two-panel --retro-hd adventure
 
 // --retro-hd text layout, taken from the template's own text layers rather than packSeventh's
 // regions, so the text sits where Gavin's frames expect it. Values are the PSD's layer metrics
@@ -390,6 +391,12 @@ function retroHdFrame(src) {
         return fs.existsSync(file) ? file : null;
     }
     const match = SEVENTH_FRAME_SRC.exec(src);
+    if (match && retroHdAdventure) {
+        // Every land frame (l, wl..gl) maps to the one adventure land frame.
+        const code = match[1].endsWith('l') ? 'l' : match[1];
+        const file = path.join(retroHdFrames, 'adventure', code + '.png');
+        if (fs.existsSync(file)) return file;
+    }
     const name = match ? match[1] + '.png' : (SEVENTH_MASK_SRC[src] || SAGA_EXTRA_SRC[src]);
     if (!name) return null;
     const file = path.join(retroHdFrames, name);
@@ -2076,6 +2083,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             + '`uv sync --extra retro-hd && uv run python -m mtg_proxies.cardconjurer.retro_hd`');
     }
     retroHdFrames = hd ? path.join(RETRO_HD_ROOT, 'frames') : null;
+    retroHdAdventure = hd && !!scry._adventure;
     try {
         return await buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath,
                                         fontSizeDelta, dfcFace, frameNameSuffix, specialLayout, legendary, crown,
@@ -2083,6 +2091,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     } finally {
         deferRedraws = false;
         retroHdFrames = null;
+        retroHdAdventure = false;
     }
 }
 
@@ -3044,6 +3053,17 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     // to add here was removed -- it is not on any real Seventh-Edition card, and it fought
     // the frame's own pinline. Retro legendaries are marked by the battlement crown below.
 
+    // --retro-hd adventure: the spell's (bottom-left) box in the spell's own colour, over the
+    // creature-coloured adventure frame (retro_hd.adventure_spell_box).
+    if (retroHd && scry._adventure) {
+        const spellBox = path.join(RETRO_HD_ROOT, 'frames', 'adventure', `spell_${scry._adventure.code}.png`);
+        if (fs.existsSync(spellBox)) {
+            const layer = { name: 'Adventure Spell Box', src: 'file://' + spellBox, masks: [] };
+            global.card.frames.unshift(layer);
+            await global.addFrame([], layer);
+        }
+    }
+
     // Battlement legend crown on retro legendaries, on by default (`--no-crown` opts out).
     // Runs last among the frame layers so it can replay the finished stack -- see
     // addRetroLegendCrown. Single-faced cards only, planeswalkers included: packPlaneswalkerSeventh
@@ -3214,6 +3234,26 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
 
     if (retroHd && !specialLayout?.planeswalker && specialLayout?.kind !== 'saga') {
         applyRetroHdLayout(global.card.text, RETRO_HD_TEXT);
+    }
+    // --retro-hd adventure: the creature's rules move into the right box and the spell gets its
+    // own name / mana / type / rules in the left panel, at the template's Adventure text layers
+    // (card pixels, crop offset (87, 79)): name and type white on the frame like the card's own,
+    // spell rules in the left box (276,1931)-(934,2429), creature rules in (1003,1697)-(1807,2481).
+    if (retroHd && scry._adventure) {
+        const text = global.card.text;
+        const spell = scry._adventure;
+        Object.assign(text.rules, { x: 1072 / HD_W, y: 1712 / HD_H, width: 705 / HD_W, height: 754 / HD_H,
+                                    size: 92 / HD_H, align: 'left' });
+        const spellRules = String(spell.oracle_text || '').replace(/\(([^)]*)\)/g, '{i}($1){/i}');
+        text.advTitle = { ...text.title, name: 'Adventure Title', text: spell.name,
+                          x: 250 / HD_W, width: (978 - 250) / HD_W, ...hdLine(1787, 92) };
+        text.advMana = { ...text.mana, name: 'Adventure Mana', text: spell.mana_cost || '',
+                         x: 250 / HD_W, width: (978 - 250) / HD_W, ...hdLine(1792, 92) };
+        text.advType = { ...text.type, name: 'Adventure Type', text: spell.type_line || '',
+                         x: 249 / HD_W, width: (934 - 249) / HD_W, ...hdLine(1878, 80) };
+        text.advRules = { ...text.rules, name: 'Adventure Rules', text: spellRules,
+                          x: 284 / HD_W, y: 1941 / HD_H, width: 640 / HD_W, height: 478 / HD_H, size: 76 / HD_H };
+        reserveRight(text.advTitle, text.advMana);
     }
 
     // Restored immediately after: the `mana` Map is process-global and shared by every
@@ -3473,48 +3513,23 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     return outPath;
 }
 
-// --retro-hd adventures (and Omens / prepare cards): the template does not split the card into
-// two panels -- Proxyshop's RetroTemplate.adventure_rules_text renders a normal retro card and
-// writes the inset spell into the rules text, old-card style ("X can go on an adventure. You may
-// cast this card as a red Adventure instant named Y for {R}. It has ..."). Flatten the Scryfall
-// card the same way so it takes the ordinary retro path. Only fix: "a"/"an" by the card type's
-// first letter (Proxyshop writes "an land" for adventure lands such as Lindblum).
-const COLOR_WORDS = { W: 'white', U: 'blue', B: 'black', R: 'red', G: 'green' };
-function listToText(words) {
-    if (words.length <= 1) return words.join('');
-    if (words.length === 2) return `${words[0]} and ${words[1]}`;
-    return `${words.slice(0, -1).join(', ')}, and ${words[words.length - 1]}`;
-}
+// --retro-hd adventures (and Omens / prepare cards) use the template's two-panel adventure layout
+// (its Adventure text box masks and text layers, which Proxyshop itself leaves switched off):
+// flatten the Scryfall card into an ordinary retro card for the creature, carrying the spell in
+// `_adventure`; renderFace then swaps in the adventure frames, overlays the spell-coloured box
+// and places the spell's text in the left panel.
 function flattenAdventureForRetroHd(scry) {
     const [main, spell] = scry.card_faces || [];
     if (!main || !spell) return scry;
-    const spellType = (spell.type_line || '').split(' ')[0].toLowerCase();
-    const cardType = ((main.type_line || '').split('\u2014')[0].trim().split(' ').pop() || 'card').toLowerCase();
-    const aAn = /^[aeiou]/.test(cardType) ? 'an' : 'a';
     const colors = ['W', 'U', 'B', 'R', 'G'].filter((c) => (spell.mana_cost || '').includes(c));
-    const maybeColors = `a ${colors.length ? listToText(colors.map((c) => COLOR_WORDS[c])) : 'colorless'}`;
-    const spellText = (spell.oracle_text || '').replace(/\s\([^)]*\)/g, '');
-    let text;
-    if ((main.oracle_text || '').includes('prepared')) {
-        text = `When this ${cardType} becomes prepared, create a copy of its spell in exile. `
-            + `While it's prepared, you may cast that spell. Doing so unprepares it. `
-            + `This card's spell is ${spell.name}. It's ${maybeColors} ${spellType} for ${spell.mana_cost} `
-            + `with "${spellText}"`;
-    } else if ((spell.type_line || '').includes('Omen')) {
-        text = `${main.name} can be heralded by an omen. You may cast this card as ${maybeColors} Omen `
-            + `${spellType} named ${spell.name} for ${spell.mana_cost}. It has "${spellText} `
-            + `Then shuffle this card into its owner's library."`;
-    } else {
-        text = `${main.name} can go on an adventure. You may cast this card as ${maybeColors} Adventure `
-            + `${spellType} named ${spell.name} for ${spell.mana_cost}. It has "${spellText} `
-            + `Then exile this card. You may cast it as ${aAn} ${cardType} for as long as it remains exiled."`;
-    }
+    const code = colors.length === 1 ? colors[0].toLowerCase() : (colors.length > 1 ? 'm' : 'c');
     const flat = { ...scry, layout: 'normal' };
     delete flat.card_faces;
     Object.assign(flat, {
-        name: main.name, mana_cost: main.mana_cost, type_line: main.type_line,
-        oracle_text: main.oracle_text ? `${text}\n${main.oracle_text}` : text,
+        name: main.name, mana_cost: main.mana_cost, type_line: main.type_line, oracle_text: main.oracle_text || '',
         power: main.power, toughness: main.toughness, flavor_text: main.flavor_text,
+        _adventure: { name: spell.name, mana_cost: spell.mana_cost, type_line: spell.type_line,
+                      oracle_text: spell.oracle_text, code },
     });
     if (!flat.image_uris && main.image_uris) flat.image_uris = main.image_uris;
     return flat;

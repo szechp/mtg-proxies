@@ -279,15 +279,19 @@ def compose_variant(t: _Template, code: str, size: str = SIZE) -> np.ndarray:
         size: The template's frame size: "Normal" for ordinary cards, "Saga" for sagas (chapter
             textbox on the left, tall art window on the right, reminder box at the bottom).
     """
-    SIZE = size  # shadows the module default for this composite
+    adventure = size == "Adventure"
+    SIZE = "Normal" if adventure else size  # shadows the module default for this composite
     recipe = VARIANTS[code]
     identity = recipe["identity"]
     saga = size == "Saga"
-    is_land = "land" in recipe and not saga  # Proxyshop: sagas have no pinlines
+    is_land = "land" in recipe and not saga and not adventure  # no pinlines on sagas / adventure boxes
     out = np.zeros((t.height, t.width, 4), np.float32)
 
     # Frame texture, clipped to the frame shape (art window and textbox are cut out of it).
     frame_mask = t.mask_of(t.find("Card Frame", "Frame Texture", "Masks", SIZE))
+    if adventure:  # frame texture also fills the textbox area outside the two adventure boxes
+        normal_box = t.mask_of(t.find("Card Frame", "Textbox", "Masks", "Normal"))
+        frame_mask = np.clip(frame_mask + normal_box - adventure_boxes(t), 0, 1)
     tex = t.rgba(t.find("Card Frame", "Frame Texture", identity))
     if (replacement := _texture_override(identity, tex)) is not None:
         tex = replacement
@@ -307,8 +311,12 @@ def compose_variant(t: _Template, code: str, size: str = SIZE) -> np.ndarray:
 
     # Textbox texture, clipped to its shape (ragged for black / green, raster for black).
     textbox_name = recipe.get("textbox", identity)
-    irregular = identity in _IRREGULAR_TEXTBOX and not is_land and not saga
-    if identity == "B" and irregular:
+    irregular = identity in _IRREGULAR_TEXTBOX and not is_land and not saga and not adventure
+    if adventure:
+        tb_mask = adventure_boxes(t)
+        tb = t.rgba(t.find("Card Frame", "Textbox", textbox_name))
+        _over(out, tb[..., :3], tb[..., 3] * tb_mask)
+    elif identity == "B" and irregular:
         black = t.rgba(t.find("Card Frame", "Textbox", f"B {SIZE}"))
         _over(out, black[..., :3], black[..., 3])
     else:
@@ -317,8 +325,9 @@ def compose_variant(t: _Template, code: str, size: str = SIZE) -> np.ndarray:
         tb = t.rgba(t.find("Card Frame", "Textbox", textbox_name))
         _over(out, tb[..., :3], tb[..., 3] * tb_mask)
 
-    # Textbox bevels (none on irregular textboxes; colourless ones are adjustment layers).
-    if not irregular and identity != "Colorless":
+    # Textbox bevels (none on irregular textboxes; colourless ones are adjustment layers; the
+    # template has no bevel masks for the adventure boxes, which get a plain outline instead).
+    if not irregular and not adventure and identity != "Colorless":
         bevel_identity = "Land" if "land" in recipe else identity
         thickness = "Land" if is_land else _BEVEL_THICKNESS.get(identity, "Medium")
         sized = t.find("Card Frame", "Textbox Bevels", "Masks", SIZE)
@@ -340,7 +349,9 @@ def compose_variant(t: _Template, code: str, size: str = SIZE) -> np.ndarray:
 
     # Outlines: art box, textbox (rectangular textboxes only), bevel and card outlines, corners.
     outlines = [*t.find("Outlines", "Art Outlines", SIZE)]
-    if not irregular:
+    if adventure:
+        _over(out, np.zeros(3, np.float32), adventure_outline(t))
+    elif not irregular:
         outlines += [layer for layer in t.find("Outlines", "Textbox Outlines") if layer.name == SIZE]
     outlines += [t.find("Outlines", name) for name in ("Bevel Outline", "Card Outline", "Outer Corners")]
     for layer in outlines:
@@ -376,6 +387,33 @@ def compose_variant(t: _Template, code: str, size: str = SIZE) -> np.ndarray:
     border[..., 3] *= 1 - art_window
     return border
 
+
+def adventure_boxes(t: _Template) -> np.ndarray:
+    """Return the template's two adventure text boxes (spell bottom-left, creature right) as a mask."""
+    return t.mask_of(t.find("Card Frame", "Textbox", "Masks", "Adventure"))
+
+
+def adventure_outline(t: _Template, width: int = 4) -> np.ndarray:
+    """Return a ``width`` px outline ring around both adventure boxes (their textbox outline)."""
+    from scipy.ndimage import binary_dilation
+
+    boxes = adventure_boxes(t) > 0.5
+    return (binary_dilation(boxes, iterations=width) & ~boxes).astype(np.float32)
+
+
+def adventure_spell_box(t: _Template, code: str) -> np.ndarray:
+    """Return the spell's (bottom-left) adventure box in ``code``'s textbox colour, transparent elsewhere."""
+    boxes = adventure_boxes(t)
+    left = np.zeros_like(boxes)
+    left[:, : t.width // 2] = boxes[:, : t.width // 2]
+    recipe = VARIANTS[code]
+    tb = t.rgba(t.find("Card Frame", "Textbox", recipe.get("textbox", recipe["identity"])))
+    out = np.zeros((t.height, t.width, 4), np.float32)
+    _over(out, tb[..., :3], tb[..., 3] * left)
+    return out
+
+
+ADVENTURE_CODES = ["w", "u", "b", "r", "g", "m", "a", "c", "l"]
 
 SAGA_CODES = ["w", "u", "b", "r", "g", "m", "l"]  # packClassicshiftedSaga's frames
 SAGA_EXTRAS = ["I", "II", "III", "IV", "V", "VI", "Divider"]
@@ -481,6 +519,18 @@ def _build_saga_frame(code: str, out_dir: Path) -> list[Path]:
     return [path]
 
 
+def _build_adventure_frame(code: str, out_dir: Path) -> list[Path]:
+    """Worker task: one adventure frame (creature colour) and its spell box overlay (spell colour)."""
+    assert _worker_template is not None
+    adv_dir = out_dir / "frames" / "adventure"
+    adv_dir.mkdir(parents=True, exist_ok=True)
+    frame = adv_dir / f"{code}.png"
+    card_area(compose_variant(_worker_template, code, "Adventure")).save(frame, optimize=True)
+    spell = adv_dir / f"spell_{code}.png"
+    card_area(adventure_spell_box(_worker_template, code)).save(spell, optimize=True)
+    return [frame, spell]
+
+
 def _build_saga_extras(out_dir: Path) -> list[Path]:
     """Worker task: saga chapter badges and divider."""
     assert _worker_template is not None
@@ -532,7 +582,8 @@ def build(
         psd_path: The template; downloaded into the cache when omitted.
         out_dir: Where ``frames/`` and ``crown/`` go.
         codes: Frame codes to build: packSeventh codes (:data:`VARIANTS`), ``saga-<code>`` for a
-            saga frame (:data:`SAGA_CODES`), ``saga-extras`` for the chapter badges and divider.
+            saga frame (:data:`SAGA_CODES`), ``saga-extras`` for the chapter badges and divider,
+            ``adventure-<code>`` for an adventure frame (:data:`ADVENTURE_CODES`) and its spell box.
             Default: all of them.
         jobs: Worker processes (default: :func:`default_jobs`).
 
@@ -546,7 +597,12 @@ def build(
     psd = psd_path or download_template()
     (out_dir / "frames").mkdir(parents=True, exist_ok=True)
     (out_dir / "crown").mkdir(parents=True, exist_ok=True)
-    codes = codes or [*VARIANTS, *(f"saga-{c}" for c in SAGA_CODES), "saga-extras"]
+    codes = codes or [
+        *VARIANTS,
+        *(f"saga-{c}" for c in SAGA_CODES),
+        "saga-extras",
+        *(f"adventure-{c}" for c in ADVENTURE_CODES),
+    ]
     jobs = jobs or default_jobs(len(codes) + 1)
     sys.stdout.write(f"building {len(codes)} frames + masks with {jobs} worker(s)\n")
     written: list[Path] = []
@@ -555,6 +611,8 @@ def build(
         for code in codes:
             if code == "saga-extras":
                 futures.append(pool.submit(_build_saga_extras, out_dir))
+            elif code.startswith("adventure-"):
+                futures.append(pool.submit(_build_adventure_frame, code.removeprefix("adventure-"), out_dir))
             elif code.startswith("saga-"):
                 futures.append(pool.submit(_build_saga_frame, code.removeprefix("saga-"), out_dir))
             else:
