@@ -1762,12 +1762,42 @@ function assertCompleteSpecialText(kind, face) {
     }
 }
 
+// Card Conjurer is a live editor: every frame image and mask it loads has
+// `onload = drawFrames`, and drawFrames ends in drawCard, so building one card redraws
+// the whole frame stack (each layer masked, at ~2000x2800) once per image that lands.
+// That was ~30 drawFrames + ~24 drawCard per card and about two thirds of render time,
+// for intermediate states nobody sees. While renderFace builds the card, both are
+// no-ops; it then draws once, explicitly, right before saving. Nothing in between reads
+// frameCanvas / cardCanvas pixels (drawFrames' own preserveAlpha read happens inside the
+// final draw), so the output is unchanged.
+let deferRedraws = false;
+function installRedrawDeferral() {
+    if (global.__redrawDeferralInstalled) return;
+    global.__redrawDeferralInstalled = true;
+    const drawFrames = global.drawFrames;
+    const drawCard = global.drawCard;
+    global.drawFrames = function (...args) { return deferRedraws ? undefined : drawFrames.apply(this, args); };
+    global.drawCard = function (...args) { return deferRedraws ? undefined : drawCard.apply(this, args); };
+}
+
 // Render a single face: load the pack, import + select the indicated face,
 // upload the matching art, autoframe, drain images, draw, save.
 async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath, fontSizeDelta = 0,
                              dfcFace = null, frameNameSuffix = '', specialLayout = null, legendary = false,
                              crown = true }) {
     resetCanvases();
+    installRedrawDeferral();
+    deferRedraws = true;
+    try {
+        return await buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath,
+                                        fontSizeDelta, dfcFace, frameNameSuffix, specialLayout, legendary, crown });
+    } finally {
+        deferRedraws = false;
+    }
+}
+
+async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath,
+                                   fontSizeDelta, dfcFace, frameNameSuffix, specialLayout, legendary, crown }) {
     await ensurePackLoaded(packFile);
     if (specialLayout?.planeswalker) resetPlaneswalkerState(frame);
 
@@ -3080,6 +3110,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     }
 
     await renderBottomInfo();
+    deferRedraws = false;  // the one real redraw -- see installRedrawDeferral
     global.drawFrames();
 
     // stationEdited() (versionStation.js) always overwrites card.station.squares[2]
