@@ -324,6 +324,46 @@ const pendingImages = [];
 const RETRO_HD_ROOT = process.env.CC_RETRO_HD || path.join(os.homedir(), '.cache', 'mtg-proxies', 'retro-hd');
 const SEVENTH_FRAME_SRC = /^\/img\/frames\/seventh\/regular\/([A-Za-z]+)\.png$/;
 let retroHdFrames = null;
+
+// --retro-hd text layout, taken from the template's own text layers rather than packSeventh's
+// regions, so the text sits where Gavin's frames expect it. Values are the PSD's layer metrics
+// (font size x transform scale, baseline anchor) in card pixels (the template crop is 1:1 with
+// CC's 2010x2814 card). writeText puts a one-line baseline at y + height/2 + 0.275*size, so a
+// line of size S on baseline B is the box {y: B - 0.775*S, height: S}.
+const HD_W = 2010, HD_H = 2814;
+function hdLine(baseline, size) {
+    return { y: (baseline - 0.775 * size) / HD_H, height: size / HD_H, size: size / HD_H };
+}
+const RETRO_HD_TEXT = {
+    // Card Name: Magic:theGathering 116px, left 218, baseline 225. Right edge kept from packSeventh.
+    title: { x: 218 / HD_W, width: 0.8868 - 218 / HD_W, ...hdLine(225, 116) },
+    // Mana Cost: 120px, right-aligned to 1852, baseline 233.
+    mana: { x: 0.1067, width: 1852 / HD_W - 0.1067, ...hdLine(233, 120) },
+    // Typeline: Plantin 96px, left 212, baseline 1641, ending 20px before the template's
+    // Expansion Reference (x 1689). Never widened past the set-symbol clamp already applied.
+    type: { x: 212 / HD_W, width: (1689 - 20 - 212) / HD_W, ...hdLine(1641, 96) },
+    // Rules Text: 99px, in Textbox Reference Normal (203,1697)-(1807,2481) less the layer's
+    // 46px side inset; vertically centred like Proxyshop does.
+    rules: { x: 249 / HD_W, y: 1697 / HD_H, width: 1512 / HD_W, height: 784 / HD_H, size: 99 / HD_H },
+    // Power / Toughness: centred on 1755, baseline 2625 (packSeventh's size, which matches).
+    pt: { x: (1755 - 137) / HD_W, width: 0.1367, ...hdLine(2625, 121) },
+};
+const RETRO_HD_BOTTOM = {
+    // Artist: "Illus. <artist>", 78px, centred, baseline 2592.
+    top: { x: 0.1, width: 0.8, ...hdLine(2592, 78) },
+    // Collector: "<number> • <set>", 56px, centred, baseline 2654 -- in place of the copyright.
+    wizards: { x: 0.1, width: 0.8, text: '{elemidinfo-number} \u2022 {elemidinfo-set}', ...hdLine(2654, 56) },
+};
+function applyRetroHdLayout(regions, layout) {
+    for (const [key, geometry] of Object.entries(layout)) {
+        const region = regions?.[key];
+        if (!region) continue;
+        // The type line's width was already clamped clear of the actual set symbol (which
+        // varies in width per set); keep whichever of the two stops earlier.
+        const width = key === 'type' && region.width ? Math.min(region.width, geometry.width) : geometry.width;
+        Object.assign(region, geometry, { width });
+    }
+}
 function retroHdFrame(src) {
     const match = retroHdFrames && SEVENTH_FRAME_SRC.exec(src);
     if (!match) return null;
@@ -2932,6 +2972,8 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
         }
     }
 
+    if (retroHd) applyRetroHdLayout(global.card.text, RETRO_HD_TEXT);
+
     // Restored immediately after: the `mana` Map is process-global and shared by every
     // card in the run, so leaving it scaled would shrink hybrid pips on non-retro cards
     // in a mixed (auto-frame) deck too.
@@ -3079,6 +3121,7 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
         // 7ED cards.
         if (global.card.bottomInfo.top) global.card.bottomInfo.top.y = 1881 / 2100;
         if (global.card.bottomInfo.wizards) global.card.bottomInfo.wizards.y = 1946 / 2100;
+        if (retroHd) applyRetroHdLayout(global.card.bottomInfo, RETRO_HD_BOTTOM);
     } else {
         setLeanBottomInfo();
         if (dfcFace && scry.layout === 'modal_dfc') {
