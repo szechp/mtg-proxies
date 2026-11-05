@@ -303,6 +303,25 @@ def card_area(full: np.ndarray) -> Image.Image:
     return img.crop(CARD_BOX)
 
 
+def build_masks(t: _Template, frames_dir: Path) -> list[Path]:
+    """Write the HD replacements for packSeventh masks whose shape differs from the template's.
+
+    ``rules.png`` stands in for packSeventh's ``rules.svg`` (the textbox). The retro path lays the
+    two-colour textbox through it from the land frames, and the template's land textbox -- its
+    pinline plus the black outline around it -- is larger than packSeventh's rules box, which
+    would clip that outline off. The template's own land-textbox outline shape fits it exactly.
+    """
+    from scipy.ndimage import binary_fill_holes
+
+    # The shape is the outline ring only (a stroke); the mask is the ring plus everything in it.
+    ring = t.mask_of(t.find("Pinlines", "Textbox Background", SIZE))
+    alpha = np.zeros((t.height, t.width, 4), np.float32)
+    alpha[..., 3] = np.maximum(ring, binary_fill_holes(ring > 0.5).astype(np.float32))
+    path = frames_dir / "rules.png"
+    card_area(alpha).save(path, optimize=True)
+    return [path]
+
+
 def download_template(dest: Path = CACHE_DIR / "retro.psd") -> Path:
     """Download the template once (~840 MB); a complete existing copy is reused."""
     if dest.exists() and dest.stat().st_size == PSD_SIZE:
@@ -338,6 +357,7 @@ def build(psd_path: Path | None = None, out_dir: Path = CACHE_DIR, codes: list[s
     crown_dir.mkdir(parents=True, exist_ok=True)
     written = []
     geometry = retro_crown.HD_GEOMETRY
+    written += build_masks(t, frames_dir)
     for code in codes or list(VARIANTS):
         frame = card_area(compose_variant(t, code))
         frame_path = frames_dir / f"{code}.png"
@@ -361,8 +381,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build --retro-hd frames from Gavin Bowers' Retro template.")
     parser.add_argument("--psd", type=Path, default=None, help="use this retro.psd instead of downloading it")
     parser.add_argument("--out", type=Path, default=CACHE_DIR, help="output directory (default: %(default)s)")
+    parser.add_argument("--masks-only", action="store_true", help="only (re)build the HD masks (fast)")
     parser.add_argument("codes", nargs="*", help="frame codes to build (default: all)")
     args = parser.parse_args()
+    if args.masks_only:
+        frames_dir = args.out / "frames"
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        for path in build_masks(_Template(args.psd or download_template()), frames_dir):
+            sys.stdout.write(f"{path}\n")
+        return
     build(args.psd, args.out, args.codes or None)
 
 

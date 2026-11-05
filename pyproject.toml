@@ -32,6 +32,7 @@ swaps = [
 # then run `uv run python -m mtg_proxies.cardconjurer.retro_hd`.
 retro-hd = [
     "psd-tools[composite]>=1.10",
+    "scipy",
 ]
 
 [project.scripts]

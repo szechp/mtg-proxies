@@ -364,10 +364,16 @@ function applyRetroHdLayout(regions, layout) {
         Object.assign(region, geometry, { width });
     }
 }
+// packSeventh masks whose HD replacement has a different shape (retro_hd.build_masks): the
+// template's land textbox, with its pinline outline, is larger than packSeventh's rules box,
+// which would clip that outline off the two-colour textbox.
+const SEVENTH_MASK_SRC = { '/img/frames/seventh/regular/rules.svg': 'rules.png' };
 function retroHdFrame(src) {
-    const match = retroHdFrames && SEVENTH_FRAME_SRC.exec(src);
-    if (!match) return null;
-    const file = path.join(retroHdFrames, match[1] + '.png');
+    if (!retroHdFrames) return null;
+    const match = SEVENTH_FRAME_SRC.exec(src);
+    const name = match ? match[1] + '.png' : SEVENTH_MASK_SRC[src];
+    if (!name) return null;
+    const file = path.join(retroHdFrames, name);
     return fs.existsSync(file) ? file : null;
 }
 function resolveSrc(src) {
