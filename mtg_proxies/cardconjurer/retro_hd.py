@@ -270,6 +270,15 @@ def _texture_override(identity: str, template_texture: np.ndarray) -> np.ndarray
     return out
 
 
+def _tone_frame(img: np.ndarray, identity: str) -> None:
+    """Apply the identity's frame tint / tone match (:data:`_FRAME_TINT`, :data:`_FRAME_TONE`) in place."""
+    if (gain := _FRAME_TINT.get(identity)) is not None:
+        img[..., :3] *= np.asarray(gain, np.float32)
+    if (tone := _FRAME_TONE.get(identity)) is not None:
+        src_mean, dst_mean, scale = (np.asarray(v, np.float32) for v in tone)
+        img[..., :3] = np.clip((img[..., :3] - src_mean / 255) * scale + dst_mean / 255, 0, 1)
+
+
 def compose_variant(t: _Template, code: str, size: str = SIZE) -> np.ndarray:
     """Composite one frame image (full template canvas, float RGBA).
 
@@ -289,9 +298,6 @@ def compose_variant(t: _Template, code: str, size: str = SIZE) -> np.ndarray:
 
     # Frame texture, clipped to the frame shape (art window and textbox are cut out of it).
     frame_mask = t.mask_of(t.find("Card Frame", "Frame Texture", "Masks", SIZE))
-    if adventure:  # frame texture also fills the textbox area outside the two adventure boxes
-        normal_box = t.mask_of(t.find("Card Frame", "Textbox", "Masks", "Normal"))
-        frame_mask = np.clip(frame_mask + normal_box - adventure_boxes(t), 0, 1)
     tex = t.rgba(t.find("Card Frame", "Frame Texture", identity))
     if (replacement := _texture_override(identity, tex)) is not None:
         tex = replacement
@@ -303,20 +309,12 @@ def compose_variant(t: _Template, code: str, size: str = SIZE) -> np.ndarray:
         mask = t.mask_of(t.find("Card Frame", "Bevels", "Masks", f"{SIZE} {group}"))
         _blend(out, t.fill_color(fill), mask * frame_mask * (fill.opacity / 255), fill.blend_mode.name)
 
-    if (gain := _FRAME_TINT.get(identity)) is not None:
-        out[..., :3] *= np.asarray(gain, np.float32)
-    if (tone := _FRAME_TONE.get(identity)) is not None:
-        src_mean, dst_mean, scale = (np.asarray(v, np.float32) for v in tone)
-        out[..., :3] = np.clip((out[..., :3] - src_mean / 255) * scale + dst_mean / 255, 0, 1)
+    _tone_frame(out, identity)
 
     # Textbox texture, clipped to its shape (ragged for black / green, raster for black).
     textbox_name = recipe.get("textbox", identity)
     irregular = identity in _IRREGULAR_TEXTBOX and not is_land and not saga and not adventure
-    if adventure:
-        tb_mask = adventure_boxes(t)
-        tb = t.rgba(t.find("Card Frame", "Textbox", textbox_name))
-        _over(out, tb[..., :3], tb[..., 3] * tb_mask)
-    elif identity == "B" and irregular:
+    if identity == "B" and irregular:
         black = t.rgba(t.find("Card Frame", "Textbox", f"B {SIZE}"))
         _over(out, black[..., :3], black[..., 3])
     else:
@@ -325,8 +323,8 @@ def compose_variant(t: _Template, code: str, size: str = SIZE) -> np.ndarray:
         tb = t.rgba(t.find("Card Frame", "Textbox", textbox_name))
         _over(out, tb[..., :3], tb[..., 3] * tb_mask)
 
-    # Textbox bevels (none on irregular textboxes; colourless ones are adjustment layers; the
-    # template has no bevel masks for the adventure boxes, which get a plain outline instead).
+    # Textbox bevels (none on irregular textboxes; colourless ones are adjustment layers; none on
+    # adventures, whose textbox is split into two flat halves by adventure_spell_panel).
     if not irregular and not adventure and identity != "Colorless":
         bevel_identity = "Land" if "land" in recipe else identity
         thickness = "Land" if is_land else _BEVEL_THICKNESS.get(identity, "Medium")
@@ -349,9 +347,7 @@ def compose_variant(t: _Template, code: str, size: str = SIZE) -> np.ndarray:
 
     # Outlines: art box, textbox (rectangular textboxes only), bevel and card outlines, corners.
     outlines = [*t.find("Outlines", "Art Outlines", SIZE)]
-    if adventure:
-        _over(out, np.zeros(3, np.float32), adventure_outline(t))
-    elif not irregular:
+    if not irregular:
         outlines += [layer for layer in t.find("Outlines", "Textbox Outlines") if layer.name == SIZE]
     outlines += [t.find("Outlines", name) for name in ("Bevel Outline", "Card Outline", "Outer Corners")]
     for layer in outlines:
@@ -388,28 +384,48 @@ def compose_variant(t: _Template, code: str, size: str = SIZE) -> np.ndarray:
     return border
 
 
-def adventure_boxes(t: _Template) -> np.ndarray:
-    """Return the template's two adventure text boxes (spell bottom-left, creature right) as a mask."""
-    return t.mask_of(t.find("Card Frame", "Textbox", "Masks", "Adventure"))
+# Adventure / prepare split of the Normal textbox, template pixels: textbox (290,1754)-(1894,2583)
+# split at the template's adventure divider (x 1095). The spell's half carries the spell's frame
+# texture behind its name and type, a black rule under the type line, and an inset box of the
+# spell's textbox texture for its rules (the template's left adventure box, (352,2000)-(1031,2520),
+# mirrored for the right half).
+_TB_LEFT, _TB_TOP, _TB_RIGHT, _TB_BOTTOM = 290, 1754, 1894, 2583
+_ADV_DIVIDER = 1095
+_ADV_RULE_Y = 1979
+_ADV_INSET = (352 - _TB_LEFT, 2000, _ADV_DIVIDER - 1031, 2520)  # (left margin, top, right margin, bottom)
+_ADV_LINE = 4
 
 
-def adventure_outline(t: _Template, width: int = 4) -> np.ndarray:
-    """Return a ``width`` px outline ring around both adventure boxes (their textbox outline)."""
-    from scipy.ndimage import binary_dilation
+def adventure_spell_panel(t: _Template, code: str, side: str) -> np.ndarray:
+    """Return the spell's half of an adventure textbox in ``code``'s colours (template canvas, RGBA).
 
-    boxes = adventure_boxes(t) > 0.5
-    return (binary_dilation(boxes, iterations=width) & ~boxes).astype(np.float32)
-
-
-def adventure_spell_box(t: _Template, code: str) -> np.ndarray:
-    """Return the spell's (bottom-left) adventure box in ``code``'s textbox colour, transparent elsewhere."""
-    boxes = adventure_boxes(t)
-    left = np.zeros_like(boxes)
-    left[:, : t.width // 2] = boxes[:, : t.width // 2]
+    Args:
+        t: The template.
+        code: The spell's frame code (:data:`VARIANTS`).
+        side: ``"left"`` (adventures) or ``"right"`` (prepare cards).
+    """
     recipe = VARIANTS[code]
-    tb = t.rgba(t.find("Card Frame", "Textbox", recipe.get("textbox", recipe["identity"])))
+    identity = recipe["identity"]
+    x0, x1 = (_TB_LEFT, _ADV_DIVIDER) if side == "left" else (_ADV_DIVIDER, _TB_RIGHT)
+    panel = np.zeros((t.height, t.width), np.float32)
+    panel[_TB_TOP:_TB_BOTTOM, x0:x1] = 1
+    m_left, top, m_right, bottom = _ADV_INSET
+    if side == "right":
+        m_left, m_right = m_right, m_left
+    inset = np.zeros_like(panel)
+    inset[top:bottom, x0 + m_left : x1 - m_right] = 1
+
     out = np.zeros((t.height, t.width, 4), np.float32)
-    _over(out, tb[..., :3], tb[..., 3] * left)
+    tex = t.rgba(t.find("Card Frame", "Frame Texture", identity))
+    _tone_frame(tex, identity)
+    _over(out, tex[..., :3], tex[..., 3] * panel)
+    tb = t.rgba(t.find("Card Frame", "Textbox", recipe.get("textbox", identity)))
+    _over(out, tb[..., :3], tb[..., 3] * inset)
+    lines = np.zeros_like(panel)
+    half = _ADV_LINE // 2
+    lines[_TB_TOP:_TB_BOTTOM, _ADV_DIVIDER - half : _ADV_DIVIDER + half] = 1  # divider between the halves
+    lines[_ADV_RULE_Y - half : _ADV_RULE_Y + half, x0:x1] = 1  # rule under the spell's type line
+    _over(out, np.zeros(3, np.float32), lines)
     return out
 
 
@@ -520,15 +536,18 @@ def _build_saga_frame(code: str, out_dir: Path) -> list[Path]:
 
 
 def _build_adventure_frame(code: str, out_dir: Path) -> list[Path]:
-    """Worker task: one adventure frame (creature colour) and its spell box overlay (spell colour)."""
+    """Worker task: one adventure frame (creature colour) and its spell panels (spell colour, both sides)."""
     assert _worker_template is not None
     adv_dir = out_dir / "frames" / "adventure"
     adv_dir.mkdir(parents=True, exist_ok=True)
     frame = adv_dir / f"{code}.png"
     card_area(compose_variant(_worker_template, code, "Adventure")).save(frame, optimize=True)
-    spell = adv_dir / f"spell_{code}.png"
-    card_area(adventure_spell_box(_worker_template, code)).save(spell, optimize=True)
-    return [frame, spell]
+    written = [frame]
+    for side in ("left", "right"):
+        path = adv_dir / f"spell_{side}_{code}.png"
+        card_area(adventure_spell_panel(_worker_template, code, side)).save(path, optimize=True)
+        written.append(path)
+    return written
 
 
 def _build_saga_extras(out_dir: Path) -> list[Path]:

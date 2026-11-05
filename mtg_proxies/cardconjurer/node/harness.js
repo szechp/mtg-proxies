@@ -3053,10 +3053,12 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     // to add here was removed -- it is not on any real Seventh-Edition card, and it fought
     // the frame's own pinline. Retro legendaries are marked by the battlement crown below.
 
-    // --retro-hd adventure: the spell's (bottom-left) box in the spell's own colour, over the
-    // creature-coloured adventure frame (retro_hd.adventure_spell_box).
+    // --retro-hd adventure / prepare: the spell's half of the textbox in the spell's own colours,
+    // with the divider and the rule under its type line (retro_hd.adventure_spell_panel), over the
+    // creature-coloured adventure frame.
     if (retroHd && scry._adventure) {
-        const spellBox = path.join(RETRO_HD_ROOT, 'frames', 'adventure', `spell_${scry._adventure.code}.png`);
+        const { side, code } = scry._adventure;
+        const spellBox = path.join(RETRO_HD_ROOT, 'frames', 'adventure', `spell_${side}_${code}.png`);
         if (fs.existsSync(spellBox)) {
             const layer = { name: 'Adventure Spell Box', src: 'file://' + spellBox, masks: [] };
             global.card.frames.unshift(layer);
@@ -3235,24 +3237,30 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     if (retroHd && !specialLayout?.planeswalker && specialLayout?.kind !== 'saga') {
         applyRetroHdLayout(global.card.text, RETRO_HD_TEXT);
     }
-    // --retro-hd adventure: the creature's rules move into the right box and the spell gets its
-    // own name / mana / type / rules in the left panel, at the template's Adventure text layers
-    // (card pixels, crop offset (87, 79)): name and type white on the frame like the card's own,
-    // spell rules in the left box (276,1931)-(934,2429), creature rules in (1003,1697)-(1807,2481).
+    // --retro-hd adventure / prepare: the textbox (203,1675)-(1807,2504) splits at x 1008. The
+    // spell's half (left for adventures, right for prepare cards) holds its name and mana, its type
+    // line above the rule at y 1900 (white on the frame, like the card's own), and its rules in the
+    // inset box; the creature's rules fill the other half. Card pixels; text positions follow the
+    // template's Adventure text layers.
     if (retroHd && scry._adventure) {
         const text = global.card.text;
         const spell = scry._adventure;
-        Object.assign(text.rules, { x: 1072 / HD_W, y: 1712 / HD_H, width: 705 / HD_W, height: 754 / HD_H,
-                                    size: 92 / HD_H, align: 'left' });
+        const left = spell.side === 'left';
+        const [px0, px1] = left ? [203, 1008] : [1008, 1807];  // spell half
+        const [cx0, cx1] = left ? [1008, 1807] : [203, 1008];  // creature half
+        const [ix0, ix1] = left ? [265, 944] : [1070, 1743];   // spell rules inset box
+        Object.assign(text.rules, { x: (cx0 + 36) / HD_W, y: 1695 / HD_H, width: (cx1 - cx0 - 66) / HD_W,
+                                    height: 790 / HD_H, size: 92 / HD_H, align: 'left' });
         const spellRules = String(spell.oracle_text || '').replace(/\(([^)]*)\)/g, '{i}($1){/i}');
         text.advTitle = { ...text.title, name: 'Adventure Title', text: spell.name,
-                          x: 250 / HD_W, width: (978 - 250) / HD_W, ...hdLine(1787, 92) };
+                          x: (px0 + 47) / HD_W, width: (px1 - px0 - 77) / HD_W, ...hdLine(1787, 92) };
         text.advMana = { ...text.mana, name: 'Adventure Mana', text: spell.mana_cost || '',
-                         x: 250 / HD_W, width: (978 - 250) / HD_W, ...hdLine(1792, 92) };
+                         x: (px0 + 47) / HD_W, width: (px1 - px0 - 77) / HD_W, ...hdLine(1792, 92) };
         text.advType = { ...text.type, name: 'Adventure Type', text: spell.type_line || '',
-                         x: 249 / HD_W, width: (934 - 249) / HD_W, ...hdLine(1878, 80) };
+                         x: (px0 + 46) / HD_W, width: (px1 - px0 - 74) / HD_W, ...hdLine(1874, 80) };
         text.advRules = { ...text.rules, name: 'Adventure Rules', text: spellRules,
-                          x: 284 / HD_W, y: 1941 / HD_H, width: 640 / HD_W, height: 478 / HD_H, size: 76 / HD_H };
+                          x: (ix0 + 19) / HD_W, y: 1931 / HD_H, width: (ix1 - ix0 - 38) / HD_W,
+                          height: 500 / HD_H, size: 76 / HD_H };
         reserveRight(text.advTitle, text.advMana);
     }
 
@@ -3529,7 +3537,9 @@ function flattenAdventureForRetroHd(scry) {
         name: main.name, mana_cost: main.mana_cost, type_line: main.type_line, oracle_text: main.oracle_text || '',
         power: main.power, toughness: main.toughness, flavor_text: main.flavor_text,
         _adventure: { name: spell.name, mana_cost: spell.mana_cost, type_line: spell.type_line,
-                      oracle_text: spell.oracle_text, code },
+                      oracle_text: spell.oracle_text, code,
+                      // Adventures put the spell on the left; prepare cards, like the real ones, on the right.
+                      side: scry.layout === 'prepare' ? 'right' : 'left' },
     });
     if (!flat.image_uris && main.image_uris) flat.image_uris = main.image_uris;
     return flat;
