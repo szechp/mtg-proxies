@@ -189,3 +189,21 @@ def test_hd_pinline_mask_shape() -> None:
     mask = crown_pinline_mask(HD_GEOMETRY)
     assert mask.shape == HD_GEOMETRY.shape
     assert mask.any()
+
+
+@pytest.mark.parametrize(
+    ("cores", "free_gb", "tasks", "expected"),
+    [
+        (16, 64.0, 15, 15),  # plenty of cores and RAM: capped by the task count
+        (16, 16.0, 15, 6),  # RAM-bound: 16 GB / 2.5 GB per worker
+        (4, 64.0, 15, 4),  # core-bound
+        (8, None, 15, 8),  # free memory unknown (e.g. Windows without psutil): cores only
+        (8, 1.0, 15, 1),  # never below one worker
+    ],
+)
+def test_default_jobs(cores: int, free_gb: float | None, tasks: int, expected: int) -> None:
+    from mtg_proxies.cardconjurer import retro_hd
+
+    free = None if free_gb is None else int(free_gb * 2**30)
+    with patch("os.cpu_count", return_value=cores), patch.object(retro_hd, "_available_memory", return_value=free):
+        assert retro_hd.default_jobs(tasks) == expected

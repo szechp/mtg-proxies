@@ -352,39 +352,103 @@ def download_template(dest: Path = CACHE_DIR / "retro.psd") -> Path:
     return dest
 
 
-def build(psd_path: Path | None = None, out_dir: Path = CACHE_DIR, codes: list[str] | None = None) -> list[Path]:
-    """Build the ``--retro-hd`` frame images and their crown layers.
+# Peak memory of one build worker (it holds its own parsed template), measured at ~2.1 GB.
+WORKER_MEMORY = 2.5 * 2**30
+
+_worker_template: _Template | None = None
+
+
+def _init_worker(psd_path: Path) -> None:
+    global _worker_template  # one parsed template per worker process
+    _worker_template = _Template(psd_path)
+
+
+def _build_frame(code: str, out_dir: Path) -> list[Path]:
+    """Worker task: one frame image and its crown layer."""
+    from mtg_proxies.cardconjurer import retro_crown
+
+    assert _worker_template is not None
+    frame = card_area(compose_variant(_worker_template, code))
+    frame_path = out_dir / "frames" / f"{code}.png"
+    frame.save(frame_path, optimize=True)
+    crown = retro_crown.make_crown_layer(np.asarray(frame), retro_crown.HD_GEOMETRY)
+    crown_path = out_dir / "crown" / f"{code}.png"
+    Image.fromarray(crown).save(crown_path, optimize=True)
+    return [frame_path, crown_path]
+
+
+def _build_masks(out_dir: Path) -> list[Path]:
+    """Worker task: the HD packSeventh mask replacements."""
+    assert _worker_template is not None
+    return build_masks(_worker_template, out_dir / "frames")
+
+
+def _available_memory() -> int | None:
+    """Return the free physical memory in bytes, or None where it cannot be read cheaply."""
+    try:
+        import psutil  # optional; present in most environments that have it
+
+        return int(psutil.virtual_memory().available)
+    except ImportError:
+        pass
+    try:
+        import os
+
+        return os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    except (ValueError, OSError, AttributeError):  # e.g. Windows has no sysconf
+        return None
+
+
+def default_jobs(tasks: int) -> int:
+    """Return how many build workers to run: every core, capped by free memory and the task count."""
+    import os
+
+    jobs = os.cpu_count() or 1
+    if (free := _available_memory()) is not None:
+        jobs = min(jobs, max(1, int(free // WORKER_MEMORY)))
+    return max(1, min(jobs, tasks))
+
+
+def build(
+    psd_path: Path | None = None, out_dir: Path = CACHE_DIR, codes: list[str] | None = None, jobs: int | None = None
+) -> list[Path]:
+    """Build the ``--retro-hd`` frame images and their crown layers, in parallel.
+
+    Each frame is an independent ~1 minute composite, so they run one per worker process
+    (each with its own parsed template, ~2.1 GB). The worker count defaults to every CPU core,
+    capped by free memory (:func:`default_jobs`).
 
     Args:
         psd_path: The template; downloaded into the cache when omitted.
         out_dir: Where ``frames/`` and ``crown/`` go.
         codes: packSeventh frame codes to build (default: all of :data:`VARIANTS`).
+        jobs: Worker processes (default: :func:`default_jobs`).
 
     Returns:
         The written paths.
     """
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
     from mtg_proxies.cardconjurer import retro_crown
 
-    t = _Template(psd_path or download_template())
-    frames_dir, crown_dir = out_dir / "frames", out_dir / "crown"
-    frames_dir.mkdir(parents=True, exist_ok=True)
-    crown_dir.mkdir(parents=True, exist_ok=True)
-    written = []
+    psd = psd_path or download_template()
+    (out_dir / "frames").mkdir(parents=True, exist_ok=True)
+    (out_dir / "crown").mkdir(parents=True, exist_ok=True)
+    codes = codes or list(VARIANTS)
+    jobs = jobs or default_jobs(len(codes) + 1)
+    sys.stdout.write(f"building {len(codes)} frames + masks with {jobs} worker(s)\n")
+    written: list[Path] = []
+    with ProcessPoolExecutor(max_workers=jobs, initializer=_init_worker, initargs=(psd,)) as pool:
+        futures = [pool.submit(_build_masks, out_dir)]
+        futures += [pool.submit(_build_frame, code, out_dir) for code in codes]
+        for future in as_completed(futures):
+            paths = future.result()
+            written += paths
+            sys.stdout.write(f"{paths[0]}\n")
     geometry = retro_crown.HD_GEOMETRY
-    written += build_masks(t, frames_dir)
-    for code in codes or list(VARIANTS):
-        frame = card_area(compose_variant(t, code))
-        frame_path = frames_dir / f"{code}.png"
-        frame.save(frame_path, optimize=True)
-        written.append(frame_path)
-        crown = retro_crown.make_crown_layer(np.asarray(frame), geometry)
-        crown_path = crown_dir / f"{code}.png"
-        Image.fromarray(crown).save(crown_path, optimize=True)
-        written.append(crown_path)
-        sys.stdout.write(f"{frame_path}\n")
     mask = np.zeros((*geometry.shape, 4), np.uint8)
     mask[..., 3] = retro_crown.crown_pinline_mask(geometry)
-    mask_path = crown_dir / retro_crown.PINLINE_MASK_NAME
+    mask_path = out_dir / "crown" / retro_crown.PINLINE_MASK_NAME
     Image.fromarray(mask).save(mask_path, optimize=True)
     written.append(mask_path)
     return written
@@ -396,6 +460,12 @@ def main() -> None:
     parser.add_argument("--psd", type=Path, default=None, help="use this retro.psd instead of downloading it")
     parser.add_argument("--out", type=Path, default=CACHE_DIR, help="output directory (default: %(default)s)")
     parser.add_argument("--masks-only", action="store_true", help="only (re)build the HD masks (fast)")
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        help="parallel workers (default: all cores, capped by free RAM, ~2.5 GB each)",
+    )
     parser.add_argument("codes", nargs="*", help="frame codes to build (default: all)")
     args = parser.parse_args()
     if args.masks_only:
@@ -404,7 +474,7 @@ def main() -> None:
         for path in build_masks(_Template(args.psd or download_template()), frames_dir):
             sys.stdout.write(f"{path}\n")
         return
-    build(args.psd, args.out, args.codes or None)
+    build(args.psd, args.out, args.codes or None, args.jobs)
 
 
 if __name__ == "__main__":
