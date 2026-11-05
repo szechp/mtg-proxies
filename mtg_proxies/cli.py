@@ -2784,8 +2784,8 @@ def main() -> None:
             " textures, modern colour grading, crisp bevels) in place of Card Conjurer's Seventh"
             " Edition scans. Everything else is --retro: text, white-frame readability, hybrid and"
             " two-colour frames, the battlement crown. Implies --retro and combines with"
-            " --retro-scaled. Single-faced, non-planeswalker cards only; the rest render plain"
-            " retro. Needs the frames built once: `uv sync --extra retro-hd && uv run python -m"
+            " --retro-scaled. Single-faced cards only (planeswalkers included); double-faced"
+            " cards render plain retro. Needs the frames built once: `uv sync --extra retro-hd && uv run python -m"
             " mtg_proxies.cardconjurer.retro_hd`. Also available per card as"
             " `#cardconjurer --retro-hd`."
         ),

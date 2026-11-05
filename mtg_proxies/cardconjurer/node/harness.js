@@ -353,7 +353,7 @@ const RETRO_HD_TEXT = {
 const RETRO_HD_ART_BOUNDS = { x: 229 / HD_W, y: 279 / HD_H, width: (1782 - 229) / HD_W, height: (1525 - 279) / HD_H };
 const RETRO_HD_BOTTOM = {
     // Artist: "Illus. <artist>", 78px, centred, baseline 2592.
-    top: { x: 0.1, width: 0.8, ...hdLine(2592, 78) },
+    top: { x: 0.1, width: 0.8, text: 'Illus. {elemidinfo-artist}', ...hdLine(2592, 78) },
     // Collector: "<number> • <set>", 56px, centred, baseline 2654 -- in place of the copyright.
     wizards: { x: 0.1, width: 0.8, text: '{elemidinfo-number} \u2022 {elemidinfo-set}', ...hdLine(2654, 56) },
 };
@@ -1217,6 +1217,69 @@ function countWrappedLines(text, boxWidthPx, fontPx) {
     }
     return Math.max(1, totalLines);
 }
+// Planeswalker abilities at one shared size. Card Conjurer splits the rules box evenly between
+// the abilities and then auto-shrinks each one on its own, so a one-line ability keeps a large
+// font while a five-line one drops to a much smaller one on the same card. Same idea as
+// layoutStationAbilities: find the largest font size at which every ability -- measured with its
+// real wrapping at that size, plus PW_ABILITY_PAD lines of breathing room each -- fits the box
+// together, size each ability's box to its own content at that size (spreading any slack
+// evenly), and put every loyalty badge on the vertical centre of its own ability.
+//
+// The badges are not positioned from the boxes: versionPlaneswalker.js draws each one at a fixed
+// per-ability-count fraction (planeswalkerAbilityLayout) plus '#planeswalker-shift-N'. What the
+// eye lines up is the badge's NUMBER, not the badge image (the minus/neutral shields carry a
+// pointed tail that drags their image centre well below the number): its fillText baseline is
+// P + 0.0172 / 0.0181 / 0.0191 (plus / minus / neutral) at 0.0286 size, so the number's centre is
+// about 0.35 x 0.0286 above that. It is matched to the ability's text centre, which writeText's
+// vertical centring puts 0.075 x size above the box centre. So the shift is solved per badge.
+const PW_ABILITY_PAD = 0.55;
+const PW_BADGE_NUMBER_CENTER = { plus: 0.0072, minus: 0.0081, neutral: 0.0091 };
+function equalizePlaneswalkerAbilities(boxTop, boxHeight) {
+    const text = global.card.text;
+    const count = global.card.planeswalker?.count || 0;
+    if (count < 1 || typeof global.planeswalkerEdited !== 'function') return;
+    const cardWidth = global.card.width, cardHeight = global.card.height;
+    const abilities = [...Array(count).keys()].map((i) => text['ability' + i]);
+    const texts = abilities.map((a) => a?.text || '');
+    const widths = abilities.map((a) => (a?.width || 0.75) * cardWidth);
+    const spanPx = boxHeight * cardHeight;
+
+    const startPx = Math.round((abilities[0]?.size || 0.0358) * cardHeight);
+    let fontPx = 40;
+    let lines = texts.map((t, i) => countWrappedLines(t, widths[i], fontPx));
+    for (let px = startPx; px >= 40; px--) {
+        const candidate = texts.map((t, i) => countWrappedLines(t, widths[i], px));
+        if (candidate.reduce((sum, n) => sum + (n + PW_ABILITY_PAD) * px, 0) <= spanPx) {
+            fontPx = px;
+            lines = candidate;
+            break;
+        }
+    }
+    const content = lines.map((n) => (n + PW_ABILITY_PAD) * fontPx);
+    const slack = Math.max(0, spanPx - content.reduce((a, b) => a + b, 0)) / count;
+    const heights = content.map((c) => c + slack);
+
+    text.ability0.y = boxTop;
+    for (let i = 0; i < 4; i++) {
+        querySelector(`#planeswalker-height-${i}`).value = i < count ? Math.round(heights[i]) : 0;
+    }
+    for (const ability of abilities) if (ability) ability.size = fontPx / cardHeight;
+
+    const layout = global.planeswalkerAbilityLayout?.[0]?.[count - 1];
+    if (layout) {
+        let y = boxTop;
+        for (let i = 0; i < count; i++) {
+            const centre = y + heights[i] / cardHeight / 2 - 0.075 * fontPx / cardHeight;
+            y += heights[i] / cardHeight;
+            const cost = String(querySelector(`#planeswalker-cost-${i}`).value || '');
+            const badge = cost.includes('+') ? 'plus' : cost.includes('-') ? 'minus' : 'neutral';
+            const shift = centre - PW_BADGE_NUMBER_CENTER[badge] - layout[i];
+            querySelector(`#planeswalker-shift-${i}`).value = Math.round(shift * cardHeight);
+        }
+    }
+    global.planeswalkerEdited();
+}
+
 function estimateStationLines(text, boxWidthFraction, fontSizeFraction) {
     const cardWidth = global.card.width || 1500;
     const cardHeight = global.card.height || 2100;
@@ -1854,10 +1917,10 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     resetCanvases();
     installRedrawDeferral();
     deferRedraws = true;
-    // --retro-hd swaps packSeventh's frame art for single-faced, non-planeswalker retro cards
-    // only: DFC faces use the Classicshifted packs, and packPlaneswalkerSeventh lays its own
-    // loyalty furniture over the same images, which the HD art does not have.
-    const hd = retroHd && frame === 'retro' && !dfcFace && !specialLayout?.planeswalker;
+    // --retro-hd swaps packSeventh's frame art for single-faced retro cards only: DFC faces use
+    // the Classicshifted packs. Planeswalkers are included -- packPlaneswalkerSeventh draws its
+    // loyalty badges over the same frame images, so they carry over onto the HD art.
+    const hd = retroHd && frame === 'retro' && !dfcFace;
     if (hd && !fs.existsSync(path.join(RETRO_HD_ROOT, 'frames', 'w.png'))) {
         throw new Error(`--retro-hd frames not built in ${RETRO_HD_ROOT} -- run `
             + '`uv sync --extra retro-hd && uv run python -m mtg_proxies.cardconjurer.retro_hd`');
@@ -2000,6 +2063,12 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
             }
             if (typeof global.planeswalkerEdited === 'function') global.planeswalkerEdited();
         }
+
+        // One shared ability font size and badges centred on their abilities (see
+        // equalizePlaneswalkerAbilities). --retro-hd fills the template's own textbox,
+        // (203,1697)-(1807,2481), inset 12px top and bottom so text clears its bevel.
+        if (retroHd) equalizePlaneswalkerAbilities((1697 + 12) / 2814, (784 - 24) / 2814);
+        else equalizePlaneswalkerAbilities(RULES_BOX_TOP, RULES_BOX_HEIGHT);
     }
     
     // For flip layouts, move the set symbol to the top type line.
@@ -2819,11 +2888,10 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
 
     // Battlement legend crown on retro legendaries, on by default (`--no-crown` opts out).
     // Runs last among the frame layers so it can replay the finished stack -- see
-    // addRetroLegendCrown. Single-faced packSeventh cards only (DFC faces carry Classicshifted's own crown; planeswalkers use a pack
-    // with different geometry).
+    // addRetroLegendCrown. Single-faced cards only, planeswalkers included: packPlaneswalkerSeventh
+    // draws on the same Seventh frame images (DFC faces carry Classicshifted's own crown).
     if (crown && !dfcFace && frame === 'retro' && scry.layout !== 'token' && scry.layout !== 'flip'
-        && /Legendary/.test(pristineFace.type_line || scry.type_line || '')
-        && !/Planeswalker/.test(pristineFace.type_line || scry.type_line || '')) {
+        && /Legendary/.test(pristineFace.type_line || scry.type_line || '')) {
         await addRetroLegendCrown(retroHd ? path.join(RETRO_HD_ROOT, 'crown') : RETRO_CROWN_DIR);
     }
 
@@ -2984,7 +3052,7 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
         }
     }
 
-    if (retroHd) applyRetroHdLayout(global.card.text, RETRO_HD_TEXT);
+    if (retroHd && !specialLayout?.planeswalker) applyRetroHdLayout(global.card.text, RETRO_HD_TEXT);
 
     // Restored immediately after: the `mana` Map is process-global and shared by every
     // card in the run, so leaving it scaled would shrink hybrid pips on non-retro cards
