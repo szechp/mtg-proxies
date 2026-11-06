@@ -303,17 +303,32 @@ const EIGHTH_SAGA_TEXT_SHIFT = 120;
 // black pinline under the tip); its right edge fades out over `feather` px into the text box.
 const EIGHTH_SAGA_STRIP = { x: 156, y: 470, width: 114, height: 1872, feather: 24 };
 // The 8th type bar's end caps in the side borders (card px; the bar spans y ~1564-1750).
-const EIGHTH_TYPE_CAPS = [{ x: 96, y: 1530, width: 64, height: 260 }, { x: 1850, y: 1530, width: 64, height: 260 }];
+// Inside the border only (its opening runs x 155-1859), faded in and out over `featherY` px.
+const EIGHTH_TYPE_CAPS = [
+    { x: 96, y: 1500, width: 59, height: 320, featherY: 40 },
+    { x: 1859, y: 1500, width: 59, height: 320, featherY: 40 },
+];
 const EIGHTH_CAP_SOURCE_SHIFT = 300;
 const _rectMasks = new Map();
 // A full-card (2010x2814) mask of white rectangles; a rectangle's right edge fades out over
-// its `feather` px.
+// its `feather` px, its top and bottom over `featherY` px.
 function rectMaskDataUri(...rects) {
     const key = JSON.stringify(rects);
     if (!_rectMasks.has(key)) {
         const canvas = createCanvas(2010, 2814);
         const ctx = canvas.getContext('2d');
-        for (const { x, y, width, height, feather = 0 } of rects) {
+        for (const { x, y, width, height, feather = 0, featherY = 0 } of rects) {
+            if (featherY) {
+                const fade = ctx.createLinearGradient(0, y, 0, y + height);
+                const edge = featherY / height;
+                fade.addColorStop(0, 'rgba(255,255,255,0)');
+                fade.addColorStop(edge, 'rgba(255,255,255,1)');
+                fade.addColorStop(1 - edge, 'rgba(255,255,255,1)');
+                fade.addColorStop(1, 'rgba(255,255,255,0)');
+                ctx.fillStyle = fade;
+                ctx.fillRect(x, y, width, height);
+                continue;
+            }
             ctx.fillStyle = 'white';
             ctx.fillRect(x, y, width - feather, height);
             if (feather) {
