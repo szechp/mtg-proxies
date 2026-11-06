@@ -136,3 +136,39 @@ def test_verdict_without_ocr_is_redone_once_ocr_is_installed(tmp_path: Path) -> 
         patch.object(art_check, "overlay_text", return_value=["MAGIC"]),
     ):
         assert not art_check.check_mtgpics_art(m, s, {}).ok
+
+
+def test_accepted_art_is_framed_like_the_print(tmp_path: Path) -> None:
+    """A tall image is cut to the region Scryfall's crop covers, so the top of the painting stays."""
+    from mtg_proxies.cardconjurer import art_check
+
+    full = _painting(4, (1000, 1600))  # portrait: centring it in a landscape window crops the top
+    print_crop = full.crop((0, 0, 1000, 720)).resize((626, 451))  # the print shows the top part
+    m, s = _save(full, tmp_path / "m.jpg"), _save(print_crop, tmp_path / "s.jpg")
+    with patch.object(art_check, "overlay_text", return_value=[]):
+        verdict = art_check.check_mtgpics_art(m, s, {})
+    assert verdict.ok
+    left, top, right, bottom = verdict.frame
+    assert top < 0.03 and abs(bottom - 0.45) < 0.03 and left < 0.03 and right > 0.97
+    framed = art_check.framed_art(m, verdict.frame)
+    assert framed != m
+    with Image.open(framed) as im:
+        assert abs(im.height / im.width - 0.72) < 0.05
+
+
+def test_frame_extends_a_trimmed_match_to_the_whole_print() -> None:
+    from mtg_proxies.cardconjurer.art_check import _Match
+
+    # The reference's middle 60% (0.2 trimmed top and bottom) matched rows 0..1 of a wallpaper:
+    # the whole print would run past both edges, so the frame is clamped to the image.
+    match = _Match(0.95, 0.01, (0.1, 0.0, 0.9, 1.0), (0.2, 0.2, 0, 0))
+    assert match.frame() == (0.1, 0.0, 0.9, 1.0)
+    assert _Match(0.95, 0.01, (0.1, 0.2, 0.5, 0.6)).frame() == (0.1, 0.2, 0.5, 0.6)
+
+
+def test_full_frame_uses_the_image_itself(tmp_path: Path) -> None:
+    from mtg_proxies.cardconjurer.art_check import framed_art
+
+    path = _save(_painting(5), tmp_path / "m.jpg")
+    assert framed_art(path, (0.01, 0.0, 1.0, 0.99)) == path
+    assert framed_art(path, None) == path

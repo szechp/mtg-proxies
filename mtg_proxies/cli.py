@@ -164,11 +164,13 @@ def _resolve_cc_frame(flags: dict) -> str:
 
 
 
-def _mtgpics_rejection(card: dict, mtgpics_path: Path) -> str | None:
-    """Return why the MTGPics image may not stand in for this card's art, or None when it may.
+def _vet_mtgpics(card: dict, mtgpics_path: Path) -> tuple[str | None, Path]:
+    """Return why the MTGPics image may not stand in for this card's art (None when it may) and the art to use.
 
     The card's own Scryfall ``art_crop`` is the reference (see ``cardconjurer/art_check.py``);
-    when it cannot be fetched the MTGPics image is used unverified, as before.
+    when it cannot be fetched the MTGPics image is used unverified, as before. An accepted image
+    comes back cut to the printed card's framing (``art_check.framed_art``), so Card Conjurer's
+    centring shows what the print shows.
     """
     from mtg_proxies import scryfall as _scryfall
     from mtg_proxies.cardconjurer import art_check
@@ -176,14 +178,16 @@ def _mtgpics_rejection(card: dict, mtgpics_path: Path) -> str | None:
     uris = card.get("image_uris") or {}
     art_url = uris.get("art_crop")
     if not art_url:
-        return None
+        return None, mtgpics_path
     try:
         reference = Path(_scryfall.get_image(art_url))
         verdict = art_check.check_mtgpics_art(mtgpics_path, reference, card)
+        if not verdict.ok:
+            return verdict.reason, mtgpics_path
+        return None, art_check.framed_art(mtgpics_path, verdict.frame)
     except Exception as exc:  # a failed check must never break a render
         _warn(f"Note: art check skipped for {card.get('name')!r}: {exc}")
-        return None
-    return None if verdict.ok else verdict.reason
+        return None, mtgpics_path
 
 
 def _require_retro_hd_frames() -> None:
@@ -2065,10 +2069,10 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
             if set_code and cn:
                 mtgp = _mtgpics.fetch_mtgpics_art(set_code, cn, cache_root=mtgpics_cache_root)
                 if mtgp is not None:
-                    rejection = _mtgpics_rejection(card.card, Path(mtgp))
+                    rejection, art = _vet_mtgpics(card.card, Path(mtgp))
                     if rejection is None:
                         mtgpics_stats["hits"] += 1
-                        return {**extras, "art_path": str(mtgp)}
+                        return {**extras, "art_path": str(art)}
                     mtgpics_stats["rejected"] += 1
                     _warn(f"Note: {card['name']!r}: MTGPics art not used ({rejection}); using Scryfall's art.")
             mtgpics_stats["misses"] += 1
