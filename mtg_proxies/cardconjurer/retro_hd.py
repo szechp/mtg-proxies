@@ -358,10 +358,15 @@ def compose_variant(t: _Template, code: str, size: str = SIZE, dfc: str | None =
         if dfc:
             overlays = t.find("Card Frame", f"Textbox Bevel Overlays {dfc}")
             if "land" in recipe:
+                # Each corner group's shape in the land colour's own bevel fill (the TF overlay
+                # only ships a Gold fill, so its fills cannot be used as they are).
                 for corner in ("TR", "BL"):
-                    for fill in t.find("Card Frame", f"Textbox Bevel Overlays {dfc}", "Land", corner):
-                        fill.visible = fill.name == land_color
-                group = t.find("Card Frame", f"Textbox Bevel Overlays {dfc}", "Land")
+                    shape = t.mask_of(t.find("Card Frame", f"Textbox Bevel Overlays {dfc}", "Land", corner))
+                    own = [layer for layer in t.find("Card Frame", "Textbox Bevels", "Land", corner)
+                           if layer.kind == "solidcolorfill" and layer.name == land_color]
+                    for fill in own:
+                        _blend(out, t.fill_color(fill), shape * (fill.opacity / 255), fill.blend_mode.name)
+                group = None
             else:
                 group = next((g for g in overlays if g.name == identity), None)
             if group is not None:
