@@ -457,9 +457,7 @@ function fitFlipsideBar(name, side) {
 // on light frames and black text on dark bars (Emeria's Call's artist line, black names on a blue
 // flipside bar, white titles on land backs). Instead, measure the frame canvas behind each line
 // and use black on light backgrounds, white on dark; the flipside cost keeps its grey shades.
-const CONTRAST_TEXT = ['title', 'type', 'flipsideType', 'flipSideReminder'];
-const CONTRAST_BOTTOM = ['top', 'wizards'];
-function backgroundIsLight(region) {
+function backgroundLuminance(region) {
     const canvas = global.frameCanvas;
     if (!canvas || !region || region.width == null) return null;
     const x = Math.max(0, Math.round(global.scaleX(region.x || 0)));
@@ -477,32 +475,50 @@ function backgroundIsLight(region) {
         sum += 0.2126 * lin(px[i]) + 0.7152 * lin(px[i + 1]) + 0.0722 * lin(px[i + 2]);
         n++;
     }
-    if (!n) return null;
-    const lum = sum / n;
-    return (lum + 0.05) / 0.05 > 1.05 / (lum + 0.05);  // black's contrast beats white's
+    return n ? sum / n : null;
 }
+// Black beats white on this background (WCAG contrast ratio).
+const prefersBlack = (lum) => (lum + 0.05) / 0.05 > 1.05 / (lum + 0.05);
+// White text's contrast ratio against a background below which the bottom lines get an outline.
+const WHITE_MIN_CONTRAST = 4.5;
 function applyContrastColours() {
     let changed = false;
-    const set = (region, light, colours) => {
-        if (!region || light === null) return;
-        const colour = light ? colours[0] : colours[1];
-        const inline = typeof region.text === 'string' && /^\{conditionalcolor:/.test(region.text);
-        if (region.color === colour && !region.conditionalColor && !region.outlineWidth && !inline) return;
-        region.color = colour;
+    const strip = (region) => {
         delete region.conditionalColor;
-        region.outlineWidth = 0;
         if (typeof region.text === 'string') region.text = region.text.replace(/^\{conditionalcolor:[^}]*\}/, '');
-        changed = true;
     };
-    for (const key of CONTRAST_TEXT) {
+    // Title, type line, flipside name and the other face's cost / type: black or white, whichever
+    // reads better (the cost / type takes the name's colour: no grey works on a mid-grey bar).
+    let flipsideColour = null;
+    for (const key of ['title', 'type', 'flipsideType', 'flipSideReminder']) {
         const region = global.card.text?.[key];
         if (!region?.text) continue;
-        const colours = key === 'flipSideReminder' ? ['#555555', '#cccccc'] : ['black', 'white'];
-        set(region, backgroundIsLight(region), colours);
+        let colour;
+        if (key === 'flipSideReminder' && flipsideColour) colour = flipsideColour;
+        else {
+            const lum = backgroundLuminance(region);
+            if (lum === null) continue;
+            colour = prefersBlack(lum) ? 'black' : 'white';
+        }
+        if (key === 'flipsideType') flipsideColour = colour;
+        strip(region);
+        region.outlineWidth = 0;
+        region.color = colour;
+        changed = true;
     }
-    for (const key of CONTRAST_BOTTOM) {
+    // Artist / collector lines stay white (the frame's standard); where white is too weak against
+    // the frame behind them, they get Card Conjurer's standard black outline.
+    for (const key of ['top', 'wizards']) {
         const region = global.card.bottomInfo?.[key];
-        if (region?.text) set(region, backgroundIsLight(region), ['black', 'white']);
+        if (!region?.text) continue;
+        const lum = backgroundLuminance(region);
+        if (lum === null) continue;
+        strip(region);
+        region.color = 'white';
+        const weak = 1.05 / (lum + 0.05) < WHITE_MIN_CONTRAST;
+        region.outlineWidth = weak ? 0.003 : 0;
+        if (weak) region.outlineColor = 'black';
+        changed = true;
     }
     return changed;
 }
