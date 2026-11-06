@@ -14,6 +14,7 @@ Rules, first match wins (see :func:`frame_flags`):
 * a line that already has a modeline is left as it is (your own choice wins);
 * battles: ``--skip`` (sideways cards render in no frame; they use the Scryfall scan);
 * Kamigawa flip, reversible and Station cards: ``--modern`` (their only frame);
+* with ``--mdfc-m15-8th``: modal double-faced cards (not planeswalkers) ``--m15-8th``;
 * double-faced cards: ``--retro-hd`` (each face on the template's transform / MDFC frame); gold
   transform cards ``--8th``; transform planeswalkers ``--retro`` (Card Conjurer's retro planeswalker
   faces); modal double-faced planeswalkers ``--modern``;
@@ -70,8 +71,14 @@ def is_dual_land(card: dict[str, Any]) -> bool:
     return len(set(card.get("produced_mana") or []) & COLOURS) >= 2
 
 
-def frame_flags(card: dict[str, Any]) -> str:
-    """Return the ``#cardconjurer`` flag for one card (Scryfall object)."""
+def frame_flags(card: dict[str, Any], *, mdfc_m15_8th: bool = False) -> str:
+    """Return the ``#cardconjurer`` flag for one card (Scryfall object).
+
+    Args:
+        card: The card's Scryfall object.
+        mdfc_m15_8th: Render modal double-faced cards (not planeswalkers) in the M15-8th hybrid
+            frame instead of ``--retro-hd``.
+    """
     layout = card.get("layout", "")
     type_line = card.get("type_line") or ""
     planeswalker = any("Planeswalker" in (face.get("type_line") or "") for face in _faces(card))
@@ -84,6 +91,8 @@ def frame_flags(card: dict[str, Any]) -> str:
             return "--modern"
         if planeswalker:
             return "--retro"
+        if layout == "modal_dfc" and mdfc_m15_8th:
+            return "--m15-8th"
         if layout == "transform" and is_gold(card):
             return "--8th"
         return "--retro-hd"
@@ -94,7 +103,7 @@ def frame_flags(card: dict[str, Any]) -> str:
     return "--retro-hd"
 
 
-def convert(decklist_path: Path) -> list[str]:
+def convert(decklist_path: Path, *, mdfc_m15_8th: bool = False) -> list[str]:
     """Return the decklist's lines with a ``#cardconjurer`` modeline on every card line."""
     from mtg_proxies.decklists import Card, parse_decklist
 
@@ -106,7 +115,8 @@ def convert(decklist_path: Path) -> list[str]:
         elif entry.modeline.strip():
             lines.append(format(entry, "arena"))
         else:
-            lines.append(f"{format(entry, 'arena')} #cardconjurer {frame_flags(entry.card)}")
+            flag = frame_flags(entry.card, mdfc_m15_8th=mdfc_m15_8th)
+            lines.append(f"{format(entry, 'arena')} #cardconjurer {flag}")
     return lines
 
 
@@ -116,13 +126,18 @@ def main() -> None:
     parser.add_argument("decklist", type=Path, help="decklist to convert")
     parser.add_argument("output", type=Path, nargs="?", help="where to write it (default: <decklist>.cc.txt)")
     parser.add_argument("--force", action="store_true", help="overwrite an existing output file")
+    parser.add_argument(
+        "--mdfc-m15-8th",
+        action="store_true",
+        help="render modal double-faced cards (Pathways, MDFC spells) in the M15-8th hybrid frame",
+    )
     args = parser.parse_args()
 
     output = args.output or args.decklist.with_suffix(".cc.txt")
     if output.exists() and not args.force:
         sys.exit(f"{output} already exists; pass --force to overwrite")
 
-    lines = convert(args.decklist)
+    lines = convert(args.decklist, mdfc_m15_8th=args.mdfc_m15_8th)
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     counts: dict[str, int] = {}
     for line in lines:

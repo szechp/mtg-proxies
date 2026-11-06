@@ -516,6 +516,7 @@ It adds `#cardconjurer --retro-hd` to every card, except: gold cards and non-bas
 two or more colours get `--8th`; double-faced cards stay `--retro-hd` (gold transform cards `--8th`,
 transform planeswalkers `--retro`, modal double-faced planeswalkers `--modern`); flip, reversible and Station cards `--modern`;
 adventures and prepare cards stay `--retro-hd` even when gold; battles get `--skip` (Scryfall scan).
+`--mdfc-m15-8th` renders modal double-faced cards (Pathways, MDFC spells) in the M15-8th hybrid frame instead.
 Lines that already have a modeline are left as they are, and each card is pinned to the printing
 the rule was decided on.
 

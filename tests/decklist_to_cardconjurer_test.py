@@ -57,3 +57,16 @@ def _card(
 )
 def test_frame_flags(card: dict, flag: str) -> None:
     assert _load().frame_flags(card) == flag
+
+
+def test_mdfc_m15_8th_setting_only_moves_modal_cards() -> None:
+    mod = _load()
+    mdfc = _card("Instant // Land", ("U",), "{1}{U}{U}", layout="modal_dfc")
+    assert mod.frame_flags(mdfc) == "--retro-hd"
+    assert mod.frame_flags(mdfc, mdfc_m15_8th=True) == "--m15-8th"
+    for other, flag in ((_card(layout="transform"), "--retro-hd"), (_card(), "--retro-hd")):
+        assert mod.frame_flags(other, mdfc_m15_8th=True) == flag
+    walker = {"layout": "modal_dfc", "type_line": "Legendary Creature — God // Legendary Planeswalker — Tibalt",
+              "card_faces": [{"type_line": "Legendary Creature — God"},
+                             {"type_line": "Legendary Planeswalker — Tibalt"}]}
+    assert mod.frame_flags(walker, mdfc_m15_8th=True) == "--modern"
