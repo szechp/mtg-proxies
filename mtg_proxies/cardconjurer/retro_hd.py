@@ -337,7 +337,7 @@ def compose_variant(t: _Template, code: str, size: str = SIZE, dfc: str | None =
         bevel_identity = "Land" if "land" in recipe else identity
         thickness = "Land" if is_land else _BEVEL_THICKNESS.get(identity, "Medium")
         sized = t.find("Card Frame", "Textbox Bevels", "Masks", SIZE)
-        bevel_cut = t.raster_mask(t.find("Masks", f"Textbox Bevels {dfc}")) if dfc else 1
+        bevel_cut = t.mask_of(t.find("Masks", f"Textbox Bevels {dfc}")) if dfc else 1
         for corner in ("TR", "BL"):
             mask = t.mask_of(next(layer for layer in sized if layer.name == f"{thickness} {corner}")) * bevel_cut
             group = t.find("Card Frame", "Textbox Bevels", bevel_identity, corner)
@@ -353,22 +353,36 @@ def compose_variant(t: _Template, code: str, size: str = SIZE, dfc: str | None =
             for layer in t.find("Card Frame", "Textbox Bevels", identity, size):
                 img = t.rgba(layer)
                 _over(out, img[..., :3], img[..., 3])
+        # The notch's own bevels (Proxyshop add_textbox_notch: "Textbox Bevel Overlays <dfc>",
+        # the frame identity's group, or for lands the land colour's TR / BL fills).
+        if dfc:
+            overlays = t.find("Card Frame", f"Textbox Bevel Overlays {dfc}")
+            if "land" in recipe:
+                for corner in ("TR", "BL"):
+                    for fill in t.find("Card Frame", f"Textbox Bevel Overlays {dfc}", "Land", corner):
+                        fill.visible = fill.name == land_color
+                group = t.find("Card Frame", f"Textbox Bevel Overlays {dfc}", "Land")
+            else:
+                group = next((g for g in overlays if g.name == identity), None)
+            if group is not None:
+                img = t.rgba(group)
+                _over(out, img[..., :3], img[..., 3])
 
     # Outlines: art box, textbox (rectangular textboxes only), bevel and card outlines, corners.
     outlines = [*t.find("Outlines", "Art Outlines", SIZE)]
     if not irregular:
         outlines += [layer for layer in t.find("Outlines", "Textbox Outlines") if layer.name == SIZE]
     outlines += [t.find("Outlines", name) for name in ("Bevel Outline", "Card Outline", "Outer Corners")]
-    textbox_cut = t.raster_mask(t.find("Masks", f"Textbox Outlines {dfc}")) if dfc else None
+    textbox_cut = t.mask_of(t.find("Masks", f"Textbox Outlines {dfc}")) if dfc else None
     for layer in outlines:
         img = t.rgba(layer)
         alpha = img[..., 3]
         if textbox_cut is not None and layer.parent is not None and layer.parent.name == "Textbox Outlines":
             alpha = alpha * textbox_cut
         _over(out, img[..., :3], alpha)
-    if notch is not None:
-        textbox_shape = t.mask_of(t.find("Card Frame", "Textbox", "Masks", SIZE))
-        _over(out, np.zeros(3, np.float32), _notch_outline(notch, textbox_shape))
+    if notch is not None and not is_land:  # the notch's outline (lands get it from their pinlines)
+        img = t.rgba(t.find("Outlines", f"{dfc} Notch"))
+        _over(out, img[..., :3], img[..., 3])
     if dfc == "MDFC":  # the strip under the rules: divider line (the arrow goes in the notch, below)
         img = t.rgba(t.find("Text and Icons", "MDFC", "Bottom", "Divider"))
         _over(out, img[..., :3], img[..., 3])
@@ -377,26 +391,27 @@ def compose_variant(t: _Template, code: str, size: str = SIZE, dfc: str | None =
     # Land pinlines: black backgrounds, then colour fills through the pinline masks (outer and
     # art in the generic land orange, textbox in the land's own colour).
     if is_land:
+        # Proxyshop copies the "Pinlines <dfc>" cut onto the whole pinlines group, backgrounds included.
+        pinline_cut = t.mask_of(t.find("Masks", f"Pinlines {dfc}")) if dfc else 1
         for path in (
             ("Pinlines", "Textbox Background", SIZE),
             ("Pinlines", "Art Background", SIZE),
             ("Pinlines", "Outer Background", "Outer Background"),
         ):
             img = t.rgba(t.find(*path))
-            _over(out, img[..., :3], img[..., 3])
+            _over(out, img[..., :3], img[..., 3] * pinline_cut)
         land_rgb = np.array(_LAND_PINLINE["Land"], np.float32) / 255
         own_rgb = np.array(_LAND_PINLINE[recipe["land"]], np.float32) / 255
         outer = t.find("Pinlines", "Outer")  # the group carries both a vector and a raster mask
         _over(out, land_rgb, t.mask_of(outer) * t.raster_mask(outer))
         _over(out, land_rgb, t.mask_of(t.find("Pinlines", "Art Masks", SIZE)))
-        # Land textboxes have a pinline band in the land's colour; the notch is part of it -- the
-        # band runs on unbroken (no Pinlines cut) and the notch is filled with the same colour.
-        _over(out, own_rgb, t.mask_of(t.find("Pinlines", "Textbox Masks", SIZE)))
-        if notch is not None:
-            hard = (notch > 0.5).astype(np.float32)
-            _over(out, own_rgb, hard)
-            textbox_shape = t.mask_of(t.find("Card Frame", "Textbox", "Masks", SIZE))
-            _over(out, np.zeros(3, np.float32), _notch_outline(hard, textbox_shape))
+        _over(out, own_rgb, t.mask_of(t.find("Pinlines", "Textbox Masks", SIZE)) * pinline_cut)
+        if dfc:  # the notch's pinline: black background, then the land colour through its mask
+            pins = t.find("Card Frame", f"Textbox Bevel Overlays {dfc}", "Pinlines")
+            img = t.rgba(t.find("Card Frame", f"Textbox Bevel Overlays {dfc}", "Pinlines", "Background"))
+            _over(out, img[..., :3], img[..., 3] * t.mask_of(pins))
+            inner = t.find("Card Frame", f"Textbox Bevel Overlays {dfc}", "Pinlines", "Pinlines")
+            _over(out, own_rgb, t.mask_of(inner) * t.mask_of(pins))
 
     if dfc == "MDFC":  # last, over land pinlines too
         arrow = t.rgba(t.find("Text and Icons", "MDFC", "Bottom", "Arrow"))
@@ -501,18 +516,6 @@ def build_saga_extras(t: _Template, out_dir: Path) -> list[Path]:
         written.append(path)
     (saga_dir / "extras.json").write_text(json.dumps(positions, indent=1))
     return written
-
-
-_NOTCH_LINE = 3  # same as the template's textbox outline
-
-
-def _notch_outline(notch: np.ndarray, textbox: np.ndarray) -> np.ndarray:
-    """Black line around the notch triangle's outer edges (not along the textbox it grows from)."""
-    from scipy import ndimage
-
-    inside = notch > 0.5
-    ring = ndimage.binary_dilation(inside, iterations=_NOTCH_LINE) & ~inside
-    return (ring & ~(textbox > 0.5)).astype(np.float32)
 
 
 def _centred_in(img: np.ndarray, region: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
