@@ -29,11 +29,11 @@ from __future__ import annotations
 
 import argparse
 import sys
-import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
+import requests
 from PIL import Image
 
 if TYPE_CHECKING:
@@ -622,9 +622,9 @@ def download_template(dest: Path = CACHE_DIR / "retro.psd") -> Path:
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".part")
-    request = urllib.request.Request(PSD_URL, headers={"User-Agent": "mtg-proxies"})
-    with urllib.request.urlopen(request) as response, tmp.open("wb") as fh:
-        while chunk := response.read(1 << 20):
+    with requests.get(PSD_URL, stream=True, headers={"User-Agent": "mtg-proxies"}) as response, tmp.open("wb") as fh:
+        response.raise_for_status()
+        for chunk in response.iter_content(chunk_size=1 << 20):
             fh.write(chunk)
     if tmp.stat().st_size != PSD_SIZE:
         raise RuntimeError(f"template download incomplete ({tmp.stat().st_size} of {PSD_SIZE} bytes)")
