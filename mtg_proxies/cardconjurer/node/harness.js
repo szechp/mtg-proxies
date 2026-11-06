@@ -199,6 +199,19 @@ async function buildEighthInsetFrame(kind, baseName) {
             throw new Error(`${kind}: no 8th frame for ${baseName}`);
         }
     }
+    // The 8th frame art carries the rounded end caps of its own type bar in the side borders
+    // (EIGHTH_TYPE_CAPS); sagas and classes have no bar there, so the caps stuck out beside the
+    // art. Cover them with the same frame's plain border from EIGHTH_CAP_SOURCE_SHIFT px lower
+    // (ogBounds = bounds: the mask stays put, only the image moves).
+    const frameIdx = (global.availableFrames || []).findIndex((f) => f && f.name === baseName);
+    if (frameIdx >= 0) {
+        global.selectedFrameIndex = frameIdx;
+        global.selectedMaskIndex = 0;
+        await global.addFrame([{ src: rectMaskDataUri(...EIGHTH_TYPE_CAPS), name: 'Type Bar Caps' }]);
+        const shifted = { x: 0, y: -EIGHTH_CAP_SOURCE_SHIFT / 2814, width: 1, height: 1 };
+        global.card.frames[0].bounds = shifted;
+        global.card.frames[0].ogBounds = { ...shifted };
+    }
     const name = colour + inset.suffix;
     for (const mask of inset.masks) {
         if (mask === 'Banner') continue;  // sagas: added last, on top (below)
@@ -289,19 +302,28 @@ const EIGHTH_SAGA_TEXT_SHIFT = 120;
 // angled corner beside the tip, over the banner's height (y 470-2342, stopping above the text box's
 // black pinline under the tip); its right edge fades out over `feather` px into the text box.
 const EIGHTH_SAGA_STRIP = { x: 156, y: 470, width: 114, height: 1872, feather: 24 };
+// The 8th type bar's end caps in the side borders (card px; the bar spans y ~1564-1750).
+const EIGHTH_TYPE_CAPS = [{ x: 96, y: 1530, width: 64, height: 260 }, { x: 1850, y: 1530, width: 64, height: 260 }];
+const EIGHTH_CAP_SOURCE_SHIFT = 300;
 const _rectMasks = new Map();
-function rectMaskDataUri({ x, y, width, height, feather = 0 }) {
-    const key = [x, y, width, height, feather].join(',');
+// A full-card (2010x2814) mask of white rectangles; a rectangle's right edge fades out over
+// its `feather` px.
+function rectMaskDataUri(...rects) {
+    const key = JSON.stringify(rects);
     if (!_rectMasks.has(key)) {
         const canvas = createCanvas(2010, 2814);
         const ctx = canvas.getContext('2d');
-        const fill = ctx.createLinearGradient(x + width - feather, 0, x + width, 0);
-        fill.addColorStop(0, 'rgba(255,255,255,1)');
-        fill.addColorStop(1, 'rgba(255,255,255,0)');
-        ctx.fillStyle = 'white';
-        ctx.fillRect(x, y, width - feather, height);
-        ctx.fillStyle = fill;
-        ctx.fillRect(x + width - feather, y, feather, height);
+        for (const { x, y, width, height, feather = 0 } of rects) {
+            ctx.fillStyle = 'white';
+            ctx.fillRect(x, y, width - feather, height);
+            if (feather) {
+                const fill = ctx.createLinearGradient(x + width - feather, 0, x + width, 0);
+                fill.addColorStop(0, 'rgba(255,255,255,1)');
+                fill.addColorStop(1, 'rgba(255,255,255,0)');
+                ctx.fillStyle = fill;
+                ctx.fillRect(x + width - feather, y, feather, height);
+            }
+        }
         _rectMasks.set(key, canvas.toDataURL('image/png'));
     }
     return _rectMasks.get(key);
