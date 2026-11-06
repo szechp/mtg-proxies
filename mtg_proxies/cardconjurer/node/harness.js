@@ -194,31 +194,22 @@ async function buildEighthInsetFrame(kind, baseName) {
     const inset = EIGHTH_INSET_LAYERS[kind];
     const colour = baseName.replace(/ Frame$/, '');
     // Layers are added bottom-up (addFrame unshifts): the 8th ring and border first.
-    if (kind === 'saga') {
-        // The squeezed banner (fitSagaBannerToEighth) ends at x 196, but the text box only starts
-        // at x 221 under where the modern banner was. A copy of the text box shifted left fills
-        // that strip; it sits under the 8th ring, which hides it everywhere else on the left.
-        const name = colour + inset.suffix;
-        if (await addLayerWithMask(name, 'Text', inset.occurrence)
-            || await addLayerWithMask('Multicolored' + inset.suffix, 'Text', inset.occurrence)) {
-            global.card.frames[0].bounds = { x: -EIGHTH_SAGA_TEXT_SHIFT / 2010, y: 0, width: 1, height: 1 };
-            global.card.frames[0].ogBounds = { x: 0, y: 0, width: 1, height: 1 };
-        }
-    }
     for (const mask of ['Frame', 'Border']) {
         if (!await addLayerWithMask(baseName, mask, 0) && !await addLayerWithMask('Multicolored Frame', mask, 0)) {
             throw new Error(`${kind}: no 8th frame for ${baseName}`);
         }
     }
+    const name = colour + inset.suffix;
     for (const mask of inset.masks) {
-        const name = colour + inset.suffix;
-        const added = await addLayerWithMask(name, mask, inset.occurrence)
+        if (mask === 'Banner') continue;  // sagas: added last, on top (below)
+        await addLayerWithMask(name, mask, inset.occurrence)
             || await addLayerWithMask('Multicolored' + inset.suffix, mask, inset.occurrence);
-        if (added && kind === 'saga' && mask === 'Banner') fitSagaBannerToEighth(global.card.frames[0]);
     }
     if (kind === 'saga') {
-        // The text box's own left edge (x 221) shows as a faint seam over the shifted copy below:
-        // cover the strip from the banner to past that edge with the shifted copy on top.
+        // The narrower banner uncovers the text box's old left edge and its angled corner beside
+        // the tip: cover that strip with plain text-box texture from further right (a copy of the
+        // text box shifted EIGHTH_SAGA_TEXT_SHIFT px left, through a feathered rectangle mask),
+        // then put the banner on top of everything.
         const strip = EIGHTH_SAGA_STRIP;
         const idx = (global.availableFrames || []).map((f, i) => ({ f, i }))
             .filter(({ f }) => f && (f.name === colour + inset.suffix))[inset.occurrence]?.i;
@@ -226,8 +217,14 @@ async function buildEighthInsetFrame(kind, baseName) {
             global.selectedFrameIndex = idx;
             global.selectedMaskIndex = 0;
             await global.addFrame([{ src: rectMaskDataUri(strip), name: 'Banner Strip' }]);
-            global.card.frames[0].bounds = { x: -EIGHTH_SAGA_TEXT_SHIFT / 2010, y: 0, width: 1, height: 1 };
-            global.card.frames[0].ogBounds = { x: 0, y: 0, width: 1, height: 1 };
+            // ogBounds = bounds: CC then draws the rectangle mask where it is and moves only the image.
+            const shifted = { x: -EIGHTH_SAGA_TEXT_SHIFT / 2010, y: 0, width: 1, height: 1 };
+            global.card.frames[0].bounds = shifted;
+            global.card.frames[0].ogBounds = { ...shifted };
+        }
+        if (await addLayerWithMask(name, 'Banner', inset.occurrence)
+            || await addLayerWithMask('Multicolored' + inset.suffix, 'Banner', inset.occurrence)) {
+            fitSagaBannerToEighth(global.card.frames[0]);
         }
     }
     if (kind === 'saga' && global.card.saga) {
@@ -283,16 +280,15 @@ function drawEighthSagaBadges() {
     }
     if (typeof global.drawCard === 'function') global.drawCard();
 }
-// The modern saga banner (x 87-226, centre 156.5 of 2010) is wider than the 8th frame's side:
-// centre it on the 8th frame's black inner pinline (x 143-154, centre 149) and squeeze it
-// horizontally about that line until its left edge meets the 8th frame's colour edge (x 102,
-// where the black border ends). Height unchanged. ogBounds of the whole card makes CC draw the
-// banner mask with the same squeeze as the image.
-const EIGHTH_SAGA_TEXT_SHIFT = 30;
-// Card-pixel box (2010x2814) from the squeezed banner's right edge past the text box's old left edge
-// and its angled corner beside the banner tip, over the banner's height (y 467-2342); its right
-// edge fades out over `feather` px so the shifted texture blends into the text box.
-const EIGHTH_SAGA_STRIP = { x: 196, y: 470, width: 76, height: 1880, feather: 24 };
+// The modern saga banner (x 87-220 of 2010, tip and centre stripe at 153.5) is wider than the 8th
+// frame's side: centre it on the text box's black pinline that continues below the tip (x 149-153,
+// centre 151) and squeeze it horizontally about that line until its left edge meets the card edge.
+// Height unchanged. ogBounds of the whole card makes CC draw the banner mask with the same squeeze.
+const EIGHTH_SAGA_TEXT_SHIFT = 120;
+// Card-pixel box (2010x2814) behind the banner and past the text box's old left edge (x 220) and its
+// angled corner beside the tip, over the banner's height (y 470-2342, stopping above the text box's
+// black pinline under the tip); its right edge fades out over `feather` px into the text box.
+const EIGHTH_SAGA_STRIP = { x: 156, y: 470, width: 114, height: 1872, feather: 24 };
 const _rectMasks = new Map();
 function rectMaskDataUri({ x, y, width, height, feather = 0 }) {
     const key = [x, y, width, height, feather].join(',');
@@ -312,7 +308,7 @@ function rectMaskDataUri({ x, y, width, height, feather = 0 }) {
 }
 // left: x 100, two px into the black border (the 8th colour starts at x 102) so no frame colour
 // shows beside the banner; the chapter badges share that left edge (drawEighthSagaBadges).
-const EIGHTH_SAGA_BANNER = { modernCentre: 156.5, modernHalf: 69.5, centre: 149, left: 100 };
+const EIGHTH_SAGA_BANNER = { modernCentre: 153.5, modernHalf: 66.5, centre: 151, left: 100 };
 function fitSagaBannerToEighth(layer) {
     if (!layer) return;
     const b = EIGHTH_SAGA_BANNER;
