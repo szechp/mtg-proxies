@@ -389,17 +389,14 @@ def compose_variant(t: _Template, code: str, size: str = SIZE, dfc: str | None =
         outer = t.find("Pinlines", "Outer")  # the group carries both a vector and a raster mask
         _over(out, land_rgb, t.mask_of(outer) * t.raster_mask(outer))
         _over(out, land_rgb, t.mask_of(t.find("Pinlines", "Art Masks", SIZE)))
-        pinline_cut = t.raster_mask(t.find("Masks", f"Pinlines {dfc}")) if dfc else 1
-        _over(out, own_rgb, t.mask_of(t.find("Pinlines", "Textbox Masks", SIZE)) * pinline_cut)
-        if notch is not None:  # land pinlines cover the notch: draw it again on top, through the band
-            tb = t.rgba(t.find("Card Frame", "Textbox", textbox_name))
-            ys = np.nonzero(notch.max(1) > 0.5)[0]
-            band = np.zeros_like(notch)
-            x0, x1 = (285, 318) if dfc == "MDFC" else (1866, 1899)  # the land pinline band at the notch
-            band[ys.min() : ys.max() + 1, x0:x1] = 1
-            _over(out, tb[..., :3], tb[..., 3] * np.maximum(notch, band))
+        # Land textboxes have a pinline band in the land's colour; the notch is part of it -- the
+        # band runs on unbroken (no Pinlines cut) and the notch is filled with the same colour.
+        _over(out, own_rgb, t.mask_of(t.find("Pinlines", "Textbox Masks", SIZE)))
+        if notch is not None:
+            hard = (notch > 0.5).astype(np.float32)
+            _over(out, own_rgb, hard)
             textbox_shape = t.mask_of(t.find("Card Frame", "Textbox", "Masks", SIZE))
-            _over(out, np.zeros(3, np.float32), _notch_outline(notch, textbox_shape))
+            _over(out, np.zeros(3, np.float32), _notch_outline(hard, textbox_shape))
 
     if dfc == "MDFC":  # last, over land pinlines too
         arrow = t.rgba(t.find("Text and Icons", "MDFC", "Bottom", "Arrow"))
@@ -519,12 +516,16 @@ def _notch_outline(notch: np.ndarray, textbox: np.ndarray) -> np.ndarray:
 
 
 def _centred_in(img: np.ndarray, region: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Shift ``img`` so its opaque box is centred on ``region``'s box; return its (rgb, alpha)."""
-    def centre(a: np.ndarray) -> tuple[int, int]:
+    """Shift ``img`` so its opaque box is centred on ``region``'s centroid; return its (rgb, alpha)."""
+    def box_centre(a: np.ndarray) -> tuple[int, int]:
         ys, xs = np.nonzero(a > 0.5)
         return (ys.min() + ys.max()) // 2, (xs.min() + xs.max()) // 2
 
-    (iy, ix), (ry, rx) = centre(img[..., 3]), centre(region)
+    def centroid(a: np.ndarray) -> tuple[int, int]:  # a triangle's visual centre, 1/3 in from its base
+        ys, xs = np.nonzero(a > 0.5)
+        return round(ys.mean()), round(xs.mean())
+
+    (iy, ix), (ry, rx) = box_centre(img[..., 3]), centroid(region)
     moved = np.roll(img, (ry - iy, rx - ix), axis=(0, 1))
     return moved[..., :3], moved[..., 3]
 
