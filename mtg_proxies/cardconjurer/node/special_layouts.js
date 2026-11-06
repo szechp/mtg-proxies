@@ -96,6 +96,12 @@ function resolveSpecialLayout(scry, requestedFrame = 'auto') {
             // plain single-face planeswalker).
             return { kind: 'planeswalker', frame: 'retro', pack: 'packPlaneswalkerSeventh.js', forceSplit: false };
         }
+        if (requestedFrame === '8th') {
+            // Ours (node/packs/): the regular 8th frame plus CC's planeswalker engine, like
+            // packPlaneswalkerSeventh does for retro. Only on an explicit --8th: auto keeps
+            // planeswalkers modern (their real cards never used the 8th frame).
+            return { kind: 'planeswalker', frame: '8th', pack: 'packPlaneswalkerEighth.js', forceSplit: false };
+        }
         if (requestedFrame === 'borderless') {
             return { kind: 'planeswalker', frame: 'borderless', pack: 'packPlaneswalkerBorderless.js', forceSplit: false };
         }

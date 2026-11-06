@@ -107,12 +107,12 @@ def test_prepare_always_routes_to_dedicated_modern_pack(frame: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Single-face planeswalker: modern/auto/8th/m15-8th -> modern, retro -> Seventh,
-# borderless -> native planeswalker-borderless.
+# Single-face planeswalker: modern/auto/m15-8th -> modern, 8th -> our 8th pack,
+# retro -> Seventh, borderless -> native planeswalker-borderless.
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("frame", ["modern", "auto", "8th", "m15-8th"])
+@pytest.mark.parametrize("frame", ["modern", "auto", "m15-8th"])
 def test_single_planeswalker_unsupported_or_modern_frames_normalize_to_modern(frame: str) -> None:
-    """8th/m15-8th have no planeswalker furniture; auto/modern land on the native modern pack."""
+    """m15-8th has no planeswalker furniture; auto/modern land on the native modern pack."""
     scry = _load_fixture("ugin_the_spirit_dragon")
 
     result = _call("resolveSpecialLayout", scry, frame)
@@ -123,6 +123,24 @@ def test_single_planeswalker_unsupported_or_modern_frames_normalize_to_modern(fr
         "pack": "packPlaneswalkerRegular.js",
         "forceSplit": False,
     }
+
+
+def test_single_planeswalker_8th_uses_our_eighth_pack() -> None:
+    """--8th on a single-face planeswalker uses our packPlaneswalkerEighth.js (node/packs/)."""
+    scry = _load_fixture("ugin_the_spirit_dragon")
+
+    result = _call("resolveSpecialLayout", scry, "8th")
+
+    assert result == {"kind": "planeswalker", "frame": "8th", "pack": "packPlaneswalkerEighth.js", "forceSplit": False}
+
+
+def test_eighth_planeswalker_pack_ships_every_frame_colour() -> None:
+    """The pack is ours, so it must be in the repo with every base frame the harness may pick."""
+    pack = Path(__file__).parents[2] / "mtg_proxies/cardconjurer/node/packs/packPlaneswalkerEighth.js"
+    text = pack.read_text()
+    assert "card.version = 'planeswalkerEighth'" in text
+    for colour in ("White", "Blue", "Black", "Red", "Green", "Multicolored", "Artifact", "Colorless", "Land"):
+        assert f"name:'{colour} Frame'" in text
 
 
 def test_single_planeswalker_retro_uses_seventh_pack() -> None:

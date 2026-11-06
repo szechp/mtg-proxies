@@ -1256,7 +1256,57 @@ function countWrappedLines(text, boxWidthPx, fontPx) {
 // about 0.35 x 0.0286 above that. It is matched to the ability's text centre, which writeText's
 // vertical centring puts 0.075 x size above the box centre. So the shift is solved per badge.
 const PW_ABILITY_PAD = 0.55;
+const EIGHTH_PW_INSET = 14;
+// versionPlaneswalker.js draws modern's alternating ability stripes for every version except
+// SDCC15 / Seventh. An 8th card has a plain textbox like Seventh, so wrap planeswalkerEdited
+// (installed once; the engine calls it by its global name) to wipe the stripes on 8th cards.
+function hidePlaneswalkerStripesOnEighth() {
+    if (global.planeswalkerEdited?._eighthWrapped || typeof global.planeswalkerEdited !== 'function') return;
+    const original = global.planeswalkerEdited;
+    const wrapped = function () {
+        original();
+        if (global.card.version !== 'planeswalkerEighth') return;
+        const canvas = global.planeswalkerPreFrameCanvas;
+        global.planeswalkerPreFrameContext?.clearRect(0, 0, canvas.width, canvas.height);
+        if (typeof global.drawCard === 'function') global.drawCard();
+    };
+    wrapped._eighthWrapped = true;
+    global.planeswalkerEdited = wrapped;
+}
 const PW_BADGE_NUMBER_CENTER = { plus: 0.0072, minus: 0.0081, neutral: 0.0091 };
+// Whether the loaded art has black rounded-off corners (Scryfall's art_crop of a card with a
+// rounded art window, e.g. every regular planeswalker frame): at least three of its corners stay
+// near-black for ROUNDED_CORNER_MIN of the width along the diagonal. Full art (MTGPics) doesn't.
+const ROUNDED_CORNER_MIN = 0.015;
+// Corner radius measured on Scryfall's planeswalker crops: ~11% of the width, so the arc reaches
+// 0.29 x 11% = 3.2% in from each edge along the diagonal; cropping 4% per side clears it.
+const ROUNDED_CORNER_ZOOM = 1.08;
+function artHasRoundedCorners() {
+    const art = unwrap(global.art);
+    if (!art || !art.width || !art.height) return false;
+    const w = 200, h = Math.max(1, Math.round(200 * art.height / art.width));
+    const ctx = createCanvas(w, h).getContext('2d');
+    try { ctx.drawImage(art, 0, 0, w, h); } catch { return false; }
+    const px = ctx.getImageData(0, 0, w, h).data;
+    const lum = (x, y) => { const i = (y * w + x) * 4; return (px[i] + px[i + 1] + px[i + 2]) / 3; };
+    const steps = Math.max(2, Math.round(ROUNDED_CORNER_MIN * w));
+    const corners = [[0, 0, 1, 1], [w - 1, 0, -1, 1], [0, h - 1, 1, -1], [w - 1, h - 1, -1, -1]];
+    const dark = corners.filter(([x, y, dx, dy]) =>
+        [...Array(steps).keys()].every((k) => lum(x + dx * k, y + dy * k) < 40));
+    return dark.length >= 3;
+}
+function zoomPastRoundedArtCorners() {
+    if (!artHasRoundedCorners()) return;
+    const zoomEl = querySelector('#art-zoom'), xEl = querySelector('#art-x'), yEl = querySelector('#art-y');
+    const zoom = parseFloat(zoomEl.value) / 100;
+    if (!zoom) return;
+    const grown = zoom * ROUNDED_CORNER_ZOOM;
+    xEl.value = Math.round(parseFloat(xEl.value) - (grown - zoom) * global.art.width / 2);
+    yEl.value = Math.round(parseFloat(yEl.value) - (grown - zoom) * global.art.height / 2);
+    zoomEl.value = (grown * 100).toFixed(1);
+    global.artEdited();
+}
+
 function equalizePlaneswalkerAbilities(boxTop, boxHeight) {
     const text = global.card.text;
     const count = global.card.planeswalker?.count || 0;
@@ -1264,7 +1314,9 @@ function equalizePlaneswalkerAbilities(boxTop, boxHeight) {
     const cardWidth = global.card.width, cardHeight = global.card.height;
     const abilities = [...Array(count).keys()].map((i) => text['ability' + i]);
     const texts = abilities.map((a) => a?.text || '');
-    const widths = abilities.map((a) => (a?.width || 0.75) * cardWidth);
+    // 0.95: CC's writeText wraps a little short of the box's full width, so measuring at the
+    // full width under-counts a line now and then and that ability auto-shrinks on its own.
+    const widths = abilities.map((a) => (a?.width || 0.75) * cardWidth * 0.95);
     const spanPx = boxHeight * cardHeight;
 
     const startPx = Math.round((abilities[0]?.size || 0.0358) * cardHeight);
@@ -1676,10 +1728,10 @@ function frameFromScryfall(scry) {
     return SCRYFALL_FRAME_TO_STYLE[scry.frame] || null;
 }
 
-// Whether a card should get an 8th-Edition legend crown. Planeswalkers are excluded --
-// pack8th has no loyalty-box geometry, so they are not renderable in this frame anyway.
+// Whether a card should get an 8th-Edition legend crown (planeswalkers included: they render
+// through our packPlaneswalkerEighth.js on --8th).
 function wantsEighthLegendCrown(typeLine) {
-    return /Legendary/.test(typeLine || '') && !/Planeswalker/.test(typeLine || '');
+    return /Legendary/.test(typeLine || '');
 }
 
 // Pack routing per Scryfall layout AND requested frame. ND-JSON's runOneJob
@@ -1896,7 +1948,9 @@ async function ensurePackLoaded(packFile) {
     if (_lastPack !== packKey) {
         const merged = [];
         for (const oneFile of packFiles) {
-            const fp = path.join(CC_ROOT, 'js/frames/', oneFile);
+            // Our own packs (node/packs/, e.g. packPlaneswalkerEighth.js) are looked up first.
+            const ownPack = path.join(__dirname, 'packs', oneFile);
+            const fp = fs.existsSync(ownPack) ? ownPack : path.join(CC_ROOT, 'js/frames/', oneFile);
             if (!fs.existsSync(fp)) throw new Error('pack not found: ' + oneFile);
             let code = fs.readFileSync(fp, 'utf8');
             code = code.replace(/^(const|let) (mana|debugging|cardConjurer|setSymbolAliases|baseWidth|baseHeight|highResScale)\b/gm, 'var $2');
@@ -2229,6 +2283,14 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
         if (retroHd) equalizePlaneswalkerAbilities((1697 + 12) / 2814, (784 - 24) / 2814);
         else equalizePlaneswalkerAbilities(RULES_BOX_TOP, RULES_BOX_HEIGHT);
     }
+
+    // 8th planeswalkers (our packPlaneswalkerEighth.js): no modern ability stripes, one shared
+    // ability size and badges centred on their abilities, in pack8th's rules box (y 1751-2521),
+    // inset EIGHTH_PW_INSET px top and bottom so text clears the box's edge.
+    if (specialLayout?.planeswalker && global.card.version === 'planeswalkerEighth') {
+        hidePlaneswalkerStripesOnEighth();
+        equalizePlaneswalkerAbilities((1751 + EIGHTH_PW_INSET) / 2814, (770 - 2 * EIGHTH_PW_INSET) / 2814);
+    }
     
     // For flip layouts, move the set symbol to the top type line.
     // We anchor it relative to the type-line center and P/T box left edge.
@@ -2414,7 +2476,7 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
         // getSeventhLoyaltyBadgeDataUri's comment for why the real modern frame art,
         // clipped through the shared badge mask, is the fix (not a synthetic fill, not
         // the mask's own raw red pixels, not Seventh's blank texture).
-        if (frame === 'retro' && !specialLayout.classicshifted) {
+        if ((frame === 'retro' || frame === '8th') && !specialLayout.classicshifted) {
             const badgeUri = await getSeventhLoyaltyBadgeDataUri(baseName);
             if (badgeUri) {
                 const loyaltyBadge = { src: badgeUri, name: 'Loyalty Badge', masks: [] };
@@ -3113,6 +3175,11 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     if (specialLayout?.planeswalker && typeof global.planeswalkerEdited === 'function') {
         global.planeswalkerEdited();
     }
+    // Scryfall's art_crop of a planeswalker is cut from its rounded art window, so its corners
+    // are black curves; the square 8th / Seventh art windows would show them. Zoom past them.
+    if (specialLayout?.planeswalker && (frame === '8th' || frame === 'retro') && !specialLayout.classicshifted) {
+        zoomPastRoundedArtCorners();
+    }
 
     // De-overlap the type line vs the set symbol. MUST run here, after the image drain above —
     // not earlier — because the icon's real on-canvas position (card.setSymbolX) is only known
@@ -3650,7 +3717,7 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
     // title / type / rules regions at all.
     if (legendary && frame === '8th' && scry.layout !== 'flip' && scry.layout !== 'token'
         && wantsEighthLegendCrown(scry.type_line)) {
-        packFile = ['pack8thLegendCrowns.js', 'pack8th.js'];
+        packFile = ['pack8thLegendCrowns.js', packFile];  // pack8th, or packPlaneswalkerEighth
     }
     return await renderFace({
         packFile, processed, faceIdx: 0, scry, outName: slug, frame, setSymbolPath, fontSizeDelta, legendary, crown,

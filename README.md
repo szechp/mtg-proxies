@@ -522,7 +522,9 @@ outcome. Re-runs skip PNGs already in OUTDIR; delete one to force a re-render. P
 | `--upscale-target-width PX` | Downsample upscaled art before rendering (default: keep the full 4× output). |
 
 Adventure, Prepare and planeswalker cards (including Transform/MDFC planeswalker faces) render
-through their native layouts. Generated tokens use Card Conjurer's Old Bordered token frame.
+through their native layouts. Single-faced planeswalkers also render in the 8th frame with `--8th`
+(loyalty badges, even ability sizes, legend crown) and in the Seventh Edition frame with `--retro`.
+Generated tokens use Card Conjurer's Old Bordered token frame.
 
 ```bash
 make cardconjurer                                   # one-time lazy clone of the Card Conjurer source
