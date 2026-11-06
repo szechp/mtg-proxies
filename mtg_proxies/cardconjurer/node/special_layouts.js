@@ -75,6 +75,16 @@ function resolveSpecialLayout(scry, requestedFrame = 'auto') {
     if (scry.layout === 'saga' && requestedFrame === 'retro') {
         return { kind: 'saga', frame: 'retro', pack: 'packClassicshiftedSaga.js', forceSplit: false };
     }
+    // On --8th, sagas and classes use CC's modern saga / class engine (versionSaga.js /
+    // versionClass.js: chapter and level split, I/II/III badges) inside the 8th frame: pack8th
+    // supplies the outer frame and border, the modern pack the inner layers (harness.js
+    // EIGHTH_INSET_LAYERS). The modern pack goes last so its frame version is the live one.
+    if (scry.layout === 'saga' && requestedFrame === '8th') {
+        return { kind: 'saga', frame: '8th', pack: ['pack8th.js', 'packSagaRegular.js'], forceSplit: false };
+    }
+    if (scry.layout === 'class' && requestedFrame === '8th') {
+        return { kind: 'class', frame: '8th', pack: ['pack8th.js', 'packClass.js'], forceSplit: false };
+    }
 
     const faces = Array.isArray(scry.card_faces) ? scry.card_faces : [];
     if (DFC_LAYOUTS.has(scry.layout) && faces.some(isPlaneswalkerFace)) {

@@ -508,6 +508,15 @@ def test_saga_on_retro_routes_to_the_saga_engine() -> None:
     assert result == {"kind": "saga", "frame": "retro", "pack": "packClassicshiftedSaga.js", "forceSplit": False}
 
 
-@pytest.mark.parametrize("frame", ["modern", "8th", "m15-8th", "borderless"])
+@pytest.mark.parametrize("frame", ["modern", "m15-8th", "borderless"])
 def test_saga_on_other_frames_keeps_the_scan_fallback(frame: str) -> None:
     assert _call("resolveSpecialLayout", _SAGA, frame) is None
+
+
+def test_saga_and_class_on_8th_use_the_modern_engine_inside_pack8th() -> None:
+    """--8th: pack8th for the outer frame, the modern saga / class pack (last, live) for the rest."""
+    saga = _call("resolveSpecialLayout", _SAGA, "8th")
+    assert saga == {"kind": "saga", "frame": "8th", "pack": ["pack8th.js", "packSagaRegular.js"], "forceSplit": False}
+    klass = _call("resolveSpecialLayout", {**_SAGA, "layout": "class", "type_line": "Enchantment — Class"}, "8th")
+    assert klass == {"kind": "class", "frame": "8th", "pack": ["pack8th.js", "packClass.js"], "forceSplit": False}
+    assert _call("resolveSpecialLayout", {**_SAGA, "layout": "class"}, "modern") is None

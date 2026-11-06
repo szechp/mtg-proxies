@@ -171,6 +171,70 @@ async function addRetroLayer(frameName, maskName, additionalMasks = []) {
 }
 
 
+// 8th-Edition sagas and classes: the 8th frame's outer ring and border (pack8th, the first copy of
+// each frame name in the merged packs) plus the modern saga / class pack's inner layers -- its
+// own Frame and Border layers left out. CC's saga / class engine lays out the text on top.
+const EIGHTH_INSET_LAYERS = {
+    saga: { suffix: ' Frame', occurrence: 1, masks: ['Pinline', 'Title', 'Type', 'Banner', 'Text'] },
+    class: { suffix: ' Regular Frame', occurrence: 0, masks: ['Pinline', 'Title', 'Type', 'Rules', 'Text Boxes'] },
+};
+async function addLayerWithMask(frameName, maskName, occurrence = 0) {
+    const matches = (global.availableFrames || []).map((f, i) => ({ f, i })).filter(({ f }) => f && f.name === frameName);
+    const hit = matches[occurrence];
+    if (!hit) return false;
+    const maskIdx = (hit.f.masks || []).findIndex((m) => m && m.name === maskName);
+    if (maskIdx < 0) return false;
+    global.selectedFrameIndex = hit.i;
+    global.selectedMaskIndex = maskIdx + 1;
+    await global.addFrame([]);
+    global.selectedMaskIndex = 0;
+    return true;
+}
+async function buildEighthInsetFrame(kind, baseName) {
+    const inset = EIGHTH_INSET_LAYERS[kind];
+    const colour = baseName.replace(/ Frame$/, '');
+    // Layers are added bottom-up (addFrame unshifts): the 8th ring and border first.
+    for (const mask of ['Frame', 'Border']) {
+        if (!await addLayerWithMask(baseName, mask, 0) && !await addLayerWithMask('Multicolored Frame', mask, 0)) {
+            throw new Error(`${kind}: no 8th frame for ${baseName}`);
+        }
+    }
+    for (const mask of inset.masks) {
+        const name = colour + inset.suffix;
+        if (!await addLayerWithMask(name, mask, inset.occurrence)) {
+            await addLayerWithMask('Multicolored' + inset.suffix, mask, inset.occurrence);
+        }
+    }
+}
+
+// Class levels. versionClass.js reads each level's height from its '#class-height-N' input, which
+// it fills from the pack's text options when it loads -- in a browser that script loads after the
+// pack's loadTextOptions, here it runs before, so the inputs are wrong and level 1 swallows the
+// whole column. Set them here instead: the column (CLASS_COLUMN, packClass's level0c top to the
+// 0.8368 bottom versionClass stretches the last level to) minus one 0.0481 header per extra level,
+// shared out by each level's wrapped line count plus CLASS_LEVEL_PAD lines.
+const CLASS_COLUMN = { top: 0.1129, bottom: 0.8368, header: 0.0481 };
+const CLASS_LEVEL_PAD = 0.8;
+function layoutClassLevels() {
+    const text = global.card.text;
+    const count = Math.min(4, global.card.class?.count || 0);
+    if (count < 1 || typeof global.classEdited !== 'function') return;
+    const cardWidth = global.card.width, cardHeight = global.card.height;
+    const lines = [...Array(count).keys()].map((i) => {
+        const level = text[`level${i}c`];
+        return countWrappedLines((level.text || '').replace(/\{lns\}\{bar\}\{lns\}/g, '\n\n'),
+            level.width * cardWidth * 0.95, (level.size || 0.0305) * cardHeight) + CLASS_LEVEL_PAD;
+    });
+    const span = CLASS_COLUMN.bottom - CLASS_COLUMN.top - CLASS_COLUMN.header * (count - 1);
+    const total = lines.reduce((a, b) => a + b, 0);
+    text.level0c.y = CLASS_COLUMN.top;
+    for (let i = 0; i < 4; i++) {
+        const height = i < count ? span * lines[i] / total : 0;
+        querySelector(`#class-height-${i}`).value = Math.round(height * cardHeight);
+    }
+    global.classEdited();
+}
+
 // Battlement legend crown for retro (Seventh) legendaries. Seventh predates crowns, so the
 // art is ours: mtg_proxies/cardconjurer/retro_crown.py generates one layer per Seventh frame
 // image (transparent except the crown band above the stock top edge) plus a crown version of
@@ -444,7 +508,8 @@ class HarnessImage {
         this.crossOrigin = null;
         this.width = 0; this.height = 0;
     }
-    get src() { return this._src; }
+    // Like a browser, an image with no src yet reports '' (versionClass.js calls src.endsWith).
+    get src() { return this._src ?? ''; }
     // Real browsers maintain these automatically; a vendored script that checks
     // them before drawing (versionStation.js's drawStationElement) would otherwise
     // always see `undefined` here and silently skip the draw, load or no load.
@@ -2178,7 +2243,8 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     // dfc_split faces build their frames manually from the DFC pack below —
     // 'false' makes any stray engine-scheduled autoFrame() a no-op so it can't
     // overwrite them with the regular (non-DFC) frame art.
-    if (dfcFace || specialLayout?.planeswalker || specialLayout?.kind === 'saga' || isToken) autoFrameTarget = 'false';
+    if (dfcFace || specialLayout?.planeswalker || specialLayout?.kind === 'saga' || specialLayout?.kind === 'class'
+        || isToken) autoFrameTarget = 'false';
 
     querySelector('#autoFrame').value = autoFrameTarget;
     querySelector('#lockSetSymbolURL').checked  = harnessOwnsSetSymbol;
@@ -2197,7 +2263,7 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     // same call by changeCardIndex's dedicated `card.version.includes('planeswalker')`
     // branch, so the stubs are discarded right after — nothing depends on them.
     const planeswalkerImportStubKeys = [];
-    if (specialLayout?.planeswalker || specialLayout?.kind === 'saga') {
+    if (specialLayout?.planeswalker || specialLayout?.kind === 'saga' || specialLayout?.kind === 'class') {
         for (const key of ['rules', 'rules2', 'pt', 'pt2', 'defense']) {
             if (!global.card.text[key]) {
                 global.card.text[key] = { text: '', x: 0, y: 0, width: 0.0001, height: 0.0001, size: 0.0001, oneLine: true };
@@ -2207,6 +2273,7 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     }
     global.importCard(processed);
     for (const key of planeswalkerImportStubKeys) delete global.card.text[key];
+    if (specialLayout?.kind === 'class') layoutClassLevels();
 
     // importCard's native ability-height split (creator-23.js) divides a hardcoded
     // 0.2915 card-height budget evenly across the abilities, starting at
@@ -2439,7 +2506,9 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
         leftRegion.width = Math.max(0.2, leftRegion.width - reserve);
     };
 
-    if (specialLayout?.kind === 'saga') {
+    if ((specialLayout?.kind === 'saga' || specialLayout?.kind === 'class') && frame === '8th') {
+        await buildEighthInsetFrame(specialLayout.kind, getFrameNameForFace(pristineFace));
+    } else if (specialLayout?.kind === 'saga') {
         // packClassicshiftedSaga ships White/Blue/Black/Red/Green/Multicolored/Land frames.
         const sagaFrame = getFrameNameForFace(pristineFace);
         if (!await addFrameByName([sagaFrame, 'Multicolored Frame'])) {
@@ -3236,7 +3305,9 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     // planeswalker version canvases. Rebuild their loyalty icons and alternating
     // ability backgrounds at the final dimensions after all image assets loaded.
     // Sagas likewise: chapter dividers and badges live on CC's saga canvas.
-    if (specialLayout?.kind === 'saga') await redrawRetroSaga(true);
+    if (specialLayout?.kind === 'saga' && frame === 'retro') await redrawRetroSaga(true);
+    if (specialLayout?.kind === 'saga' && frame === '8th' && typeof global.sagaEdited === 'function') global.sagaEdited();
+    if (specialLayout?.kind === 'class' && typeof global.classEdited === 'function') global.classEdited();
     if (specialLayout?.planeswalker && typeof global.planeswalkerEdited === 'function') {
         global.planeswalkerEdited();
     }
@@ -3605,7 +3676,9 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
     if (special?.kind === 'invalid') throw new Error(special.reason);
     // Sagas render only under --retro-hd (the HD template's saga frames); plain --retro and every
     // other frame keep falling back to the Scryfall scan.
-    const skipReason = (special?.kind === 'saga' && retroHd) ? null : shouldSkip(scry);
+    const rendersHere = (special?.kind === 'saga' && (retroHd || special.frame === '8th'))
+        || (special?.kind === 'class' && special.frame === '8th');
+    const skipReason = rendersHere ? null : shouldSkip(scry);
     if (skipReason) {
         throw new Error(`${skipReason} not supported on ${frame} frame — fall back to Scryfall image`);
     }
@@ -3697,7 +3770,7 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
     // title / type / rules regions at all.
     if (legendary && frame === '8th' && scry.layout !== 'flip' && scry.layout !== 'token'
         && wantsEighthLegendCrown(scry.type_line)) {
-        packFile = ['pack8thLegendCrowns.js', packFile];  // pack8th, or packPlaneswalkerEighth
+        packFile = ['pack8thLegendCrowns.js', ...[packFile].flat()];  // pack8th, packPlaneswalkerEighth, ...
     }
     return await renderFace({
         packFile, processed, faceIdx: 0, scry, outName: slug, frame, setSymbolPath, fontSizeDelta, legendary, crown,

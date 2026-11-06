@@ -524,6 +524,8 @@ outcome. Re-runs skip PNGs already in OUTDIR; delete one to force a re-render. P
 Adventure, Prepare and planeswalker cards (including Transform/MDFC planeswalker faces) render
 through their native layouts. Single-faced planeswalkers also render in the 8th frame with `--8th`
 (loyalty badges, even ability sizes, legend crown) and in the Seventh Edition frame with `--retro`.
+Sagas and Classes render in the 8th frame with `--8th`: the 8th outer frame around Card Conjurer's
+modern saga / class layout (chapter badges, level headers).
 Generated tokens use Card Conjurer's Old Bordered token frame.
 
 ```bash
