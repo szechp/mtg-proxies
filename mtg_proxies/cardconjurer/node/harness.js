@@ -430,6 +430,28 @@ function unsupportedRequest(scry, requestedFrame, special, { dfcSplit, retroHd }
     return null;
 }
 
+// The MDFC flipside bar holds the other face's name (left) and its cost or type (right). CC sets
+// the right-hand text larger than the name and leaves them to collide when the name is long
+// ("Shatterskull, the Hammer Pass" + "Land"). Give both the name's size, keep a FLIPSIDE_GAP
+// (in units of that size) between them, and shrink both together when the pair is too wide.
+const FLIPSIDE_GAP = 0.8;
+function fitFlipsideBar(name, side) {
+    if (!name || !side || !name.text || !side.text) return;
+    const cardWidth = global.card.width, cardHeight = global.card.height;
+    const measure = (region, px) => {
+        stationMeasureCtx.font = `${Math.round(px)}px ${region.font || 'mplantin'}`;
+        const symbols = (region.text.match(/\{[^}]*\}/g) || []).length;
+        const plain = region.text.replace(/\{[^}]*\}/g, '');
+        return stationMeasureCtx.measureText(plain).width + symbols * 0.86 * px;
+    };
+    let px = name.size * cardHeight;
+    const avail = name.width * cardWidth;
+    const total = (p) => measure(name, p) + measure(side, p) + FLIPSIDE_GAP * p;
+    if (total(px) > avail) px *= avail / total(px);
+    name.size = side.size = px / cardHeight;
+    name.width = (avail - measure(side, px) - FLIPSIDE_GAP * px) / cardWidth;
+}
+
 // Battlement legend crown for retro (Seventh) legendaries. Seventh predates crowns, so the
 // art is ours: mtg_proxies/cardconjurer/retro_crown.py generates one layer per Seventh frame
 // image (transparent except the crown band above the stock top edge) plus a crown version of
@@ -3154,7 +3176,7 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
 
         // De-overlap the DFC name/mana and flipside type/reminder bands (helpers hoisted above).
         reserveRight(global.card.text.title, global.card.text.mana);
-        reserveRight(global.card.text.flipsideType, global.card.text.flipSideReminder);
+        fitFlipsideBar(global.card.text.flipsideType, global.card.text.flipSideReminder);
     } else if (frame === 'borderless' && scry.layout !== 'flip') {
         // Promo borderless (packPromoRegular-1 / packIkoShort): self-contained per-color frame
         // art with a smaller text box and no autoFrame config — pick frame + P/T by name, like
