@@ -194,6 +194,17 @@ async function buildEighthInsetFrame(kind, baseName) {
     const inset = EIGHTH_INSET_LAYERS[kind];
     const colour = baseName.replace(/ Frame$/, '');
     // Layers are added bottom-up (addFrame unshifts): the 8th ring and border first.
+    if (kind === 'saga') {
+        // The squeezed banner (fitSagaBannerToEighth) ends at x 196, but the text box only starts
+        // at x 221 under where the modern banner was. A copy of the text box shifted left fills
+        // that strip; it sits under the 8th ring, which hides it everywhere else on the left.
+        const name = colour + inset.suffix;
+        if (await addLayerWithMask(name, 'Text', inset.occurrence)
+            || await addLayerWithMask('Multicolored' + inset.suffix, 'Text', inset.occurrence)) {
+            global.card.frames[0].bounds = { x: -EIGHTH_SAGA_TEXT_SHIFT / 2010, y: 0, width: 1, height: 1 };
+            global.card.frames[0].ogBounds = { x: 0, y: 0, width: 1, height: 1 };
+        }
+    }
     for (const mask of ['Frame', 'Border']) {
         if (!await addLayerWithMask(baseName, mask, 0) && !await addLayerWithMask('Multicolored Frame', mask, 0)) {
             throw new Error(`${kind}: no 8th frame for ${baseName}`);
@@ -201,10 +212,31 @@ async function buildEighthInsetFrame(kind, baseName) {
     }
     for (const mask of inset.masks) {
         const name = colour + inset.suffix;
-        if (!await addLayerWithMask(name, mask, inset.occurrence)) {
-            await addLayerWithMask('Multicolored' + inset.suffix, mask, inset.occurrence);
-        }
+        const added = await addLayerWithMask(name, mask, inset.occurrence)
+            || await addLayerWithMask('Multicolored' + inset.suffix, mask, inset.occurrence);
+        if (added && kind === 'saga' && mask === 'Banner') fitSagaBannerToEighth(global.card.frames[0]);
     }
+    if (kind === 'saga' && global.card.saga) {
+        // CC centres each chapter badge on card.saga.x - 0.022 (the modern banner's centre) and
+        // starts the dividers at card.saga.x: move both with the banner, keep the dividers' ends.
+        const shift = (EIGHTH_SAGA_BANNER.centre - EIGHTH_SAGA_BANNER.modernCentre) / 2010;
+        global.card.saga.x += shift;
+        global.card.saga.width -= shift;
+    }
+}
+// The modern saga banner (x 87-226, centre 156.5 of 2010) is wider than the 8th frame's side:
+// centre it on the 8th frame's black inner pinline (x 143-154, centre 149) and squeeze it
+// horizontally about that line until its left edge meets the 8th frame's colour edge (x 102,
+// where the black border ends). Height unchanged. ogBounds of the whole card makes CC draw the
+// banner mask with the same squeeze as the image.
+const EIGHTH_SAGA_TEXT_SHIFT = 30;
+const EIGHTH_SAGA_BANNER = { modernCentre: 156.5, modernHalf: 69.5, centre: 149, left: 102 };
+function fitSagaBannerToEighth(layer) {
+    if (!layer) return;
+    const b = EIGHTH_SAGA_BANNER;
+    const scale = (b.centre - b.left) / b.modernHalf;
+    layer.bounds = { x: (b.centre - b.modernCentre * scale) / 2010, y: 0, width: scale, height: 1 };
+    layer.ogBounds = { x: 0, y: 0, width: 1, height: 1 };
 }
 
 // Class levels. versionClass.js reads each level's height from its '#class-height-N' input, which
