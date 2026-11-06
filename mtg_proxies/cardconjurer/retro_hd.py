@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import requests
 from PIL import Image
+from tqdm import tqdm
 
 if TYPE_CHECKING:
     from psd_tools.api.layers import Layer
@@ -622,10 +623,15 @@ def download_template(dest: Path = CACHE_DIR / "retro.psd") -> Path:
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".part")
-    with requests.get(PSD_URL, stream=True, headers={"User-Agent": "mtg-proxies"}) as response, tmp.open("wb") as fh:
+    with (
+        requests.get(PSD_URL, stream=True, headers={"User-Agent": "mtg-proxies"}) as response,
+        tmp.open("wb") as fh,
+        tqdm(total=PSD_SIZE, unit="B", unit_scale=True, desc=dest.name) as pbar,
+    ):
         response.raise_for_status()
         for chunk in response.iter_content(chunk_size=1 << 20):
             fh.write(chunk)
+            pbar.update(len(chunk))
     if tmp.stat().st_size != PSD_SIZE:
         raise RuntimeError(f"template download incomplete ({tmp.stat().st_size} of {PSD_SIZE} bytes)")
     tmp.replace(dest)
@@ -794,6 +800,7 @@ def build(
     ]
     jobs = jobs or default_jobs(len(codes) + 1)
     sys.stdout.write(f"building {len(codes)} frames + masks with {jobs} worker(s)\n")
+    sys.stdout.write("the bar starts moving once the workers have parsed the template\n")
     written: list[Path] = []
     with ProcessPoolExecutor(max_workers=jobs, initializer=_init_worker, initargs=(psd,)) as pool:
         futures = [pool.submit(_build_masks, out_dir)]
@@ -814,10 +821,8 @@ def build(
                 futures.append(pool.submit(_build_saga_frame, code.removeprefix("saga-"), out_dir))
             else:
                 futures.append(pool.submit(_build_frame, code, out_dir))
-        for future in as_completed(futures):
-            paths = future.result()
-            written += paths
-            sys.stdout.write(f"{paths[0]}\n")
+        for future in tqdm(as_completed(futures), total=len(futures), desc="building frames", unit=" frames"):
+            written += future.result()
     geometry = retro_crown.HD_GEOMETRY
     mask = np.zeros((*geometry.shape, 4), np.uint8)
     mask[..., 3] = retro_crown.crown_pinline_mask(geometry)
