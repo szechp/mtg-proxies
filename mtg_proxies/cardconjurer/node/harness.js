@@ -1705,6 +1705,9 @@ function layoutRetroClass(scry) {
     text.title.font = 'goudymedieval';
     text.title.size = 0.041;
     delete text.type.font;
+    // packClass is a modern pack (black title and type); retro prints them white with packSeventh's
+    // shadow, as the saga pack does.
+    for (const region of [text.title, text.type]) Object.assign(region, { color: 'white', shadowX: 0.002, shadowY: 0.0015 });
     global.card.bottomInfo = {
         top: { text: 'Illus. {elemidinfo-artist}', x: 0.1, y: 1908 / 2100, width: 0.8, height: 0.0267, oneLine: true,
                size: 0.0267, align: 'center', shadowX: 0.0021, shadowY: 0.0015, color: 'white' },
