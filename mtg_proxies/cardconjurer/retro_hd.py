@@ -731,12 +731,18 @@ def _build_masks(out_dir: Path) -> list[Path]:
 
 
 def _available_memory() -> int | None:
-    """Return the free physical memory in bytes, or None where it cannot be read cheaply."""
+    """Return the memory new processes can use in bytes, or None where it cannot be read cheaply."""
     try:
         import psutil  # optional; present in most environments that have it
 
         return int(psutil.virtual_memory().available)
     except ImportError:
+        pass
+    try:  # Linux: MemAvailable counts reclaimable page cache, unlike SC_AVPHYS_PAGES below
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) * 1024
+    except OSError:
         pass
     try:
         import os

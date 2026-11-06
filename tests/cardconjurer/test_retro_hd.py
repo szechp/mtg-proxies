@@ -207,3 +207,11 @@ def test_default_jobs(cores: int, free_gb: float | None, tasks: int, expected: i
     free = None if free_gb is None else int(free_gb * 2**30)
     with patch("os.cpu_count", return_value=cores), patch.object(retro_hd, "_available_memory", return_value=free):
         assert retro_hd.default_jobs(tasks) == expected
+
+
+def test_available_memory_counts_reclaimable_page_cache() -> None:
+    from mtg_proxies.cardconjurer import retro_hd
+
+    meminfo = "MemTotal:       16000000 kB\nMemFree:         1000000 kB\nMemAvailable:    8000000 kB\n"
+    with patch.dict("sys.modules", {"psutil": None}), patch.object(Path, "read_text", return_value=meminfo):
+        assert retro_hd._available_memory() == 8000000 * 1024
