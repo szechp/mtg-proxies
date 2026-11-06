@@ -327,6 +327,7 @@ def compose_variant(t: _Template, code: str, size: str = SIZE, dfc: str | None =
         tb = t.rgba(t.find("Card Frame", "Textbox", textbox_name))
         _over(out, tb[..., :3], tb[..., 3] * tb_mask)
     notch = t.mask_of(t.find("Card Frame", "Textbox", "Masks", f"{dfc} Notch")) if dfc else None
+    notch_visible = notch  # the notch's textbox area left showing (land pinlines narrow it)
     if notch is not None:  # the notch triangle in the textbox texture (ragged boxes included)
         tb = t.rgba(t.find("Card Frame", "Textbox", textbox_name))
         _over(out, tb[..., :3], tb[..., 3] * notch)
@@ -417,10 +418,11 @@ def compose_variant(t: _Template, code: str, size: str = SIZE, dfc: str | None =
             _over(out, img[..., :3], img[..., 3] * t.mask_of(pins))
             inner = t.find("Card Frame", f"Textbox Bevel Overlays {dfc}", "Pinlines", "Pinlines")
             _over(out, own_rgb, t.mask_of(inner) * t.mask_of(pins))
+            notch_visible = notch * (1 - t.mask_of(pins))
 
     if dfc == "MDFC":  # last, over land pinlines too
         arrow = t.rgba(t.find("Text and Icons", "MDFC", "Bottom", "Arrow"))
-        _over(out, *_centred_in(arrow, notch))
+        _over(out, *_centred_in(arrow, notch_visible))
 
     # Black border under everything, like packSeventh's frame images (the template keeps its
     # border in a separate group); then the art window is cut at the template's art reference
