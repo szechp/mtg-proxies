@@ -443,7 +443,10 @@ SAGA_CODES = ["w", "u", "b", "r", "g", "m", "l"]  # packClassicshiftedSaga's fra
 CLASS_CODES = ["w", "u", "b", "r", "g", "m", "a", "c", "l"]  # packClass's regular frames
 # The template's class level header (Class > Stage): a bar above the cost / "Level N" line and a
 # divider line under it, together the 0.0481-card-height band CC's versionClass draws per level.
+# Only the bar is drawn (the user found the divider under "cost: Level N" cluttered); the crop
+# keeps the full band so the header still lines up with the cost / level text.
 CLASS_HEADER = ("Line", "Divider Line")
+CLASS_HEADER_DRAWN = ("Line",)
 SAGA_EXTRAS = ["I", "II", "III", "IV", "V", "VI", "Divider"]
 
 
@@ -473,7 +476,7 @@ def build_saga_extras(t: _Template, out_dir: Path) -> list[Path]:
 
 
 def build_class_extras(t: _Template, out_dir: Path) -> list[Path]:
-    """Write the template's class level header (bar + divider) as one tight crop.
+    """Write the template's class level header (its bar; the band also spans the divider) as one crop.
 
     ``class/extras.json`` records the crop's box in card pixels (left, top, width, height).
     """
@@ -488,6 +491,8 @@ def build_class_extras(t: _Template, out_dir: Path) -> list[Path]:
     y1 = max(layer.bbox[3] for layer in layers)
     canvas = np.zeros((t.height, t.width, 4), np.float32)
     for layer in layers:
+        if layer.name not in CLASS_HEADER_DRAWN:
+            continue
         img = t.rgba(layer)
         _over(canvas, img[..., :3], img[..., 3])
     cx0, cy0 = x0 - CARD_BOX[0], y0 - CARD_BOX[1]
