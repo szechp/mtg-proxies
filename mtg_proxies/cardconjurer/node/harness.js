@@ -452,6 +452,61 @@ function fitFlipsideBar(name, side) {
     name.width = (avail - measure(side, px) - FLIPSIDE_GAP * px) / cardWidth;
 }
 
+// Contrast detection for M15-8th cards. Card Conjurer colours these lines per face and frame
+// (black on back faces, white on dark frames, an outline on land frames), which leaves white text
+// on light frames and black text on dark bars (Emeria's Call's artist line, black names on a blue
+// flipside bar, white titles on land backs). Instead, measure the frame canvas behind each line
+// and use black on light backgrounds, white on dark; the flipside cost keeps its grey shades.
+const CONTRAST_TEXT = ['title', 'type', 'flipsideType', 'flipSideReminder'];
+const CONTRAST_BOTTOM = ['top', 'wizards'];
+function backgroundIsLight(region) {
+    const canvas = global.frameCanvas;
+    if (!canvas || !region || region.width == null) return null;
+    const x = Math.max(0, Math.round(global.scaleX(region.x || 0)));
+    const y = Math.max(0, Math.round(global.scaleY(region.y || 0)));
+    const w = Math.min(canvas.width - x, Math.round(global.scaleWidth(region.width)));
+    const h = Math.min(canvas.height - y, Math.round(global.scaleHeight(region.height || region.size || 0.03)));
+    if (w < 2 || h < 2) return null;
+    const px = canvas.getContext('2d').getImageData(x, y, w, h).data;
+    // Mean relative luminance (sRGB linearised), then whichever of black and white has the higher
+    // WCAG contrast ratio against it: black when L > ~0.18.
+    const lin = (c) => { c /= 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+    let sum = 0, n = 0;
+    for (let i = 0; i < px.length; i += 16) {  // every 4th pixel is plenty
+        if (px[i + 3] < 128) continue;
+        sum += 0.2126 * lin(px[i]) + 0.7152 * lin(px[i + 1]) + 0.0722 * lin(px[i + 2]);
+        n++;
+    }
+    if (!n) return null;
+    const lum = sum / n;
+    return (lum + 0.05) / 0.05 > 1.05 / (lum + 0.05);  // black's contrast beats white's
+}
+function applyContrastColours() {
+    let changed = false;
+    const set = (region, light, colours) => {
+        if (!region || light === null) return;
+        const colour = light ? colours[0] : colours[1];
+        const inline = typeof region.text === 'string' && /^\{conditionalcolor:/.test(region.text);
+        if (region.color === colour && !region.conditionalColor && !region.outlineWidth && !inline) return;
+        region.color = colour;
+        delete region.conditionalColor;
+        region.outlineWidth = 0;
+        if (typeof region.text === 'string') region.text = region.text.replace(/^\{conditionalcolor:[^}]*\}/, '');
+        changed = true;
+    };
+    for (const key of CONTRAST_TEXT) {
+        const region = global.card.text?.[key];
+        if (!region?.text) continue;
+        const colours = key === 'flipSideReminder' ? ['#555555', '#cccccc'] : ['black', 'white'];
+        set(region, backgroundIsLight(region), colours);
+    }
+    for (const key of CONTRAST_BOTTOM) {
+        const region = global.card.bottomInfo?.[key];
+        if (region?.text) set(region, backgroundIsLight(region), ['black', 'white']);
+    }
+    return changed;
+}
+
 // Battlement legend crown for retro (Seventh) legendaries. Seventh predates crowns, so the
 // art is ours: mtg_proxies/cardconjurer/retro_crown.py generates one layer per Seventh frame
 // image (transparent except the crown band above the stock top edge) plus a crown version of
@@ -4047,6 +4102,12 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     await renderBottomInfo();
     deferRedraws = false;  // the one real redraw -- see installRedrawDeferral
     global.drawFrames();
+    // M15-8th: pick each line's text colour from the frame actually drawn behind it.
+    if (frame === 'm15-8th' && scry.layout !== 'token' && applyContrastColours()) {
+        await global.drawText();
+        await renderBottomInfo();
+        global.drawFrames();
+    }
 
     // stationEdited() (versionStation.js) always overwrites card.station.squares[2]
     // .height with its own "stretch to the max allowed height above the bottom margin"
