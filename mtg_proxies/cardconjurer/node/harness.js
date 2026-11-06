@@ -3435,11 +3435,14 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     // pack8th in renderCard.
     //
     // Border cover first, crown second: addFrame unshifts, so the later layer sits on top.
-    if (legendary && !dfcFace && frame === '8th'
+    // Transform faces on 8th (pack8thTransformFront/Back) take the pack's transform crowns.
+    const eighthTransformFace = dfcFace && scry.layout === 'transform';
+    if (legendary && (!dfcFace || eighthTransformFace) && frame === '8th'
         && wantsEighthLegendCrown(pristineFace.type_line || scry.type_line)) {
         await addFrameByName(['Legend Crown Border Cover']);
-        const crown = getFrameNameForFace(pristineFace).replace(' Frame', ' Legend Crown');
-        await addFrameByName([crown, 'Artifact Legend Crown', 'Colorless Legend Crown']);
+        const kind = eighthTransformFace ? ' Transform Legend Crown' : ' Legend Crown';
+        const crown = getFrameNameForFace(pristineFace).replace(' Frame', kind);
+        await addFrameByName([crown, 'Artifact' + kind, 'Colorless' + kind]);
     }
 
     // Two-colour cards get the modern two-tone treatment. Which variant applies is
@@ -4116,13 +4119,20 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
     // packs. Returns { out, outBack } instead of a single path.
     const splitPacks = !special && dfcSplit ? packsForDfcSplit(scry.layout, frame) : null;
     if (splitPacks) {
+        // 8th transform faces that are legendary load CC's 8th crown pack alongside (the face's
+        // pack last, so its frame version is the live one).
+        const withCrown = (pack, index) => (legendary && frame === '8th' && scry.layout === 'transform'
+            && wantsEighthLegendCrown(scry.card_faces?.[index]?.type_line))
+            ? ['pack8thLegendCrowns.js', ...[pack].flat()] : pack;
         const out = await renderFace({
-            packFile: splitPacks.front, processed, faceIdx: 0, scry, outName: slug,
+            packFile: withCrown(splitPacks.front, 0), processed, faceIdx: 0, scry, outName: slug,
             frame, setSymbolPath, fontSizeDelta, dfcFace: 'front', frameNameSuffix: splitPacks.suffixes[0],
+            legendary,
         });
         const outBack = await renderFace({
-            packFile: splitPacks.back, processed, faceIdx: 1, scry, outName: slug + '_back',
+            packFile: withCrown(splitPacks.back, 1), processed, faceIdx: 1, scry, outName: slug + '_back',
             frame, setSymbolPath, fontSizeDelta, dfcFace: 'back', frameNameSuffix: splitPacks.suffixes[1],
+            legendary,
         });
         return { out, outBack };
     }
