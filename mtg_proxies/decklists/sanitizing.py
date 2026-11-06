@@ -202,16 +202,15 @@ def validate_print(
                     + f" Using {format_print(card)!r} instead.",
                 )
             )
-        elif not card["highres_image"]:  # Found but low resolution — check if a better print exists
+        elif not card["highres_image"]:  # Found but low resolution — check for a highres scan of the same art
             if allow_low_res and preferred_sets is None:
                 # print mode (no --set): honor whatever print was requested, do not upgrade
                 pass
             else:
                 # recommend_print enforces the preferred-set restriction (with allow_low_res honored
-                # inside it) and otherwise returns the highest-scoring alternative. Pass ``current=card``
-                # rather than ``card_name=`` so the oracle_id is derived from the dict — handles
-                # reversible_card layout correctly (recommend_print's special case at scryfall.py:424).
-                better = scryfall.recommend_print(
+                # inside it) and ranks the rest. Pass ``current=card`` rather than ``card_name=`` so
+                # the oracle_id is derived from the dict — handles reversible_card layout correctly.
+                ranked = scryfall.recommend_print(
                     card,
                     art_preference=art_preference,
                     preferred_sets=preferred_sets,
@@ -219,6 +218,17 @@ def validate_print(
                     prefer_retro_frame=prefer_retro_frame,
                     prefer_borderless=prefer_borderless,
                     art_before=art_before,
+                    mode="all",
+                )
+                # Same artwork only: a pinned print is a deliberate art choice (often an earlier
+                # ``convert`` art roll), and a preview image of it beats a scan of different art.
+                better = next(
+                    (
+                        c
+                        for c in ranked
+                        if c["highres_image"] and scryfall.artwork_id(c) == scryfall.artwork_id(card)
+                    ),
+                    card,
                 )
                 if better["id"] != card["id"]:
                     warnings.append(

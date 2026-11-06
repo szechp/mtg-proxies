@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import dataclasses
 import logging
 import random
@@ -2648,6 +2649,17 @@ def main() -> None:
             " recommendation when a card has no print before the cutoff."
         ),
     )
+    convert_parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "seed for the art roll: for each card without a pinned print, standard mode picks a"
+            " random artwork among those scoring within 8 points of the best. The seed used is"
+            " printed; pass it again to repeat a roll. Lines that already name a print never re-roll."
+        ),
+    )
 
     # Tokens tool
     tokens_parser = subparsers.add_parser(
@@ -3338,6 +3350,14 @@ def main() -> None:
             # backward compat with `convert deck.txt out.txt` and `convert --basic-lands mountain=9 out.txt`).
             outfile = args.out if args.out is not None else args.outfile
             basic_land_specs = args.basic_lands
+            art_roll_seed = args.seed if args.seed is not None else random.randrange(10_000)
+
+            def _art_roll() -> contextlib.AbstractContextManager[None]:
+                if args.art_preference != "standard":
+                    return contextlib.nullcontext()
+                print(f"Art roll: seed {art_roll_seed} (repeat with --seed {art_roll_seed})")
+                return scryfall.art_roll(art_roll_seed)
+
             # Track whether the positional decklist arg was consumed by a legacy outfile shift.
             input_decklist_spec = args.decklist
             if basic_land_specs and outfile is None:
@@ -3381,16 +3401,17 @@ def main() -> None:
                         )
                         raise SystemExit(1)
                     allow_low_res = getattr(args, "allow_low_res", False)
-                    decklist = parse_decklist_spec(
-                        input_decklist_spec,
-                        warn_levels=["ERROR", "WARNING", "COSMETIC"],
-                        art_preference=args.art_preference,
-                        preferred_sets=args.set or None,
-                        allow_low_res=allow_low_res,
-                        prefer_retro_frame=getattr(args, "prefer_retro_frame", False),
-                        prefer_borderless=getattr(args, "prefer_borderless", False),
-                        art_before=getattr(args, "art_before", None),
-                    )
+                    with _art_roll():
+                        decklist = parse_decklist_spec(
+                            input_decklist_spec,
+                            warn_levels=["ERROR", "WARNING", "COSMETIC"],
+                            art_preference=args.art_preference,
+                            preferred_sets=args.set or None,
+                            allow_low_res=allow_low_res,
+                            prefer_retro_frame=getattr(args, "prefer_retro_frame", False),
+                            prefer_borderless=getattr(args, "prefer_borderless", False),
+                            art_before=getattr(args, "art_before", None),
+                        )
                     if decklist.entries and not (
                         isinstance(decklist.entries[-1], Comment) and not decklist.entries[-1].text.strip()
                     ):
@@ -3424,16 +3445,17 @@ def main() -> None:
 
                 # Parse decklist
                 allow_low_res = getattr(args, "allow_low_res", False)
-                decklist = parse_decklist_spec(
-                    decklist_spec,
-                    warn_levels=["ERROR", "WARNING", "COSMETIC"],
-                    art_preference=args.art_preference,
-                    preferred_sets=args.set or None,
-                    allow_low_res=allow_low_res,
-                    prefer_retro_frame=getattr(args, "prefer_retro_frame", False),
-                    prefer_borderless=getattr(args, "prefer_borderless", False),
-                    art_before=getattr(args, "art_before", None),
-                )
+                with _art_roll():
+                    decklist = parse_decklist_spec(
+                        decklist_spec,
+                        warn_levels=["ERROR", "WARNING", "COSMETIC"],
+                        art_preference=args.art_preference,
+                        preferred_sets=args.set or None,
+                        allow_low_res=allow_low_res,
+                        prefer_retro_frame=getattr(args, "prefer_retro_frame", False),
+                        prefer_borderless=getattr(args, "prefer_borderless", False),
+                        art_before=getattr(args, "art_before", None),
+                    )
 
             # If preferred sets were specified, move cards not from those sets to the bottom
             preferred_sets = args.set or None

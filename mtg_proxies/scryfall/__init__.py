@@ -1,4 +1,6 @@
 from mtg_proxies.scryfall.scryfall import (
+    art_roll,
+    artwork_id,
     canonic_card_name,
     card_by_id,
     cards_by_oracle_id,
@@ -14,6 +16,8 @@ from mtg_proxies.scryfall.scryfall import (
 )
 
 __all__ = [
+    "art_roll",
+    "artwork_id",
     "canonic_card_name",
     "card_by_id",
     "cards_by_oracle_id",

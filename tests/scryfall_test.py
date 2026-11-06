@@ -50,6 +50,15 @@ def _test_card(
     }
 
 
+def _fake_recommend(best: dict, ranked: list[dict]):  # noqa: ANN202
+    """Stand-in for ``recommend_print``: ``ranked`` for ``mode="all"``, else ``best``."""
+
+    def fake(*args: object, mode: str = "best", **kwargs: object) -> dict | list[dict]:
+        return ranked if mode == "all" else best
+
+    return fake
+
+
 @pytest.mark.parametrize(
     ("id", "n_faces"),
     [
@@ -121,13 +130,14 @@ def test_recommend_print_prefers_wild_lightning_bolt() -> None:
 @pytest.mark.parametrize(
     "name", ["Voice of Victory", "Rot-Curse Rakshasa", "Cori-Steel Cutter", "Surrak, Elusive Hunter"]
 )
-def test_recommend_print_falls_back_to_highres_when_standard_is_lowres(name: str) -> None:
+def test_recommend_print_lowres_standard_never_swaps_to_promo_or_digital(name: str) -> None:
+    """Cards whose standard print is only a lowres preview keep a clean paper print."""
     from mtg_proxies import scryfall
 
     card = scryfall.recommend_print(card_name=name)
 
-    assert card.get("highres_image")
     assert not card.get("digital")
+    assert not {"datestamped", "prerelease", "stamped"} & set(card.get("promo_types") or [])
 
 
 @pytest.mark.parametrize("name", ["Mountain", "Forest", "Plains", "Island", "Swamp"])
@@ -177,7 +187,7 @@ def test_recommend_print_prefers_clean_standard_prints(
     assert not card.get("digital")
 
 
-def test_recommend_print_standard_fallback_prefers_clean_alternate_before_promo(
+def test_recommend_print_standard_lowres_standard_beats_alternate_treatments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from mtg_proxies.scryfall import scryfall
@@ -202,10 +212,11 @@ def test_recommend_print_standard_fallback_prefers_clean_alternate_before_promo(
 
     card = scryfall.recommend_print(card_name="Test Card")
 
-    assert card["id"] == "clean-alternate"
+    # A preview of the plain print beats a showcase scan and a date-stamped promo.
+    assert card["id"] == "lowres-standard"
 
 
-def test_recommend_print_standard_fallback_uses_promo_when_no_clean_alternate_exists(
+def test_recommend_print_standard_lowres_standard_beats_promo_and_digital(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from mtg_proxies.scryfall import scryfall
@@ -231,10 +242,10 @@ def test_recommend_print_standard_fallback_uses_promo_when_no_clean_alternate_ex
 
     card = scryfall.recommend_print(card_name="Test Card")
 
-    assert card["id"] == "digital-highres"
+    assert card["id"] == "lowres-standard"
 
 
-def test_recommend_print_standard_fallback_keeps_lowres_standard_when_only_promo_highres_exists(
+def test_recommend_print_standard_keeps_lowres_standard_over_stamped_promo(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from mtg_proxies.scryfall import scryfall
@@ -253,7 +264,7 @@ def test_recommend_print_standard_fallback_keeps_lowres_standard_when_only_promo
 
     card = scryfall.recommend_print(card_name="Test Card")
 
-    assert card["id"] == "stamped-promo"
+    assert card["id"] == "lowres-standard"
 
 
 def test_recommend_print_standard_devalues_flashy_anime_variants(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -283,7 +294,7 @@ def test_recommend_print_standard_devalues_flashy_anime_variants(monkeypatch: py
     assert card["id"] == "plain-english-print"
 
 
-def test_recommend_print_standard_picks_highres_ub_promo_over_lowres_ub_mainset(
+def test_recommend_print_standard_picks_lowres_lotr_mainset_over_stamped_promo(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from mtg_proxies.scryfall import scryfall
@@ -309,14 +320,17 @@ def test_recommend_print_standard_picks_highres_ub_promo_over_lowres_ub_mainset(
 
     card = scryfall.recommend_print(card_name="Test Card")
 
-    assert card["id"] == "ub-promo"
+    # LOTR is an allowed UB franchise, so its plain print isn't penalized and beats the dated promo.
+    assert card["id"] == "plain-ub-mainset"
 
 
 def test_illustration_style_delta_builds_net_scores(monkeypatch: pytest.MonkeyPatch) -> None:
     from mtg_proxies.scryfall import scryfall
 
     fake_tags = [
-        {"slug": "oil-painting-medium", "taggings": [{"illustration_id": "illo-oil"}]},
+        {"slug": "oil-paint", "taggings": [{"illustration_id": "illo-oil"}]},
+        # Matched through an alias: a renamed tag keeps scoring under its old name.
+        {"slug": "renamed-watercolor", "aliases": ["watercolor"], "taggings": [{"illustration_id": "illo-wc"}]},
         {"slug": "anime", "taggings": [{"illustration_id": "illo-anime"}, {"illustration_id": "illo-mixed"}]},
         {"slug": "acrylic-paint", "taggings": [{"illustration_id": "illo-mixed"}]},
         {"slug": "some-subject-tag", "taggings": [{"illustration_id": "illo-oil"}]},  # not a style slug
@@ -326,6 +340,7 @@ def test_illustration_style_delta_builds_net_scores(monkeypatch: pytest.MonkeyPa
     try:
         deltas = scryfall._illustration_style_delta()
         assert deltas["illo-oil"] == 8
+        assert deltas["illo-wc"] == 4
         assert deltas["illo-anime"] == -16
         assert deltas["illo-mixed"] == -16 + 6  # anime + acrylic stack
         assert "untagged-illo" not in deltas  # unscored illustrations are absent (neutral)
@@ -415,27 +430,23 @@ def test_recommend_print_prefer_borderless_falls_back_when_none(monkeypatch: pyt
     assert card["id"] == "plain-a"  # highres normal wins; no crash
 
 
-def test_art_style_scores_stay_below_highres_bonus() -> None:
-    """Invariant: no art-style magnitude may reach the +32 highres bonus.
+def test_art_style_cap_stays_below_english_bonus() -> None:
+    """Invariant: style can re-rank prints, but never outweigh language (+64).
 
-    This is the real guarantee behind "style never overrides resolution" — it's a
-    property of the constants, not of any one pick. Asserted directly so cranking a
-    value too high (e.g. anime -40) fails here regardless of score arithmetic.
+    Asserted on the constants so cranking a value too high fails here regardless of
+    score arithmetic. Every single tag also fits inside the cap.
     """
     from mtg_proxies.scryfall import scryfall
 
     assert scryfall._ART_STYLE_SCORES, "expected a non-empty art-style table"
-    assert max(abs(v) for v in scryfall._ART_STYLE_SCORES.values()) < 32
+    assert max(abs(v) for v in scryfall._ART_STYLE_SCORES.values()) <= scryfall._ART_STYLE_CAP
+    assert scryfall._ICONIC_ARTIST_SCORE <= scryfall._ART_STYLE_CAP
+    assert scryfall._ART_STYLE_CAP < 64
 
 
-def test_recommend_print_highres_overrides_art_style(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Behavioral documentation: with style active, resolution still wins.
-
-    A highres anime print (penalized) beats a lowres oil print (boosted). Note this
-    stubs the delta map directly, so it documents the score()-integration behavior at
-    the agreed magnitudes — it does NOT read _ART_STYLE_SCORES; the real magnitude
-    guard is test_art_style_scores_stay_below_highres_bonus.
-    """
+def test_recommend_print_better_art_may_win_as_lowres(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lowres (preview) print with clearly better art beats a highres print of worse art,
+    and the lowres fallback doesn't swap it back for the worse-art scan."""
     from mtg_proxies.scryfall import scryfall
 
     lowres_oil = _test_card("lowres-oil", highres_image=False, illustration_id="illo-oil")
@@ -445,7 +456,167 @@ def test_recommend_print_highres_overrides_art_style(monkeypatch: pytest.MonkeyP
 
     card = scryfall.recommend_print(card_name="Test Card")
 
-    assert card["id"] == "highres-anime"
+    assert card["id"] == "lowres-oil"
+
+
+def test_recommend_print_same_art_prefers_highres_scan(monkeypatch: pytest.MonkeyPatch) -> None:
+    """For one illustration, the highres scan still beats the lowres preview."""
+    from mtg_proxies.scryfall import scryfall
+
+    lowres = _test_card("lowres", highres_image=False, illustration_id="illo-oil")
+    highres = _test_card("highres", highres_image=True, illustration_id="illo-oil")
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [lowres, highres])
+    monkeypatch.setattr(scryfall, "_illustration_style_delta", lambda: {"illo-oil": 8})
+
+    assert scryfall.recommend_print(card_name="Test Card")["id"] == "highres"
+
+
+def test_retro_frame_with_modern_art_beats_modern_frame(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A retro-frame print of 2015+ art outranks the same-quality modern-frame print..."""
+    from mtg_proxies.scryfall import scryfall
+
+    modern = _test_card("modern", highres_image=True, frame="2015", illustration_id="new-art")
+    retro_new = _test_card("retro-new", highres_image=True, frame="1997", illustration_id="new-art")
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [modern, retro_new])
+    monkeypatch.setattr(scryfall, "_illustration_style_delta", lambda: {})
+    monkeypatch.setattr(scryfall, "_illustration_debut", lambda: {"new-art": "2021-06-18"})
+
+    assert scryfall.recommend_print(card_name="Test Card")["id"] == "retro-new"
+
+
+def test_retro_frame_with_90s_art_gets_no_bump(monkeypatch: pytest.MonkeyPatch) -> None:
+    """...but old art reprinted in a retro frame (30A / DMR Alpha art) doesn't."""
+    from mtg_proxies.scryfall import scryfall
+
+    modern = _test_card("modern", highres_image=True, frame="2015", illustration_id="modern-art")
+    retro_old = _test_card("retro-old", highres_image=True, frame="1993", illustration_id="alpha-art")
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [retro_old, modern])
+    monkeypatch.setattr(scryfall, "_illustration_style_delta", lambda: {})
+    monkeypatch.setattr(scryfall, "_illustration_debut", lambda: {"alpha-art": "1993-08-05", "modern-art": "2018-04-27"})
+
+    assert scryfall.recommend_print(card_name="Test Card")["id"] == "modern"
+
+
+def test_90s_original_artists_are_neutral() -> None:
+    from mtg_proxies.scryfall import scryfall
+
+    for artist in ("Mark Poole", "Christopher Rush", "Anson Maddocks"):
+        assert scryfall._artist_style_score(_test_card("x", highres_image=True, artist=artist)) == 0
+
+
+def test_iconic_artist_boost_counts_shared_credits() -> None:
+    """A credit naming several artists counts when any of them is iconic."""
+    from mtg_proxies.scryfall import scryfall
+
+    duo = _test_card("duo", highres_image=True, artist="Zoltan Boros & Gabor Szikszai")
+    other = _test_card("other", highres_image=True, artist="Nobody Famous")
+
+    assert scryfall._artist_style_score(duo) == scryfall._ICONIC_ARTIST_SCORE
+    assert scryfall._artist_style_score(other) == 0
+
+
+@pytest.mark.parametrize(
+    ("set_code", "set_name", "allowed"),
+    [
+        ("ltr", "The Lord of the Rings: Tales of Middle-earth", True),
+        ("hob", "The Hobbit", True),
+        ("40k", "Warhammer 40,000 Commander", True),
+        ("pip", "Fallout", False),
+        ("trk", "Star Trek", False),
+    ],
+)
+def test_universes_beyond_allowlist(set_code: str, set_name: str, allowed: bool) -> None:
+    """LOTR / Hobbit / Warhammer 40k fit the Magic look; other UB franchises stay penalized."""
+    from mtg_proxies.scryfall import scryfall
+
+    card = _test_card("ub", highres_image=True, set_code=set_code, set_name=set_name, promo_types=["universesbeyond"])
+
+    assert (scryfall._standard_art_penalty(card) == 0) is allowed
+
+
+def test_universes_beyond_triangle_stamp_without_promo_flag_is_penalized() -> None:
+    from mtg_proxies.scryfall import scryfall
+
+    card = _test_card("ub", highres_image=True, set_code="trk", set_name="Star Trek")
+    card["security_stamp"] = "triangle"
+
+    assert scryfall._standard_art_penalty(card) >= 64
+
+
+@pytest.mark.parametrize(("collector_number", "penalized"), [("29", False), ("63", False), ("92", True), ("92z", True)])
+def test_brr_schematics_heavily_penalized(collector_number: str, penalized: bool) -> None:
+    """Retro Artifacts #64+ are the blueprint schematics; #1-63 keep their original art."""
+    from mtg_proxies.scryfall import scryfall
+
+    card = _test_card(
+        "brr", highres_image=True, set_code="brr", set_name="The Brothers' War Retro Artifacts",
+        collector_number=collector_number,
+    )
+
+    assert (scryfall._standard_art_penalty(card) >= 128) is penalized
+    # Asking for the set explicitly waives it.
+    assert scryfall._standard_art_penalty(card, preferred_sets=["brr"]) == 0
+
+
+def _roll_pool() -> list[dict]:
+    rahn_dom = _test_card("rahn-dom", highres_image=True, illustration_id="rahn", set_code="dom")
+    rahn_dom["released_at"] = "2018-04-27"
+    rahn_gift = _test_card("rahn-gift", highres_image=True, illustration_id="rahn", set_code="gnt", set_type="box")
+    rahn_gift["released_at"] = "2018-11-16"
+    walker = _test_card("walker", highres_image=True, illustration_id="walker")
+    anime = _test_card("anime", highres_image=True, illustration_id="anime")
+    return [rahn_gift, rahn_dom, walker, anime]
+
+
+def test_art_roll_picks_among_near_ties_reproducibly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Within the window every artwork can come up; outside it never; same seed, same pick."""
+    from mtg_proxies.scryfall import scryfall
+
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: _roll_pool())
+    monkeypatch.setattr(scryfall, "_illustration_style_delta", lambda: {"rahn": 16, "walker": 8, "anime": -16})
+
+    def pick(seed: int) -> str:
+        with scryfall.art_roll(seed):
+            return scryfall.recommend_print(card_name="Test Card")["id"]
+
+    picks = {pick(seed) for seed in range(40)}
+    # Rahn's art always resolves to its original main-set print, never the gift-pack reprint.
+    assert picks == {"rahn-dom", "walker"}
+    assert pick(7) == pick(7)
+
+
+def test_art_roll_never_crosses_to_a_different_card_with_the_same_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same-name tokens with different rules text are separate cards: the roll stays on the top one."""
+    from mtg_proxies.scryfall import scryfall
+
+    top = _test_card("token-a", highres_image=True, illustration_id="a")
+    other = _test_card("token-b", highres_image=True, illustration_id="b")
+    other["oracle_id"] = "another-oracle"
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: [top, other])
+    monkeypatch.setattr(scryfall, "_illustration_style_delta", lambda: {"a": 8, "b": 6})
+
+    for seed in range(20):
+        with scryfall.art_roll(seed):
+            assert scryfall.recommend_print(card_name="Test Card")["id"] == "token-a"
+
+
+def test_art_roll_off_outside_context_and_for_pinned_prints(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mtg_proxies.scryfall import scryfall
+
+    pool = _roll_pool()
+    monkeypatch.setattr(scryfall, "get_cards", lambda name=None: pool)
+    monkeypatch.setattr(scryfall, "cards_by_oracle_id", lambda: {"oracle": pool})
+    monkeypatch.setattr(scryfall, "_illustration_style_delta", lambda: {"rahn": 16, "walker": 8, "anime": -16})
+
+    # No roll outside art_roll(): the top score wins deterministically.
+    assert {scryfall.recommend_print(card_name="Test Card")["id"] for _ in range(5)} <= {"rahn-dom", "rahn-gift"}
+    # A pinned print is never re-rolled away.
+    walker = pool[2]
+    with scryfall.art_roll(1):
+        for _ in range(10):
+            assert scryfall.recommend_print(walker)["id"] in {"walker", "rahn-gift", "rahn-dom"}
+            assert scryfall._ART_ROLL.get() is not None
+    assert scryfall._ART_ROLL.get() is None
 
 
 def test_recommend_print_wild_ignores_art_style(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -717,11 +888,17 @@ def test_validate_print_lowres_upgrade_suppresses_preferred_set_warning(monkeypa
     import mtg_proxies.decklists.sanitizing as sanitizing
     from mtg_proxies.decklists.sanitizing import validate_print
 
-    lowres_ltr = _test_card("lowres-ltr", highres_image=False, set_code="ltr", collector_number="224")
-    highres_non_ltr = _test_card("highres-woc", highres_image=True, set_code="woc", collector_number="84")
+    lowres_ltr = _test_card(
+        "lowres-ltr", highres_image=False, set_code="ltr", collector_number="224", illustration_id="art"
+    )
+    highres_non_ltr = _test_card(
+        "highres-woc", highres_image=True, set_code="woc", collector_number="84", illustration_id="art"
+    )
 
     monkeypatch.setattr(sanitizing.scryfall, "get_card", lambda *args, **kwargs: lowres_ltr)
-    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: highres_non_ltr)
+    monkeypatch.setattr(
+        sanitizing.scryfall, "recommend_print", _fake_recommend(highres_non_ltr, [lowres_ltr, highres_non_ltr])
+    )
 
     _, warnings = validate_print("Test Card", "LTR", "224", preferred_sets=["ltr"])
 
@@ -736,16 +913,33 @@ def test_validate_print_auto_upgrades_explicit_lowres_to_highres(monkeypatch: py
     import mtg_proxies.decklists.sanitizing as sanitizing
     from mtg_proxies.decklists.sanitizing import validate_print
 
-    lowres = _test_card("lowres", highres_image=False, set_code="ltr", collector_number="224")
-    highres = _test_card("highres", highres_image=True, set_code="ltr", collector_number="301")
+    lowres = _test_card("lowres", highres_image=False, set_code="ltr", collector_number="224", illustration_id="art")
+    highres = _test_card("highres", highres_image=True, set_code="ltr", collector_number="301", illustration_id="art")
 
     monkeypatch.setattr(sanitizing.scryfall, "get_card", lambda *args, **kwargs: lowres)
-    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: highres)
+    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", _fake_recommend(highres, [lowres, highres]))
 
     card, warnings = validate_print("Test Card", "LTR", "224")
 
     assert card["id"] == "highres"
     assert any(w.level == "WARNING" and "Upgrading to" in w.message for w in warnings)
+
+
+def test_validate_print_never_upgrades_a_pinned_lowres_print_to_different_art(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pinned print is an art choice (e.g. an earlier convert roll); only a scan of the same art replaces it."""
+    import mtg_proxies.decklists.sanitizing as sanitizing
+    from mtg_proxies.decklists.sanitizing import validate_print
+
+    lowres = _test_card("lowres", highres_image=False, set_code="ltr", collector_number="224", illustration_id="a")
+    other_art = _test_card("other-art", highres_image=True, set_code="ltr", collector_number="9", illustration_id="b")
+
+    monkeypatch.setattr(sanitizing.scryfall, "get_card", lambda *args, **kwargs: lowres)
+    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", _fake_recommend(other_art, [lowres, other_art]))
+
+    card, warnings = validate_print("Test Card", "LTR", "224")
+
+    assert card["id"] == "lowres"
+    assert not any("Upgrading" in w.message for w in warnings)
 
 
 def test_validate_print_keeps_lowres_when_no_better_option_exists(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -756,7 +950,7 @@ def test_validate_print_keeps_lowres_when_no_better_option_exists(monkeypatch: p
     lowres = _test_card("lowres", highres_image=False, set_code="ltr", collector_number="224")
 
     monkeypatch.setattr(sanitizing.scryfall, "get_card", lambda *args, **kwargs: lowres)
-    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: lowres)
+    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", _fake_recommend(lowres, [lowres]))
 
     card, warnings = validate_print("Test Card", "LTR", "224")
 
@@ -782,7 +976,7 @@ def test_validate_print_allow_low_res_does_not_upgrade_lowres_standard_to_highre
     monkeypatch.setattr(sanitizing.scryfall, "get_card", lambda *args, **kwargs: lowres_standard)
     # Real recommend_print, given (lowres_standard, highres_borderless) both in LTR with allow_low_res=True,
     # returns lowres_standard via penalty arithmetic. Mock to match that contract.
-    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: lowres_standard)
+    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", _fake_recommend(lowres_standard, [lowres_standard]))
 
     card, warnings = validate_print(
         "Test Card", "LTR", "192", allow_low_res=True, preferred_sets=["LTR"], art_preference="standard"
@@ -797,11 +991,11 @@ def test_validate_print_allow_low_res_upgrades_within_preferred_set(monkeypatch:
     import mtg_proxies.decklists.sanitizing as sanitizing
     from mtg_proxies.decklists.sanitizing import validate_print
 
-    lowres = _test_card("lowres", highres_image=False, set_code="ltr", collector_number="192")
-    highres = _test_card("highres", highres_image=True, set_code="ltr", collector_number="741")
+    lowres = _test_card("lowres", highres_image=False, set_code="ltr", collector_number="192", illustration_id="art")
+    highres = _test_card("highres", highres_image=True, set_code="ltr", collector_number="741", illustration_id="art")
 
     monkeypatch.setattr(sanitizing.scryfall, "get_card", lambda *args, **kwargs: lowres)
-    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: highres)
+    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", _fake_recommend(highres, [lowres, highres]))
 
     card, warnings = validate_print("Test Card", "LTR", "192", allow_low_res=True, preferred_sets=["LTR"])
 
@@ -824,7 +1018,7 @@ def test_validate_print_allow_low_res_keeps_lowres_when_highres_only_outside_pre
 
     monkeypatch.setattr(sanitizing.scryfall, "get_card", lambda *args, **kwargs: lowres_ltr)
     # Real recommend_print restricts to LTR (the only preferred set) and returns lowres_ltr.
-    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", lambda *args, **kwargs: lowres_ltr)
+    monkeypatch.setattr(sanitizing.scryfall, "recommend_print", _fake_recommend(lowres_ltr, [lowres_ltr]))
 
     card, warnings = validate_print("Test Card", "LTR", "192", allow_low_res=True, preferred_sets=["LTR"])
 

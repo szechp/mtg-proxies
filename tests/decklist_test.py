@@ -81,7 +81,7 @@ def test_parsing(data_dir: Path) -> None:
         (  # Non-black border with alternative
             "1 Counterspell (5ED) 77",
             "1 Counterspell (5ED) 77",
-            ["COSMETIC: White border for 'Counterspell (5ED) 77'. Maybe you want 'Counterspell (DMR) 45'?"],
+            ["COSMETIC: White border for 'Counterspell (5ED) 77'. Maybe you want 'Counterspell (JVC) 24'?"],
         ),
         (  # Non-black border without alternative
             "1 Adorable Kitten (UST) 1",
@@ -117,14 +117,16 @@ def test_parsing(data_dir: Path) -> None:
         ),
         (  # Double faced card with same name as a token (with set and collector number)
             "1 Illusion (DMR) 213",
-            "1 Illusion (TBLC) 13",  # TODO: This turns into the token, should be the card instead
-            ["WARNING: Unable to find scan of 'Illusion (DMR) 213'. Using 'Illusion (TBLC) 13' instead."],
+            "1 Illusion (TRNA) 2",  # TODO: This turns into the token, should be the card instead
+            ["WARNING: Unable to find scan of 'Illusion (DMR) 213'. Using 'Illusion (TRNA) 2' instead."],
         ),
         (  # Token with same name as the front of a double faced card (without set and collector number)
             "1 Illusion",
-            "1 Illusion (TBLC) 13",  # Remains the token
+            "1 Illusion (TRNA) 2",  # Remains the token
             [
-                "WARNING: Tokens are not unique by name. Assuming 'Illusion' is a '*/* blue Token Creature — Illusion'.",  # noqa: E501
+                "WARNING: Tokens are not unique by name. Assuming 'Illusion' is a \"0/2 blue Token Creature — Illusion"
+                " with 'Whenever this creature blocks a creature, that creature doesn't untap during its controller's"
+                " next untap step.'\".",
             ],  # TODO: There should be a warning about the ambiguity
         ),
     ],

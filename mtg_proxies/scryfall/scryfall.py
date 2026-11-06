@@ -12,10 +12,13 @@ import json
 import logging
 import os
 import pickle
+import random
 import re
 import threading
 import time
 from collections import defaultdict
+from collections.abc import Generator
+from contextvars import ContextVar
 from functools import cache
 from importlib.metadata import version
 from pathlib import Path
@@ -55,6 +58,16 @@ _SCRYFALL_HEADERS = {"User-Agent": _USER_AGENT, "Accept": "*/*"}
 # set_type is too broad to use instead: it also covers Retro Artifacts (wanted under
 # --retro), the Mystical Archive, Special Guests and more.
 _BLOCKED_SETS = frozenset({"exp", "zne"})
+
+# Universes Beyond franchises whose art fits the classic Magic look; matched against
+# ``set_name`` (lowercase substring) so every product of a franchise — main set,
+# commander decks, promos — is let back in. All other UB prints keep the UB penalty.
+_ALLOWED_UB_FRANCHISES = ("lord of the rings", "middle-earth", "hobbit", "warhammer 40,000")
+
+# The Brothers' War Retro Artifacts reprints each artifact twice: retro-frame art
+# (#1-63) and blueprint "schematic" art (#64-126, plus serialized ``z`` copies).
+# Scryfall carries no field for the schematics — the collector number is the signal.
+_BRR_SCHEMATIC_MIN_NUMBER = 64
 
 _NONSTANDARD_ART_OVERRIDES = frozenset({
     # J22 (Jumpstart 2022) "Anime Border" basic land treatments. Promo_types
@@ -530,7 +543,8 @@ def _standard_art_penalty(card: dict, preferred_sets: list[str] | None = None) -
         "ninja turtles",
         "teenage mutant ninja turtles",
     }
-    if any(keyword in set_name for keyword in keywords):
+    ub_allowed = any(franchise in set_name for franchise in _ALLOWED_UB_FRANCHISES)
+    if not ub_allowed and any(keyword in set_name for keyword in keywords):
         penalty += 256
     if not in_preferred_set and (card.get("set") == "sld" or "secret lair" in set_name):
         penalty += 256
@@ -538,6 +552,10 @@ def _standard_art_penalty(card: dict, preferred_sets: list[str] | None = None) -
         penalty += 256
     if card.get("set") == "plst" or set_name == "the list":
         penalty += 24
+    if not in_preferred_set and card.get("set") == "brr":
+        number = re.match(r"\d+", card.get("collector_number") or "")
+        if number and int(number.group()) >= _BRR_SCHEMATIC_MIN_NUMBER:
+            penalty += 128
 
     # Scryfall marks many crossover releases as funny sets.
     if card.get("set_type") == "funny":
@@ -556,7 +574,9 @@ def _standard_art_penalty(card: dict, preferred_sets: list[str] | None = None) -
     if (card.get("artist"), card.get("set")) in _NONSTANDARD_ART_OVERRIDES:
         penalty += 128
 
-    if "universesbeyond" in promo_types:
+    # ``security_stamp == "triangle"`` is Wizards' printed UB marker; it also catches UB prints
+    # whose ``promo_types`` lack the ``universesbeyond`` flag.
+    if not ub_allowed and ("universesbeyond" in promo_types or card.get("security_stamp") == "triangle"):
         penalty += 64 if not _has_flashy_treatment(card) and card.get("set_type") != "promo" else 256
     if {"boosterfun", "bundle", "concept", "galaxyfoil", "halofoil", "poster", "serialized", "surgefoil"} & promo_types:
         penalty += 16
@@ -579,81 +599,125 @@ def _has_flashy_treatment(card: dict) -> bool:
     )
 
 
-def _is_stamped_promo(card: dict) -> bool:
-    promo_types = set(card.get("promo_types", []))
-    return bool({"datestamped", "prerelease", "promopack", "setpromo", "stamped"} & promo_types)
-
-
-def _select_standard_fallback(alternatives: list[dict], scores: list[int]) -> dict:
-    highres_candidates = [card for card in alternatives if card.get("highres_image", False)]
-    if not highres_candidates:
-        return alternatives[int(np.argmax(scores))]
-
-    standard_best = alternatives[int(np.argmax(scores))]
-    indexed_scores = {card["id"]: score for card, score in zip(alternatives, scores, strict=True)}
-
-    def rank(card: dict) -> tuple[int, int]:
-        promo_types = set(card.get("promo_types", []))
-        universes_beyond = "universesbeyond" in promo_types
-        is_promo = card.get("set_type") == "promo" or _is_stamped_promo(card)
-        clean_fallback = not card.get("digital") and not is_promo and not universes_beyond
-        return (
-            0 if clean_fallback and _has_flashy_treatment(card) else 1,
-            -indexed_scores[card["id"]],
-        )
-
-    clean_candidates = [
-        card
-        for card in highres_candidates
-        if not card.get("digital")
-        and card.get("set_type") != "promo"
-        and not _is_stamped_promo(card)
-        and "universesbeyond" not in set(card.get("promo_types", []))
-    ]
-    if clean_candidates:
-        return min(clean_candidates, key=rank)
-
-    digital_candidates = [
-        card
-        for card in highres_candidates
-        if card.get("digital")
-        and card.get("set_type") != "promo"
-        and not _is_stamped_promo(card)
-        and "universesbeyond" not in set(card.get("promo_types", []))
-    ]
-    if digital_candidates:
-        return min(digital_candidates, key=lambda card: -indexed_scores[card["id"]])
-
-    promo_candidates = [
-        card for card in highres_candidates if card.get("set_type") == "promo" or _is_stamped_promo(card)
-    ]
-    if promo_candidates:
-        return min(promo_candidates, key=lambda card: -indexed_scores[card["id"]])
-
-    return standard_best
-
-
-# Art-style scoring sourced from Scryfall's Tagger ``art_tags`` bulk file. A small,
-# illustration-level nudge applied in ``standard`` art mode only: toward the classic
-# painterly MTG look, away from off-brand mediums. Every magnitude is kept BELOW the
-# highres bonus (+32) and the English bonus (+64) so a clean English scan always wins —
-# style only breaks ties between prints already equal on resolution / language. The
-# match key is ``illustration_id``, so the verdict is consistent across every reprint
-# of one piece of art. Untagged illustrations score 0 (Tagger coverage is partial), so
-# this can only ever re-rank, never exclude a card.
+# Art-style scoring, applied in ``standard`` art mode only: toward the classic Magic
+# illustration look (traditional paint, modern digital painting, iconic artists), away
+# from off-brand mediums. Tag scores come from Scryfall's Tagger ``art_tags`` bulk file,
+# matched by ``illustration_id`` so the verdict is consistent across every reprint of one
+# piece of art; untagged illustrations score 0 (Tagger coverage is partial). Tag scores
+# add up — an anime digital painting nets 6 - 16 = -10 — and the total style score
+# (tags + artist) is clamped to ±_ART_STYLE_CAP. The cap sits above the highres bonus
+# (+12), so clearly better art may win as a preview-quality (lowres) image, which the
+# Card Conjurer / upscale paths render fine; it stays far below the English bonus (+64)
+# and the off-brand penalties (UB, Secret Lair, schematics), so style can never pull
+# those back in. Between two prints of the SAME illustration style is equal, so the
+# highres scan still wins.
 _ART_STYLE_SCORES: dict[str, int] = {
-    # Boost — traditional painterly media, the look people picture as "MTG".
+    # Boost — traditional paint and modern digital painting, the look people picture as "Magic".
+    # Matched on the bulk file's slug or any of its aliases. Scryfall search names oil
+    # paintings ``oil-painting-medium``; the bulk file lists the same tag as ``oil-paint``
+    # without that alias, so both names are scored (a tag matches once, never twice).
     "oil-painting-medium": 8,
+    "oil-paint": 8,
     "acrylic-paint": 6,
+    "digital-painting": 6,
     "watercolor": 4,
     "gouache": 4,
     # Penalty — off-brand for the classic fantasy-illustration aesthetic.
     "3d-render-medium": -8,
     "photograph-medium": -8,
+    "comic-style": -8,
+    "sketch": -8,
+    "cartoon": -12,
     "anime": -16,
     "pixel-art": -16,
     "ascii-medium": -16,
 }
+
+# Artists whose work defines the Magic look, from the 1993 originals to the modern house
+# style. Exact Scryfall ``artist`` spelling; a credit naming several artists ("A & B")
+# counts when any of them is listed.
+# 1993-96 originals (Mark Poole, Christopher Rush, Anson Maddocks, ...) are deliberately not
+# listed: their art stays neutral, neither boosted nor penalized.
+_ICONIC_ARTISTS = frozenset({
+    # Classic painters
+    "Aleksi Briclot", "Chris Rahn", "Daarken", "Donato Giancola", "Eric Deschamps", "Greg Staples",
+    "Howard Lyon", "Jason Chan", "John Avon", "Karl Kopinski", "Kev Walker", "Lars Grant-West",
+    "Lucas Graciano", "Mark Zug", "Matt Stewart", "Raymond Swanland", "Rebecca Guay", "rk post",
+    "Rob Alexander", "Ron Spencer", "Steve Argyle", "Terese Nielsen", "Todd Lockwood", "Wayne Reynolds",
+    # Modern digital
+    "Adam Paquette", "Chase Stone", "Chris Rallis", "Clint Cearley", "Cynthia Sheppard", "Gabor Szikszai",
+    "Igor Kieryluk", "Johannes Voss", "Kieran Yanner", "Magali Villeneuve", "Nils Hamm", "Noah Bradley",
+    "Ryan Pancoast", "Seb McKinnon", "Svetlin Velinov", "Tyler Jacobson", "Victor Adame Minguez",
+    "Volkan Baǵa", "Yongjae Choi", "Zoltan Boros",
+})
+_ICONIC_ARTIST_SCORE = 8
+_ART_STYLE_CAP = 24
+
+# Art roll (``convert`` only): within ``art_roll()``, a ``standard``-mode pick for a card
+# with no print pinned is drawn at random from the artworks scoring within this many points
+# of the best, instead of always taking the top score. Big enough to mix e.g. an iconic
+# artist's print with another digital painting; smaller than every off-brand penalty,
+# the lowres gap plus the cheapest style difference, and the English bonus.
+_ART_ROLL_WINDOW = 8
+_ART_ROLL: ContextVar[random.Random | None] = ContextVar("_ART_ROLL", default=None)
+# Set types whose print counts as an artwork's "original" release, preferred over gift
+# packs, reprint products and promos when several prints of the rolled art tie.
+_MAIN_SET_TYPES = frozenset({"expansion", "core", "draft_innovation"})
+
+
+@contextlib.contextmanager
+def art_roll(seed: int) -> Generator[None, None, None]:
+    """Randomize standard-mode artwork picks among near-equal candidates for the duration.
+
+    Reproducible: the same seed over the same decklist yields the same picks. Only bare
+    card names roll — a print that is already pinned (``current``) is never re-rolled.
+
+    Args:
+        seed: Seed for the roll.
+    """
+    token = _ART_ROLL.set(random.Random(seed))
+    try:
+        yield
+    finally:
+        _ART_ROLL.reset(token)
+
+
+def artwork_id(card: dict) -> str:
+    """Identify a print's (front) artwork; prints without an illustration id stand alone."""
+    faces = card.get("card_faces") or [{}]
+    return card.get("illustration_id") or faces[0].get("illustration_id") or card["id"]
+
+
+def _roll_artwork(alternatives: list[dict], scores: list[int], rng: random.Random) -> dict:
+    """Pick a random artwork among those within :data:`_ART_ROLL_WINDOW` of the top score.
+
+    The artwork is the random part; which print of it comes back is not: its best-scoring
+    print, preferring the art's original main-set release over reprints and promos.
+    """
+    top = max(scores)
+    # A name lookup can mix different cards that share a name (tokens: a 0/2 Illusion and a
+    # */* one); roll only among prints of the top card, never across different rules text.
+    top_oracle = alternatives[int(np.argmax(scores))].get("oracle_id")
+    groups: dict[str, list[tuple[int, dict]]] = defaultdict(list)
+    for card, card_score in zip(alternatives, scores, strict=True):
+        if card_score >= top - _ART_ROLL_WINDOW and card.get("oracle_id") == top_oracle:
+            groups[artwork_id(card)].append((card_score, card))
+    members = groups[rng.choice(sorted(groups))]
+    return min(
+        members,
+        key=lambda m: (
+            -m[0],
+            m[1].get("set_type") not in _MAIN_SET_TYPES,
+            m[1].get("released_at") or "9999-12-31",
+            m[1].get("collector_number") or "",
+        ),
+    )[1]
+
+
+def _artist_style_score(card: dict) -> int:
+    """Return the iconic-artist boost for ``card`` (0 when no credited artist is listed)."""
+    artists = re.split(r"\s+&\s+", card.get("artist") or "")
+    return _ICONIC_ARTIST_SCORE if any(a in _ICONIC_ARTISTS for a in artists) else 0
 
 
 @cache
@@ -679,7 +743,8 @@ def _illustration_style_delta() -> dict[str, int]:
 
     deltas: dict[str, int] = defaultdict(int)
     for tag in tags:
-        delta = _ART_STYLE_SCORES.get(tag.get("slug"))
+        names = [tag.get("slug"), *(tag.get("aliases") or ())]
+        delta = next((_ART_STYLE_SCORES[n] for n in names if n in _ART_STYLE_SCORES), None)
         if delta is None:
             continue
         for tagging in tag.get("taggings", ()):
@@ -723,6 +788,25 @@ def recommend_print(
 
 # Pre-2015 Magic card frames — collectively "retro" / "old-school" / "blocky".
 RETRO_FRAMES: frozenset[str] = frozenset({"1993", "1997", "2003"})
+
+# Standard mode: retro-frame prints of modern artwork (Modern Horizons / Remastered / Retro
+# Artifacts style) get this bump — the old-frame look without 90s art. +10 rather than +8 to
+# cancel the +2 every 2015-frame print gets. Old art reprinted in a retro frame (30A, DMR's
+# Alpha art) gets nothing.
+_RETRO_MODERN_ART_BONUS = 10
+_MODERN_ART_SINCE = "2015-01-01"
+
+
+@cache
+def _illustration_debut() -> dict[str, str]:
+    """Map ``illustration_id`` → release date of its earliest print (``YYYY-MM-DD``)."""
+    debut: dict[str, str] = {}
+    for card in card_by_id().values():
+        illustration_id = card.get("illustration_id")
+        released = card.get("released_at")
+        if illustration_id and released and released < debut.get(illustration_id, "9999-12-31"):
+            debut[illustration_id] = released
+    return debut
 
 
 def recommend_print(
@@ -789,7 +873,6 @@ def recommend_print(
     # Without --allow-low-res, low-res preferred-set prints are filtered out so the recommender can
     # fall back to high-res alternatives in other sets. With --allow-low-res, the preferred-set
     # restriction is absolute regardless of resolution.
-    preferred_set_restricted = False
     if preferred_sets:
         preferred_set_codes = {ps.lower() for ps in preferred_sets}
         in_preferred = [a for a in alternatives if a.get("set") in preferred_set_codes]
@@ -797,7 +880,6 @@ def recommend_print(
             in_preferred = [a for a in in_preferred if a.get("highres_image")]
         if in_preferred:
             alternatives = in_preferred
-            preferred_set_restricted = True
         else:
             # The user picked --set <X> but no qualifying print exists. Fall through
             # so the function still returns something, but log so a caller / log reader
@@ -832,6 +914,10 @@ def recommend_print(
         if borderless:
             alternatives = borderless
 
+    def _style_score(card: dict) -> int:
+        style = _illustration_style_delta().get(card.get("illustration_id") or "", 0) + _artist_style_score(card)
+        return max(-_ART_STYLE_CAP, min(_ART_STYLE_CAP, style))
+
     def score(card: dict) -> int:
         points = 0
         frame_effects = set(card.get("frame_effects", []))
@@ -848,7 +934,7 @@ def recommend_print(
             points += 1
         if prefer_retro_frame:
             # Replaces the +2 "modern frame" bonus with a heavy retro boost. Must outrank
-            # combined highres (+32) + en (+64) + black border (+8) so any retro print
+            # combined highres (+12) + en (+64) + black border (+8) so any retro print
             # beats a polished modern one when both exist.
             if card["frame"] in RETRO_FRAMES:
                 points += 128
@@ -861,13 +947,20 @@ def recommend_print(
         if card["collector_number"][-1] not in ["p", "s"] and card["nonfoil"]:
             points += 16
         if card["highres_image"]:
-            points += 32
+            # Small on purpose: Scryfall's "lowres" images are mostly official previews at the
+            # same pixel size as scans (softer, but no print dots), and 2023+ art often exists
+            # only that way. Enough to prefer the scan of the same art; not enough to bury better art.
+            points += 12
         if card["lang"] == "en":
             points += 64
 
         if art_preference == "standard":
-            style = _illustration_style_delta().get(card.get("illustration_id") or "", 0)
-            return points + style - _standard_art_penalty(card, preferred_sets=preferred_sets)
+            if (
+                card["frame"] in RETRO_FRAMES
+                and _illustration_debut().get(card.get("illustration_id") or "", "") >= _MODERN_ART_SINCE
+            ):
+                points += _RETRO_MODERN_ART_BONUS
+            return points + _style_score(card) - _standard_art_penalty(card, preferred_sets=preferred_sets)
 
         if _has_flashy_treatment(card):
             points += 48
@@ -887,23 +980,15 @@ def recommend_print(
     if mode == "best":
         best_index = int(np.argmax(scores))
         best_card = alternatives[best_index]
-
-        # Skip the standard-art "lowres → highres elsewhere" fallback when we're restricted to
-        # the user's preferred set — they opted in, so respect it.
-        if art_preference == "standard" and not best_card.get("highres_image", False) and not preferred_set_restricted:
-            best_card = _select_standard_fallback(alternatives, scores)
+        rng = _ART_ROLL.get()
+        if rng is not None and current is None and art_preference == "standard":
+            best_card = _roll_artwork(alternatives, scores, rng)
 
         if current is not None:
             if current["id"] == best_card["id"]:
                 return current  # No better recommendation
-            # If the fallback did not override the argmax winner, preserve current on score
-            # ties. (When the fallback overrides, we want the upgrade even on a score tie.)
-            fallback_did_not_override = best_card is alternatives[best_index]
-            if (
-                fallback_did_not_override
-                and current in alternatives
-                and scores[alternatives.index(current)] == scores[best_index]
-            ):
+            # Preserve current on score ties.
+            if current in alternatives and scores[alternatives.index(current)] == scores[best_index]:
                 return current
 
         # Return print with highest score
