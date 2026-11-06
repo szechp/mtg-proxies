@@ -64,6 +64,9 @@ _TRIMS = (
     (0, 0, 0, 0.2),
 )
 
+# Curated list of MTGPics images known to be wrong for their printing (committed, short).
+BLOCKLIST = Path(__file__).with_name("mtgpics_blocklist.txt")
+
 _OVERLAY_WORDS = re.compile(
     r"WIZARD|COAST|GATHERING|WOTC|TOLKIEN|MIDDLE.?EARTH|LORD.{0,6}RINGS|UNIVERSES ?BEYOND|©|\(C\)|\bMEE\b"
     r"|\bMAGIC\b|WWW\.|\.COM\b|ARTSTATION|INSTAGRAM|ARTIST:",
@@ -241,6 +244,29 @@ def overlay_text(path: Path, artist: str = "", card_name: str = "") -> list[str]
     return flag_overlay_text([(r[1], float(r[2])) for r in result or []], artist, card_name)
 
 
+@cache
+def _blocklist() -> dict[tuple[str, str], str]:
+    entries = {}
+    try:
+        lines = BLOCKLIST.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return entries
+    for line in lines:
+        parts = line.split(None, 2)
+        if len(parts) >= 2 and not line.lstrip().startswith("#"):
+            entries[parts[0].lower(), parts[1]] = parts[2].strip() if len(parts) > 2 else "listed"
+    return entries
+
+
+def curated_rejection(set_code: str, collector_number: str) -> str | None:
+    """Return why this printing's MTGPics image is on the curated blocklist, or None.
+
+    The blocklist (:data:`BLOCKLIST`) holds the few images the automatic check cannot catch, such
+    as a redraw that keeps the original's composition and colours.
+    """
+    return _blocklist().get(((set_code or "").lower(), str(collector_number or "")))
+
+
 def check_mtgpics_art(candidate: Path, reference: Path, card: dict) -> Verdict:
     """Decide whether an MTGPics image may stand in for the card's Scryfall art (cached).
 
@@ -249,6 +275,9 @@ def check_mtgpics_art(candidate: Path, reference: Path, card: dict) -> Verdict:
         reference: Scryfall's ``art_crop`` for the same printing.
         card: The card's Scryfall object (``artist`` and ``name`` are used).
     """
+    listed = curated_rejection(card.get("set", ""), card.get("collector_number", ""))
+    if listed:
+        return Verdict(False, f"on the curated list of wrong MTGPics art: {listed}")
     sidecar = candidate.with_name(candidate.name + ".check.json")
     ocr = ocr_available()
     try:

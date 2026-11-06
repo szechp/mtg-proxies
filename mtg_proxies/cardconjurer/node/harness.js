@@ -1257,6 +1257,11 @@ function countWrappedLines(text, boxWidthPx, fontPx) {
 // vertical centring puts 0.075 x size above the box centre. So the shift is solved per badge.
 const PW_ABILITY_PAD = 0.55;
 const EIGHTH_PW_INSET = 14;
+// Each pack's own ability x / width (packPlaneswalkerEighth.js ours, packPlaneswalkerSeventh.js CC's).
+const PW_ABILITY_BASE = {
+    planeswalkerEighth: { x: 362 / 2010, width: 1446 / 2010 },
+    planeswalkerSeventh: { x: 0.18, width: 0.70 },
+};
 // versionPlaneswalker.js draws modern's alternating ability stripes for every version except
 // SDCC15 / Seventh. An 8th card has a plain textbox like Seventh, so wrap planeswalkerEdited
 // (installed once; the engine calls it by its global name) to wipe the stripes on 8th cards.
@@ -1274,43 +1279,23 @@ function hidePlaneswalkerStripesOnEighth() {
     global.planeswalkerEdited = wrapped;
 }
 const PW_BADGE_NUMBER_CENTER = { plus: 0.0072, minus: 0.0081, neutral: 0.0091 };
-// Whether the loaded art has black rounded-off corners (Scryfall's art_crop of a card with a
-// rounded art window, e.g. every regular planeswalker frame): at least three of its corners stay
-// near-black for ROUNDED_CORNER_MIN of the width along the diagonal. Full art (MTGPics) doesn't.
-const ROUNDED_CORNER_MIN = 0.015;
-// Corner radius measured on Scryfall's planeswalker crops: ~11% of the width, so the arc reaches
-// 0.29 x 11% = 3.2% in from each edge along the diagonal; cropping 4% per side clears it.
-const ROUNDED_CORNER_ZOOM = 1.08;
-function artHasRoundedCorners() {
-    const art = unwrap(global.art);
-    if (!art || !art.width || !art.height) return false;
-    const w = 200, h = Math.max(1, Math.round(200 * art.height / art.width));
-    const ctx = createCanvas(w, h).getContext('2d');
-    try { ctx.drawImage(art, 0, 0, w, h); } catch { return false; }
-    const px = ctx.getImageData(0, 0, w, h).data;
-    const lum = (x, y) => { const i = (y * w + x) * 4; return (px[i] + px[i + 1] + px[i + 2]) / 3; };
-    const steps = Math.max(2, Math.round(ROUNDED_CORNER_MIN * w));
-    const corners = [[0, 0, 1, 1], [w - 1, 0, -1, 1], [0, h - 1, 1, -1], [w - 1, h - 1, -1, -1]];
-    const dark = corners.filter(([x, y, dx, dy]) =>
-        [...Array(steps).keys()].every((k) => lum(x + dx * k, y + dy * k) < 40));
-    return dark.length >= 3;
-}
-function zoomPastRoundedArtCorners() {
-    if (!artHasRoundedCorners()) return;
-    const zoomEl = querySelector('#art-zoom'), xEl = querySelector('#art-x'), yEl = querySelector('#art-y');
-    const zoom = parseFloat(zoomEl.value) / 100;
-    if (!zoom) return;
-    const grown = zoom * ROUNDED_CORNER_ZOOM;
-    xEl.value = Math.round(parseFloat(xEl.value) - (grown - zoom) * global.art.width / 2);
-    yEl.value = Math.round(parseFloat(yEl.value) - (grown - zoom) * global.art.height / 2);
-    zoomEl.value = (grown * 100).toFixed(1);
-    global.artEdited();
-}
-
 function equalizePlaneswalkerAbilities(boxTop, boxHeight) {
     const text = global.card.text;
     const count = global.card.planeswalker?.count || 0;
     if (count < 1 || typeof global.planeswalkerEdited !== 'function') return;
+    // versionPlaneswalker.js moves a cost-less (static) ability 0.044 left and remembers every
+    // ability's normal x/width in card.planeswalker.orig_ability_textbox_* the first time it sees
+    // one -- but that memory outlives the card, and it has been seen holding an already-shifted x,
+    // which pushed every costed ability's text under its badge. Reset it to the pack's own values.
+    const base = PW_ABILITY_BASE[global.card.version];
+    if (base) {
+        global.card.planeswalker.orig_ability_textbox_x = base.x;
+        global.card.planeswalker.orig_ability_textbox_width = base.width;
+        for (let i = 0; i < 4; i++) {
+            if (text['ability' + i]) Object.assign(text['ability' + i], { x: base.x, width: base.width });
+        }
+        global.planeswalkerEdited();
+    }
     const cardWidth = global.card.width, cardHeight = global.card.height;
     const abilities = [...Array(count).keys()].map((i) => text['ability' + i]);
     const texts = abilities.map((a) => a?.text || '');
@@ -3174,11 +3159,6 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     }
     if (specialLayout?.planeswalker && typeof global.planeswalkerEdited === 'function') {
         global.planeswalkerEdited();
-    }
-    // Scryfall's art_crop of a planeswalker is cut from its rounded art window, so its corners
-    // are black curves; the square 8th / Seventh art windows would show them. Zoom past them.
-    if (specialLayout?.planeswalker && (frame === '8th' || frame === 'retro') && !specialLayout.classicshifted) {
-        zoomPastRoundedArtCorners();
     }
 
     // De-overlap the type line vs the set symbol. MUST run here, after the image drain above —

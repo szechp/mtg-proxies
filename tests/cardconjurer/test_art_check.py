@@ -172,3 +172,14 @@ def test_full_frame_uses_the_image_itself(tmp_path: Path) -> None:
     path = _save(_painting(5), tmp_path / "m.jpg")
     assert framed_art(path, (0.01, 0.0, 1.0, 0.99)) == path
     assert framed_art(path, None) == path
+
+
+def test_curated_blocklist_rejects_before_any_check(tmp_path: Path) -> None:
+    from mtg_proxies.cardconjurer import art_check
+
+    m, s = _pair(tmp_path, same=True)
+    with patch.object(art_check, "_locate", side_effect=AssertionError("checked")):
+        verdict = art_check.check_mtgpics_art(m, s, {"set": "WAR", "collector_number": "169"})
+    assert not verdict.ok
+    assert "curated" in verdict.reason and "stained-glass" in verdict.reason
+    assert art_check.curated_rejection("war", "170") is None
