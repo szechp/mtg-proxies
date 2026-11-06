@@ -286,13 +286,14 @@ def compose_variant(t: _Template, code: str, size: str = SIZE) -> np.ndarray:
         t: The template.
         code: packSeventh frame code (:data:`VARIANTS`).
         size: The template's frame size: "Normal" for ordinary cards, "Saga" for sagas (chapter
-            textbox on the left, tall art window on the right, reminder box at the bottom).
+            textbox on the left, tall art window on the right, reminder box at the bottom),
+            "Class" for classes (the saga layout mirrored: art left, levels right).
     """
     adventure = size == "Adventure"
     SIZE = "Normal" if adventure else size  # shadows the module default for this composite
     recipe = VARIANTS[code]
     identity = recipe["identity"]
-    saga = size == "Saga"
+    saga = size in ("Saga", "Class")  # the tall inset layouts share every rule
     is_land = "land" in recipe and not saga and not adventure  # no pinlines on sagas / adventure boxes
     out = np.zeros((t.height, t.width, 4), np.float32)
 
@@ -338,7 +339,7 @@ def compose_variant(t: _Template, code: str, size: str = SIZE) -> np.ndarray:
                 fills = [layer for layer in fills if layer.name == land_color]
             for fill in fills:
                 _blend(out, t.fill_color(fill), mask * (fill.opacity / 255), fill.blend_mode.name)
-        # White, blue and red sagas also carry the template's chapter-box lines (Proxyshop
+        # White, blue and red sagas / classes also carry the template's chapter-box lines (Proxyshop
         # enables the size's sub-group of their textbox bevel when the card has no pinlines).
         if saga and identity in {"W", "U", "R"}:
             for layer in t.find("Card Frame", "Textbox Bevels", identity, size):
@@ -439,6 +440,10 @@ def adventure_spell_panel(t: _Template, code: str, side: str) -> np.ndarray:
 ADVENTURE_CODES = ["w", "u", "b", "r", "g", "m", "a", "c", "l"]
 
 SAGA_CODES = ["w", "u", "b", "r", "g", "m", "l"]  # packClassicshiftedSaga's frames
+CLASS_CODES = ["w", "u", "b", "r", "g", "m", "a", "c", "l"]  # packClass's regular frames
+# The template's class level header (Class > Stage): a bar above the cost / "Level N" line and a
+# divider line under it, together the 0.0481-card-height band CC's versionClass draws per level.
+CLASS_HEADER = ("Line", "Divider Line")
 SAGA_EXTRAS = ["I", "II", "III", "IV", "V", "VI", "Divider"]
 
 
@@ -465,6 +470,31 @@ def build_saga_extras(t: _Template, out_dir: Path) -> list[Path]:
         written.append(path)
     (saga_dir / "extras.json").write_text(json.dumps(positions, indent=1))
     return written
+
+
+def build_class_extras(t: _Template, out_dir: Path) -> list[Path]:
+    """Write the template's class level header (bar + divider) as one tight crop.
+
+    ``class/extras.json`` records the crop's box in card pixels (left, top, width, height).
+    """
+    import json
+
+    class_dir = out_dir / "frames" / "class"
+    class_dir.mkdir(parents=True, exist_ok=True)
+    layers = [t.find("Class", "Stage", name) for name in CLASS_HEADER]
+    x0 = min(layer.bbox[0] for layer in layers)
+    y0 = min(layer.bbox[1] for layer in layers)
+    x1 = max(layer.bbox[2] for layer in layers)
+    y1 = max(layer.bbox[3] for layer in layers)
+    canvas = np.zeros((t.height, t.width, 4), np.float32)
+    for layer in layers:
+        img = t.rgba(layer)
+        _over(canvas, img[..., :3], img[..., 3])
+    cx0, cy0 = x0 - CARD_BOX[0], y0 - CARD_BOX[1]
+    path = class_dir / "header.png"
+    card_area(canvas).crop((cx0, cy0, cx0 + (x1 - x0), cy0 + (y1 - y0))).save(path, optimize=True)
+    (class_dir / "extras.json").write_text(json.dumps({"header": [cx0, cy0, x1 - x0, y1 - y0]}, indent=1))
+    return [path]
 
 
 def card_area(full: np.ndarray) -> Image.Image:
@@ -542,6 +572,21 @@ def _build_saga_frame(code: str, out_dir: Path) -> list[Path]:
     return [path]
 
 
+def _build_class_frame(code: str, out_dir: Path) -> list[Path]:
+    """Worker task: one class frame image."""
+    assert _worker_template is not None
+    path = out_dir / "frames" / "class" / f"{code}.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    card_area(compose_variant(_worker_template, code, "Class")).save(path, optimize=True)
+    return [path]
+
+
+def _build_class_extras(out_dir: Path) -> list[Path]:
+    """Worker task: the class level header."""
+    assert _worker_template is not None
+    return build_class_extras(_worker_template, out_dir)
+
+
 def _build_adventure_frame(code: str, out_dir: Path) -> list[Path]:
     """Worker task: one adventure frame (creature colour) and its spell panels (spell colour, both sides)."""
     assert _worker_template is not None
@@ -609,7 +654,9 @@ def build(
         out_dir: Where ``frames/`` and ``crown/`` go.
         codes: Frame codes to build: packSeventh codes (:data:`VARIANTS`), ``saga-<code>`` for a
             saga frame (:data:`SAGA_CODES`), ``saga-extras`` for the chapter badges and divider,
-            ``adventure-<code>`` for an adventure frame (:data:`ADVENTURE_CODES`) and its spell box.
+            ``adventure-<code>`` for an adventure frame (:data:`ADVENTURE_CODES`) and its spell box,
+            ``class-<code>`` for a class frame (:data:`CLASS_CODES`), ``class-extras`` for the level
+            header.
             Default: all of them.
         jobs: Worker processes (default: :func:`default_jobs`).
 
@@ -628,6 +675,8 @@ def build(
         *(f"saga-{c}" for c in SAGA_CODES),
         "saga-extras",
         *(f"adventure-{c}" for c in ADVENTURE_CODES),
+        *(f"class-{c}" for c in CLASS_CODES),
+        "class-extras",
     ]
     jobs = jobs or default_jobs(len(codes) + 1)
     sys.stdout.write(f"building {len(codes)} frames + masks with {jobs} worker(s)\n")
@@ -637,6 +686,10 @@ def build(
         for code in codes:
             if code == "saga-extras":
                 futures.append(pool.submit(_build_saga_extras, out_dir))
+            elif code == "class-extras":
+                futures.append(pool.submit(_build_class_extras, out_dir))
+            elif code.startswith("class-"):
+                futures.append(pool.submit(_build_class_frame, code.removeprefix("class-"), out_dir))
             elif code.startswith("adventure-"):
                 futures.append(pool.submit(_build_adventure_frame, code.removeprefix("adventure-"), out_dir))
             elif code.startswith("saga-"):

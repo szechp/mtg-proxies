@@ -364,15 +364,17 @@ function fitSagaBannerToEighth(layer) {
 // own content and the slack spread evenly.
 const CLASS_COLUMN = { top: 0.1129, bottom: 0.8368, header: 0.0481 };
 const CLASS_LEVEL_PAD = 0.7;
-function layoutClassLevels() {
+function layoutClassLevels(column = CLASS_COLUMN) {
     const text = global.card.text;
-    const count = Math.min(4, global.card.class?.count || 0);
+    // Levels in use, from their text: classEdited replaces card.class (getCardClass) and drops the
+    // count the import put there, so card.class.count is gone by the time a retro layout runs.
+    const count = [0, 1, 2, 3].filter((i) => i === 0 || (text[`level${i}c`]?.text || '').trim()).length;
     if (count < 1 || typeof global.classEdited !== 'function') return;
     const cardWidth = global.card.width, cardHeight = global.card.height;
     const levels = [...Array(count).keys()].map((i) => text[`level${i}c`]);
     const texts = levels.map((l) => (l.text || '').replace(/\{lns\}\{bar\}\{lns\}/g, '\n\n'));
     const widths = levels.map((l) => l.width * cardWidth * 0.95);
-    const spanPx = (CLASS_COLUMN.bottom - CLASS_COLUMN.top - CLASS_COLUMN.header * (count - 1)) * cardHeight;
+    const spanPx = (column.bottom - column.top - column.header * (count - 1)) * cardHeight;
     let fontPx = 40;
     let lines = texts.map((t, i) => countWrappedLines(t, widths[i], fontPx));
     for (let px = Math.round((levels[0].size || 0.0305) * cardHeight); px >= 40; px--) {
@@ -385,7 +387,7 @@ function layoutClassLevels() {
     }
     const content = lines.map((n) => (n + CLASS_LEVEL_PAD) * fontPx);
     const slack = Math.max(0, spanPx - content.reduce((a, b) => a + b, 0)) / count;
-    text.level0c.y = CLASS_COLUMN.top;
+    text.level0c.y = column.top;
     for (const level of levels) level.size = fontPx / cardHeight;
     for (let i = 0; i < 4; i++) {
         querySelector(`#class-height-${i}`).value = i < count ? Math.round(content[i] + slack) : 0;
@@ -637,11 +639,20 @@ const SAGA_FRAME_SRC = /^\/img\/frames\/custom\/classicshifted\/saga\/([a-z]+)\.
 const SAGA_EXTRA_SRC = {
     '/img/frames/saga/sagaDivider.png': 'saga/divider.png',
     '/img/frames/saga/sagaChapter.png': null,
+    // CC's class level header -> the template's (bar + divider; retro_hd.build_class_extras).
+    '/img/frames/class/header.png': 'class/header.png',
 };
+// packClass's regular frames (/img/frames/class/<code>.png) -> the template's class frames.
+const CLASS_FRAME_SRC = /^\/img\/frames\/class\/([a-z])\.png$/;
 const TRANSPARENT_PNG = createCanvas(1, 1).toDataURL('image/png');
 function retroHdFrame(src) {
     if (!retroHdFrames) return null;
     if (src in SAGA_EXTRA_SRC && SAGA_EXTRA_SRC[src] === null) return TRANSPARENT_PNG;
+    const classFrame = CLASS_FRAME_SRC.exec(src);
+    if (classFrame) {
+        const file = path.join(retroHdFrames, 'class', classFrame[1] + '.png');
+        return fs.existsSync(file) ? file : null;
+    }
     const saga = SAGA_FRAME_SRC.exec(src);
     if (saga) {
         const file = path.join(retroHdFrames, 'saga', saga[1] + '.png');
@@ -1647,6 +1658,81 @@ const RETRO_HD_SAGA = {
     divider: { x: 244 / HD_W, width: 661 / HD_W },
 };
 
+// --retro-hd classes: the Proxyshop template's class layout -- the saga layout mirrored (art left,
+// levels right; RETRO_HD_SAGA), card pixels. CC's class engine draws each level header
+// (versionClass.js: classHeader at card.class.x / width, 0.0481 tall) -- remapped to the template's
+// own header (bar + divider, x 1114-1762) -- so getCardClass reports that column, and classEdited
+// stretches the last level to its own fixed 0.8368 bottom: both are corrected for these cards.
+const RETRO_HD_CLASS = {
+    column: { top: 280 / HD_H, bottom: (2111 - 10) / HD_H, header: 0.0481 },
+    levelX: 1114 / HD_W, levelWidth: 640 / HD_W,
+    header: { x: 1114 / HD_W, width: 648 / HD_W },
+    headerText: 62 / HD_H,
+    art: { x: 227 / HD_W, y: 278 / HD_H, width: (1003 - 227) / HD_W, height: (2114 - 278) / HD_H },
+};
+function installRetroClassHooks() {
+    if (typeof global.getCardClass === 'function' && !global.getCardClass._retroHd) {
+        const original = global.getCardClass;
+        const wrapped = function () {
+            return global.card._retroHdClass ? { ...RETRO_HD_CLASS.header } : original();
+        };
+        wrapped._retroHd = true;
+        global.getCardClass = wrapped;
+    }
+    if (typeof global.classEdited === 'function' && !global.classEdited._retroHd) {
+        const original = global.classEdited;
+        const wrapped = function () {
+            original();
+            if (!global.card._retroHdClass) return;
+            const text = global.card.text;
+            const count = [0, 1, 2, 3].filter((i) => i === 0 || (text[`level${i}c`]?.text || '').trim()).length;
+            const last = text[`level${count - 1}c`];
+            if (last && last.y < 1) last.height = RETRO_HD_CLASS.column.bottom - last.y;
+            global.drawTextBuffer?.();
+            global.drawCard?.();
+        };
+        wrapped._retroHd = true;
+        global.classEdited = wrapped;
+    }
+}
+function layoutRetroClass(scry) {
+    const text = global.card.text;
+    const g = RETRO_HD_CLASS;
+    global.card._retroHdClass = true;
+    installRetroClassHooks();
+    // CC loads the class header image once; make it reload through the current (HD) remap.
+    if (global.classHeader) global.classHeader.src = '';
+    text.title.font = 'goudymedieval';
+    text.title.size = 0.041;
+    delete text.type.font;
+    global.card.bottomInfo = {
+        top: { text: 'Illus. {elemidinfo-artist}', x: 0.1, y: 1908 / 2100, width: 0.8, height: 0.0267, oneLine: true,
+               size: 0.0267, align: 'center', shadowX: 0.0021, shadowY: 0.0015, color: 'white' },
+        wizards: { name: 'wizards', text: '{elemidinfo-number}', x: 0.1, y: 1933 / 2100, width: 0.8, height: 0.0172,
+                   oneLine: true, size: 0.0172, align: 'center', shadowX: 0.0014, shadowY: 0.001, color: 'white' },
+    };
+    applyRetroHdLayout(text, { title: RETRO_HD_TEXT.title, mana: RETRO_HD_TEXT.mana });
+    Object.assign(text.type, { x: RETRO_HD_TEXT.type.x, width: RETRO_HD_TEXT.type.width, ...hdLine(RETRO_HD_SAGA.typeBaseline, 96) });
+    // The reminder ("Gain the next level as a sorcery...") goes to the template's bottom box, as on
+    // the template; CC's import prefixes it to level 1 with a bar.
+    const [head, ...rest] = String(text.level0c.text || '').split('{lns}{bar}{lns}');
+    const reminder = rest.length ? head : '';
+    if (rest.length) text.level0c.text = rest.join('{lns}{bar}{lns}');
+    text.reminder = { name: 'Reminder Text', ...RETRO_HD_SAGA.reminder, text: reminder };
+    for (let i = 0; i < 4; i++) {
+        Object.assign(text[`level${i}c`], { x: g.levelX, width: g.levelWidth });
+        for (const part of ['a', 'b']) {
+            const region = text[`level${i}${part}`];
+            if (region) Object.assign(region, { x: g.levelX, width: g.levelWidth, size: g.headerText, height: g.headerText * 1.25 });
+        }
+    }
+    global.card.artBounds = { ...g.art };
+    global.autoFitArt();
+    global.card.setSymbolBounds = { ...global.card.setSymbolBounds, x: 0.9, y: 0.5739 + 587 / HD_H, width: 0.12, height: 0.0372 };
+    if (typeof global.resetSetSymbol === 'function') global.resetSetSymbol();
+    layoutClassLevels(g.column);
+}
+
 // The saga reminder line, as the template prints it: the oracle text before the first chapter
 // (CC's extractSagaReminderText only knows the standard lore-counter sentence and returns null for
 // e.g. Read ahead), with Read ahead's long reminder swapped for Proxyshop's abridged one.
@@ -2466,7 +2552,7 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     }
     global.importCard(processed);
     for (const key of planeswalkerImportStubKeys) delete global.card.text[key];
-    if (specialLayout?.kind === 'class') layoutClassLevels();
+    if (specialLayout?.kind === 'class' && frame === '8th') layoutClassLevels();
 
     // importCard's native ability-height split (creator-23.js) divides a hardcoded
     // 0.2915 card-height budget evenly across the abilities, starting at
@@ -2700,8 +2786,17 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     };
 
     global.card._eighthSaga = specialLayout?.kind === 'saga' && frame === '8th';
+    global.card._retroHdClass = false;  // layoutRetroClass sets it for --retro-hd classes
     if ((specialLayout?.kind === 'saga' || specialLayout?.kind === 'class') && frame === '8th') {
         await buildEighthInsetFrame(specialLayout.kind, getFrameNameForFace(pristineFace));
+    } else if (specialLayout?.kind === 'class') {
+        // --retro-hd: packClass's regular frame, remapped to the template's class frame.
+        const regular = getFrameNameForFace(pristineFace).replace(/ Frame$/, ' Regular Frame');
+        global.selectedMaskIndex = 0;
+        if (!await addFrameByName([regular, 'Multicolored Regular Frame'])) {
+            throw new Error(`class: no frame for ${regular}`);
+        }
+        layoutRetroClass(scry);
     } else if (specialLayout?.kind === 'saga') {
         // packClassicshiftedSaga ships White/Blue/Black/Red/Green/Multicolored/Land frames.
         const sagaFrame = getFrameNameForFace(pristineFace);
@@ -3385,6 +3480,7 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     // addRetroLegendCrown. Single-faced cards only, planeswalkers included: packPlaneswalkerSeventh
     // draws on the same Seventh frame images (DFC faces carry Classicshifted's own crown).
     if (crown && !dfcFace && frame === 'retro' && scry.layout !== 'token' && scry.layout !== 'flip'
+        && specialLayout?.kind !== 'class'  // the crown replays Seventh frame layers; classes have none
         && /Legendary/.test(pristineFace.type_line || scry.type_line || '')) {
         await addRetroLegendCrown(retroHd ? path.join(RETRO_HD_ROOT, 'crown') : RETRO_CROWN_DIR);
     }
@@ -3550,7 +3646,7 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
         }
     }
 
-    if (retroHd && !specialLayout?.planeswalker && specialLayout?.kind !== 'saga') {
+    if (retroHd && !specialLayout?.planeswalker && specialLayout?.kind !== 'saga' && specialLayout?.kind !== 'class') {
         applyRetroHdLayout(global.card.text, RETRO_HD_TEXT);
     }
     // --retro-hd adventure / prepare: the textbox (203,1675)-(1807,2504) splits at x 1008. The
@@ -3876,7 +3972,7 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
     // Sagas render only under --retro-hd (the HD template's saga frames); plain --retro and every
     // other frame keep falling back to the Scryfall scan.
     const rendersHere = (special?.kind === 'saga' && (retroHd || special.frame === '8th'))
-        || (special?.kind === 'class' && special.frame === '8th');
+        || (special?.kind === 'class' && (retroHd || special.frame === '8th'));
     const skipReason = rendersHere ? null : shouldSkip(scry);
     if (skipReason) {
         throw new Error(`${skipReason} not supported on ${frame} frame — fall back to Scryfall image`);

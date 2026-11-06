@@ -82,6 +82,12 @@ function resolveSpecialLayout(scry, requestedFrame = 'auto') {
     if (scry.layout === 'saga' && requestedFrame === '8th') {
         return { kind: 'saga', frame: '8th', pack: ['pack8th.js', 'packSagaRegular.js'], forceSplit: false };
     }
+    // Classes on retro: CC's class engine (versionClass.js) over the Proxyshop template's class
+    // frame -- --retro-hd only (harness renderCard lets them through only then; plain --retro has
+    // no class frame and keeps the scan fallback, like sagas).
+    if (scry.layout === 'class' && requestedFrame === 'retro') {
+        return { kind: 'class', frame: 'retro', pack: 'packClass.js', forceSplit: false };
+    }
     if (scry.layout === 'class' && requestedFrame === '8th') {
         return { kind: 'class', frame: '8th', pack: ['pack8th.js', 'packClass.js'], forceSplit: false };
     }
