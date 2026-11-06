@@ -855,6 +855,7 @@ def _apply_per_card_modelines(
     # the Scryfall scan.
     if any(any(d.verb == "cardconjurer" for d in dl) for dl in parsed):
         from mtg_proxies.cardconjurer.per_card import (
+            CardConjurerRenderError,
             CardConjurerRequest,
             _default_cache_root,
             render_per_card_batch,
@@ -973,7 +974,15 @@ def _apply_per_card_modelines(
                 break  # one directive per card is enough; ignore stacked duplicates
 
         if cc_requests:
-            rendered = render_per_card_batch(cc_requests)
+            try:
+                rendered = render_per_card_batch(cc_requests)
+            except CardConjurerRenderError as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                print(
+                    "Change those cards' #cardconjurer frame (e.g. --modern) or remove the modeline.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1) from exc
             for slot_id, png_path in rendered.items():
                 for slot in cc_slots_by_id.get(slot_id, []):
                     _write(slot, str(png_path))
@@ -2300,7 +2309,11 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
         post_process=post_process_cb,
         filename_prefix_by_slot=filename_prefix_by_slot,
     )
-    print(f"[cardconjurer] {summary['ok']}/{summary['total']} rendered, {summary['skipped']} skipped")
+    errors = summary.get("errors") or []
+    print(
+        f"[cardconjurer] {summary['ok']}/{summary['total']} rendered, {summary['skipped']} skipped"
+        + (f", {len(errors)} FAILED" if errors else "")
+    )
     if frame_scale_stats["scaled"]:
         print(
             f"[cardconjurer] frame scaling: {frame_scale_stats['scaled']} frames grown "
@@ -2318,7 +2331,18 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
                 + (f" ({mtgpics_stats['rejected']} MTGPics images rejected: wrong art or overlay text)"
                    if mtgpics_stats["rejected"] else "")
             )
-
+    if errors:
+        # Cards that cannot be rendered as asked were neither rendered nor replaced by a scan:
+        # say so loudly and fail the run, rather than leave a wrong or missing card unnoticed.
+        print(f"\nERROR: {len(errors)} card(s) could not be rendered as requested:", file=sys.stderr)
+        for name, reason in errors:
+            print(f"  - {name}: {reason}", file=sys.stderr)
+        print(
+            "Change their frame with a per-card modeline (e.g. `#cardconjurer --modern`) or render "
+            "them another way; they are listed in report.csv as 'error'.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
 
 
 def main() -> None:

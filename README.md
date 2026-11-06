@@ -527,6 +527,10 @@ through their native layouts. Single-faced planeswalkers also render in the 8th 
 Sagas and Classes render in the 8th frame with `--8th`: the 8th outer frame around Card Conjurer's
 modern saga / class layout (chapter badges, level headers).
 Generated tokens use Card Conjurer's Old Bordered token frame.
+A card that cannot be rendered the way you asked (an adventure or double-faced planeswalker on `--8th`,
+a flip card off `--modern`, any battle, ...) fails loudly: it is not rendered or swapped for a scan,
+the run lists it with the reason and exits with an error. Give it its own frame with a modeline
+(`#cardconjurer --modern`).
 
 ```bash
 make cardconjurer                                   # one-time lazy clone of the Card Conjurer source

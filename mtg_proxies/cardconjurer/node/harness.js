@@ -378,6 +378,41 @@ function layoutClassLevels() {
     global.classEdited();
 }
 
+// Why a card cannot be rendered as requested, or null. Checked before rendering so such a card
+// fails loudly (status 'error') rather than silently coming out in another frame or a broken
+// layout. With no frame flag (auto) each card takes the frame it was printed in, so only the
+// layouts we cannot draw at all count there.
+const FRAME_LABEL = { '8th': '8th', modern: 'modern', 'm15-8th': 'M15-8th', retro: 'retro', borderless: 'borderless' };
+function unsupportedRequest(scry, requestedFrame, special, { dfcSplit, retroHd }) {
+    const typeLine = scry.type_line || '';
+    if (/\bBattle\b/.test(typeLine)) return 'battles (sideways cards) are not supported in any frame';
+    if (requestedFrame === 'auto' || requestedFrame === 'station') return null;
+    const asked = FRAME_LABEL[requestedFrame] || requestedFrame;
+    if (special?.kind === 'invalid') return null;  // renderCard reports these
+    if (special && special.frame !== requestedFrame
+            && !(retroHd && requestedFrame === 'retro' && ['adventure', 'prepare'].includes(scry.layout))) {
+        const what = special.kind === 'planeswalker-dfc' ? 'double-faced planeswalker'
+            : special.kind === 'planeswalker' ? 'planeswalker' : `${scry.layout} card`;
+        return `no ${asked} layout for this ${what}: it would render in the ${FRAME_LABEL[special.frame] || special.frame} frame`;
+    }
+    if (scry.layout === 'flip' && requestedFrame !== 'modern') {
+        return `flip cards only render in the modern flip frame, not ${asked}`;
+    }
+    if (scry.layout === 'reversible_card' && requestedFrame !== 'modern') {
+        return `reversible cards only render as a modern flip card, not ${asked}`;
+    }
+    if (scry.layout === 'modal_dfc' && dfcSplit && requestedFrame === '8th') {
+        return 'no 8th layout for modal double-faced cards: it would render in the M15-8th hybrid frame';
+    }
+    if (requestedFrame === 'borderless' && ['transform', 'modal_dfc'].includes(scry.layout)) {
+        return 'no borderless layout for double-faced cards: it would render in the modern frame';
+    }
+    if (isStationCard(scry) && requestedFrame !== 'modern') {
+        return `Station cards only render in their own modern frame, not ${asked}`;
+    }
+    return null;
+}
+
 // Battlement legend crown for retro (Seventh) legendaries. Seventh predates crowns, so the
 // art is ours: mtg_proxies/cardconjurer/retro_crown.py generates one layer per Seventh frame
 // image (transparent except the crown band above the stock top edge) plus a crown version of
@@ -4028,6 +4063,16 @@ async function runOneJob(job) {
         if (dfcSplit && job.art_path_back && scry.card_faces && scry.card_faces[1]) {
             scry.card_faces[1].image_uris = scry.card_faces[1].image_uris || {};
             scry.card_faces[1].image_uris.art_crop = job.art_path_back;
+        }
+
+        // A card that cannot be rendered the way it was asked for fails loudly (status 'error':
+        // not rendered, not swapped for a scan) instead of coming out in another frame or layout.
+        const unsupported = unsupportedRequest(scry, requestedFrame, special, {
+            dfcSplit, retroHd: !!job.retro_hd,
+        });
+        if (unsupported) {
+            writeResponse({ slot: job.slot, status: 'error', reason: unsupported });
+            return;
         }
 
         // Intercept the remaining DFCs and route them to a Kamigawa flip card.

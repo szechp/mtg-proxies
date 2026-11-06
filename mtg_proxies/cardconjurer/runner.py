@@ -438,6 +438,7 @@ def render_deck(
     fallback_rows: list[dict[str, Any]] = []
     report_rows: list[dict[str, Any]] = []
     ok = skipped = 0
+    errors: list[tuple[str, str]] = []
     for i, spec in enumerate(cards):
         count, name = spec[0], spec[1]
         set_code = spec[2] if len(spec) > 2 else None
@@ -478,6 +479,17 @@ def render_deck(
                 "ms": r.get("ms", 0),
             })
             ok += 1
+        elif r["status"] == "error":
+            # Cannot be rendered as asked: neither rendered nor swapped for a scan (fails loudly).
+            errors.append((name, r.get("reason", "")))
+            report_rows.append({
+                "slot": slot_str,
+                "name": name,
+                "status": "error",
+                "reason": r.get("reason", ""),
+                "png": "",
+                "ms": 0,
+            })
         else:
             fallback_rows.append({
                 "count": count,
@@ -500,7 +512,7 @@ def render_deck(
     (outdir / "fallback.txt").write_text(format_fallback_txt(fallback_rows))
     (outdir / "report.csv").write_text(format_report_csv(report_rows))
 
-    return {"ok": ok, "skipped": skipped, "total": len(cards)}
+    return {"ok": ok, "skipped": skipped, "errors": errors, "total": len(cards)}
 
 
 def format_report_csv(rows: Iterable[ReportRow]) -> str:
