@@ -584,6 +584,7 @@ const RETRO_HD_ROOT = process.env.CC_RETRO_HD || path.join(os.homedir(), '.cache
 const SEVENTH_FRAME_SRC = /^\/img\/frames\/seventh\/regular\/([A-Za-z]+)\.png$/;
 let retroHdFrames = null;
 let retroHdAdventure = false;  // the card being built is a two-panel --retro-hd adventure
+let retroHdVariant = null;  // 'tf' / 'mdfc': a --retro-hd double-faced face (retro_hd.py frames/<variant>/)
 
 // --retro-hd text layout, taken from the template's own text layers rather than packSeventh's
 // regions, so the text sits where Gavin's frames expect it. Values are the PSD's layer metrics
@@ -659,6 +660,10 @@ function retroHdFrame(src) {
         return fs.existsSync(file) ? file : null;
     }
     const match = SEVENTH_FRAME_SRC.exec(src);
+    if (match && retroHdVariant) {
+        const file = path.join(retroHdFrames, retroHdVariant, match[1] + '.png');
+        if (fs.existsSync(file)) return file;
+    }
     if (match && retroHdAdventure) {
         // Every land frame (l, wl..gl) maps to the one adventure land frame.
         const code = match[1].endsWith('l') ? 'l' : match[1];
@@ -2470,6 +2475,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     }
     retroHdFrames = hd ? path.join(RETRO_HD_ROOT, 'frames') : null;
     retroHdAdventure = hd && !!scry._adventure;
+    retroHdVariant = hd && scry._dfc ? scry._dfc.variant : null;
     try {
         return await buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath,
                                         fontSizeDelta, dfcFace, frameNameSuffix, specialLayout, legendary, crown,
@@ -2478,6 +2484,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         deferRedraws = false;
         retroHdFrames = null;
         retroHdAdventure = false;
+        retroHdVariant = null;
     }
 }
 
@@ -3478,6 +3485,21 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
         }
     }
 
+    // --retro-hd double-faced face: the template's face icon (transform sun / moon, MDFC
+    // triangles) in the frame left of the title (retro_hd.build_dfc_extras).
+    if (retroHd && scry._dfc) {
+        const dir = path.join(RETRO_HD_ROOT, 'frames', 'dfc');
+        const key = `${scry._dfc.layout === 'modal_dfc' ? 'mdfc' : 'tf'}_${scry._dfc.side}`;
+        const icon = path.join(dir, key + '.png');
+        if (fs.existsSync(icon)) {
+            const [x, y, w, h] = JSON.parse(fs.readFileSync(path.join(dir, 'extras.json'), 'utf8'))[key];
+            const layer = { name: 'DFC Icon', src: 'file://' + icon, masks: [],
+                            bounds: { x: x / HD_W, y: y / HD_H, width: w / HD_W, height: h / HD_H } };
+            global.card.frames.unshift(layer);
+            await global.addFrame([], layer);
+        }
+    }
+
     // Battlement legend crown on retro legendaries, on by default (`--no-crown` opts out).
     // Runs last among the frame layers so it can replay the finished stack -- see
     // addRetroLegendCrown. Single-faced cards only, planeswalkers included: packPlaneswalkerSeventh
@@ -3663,7 +3685,7 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
         const left = spell.side === 'left';
         const [px0, px1] = left ? [203, 1008] : [1008, 1807];  // spell half
         const [cx0, cx1] = left ? [1008, 1807] : [203, 1008];  // creature half
-        const [ix0, ix1] = left ? [265, 944] : [1070, 1743];   // spell rules inset box
+        const [ix0, ix1] = [px0 + 17, px1 - 13];  // spell rules box: the half below the rule
         Object.assign(text.rules, { x: (cx0 + 36) / HD_W, y: 1695 / HD_H, width: (cx1 - cx0 - 66) / HD_W,
                                     height: 790 / HD_H, size: 92 / HD_H, align: 'left' });
         const spellRules = String(spell.oracle_text || '').replace(/\(([^)]*)\)/g, '{i}($1){/i}');
@@ -3677,6 +3699,36 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
                           x: (ix0 + 19) / HD_W, y: 1931 / HD_H, width: (ix1 - ix0 - 38) / HD_W,
                           height: 500 / HD_H, size: 76 / HD_H };
         reserveRight(text.advTitle, text.advMana);
+    }
+
+    // --retro-hd double-faced face. MDFC: the rules end above the template's strip (Textbox
+    // Reference Normal MDFC, bottom 2367), which names the other face: its type line after the
+    // arrow on the left, its mana cost (or a land's mana ability) on the right. Transform front
+    // with a creature back: the back's power / toughness in grey at the template's spot.
+    if (retroHd && scry._dfc) {
+        const text = global.card.text;
+        const other = scry._dfc.other;
+        // The face icon sits left of the title: start the name past it (the template's DFC
+        // icons end at card x ~211, its titles at 218).
+        const titleShift = DFC_TITLE_X / HD_W - text.title.x;
+        if (titleShift > 0) {
+            text.title.x += titleShift;
+            text.title.width -= titleShift;
+        }
+        if (scry._dfc.layout === 'modal_dfc') {
+            text.rules.height = (2367 - text.rules.y * HD_H) / HD_H;
+            const ability = String(other.oracle_text || '').split('\n')[0];
+            const right = other.mana_cost || (/^\{T\}: Add /.test(ability) ? ability : '');
+            // The arrow sits in the notch (retro_hd.py), so the other face's type starts at the box edge.
+            text.dfcLeft = { name: 'DFC Other Face', text: other.type_line || '', x: 232 / HD_W, width: 1000 / HD_W,
+                             ...hdLine(2448, 52), oneLine: true, color: 'black' };
+            text.dfcRight = { name: 'DFC Other Cost', text: right, x: 1100 / HD_W, width: 650 / HD_W,
+                              ...hdLine(2448, 52), oneLine: true, align: 'right', color: 'black' };
+        } else if (scry._dfc.variant === 'tf') {
+            text.reversePt = { name: 'Reverse P/T', text: `${other.power}/${other.toughness}`,
+                               x: 1650 / HD_W, width: 176 / HD_W, ...hdLine(2452, 52), oneLine: true,
+                               align: 'center', color: '#555555' };
+        }
     }
 
     // Restored immediately after: the `mana` Map is process-global and shared by every
@@ -3965,6 +4017,35 @@ function flattenAdventureForRetroHd(scry) {
     return flat;
 }
 
+// One face of a transform / MDFC card as a single-faced card for the --retro-hd path, carrying
+// what the face needs from the other one in `_dfc` (variant: retro_hd.py's 'tf' frame for a
+// transform front whose back has a power / toughness, 'mdfc' for both MDFC faces).
+const DFC_TITLE_X = 236;  // card px: title start on --retro-hd DFC faces, clear of the face icon
+const DFC_FACE_KEYS = ['name', 'mana_cost', 'type_line', 'oracle_text', 'colors', 'color_indicator', 'power',
+    'toughness', 'loyalty', 'defense', 'flavor_text', 'artist', 'printed_name', 'printed_type_line', 'printed_text',
+    'image_uris', 'watermark'];
+function dfcFaceForRetroHd(scry, index) {
+    const face = scry.card_faces[index];
+    const other = scry.card_faces[1 - index] || {};
+    const flat = { ...scry, layout: 'normal' };
+    delete flat.card_faces;
+    for (const key of DFC_FACE_KEYS) {
+        if (key in face) flat[key] = face[key];
+        else if (key !== 'image_uris' && key !== 'artist') delete flat[key];
+    }
+    flat.colors = face.colors || face.color_indicator || [];
+    flat.oracle_text = face.oracle_text || '';
+    const side = index ? 'back' : 'front';
+    const variant = scry.layout === 'modal_dfc' ? 'mdfc'
+        : (side === 'front' && other.power != null ? 'tf' : null);
+    flat._dfc = {
+        layout: scry.layout, side, variant,
+        other: { name: other.name, type_line: other.type_line, mana_cost: other.mana_cost,
+                 oracle_text: other.oracle_text, power: other.power, toughness: other.toughness },
+    };
+    return flat;
+}
+
 async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fontSizeDelta = 0, dfcSplit = false,
                                         legendary = false, crown = true, retroHd = false } = {}) {
     if (retroHd && frame === 'retro' && ['adventure', 'prepare'].includes(scry.layout)) {
@@ -4009,6 +4090,24 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
     // → `face`) carries the localized text into the engine's normal render pipeline.
     const processed = [];
     global.processScryfallCard(JSON.parse(JSON.stringify(scry)), processed);
+
+    // --retro-hd transform / MDFC: each face renders as an ordinary single-faced retro-hd card
+    // (the whole retro-hd path: HD frame, template text layout, crown), on the template's
+    // double-faced frame variant, with its face icon and the other face's strip / reverse P/T
+    // (renderFace, scry._dfc).
+    if (retroHd && frame === 'retro' && dfcSplit && !special && ['transform', 'modal_dfc'].includes(scry.layout)) {
+        const outs = [];
+        for (const index of [0, 1]) {
+            const face = dfcFaceForRetroHd(scry, index);
+            const faceProcessed = [];
+            global.processScryfallCard(JSON.parse(JSON.stringify(face)), faceProcessed);
+            outs.push(await renderFace({
+                packFile: packForLayout('normal', 'retro').single, processed: faceProcessed, faceIdx: 0, scry: face,
+                outName: index ? slug + '_back' : slug, frame, setSymbolPath, fontSizeDelta, legendary, crown, retroHd,
+            }));
+        }
+        return { out: outs[0], outBack: outs[1] };
+    }
 
     // dfc_split: render each face as its own full-size card via the real DFC
     // packs. Returns { out, outBack } instead of a single path.

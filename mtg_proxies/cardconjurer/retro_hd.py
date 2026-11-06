@@ -279,7 +279,7 @@ def _tone_frame(img: np.ndarray, identity: str) -> None:
         img[..., :3] = np.clip((img[..., :3] - src_mean / 255) * scale + dst_mean / 255, 0, 1)
 
 
-def compose_variant(t: _Template, code: str, size: str = SIZE) -> np.ndarray:
+def compose_variant(t: _Template, code: str, size: str = SIZE, dfc: str | None = None) -> np.ndarray:
     """Composite one frame image (full template canvas, float RGBA).
 
     Args:
@@ -288,6 +288,9 @@ def compose_variant(t: _Template, code: str, size: str = SIZE) -> np.ndarray:
         size: The template's frame size: "Normal" for ordinary cards, "Saga" for sagas (chapter
             textbox on the left, tall art window on the right, reminder box at the bottom),
             "Class" for classes (the saga layout mirrored: art left, levels right).
+        dfc: "TF" for a transform front (the textbox's notch at its bottom-right, for the back
+            face's power / toughness), "MDFC" for a modal double-faced face (the notch at the
+            bottom-left, and the strip under the rules with the divider and arrow), None otherwise.
     """
     adventure = size == "Adventure"
     SIZE = "Normal" if adventure else size  # shadows the module default for this composite
@@ -323,6 +326,10 @@ def compose_variant(t: _Template, code: str, size: str = SIZE) -> np.ndarray:
         tb_mask = t.mask_of(t.find("Card Frame", "Textbox", "Masks", shape))
         tb = t.rgba(t.find("Card Frame", "Textbox", textbox_name))
         _over(out, tb[..., :3], tb[..., 3] * tb_mask)
+    notch = t.mask_of(t.find("Card Frame", "Textbox", "Masks", f"{dfc} Notch")) if dfc else None
+    if notch is not None:  # the notch triangle in the textbox texture (ragged boxes included)
+        tb = t.rgba(t.find("Card Frame", "Textbox", textbox_name))
+        _over(out, tb[..., :3], tb[..., 3] * notch)
 
     # Textbox bevels (none on irregular textboxes; colourless ones are adjustment layers; none on
     # adventures, whose textbox is split into two flat halves by adventure_spell_panel).
@@ -330,8 +337,9 @@ def compose_variant(t: _Template, code: str, size: str = SIZE) -> np.ndarray:
         bevel_identity = "Land" if "land" in recipe else identity
         thickness = "Land" if is_land else _BEVEL_THICKNESS.get(identity, "Medium")
         sized = t.find("Card Frame", "Textbox Bevels", "Masks", SIZE)
+        bevel_cut = t.raster_mask(t.find("Masks", f"Textbox Bevels {dfc}")) if dfc else 1
         for corner in ("TR", "BL"):
-            mask = t.mask_of(next(layer for layer in sized if layer.name == f"{thickness} {corner}"))
+            mask = t.mask_of(next(layer for layer in sized if layer.name == f"{thickness} {corner}")) * bevel_cut
             group = t.find("Card Frame", "Textbox Bevels", bevel_identity, corner)
             fills = [layer for layer in group if layer.kind == "solidcolorfill"]
             if "land" in recipe:  # land bevels hold one fill per colour; Proxyshop enables the land's own
@@ -351,9 +359,20 @@ def compose_variant(t: _Template, code: str, size: str = SIZE) -> np.ndarray:
     if not irregular:
         outlines += [layer for layer in t.find("Outlines", "Textbox Outlines") if layer.name == SIZE]
     outlines += [t.find("Outlines", name) for name in ("Bevel Outline", "Card Outline", "Outer Corners")]
+    textbox_cut = t.raster_mask(t.find("Masks", f"Textbox Outlines {dfc}")) if dfc else None
     for layer in outlines:
         img = t.rgba(layer)
+        alpha = img[..., 3]
+        if textbox_cut is not None and layer.parent is not None and layer.parent.name == "Textbox Outlines":
+            alpha = alpha * textbox_cut
+        _over(out, img[..., :3], alpha)
+    if notch is not None:
+        textbox_shape = t.mask_of(t.find("Card Frame", "Textbox", "Masks", SIZE))
+        _over(out, np.zeros(3, np.float32), _notch_outline(notch, textbox_shape))
+    if dfc == "MDFC":  # the strip under the rules: divider line (the arrow goes in the notch, below)
+        img = t.rgba(t.find("Text and Icons", "MDFC", "Bottom", "Divider"))
         _over(out, img[..., :3], img[..., 3])
+
 
     # Land pinlines: black backgrounds, then colour fills through the pinline masks (outer and
     # art in the generic land orange, textbox in the land's own colour).
@@ -370,7 +389,21 @@ def compose_variant(t: _Template, code: str, size: str = SIZE) -> np.ndarray:
         outer = t.find("Pinlines", "Outer")  # the group carries both a vector and a raster mask
         _over(out, land_rgb, t.mask_of(outer) * t.raster_mask(outer))
         _over(out, land_rgb, t.mask_of(t.find("Pinlines", "Art Masks", SIZE)))
-        _over(out, own_rgb, t.mask_of(t.find("Pinlines", "Textbox Masks", SIZE)))
+        pinline_cut = t.raster_mask(t.find("Masks", f"Pinlines {dfc}")) if dfc else 1
+        _over(out, own_rgb, t.mask_of(t.find("Pinlines", "Textbox Masks", SIZE)) * pinline_cut)
+        if notch is not None:  # land pinlines cover the notch: draw it again on top, through the band
+            tb = t.rgba(t.find("Card Frame", "Textbox", textbox_name))
+            ys = np.nonzero(notch.max(1) > 0.5)[0]
+            band = np.zeros_like(notch)
+            x0, x1 = (285, 318) if dfc == "MDFC" else (1866, 1899)  # the land pinline band at the notch
+            band[ys.min() : ys.max() + 1, x0:x1] = 1
+            _over(out, tb[..., :3], tb[..., 3] * np.maximum(notch, band))
+            textbox_shape = t.mask_of(t.find("Card Frame", "Textbox", "Masks", SIZE))
+            _over(out, np.zeros(3, np.float32), _notch_outline(notch, textbox_shape))
+
+    if dfc == "MDFC":  # last, over land pinlines too
+        arrow = t.rgba(t.find("Text and Icons", "MDFC", "Bottom", "Arrow"))
+        _over(out, *_centred_in(arrow, notch))
 
     # Black border under everything, like packSeventh's frame images (the template keeps its
     # border in a separate group); then the art window is cut at the template's art reference
@@ -387,13 +420,11 @@ def compose_variant(t: _Template, code: str, size: str = SIZE) -> np.ndarray:
 
 # Adventure / prepare split of the Normal textbox, template pixels: textbox (290,1754)-(1894,2583)
 # split at the template's adventure divider (x 1095). The spell's half carries the spell's frame
-# texture behind its name and type, a black rule under the type line, and an inset box of the
-# spell's textbox texture for its rules (the template's left adventure box, (352,2000)-(1031,2520),
-# mirrored for the right half).
+# texture behind its name and type, a black rule under the type line, and the spell's textbox
+# texture for its rules below the rule, flush with the lines around it.
 _TB_LEFT, _TB_TOP, _TB_RIGHT, _TB_BOTTOM = 290, 1754, 1894, 2583
 _ADV_DIVIDER = 1095
 _ADV_RULE_Y = 1979
-_ADV_INSET = (352 - _TB_LEFT, 2000, _ADV_DIVIDER - 1031, 2520)  # (left margin, top, right margin, bottom)
 _ADV_LINE = 3  # same as the template's textbox outline
 
 
@@ -410,11 +441,10 @@ def adventure_spell_panel(t: _Template, code: str, side: str) -> np.ndarray:
     x0, x1 = (_TB_LEFT, _ADV_DIVIDER) if side == "left" else (_ADV_DIVIDER, _TB_RIGHT)
     panel = np.zeros((t.height, t.width), np.float32)
     panel[_TB_TOP:_TB_BOTTOM, x0:x1] = 1
-    m_left, top, m_right, bottom = _ADV_INSET
-    if side == "right":
-        m_left, m_right = m_right, m_left
+    # The spell's rules box fills its half below the rule, up to the pinline and the divider (the
+    # template's inset box left a gap of frame texture around it; the user wanted it flush).
     inset = np.zeros_like(panel)
-    inset[top:bottom, x0 + m_left : x1 - m_right] = 1
+    inset[_ADV_RULE_Y:_TB_BOTTOM, x0:x1] = 1
 
     out = np.zeros((t.height, t.width, 4), np.float32)
     tex = t.rgba(t.find("Card Frame", "Frame Texture", identity))
@@ -443,10 +473,9 @@ SAGA_CODES = ["w", "u", "b", "r", "g", "m", "l"]  # packClassicshiftedSaga's fra
 CLASS_CODES = ["w", "u", "b", "r", "g", "m", "a", "c", "l"]  # packClass's regular frames
 # The template's class level header (Class > Stage): a bar above the cost / "Level N" line and a
 # divider line under it, together the 0.0481-card-height band CC's versionClass draws per level.
-# Only the bar is drawn (the user found the divider under "cost: Level N" cluttered); the crop
-# keeps the full band so the header still lines up with the cost / level text.
+# The divider is drawn at the template's own 25% layer opacity (it first came out solid black,
+# which looked cluttered).
 CLASS_HEADER = ("Line", "Divider Line")
-CLASS_HEADER_DRAWN = ("Line",)
 SAGA_EXTRAS = ["I", "II", "III", "IV", "V", "VI", "Divider"]
 
 
@@ -464,7 +493,9 @@ def build_saga_extras(t: _Template, out_dir: Path) -> list[Path]:
     for name in SAGA_EXTRAS:
         layer = t.find("Saga", name)
         x0, y0, x1, y1 = layer.bbox
-        img = card_area(t.rgba(layer))
+        rgba = t.rgba(layer)
+        rgba[..., 3] *= layer.opacity / 255  # the chapter divider is a 20% layer
+        img = card_area(rgba)
         cx0, cy0 = x0 - CARD_BOX[0], y0 - CARD_BOX[1]
         crop = img.crop((cx0, cy0, cx0 + (x1 - x0), cy0 + (y1 - y0)))
         path = saga_dir / f"{name.lower()}.png"
@@ -475,8 +506,59 @@ def build_saga_extras(t: _Template, out_dir: Path) -> list[Path]:
     return written
 
 
+_NOTCH_LINE = 3  # same as the template's textbox outline
+
+
+def _notch_outline(notch: np.ndarray, textbox: np.ndarray) -> np.ndarray:
+    """Black line around the notch triangle's outer edges (not along the textbox it grows from)."""
+    from scipy import ndimage
+
+    inside = notch > 0.5
+    ring = ndimage.binary_dilation(inside, iterations=_NOTCH_LINE) & ~inside
+    return (ring & ~(textbox > 0.5)).astype(np.float32)
+
+
+def _centred_in(img: np.ndarray, region: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Shift ``img`` so its opaque box is centred on ``region``'s box; return its (rgb, alpha)."""
+    def centre(a: np.ndarray) -> tuple[int, int]:
+        ys, xs = np.nonzero(a > 0.5)
+        return (ys.min() + ys.max()) // 2, (xs.min() + xs.max()) // 2
+
+    (iy, ix), (ry, rx) = centre(img[..., 3]), centre(region)
+    moved = np.roll(img, (ry - iy, rx - ix), axis=(0, 1))
+    return moved[..., :3], moved[..., 3]
+
+
+DFC_ICONS = {  # (group, face) in the template's Text and Icons
+    "tf_front": ("Transform", "Front"),
+    "tf_back": ("Transform", "Back"),
+    "mdfc_front": ("MDFC", "Front"),
+    "mdfc_back": ("MDFC", "Back"),
+}
+
+
+def build_dfc_extras(t: _Template, out_dir: Path) -> list[Path]:
+    """Write the template's double-faced face icons as tight crops; ``dfc/extras.json`` holds their boxes."""
+    import json
+
+    dfc_dir = out_dir / "frames" / "dfc"
+    dfc_dir.mkdir(parents=True, exist_ok=True)
+    positions, written = {}, []
+    for key, (group, face) in DFC_ICONS.items():
+        img = t.rgba(t.find("Text and Icons", group, face))
+        ys, xs = np.nonzero(img[..., 3] > 0.02)
+        x0, y0, x1, y1 = int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+        cx0, cy0 = x0 - CARD_BOX[0], y0 - CARD_BOX[1]
+        path = dfc_dir / f"{key}.png"
+        card_area(img).crop((cx0, cy0, cx0 + (x1 - x0), cy0 + (y1 - y0))).save(path, optimize=True)
+        positions[key] = [cx0, cy0, x1 - x0, y1 - y0]
+        written.append(path)
+    (dfc_dir / "extras.json").write_text(json.dumps(positions, indent=1))
+    return written
+
+
 def build_class_extras(t: _Template, out_dir: Path) -> list[Path]:
-    """Write the template's class level header (its bar; the band also spans the divider) as one crop.
+    """Write the template's class level header (bar + faint divider) as one tight crop.
 
     ``class/extras.json`` records the crop's box in card pixels (left, top, width, height).
     """
@@ -491,10 +573,8 @@ def build_class_extras(t: _Template, out_dir: Path) -> list[Path]:
     y1 = max(layer.bbox[3] for layer in layers)
     canvas = np.zeros((t.height, t.width, 4), np.float32)
     for layer in layers:
-        if layer.name not in CLASS_HEADER_DRAWN:
-            continue
         img = t.rgba(layer)
-        _over(canvas, img[..., :3], img[..., 3])
+        _over(canvas, img[..., :3], img[..., 3] * (layer.opacity / 255))
     cx0, cy0 = x0 - CARD_BOX[0], y0 - CARD_BOX[1]
     path = class_dir / "header.png"
     card_area(canvas).crop((cx0, cy0, cx0 + (x1 - x0), cy0 + (y1 - y0))).save(path, optimize=True)
@@ -586,6 +666,22 @@ def _build_class_frame(code: str, out_dir: Path) -> list[Path]:
     return [path]
 
 
+def _build_dfc_frame(task: str, out_dir: Path) -> list[Path]:
+    """Worker task ``tf-<code>`` / ``mdfc-<code>``: one double-faced frame variant."""
+    assert _worker_template is not None
+    kind, code = task.split("-", 1)
+    path = out_dir / "frames" / kind / f"{code}.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    card_area(compose_variant(_worker_template, code, dfc=kind.upper())).save(path, optimize=True)
+    return [path]
+
+
+def _build_dfc_extras(out_dir: Path) -> list[Path]:
+    """Worker task: the double-faced face icons."""
+    assert _worker_template is not None
+    return build_dfc_extras(_worker_template, out_dir)
+
+
 def _build_class_extras(out_dir: Path) -> list[Path]:
     """Worker task: the class level header."""
     assert _worker_template is not None
@@ -661,7 +757,8 @@ def build(
             saga frame (:data:`SAGA_CODES`), ``saga-extras`` for the chapter badges and divider,
             ``adventure-<code>`` for an adventure frame (:data:`ADVENTURE_CODES`) and its spell box,
             ``class-<code>`` for a class frame (:data:`CLASS_CODES`), ``class-extras`` for the level
-            header.
+            header, ``tf-<code>`` / ``mdfc-<code>`` for a double-faced frame variant (:data:`VARIANTS`),
+            ``dfc-extras`` for the face icons.
             Default: all of them.
         jobs: Worker processes (default: :func:`default_jobs`).
 
@@ -682,6 +779,9 @@ def build(
         *(f"adventure-{c}" for c in ADVENTURE_CODES),
         *(f"class-{c}" for c in CLASS_CODES),
         "class-extras",
+        *(f"tf-{c}" for c in VARIANTS),
+        *(f"mdfc-{c}" for c in VARIANTS),
+        "dfc-extras",
     ]
     jobs = jobs or default_jobs(len(codes) + 1)
     sys.stdout.write(f"building {len(codes)} frames + masks with {jobs} worker(s)\n")
@@ -691,6 +791,10 @@ def build(
         for code in codes:
             if code == "saga-extras":
                 futures.append(pool.submit(_build_saga_extras, out_dir))
+            elif code == "dfc-extras":
+                futures.append(pool.submit(_build_dfc_extras, out_dir))
+            elif code.startswith(("tf-", "mdfc-")):
+                futures.append(pool.submit(_build_dfc_frame, code, out_dir))
             elif code == "class-extras":
                 futures.append(pool.submit(_build_class_extras, out_dir))
             elif code.startswith("class-"):

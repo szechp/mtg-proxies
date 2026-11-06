@@ -37,7 +37,13 @@ def _card(
         (_card("Creature // Sorcery — Adventure", ("R", "W"), "{2}{R}", layout="adventure"), "--retro-hd"),
         (_card("Battle — Siege", ("G",), "{3}{G}"), "--skip"),
         (_card(layout="flip"), "--modern"),
-        (_card(layout="transform"), "--retro"),
+        (_card(layout="transform"), "--retro-hd"),
+        (_card(layout="modal_dfc"), "--retro-hd"),
+        (
+            {"layout": "transform", "type_line": "Legendary Creature — Human // Legendary Planeswalker — Arlinn",
+             "card_faces": [{"type_line": "Legendary Planeswalker — Arlinn", "colors": ["R", "G"]}]},
+            "--retro",
+        ),
         (_card(colors=("U", "R"), cost="{U}{R}", layout="transform"), "--8th"),
         (
             {"layout": "modal_dfc", "type_line": "Legendary Creature — God // Legendary Planeswalker — Tibalt",

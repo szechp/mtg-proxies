@@ -14,8 +14,9 @@ Rules, first match wins (see :func:`frame_flags`):
 * a line that already has a modeline is left as it is (your own choice wins);
 * battles: ``--skip`` (sideways cards render in no frame; they use the Scryfall scan);
 * Kamigawa flip, reversible and Station cards: ``--modern`` (their only frame);
-* double-faced cards: ``--retro`` (``--retro-hd`` is single-faced only); gold transform cards
-  ``--8th``; modal double-faced planeswalkers ``--modern``;
+* double-faced cards: ``--retro-hd`` (each face on the template's transform / MDFC frame); gold
+  transform cards ``--8th``; transform planeswalkers ``--retro`` (Card Conjurer's retro planeswalker
+  faces); modal double-faced planeswalkers ``--modern``;
 * adventures / prepare cards: ``--retro-hd`` even when gold (8th has no adventure layout, and
   retro-hd keeps them gold);
 * gold cards (two or more colours, not hybrid-only) and non-basic lands that make two or more
@@ -81,9 +82,11 @@ def frame_flags(card: dict[str, Any]) -> str:
     if layout in ("transform", "modal_dfc"):
         if layout == "modal_dfc" and planeswalker:
             return "--modern"
-        if layout == "transform" and not planeswalker and is_gold(card):
+        if planeswalker:
+            return "--retro"
+        if layout == "transform" and is_gold(card):
             return "--8th"
-        return "--retro"
+        return "--retro-hd"
     if layout in ("adventure", "prepare"):
         return "--retro-hd"
     if is_gold(card) or is_dual_land(card):
