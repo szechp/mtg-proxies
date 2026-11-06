@@ -38,6 +38,8 @@ class CardConjurerRequest:
     art_path: str | None = None
     frame_overlap_mm: float | None = None
     legendary: bool = False
+    no_crown: bool = False
+    retro_hd: bool = False
 
 
 RunHarness = Callable[[list[dict[str, Any]]], list[dict[str, Any]]]
@@ -72,6 +74,10 @@ def _default_run_harness(cache_root: Path, harness_path: Path) -> RunHarness:
     return _run
 
 
+class CardConjurerRenderError(RuntimeError):
+    """A ``#cardconjurer`` card cannot be rendered as its modeline asks (e.g. no such frame for its layout)."""
+
+
 def render_per_card_batch(
     requests: list[CardConjurerRequest],
     *,
@@ -104,11 +110,23 @@ def render_per_card_batch(
             set_symbol_path=req.set_symbol_path,
             art_path=req.art_path,
             legendary=req.legendary,
+            no_crown=req.no_crown,
+            retro_hd=req.retro_hd,
         )
         for req in requests
     ]
     responses = run_harness(jobs)
     requests_by_slot = {req.slot_id: req for req in requests}
+
+    failed = [resp for resp in responses if resp.get("status") == "error"]
+    if failed:
+        # A card that cannot be rendered as asked must not quietly fall back to its scan.
+        names = {req.slot_id: req.name for req in requests}
+        lines = "\n".join(
+            f"  - {names.get(str(r.get('slot')), r.get('slot'))}: {r.get('reason', '')}" for r in failed
+        )
+        count = len(failed)
+        raise CardConjurerRenderError(f"{count} #cardconjurer card(s) could not be rendered as requested:\n{lines}")
 
     by_slot: dict[str, Path] = {}
     for resp in responses:

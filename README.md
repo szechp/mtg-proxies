@@ -46,7 +46,7 @@ Create a high quality printable PDF from your decklist or a list of cards you wa
   Use ManaStack and Archidekt deck IDs directly as input instead of local files. Archidekt decks must be public.
 
 - **Headless 8th-edition / retro frame rendering**  
-  `mtg-proxies cardconjurer DECKLIST OUTDIR` renders every supported card via a headless [Card Conjurer](https://cardconjurer.com) Node harness, producing PNGs ready to feed back into `print --custom-art OUTDIR`. With no frame flag each card's frame is chosen automatically from its Scryfall data (2015→modern, 2003→8th, 1997/1993→retro; frames with no equivalent skip to the scan); pass `--8th` / `--modern` / `--m15-8th` / `--retro` to force one style for the whole deck (`--m15-8th` is a hybrid modern-M15 body with 8th-Edition styling, never auto-selected). Re-runs skip cards whose PNG is already in OUTDIR (delete to force a redo). **Hi-res art is fetched from [MTGPics](https://www.mtgpics.com) by default** (~1430×1058 native crops, no GPU upscale needed); cards missing from MTGPics fall back to Scryfall's `art_crop` raw. Optional `--upscale [--upscale-model PATH]` runs the Scryfall fallback through Real-ESRGAN when MTGPics doesn't have a card. Per-card opt-in via `#cardconjurer --8th` modeline is also supported. The Card Conjurer source is lazy-cloned on demand — see `make cardconjurer`.
+  `mtg-proxies cardconjurer DECKLIST OUTDIR` renders every supported card via a headless [Card Conjurer](https://cardconjurer.com) Node harness, producing PNGs ready to feed back into `print --custom-art OUTDIR`. With no frame flag each card's frame is chosen automatically from its Scryfall data (2015→modern, 2003→8th, 1997/1993→retro; frames with no equivalent skip to the scan); pass `--8th` / `--modern` / `--m15-8th` / `--retro` to force one style for the whole deck (`--m15-8th` is a hybrid modern-M15 body with 8th-Edition styling, never auto-selected). Re-runs skip cards whose PNG is already in OUTDIR (delete to force a redo). **Hi-res art is fetched from [MTGPics](https://www.mtgpics.com) by default** (~1430×1058 native crops, no GPU upscale needed) — each MTGPics image is first checked against the card's Scryfall art: wrong artwork, cut-down versions and (with `uv sync --extra art-check`) promo images carrying WotC credit lines, logos or watermarks are skipped in favour of Scryfall's art; cards missing from MTGPics fall back to Scryfall's `art_crop` raw. Optional `--upscale [--upscale-model PATH]` runs the Scryfall fallback through Real-ESRGAN when MTGPics doesn't have a card. Per-card opt-in via `#cardconjurer --8th` modeline is also supported. The Card Conjurer source is lazy-cloned on demand — see `make cardconjurer`.
 
 - **MPCFill render fetch by identifier**  
   Use `#mpcfill --identifier <drive_id> [--bleed-crop PCT] [--scaled]` on a decklist line to swap that slot to a specific [MPCFill](https://mpcfill.com) community render.
@@ -321,7 +321,7 @@ treatment to that one card. Several verbs can stack on one line:
 ```
 1 Caves of Koilos (DRC) 148  #mpcfill --identifier 1nUk_jZc6JtMxr-WrFlqHO5MGNkAS--XS --scaled
 1 Birds of Paradise (RVR) 133 #upscale
-1 Exploration (DMR) 339      #cardconjurer --retro-scaled --legendary
+1 Exploration (DMR) 339      #cardconjurer --retro-scaled
 4 Mountain (RVR) 271         #normalize #shadow-lift
 1 Sol Ring (C21) 263         #no-upscale
 ```
@@ -366,7 +366,9 @@ honored in both:
 | *(no frame flag)* | ✓ | ✓ | `print`: frame chosen automatically from the card's Scryfall frame. Subcommand: keeps the deck-wide frame. |
 | `--8th` / `--modern` / `--m15-8th` / `--retro` / `--borderless` | ✓ | ✓ | Force a frame for this card (overrides the deck-wide one in the subcommand). |
 | `--retro-scaled` / `--8th-scaled` | ✓ | ✓ | That frame, grown by 0.75 mm per side for the sticker workflow. Implies the base frame. |
-| `--legendary` | ✓ | ✓ | Legend marker on frames that have none stock: gold pinline on retro, crown on 8th. |
+| `--legendary` | ✓ | ✓ | Kept for old decklists; does nothing (legend crowns are on by default on 8th and retro). |
+| `--no-crown` | ✓ | ✓ | Leave the legend crown off this legendary: the battlement crown on retro, Card Conjurer's crown on 8th (both on by default). |
+| `--retro-hd` | ✓ | ✓ | Retro with high-detail frame art from Gavin Bowers' Proxyshop Retro template. Implies `--retro`. |
 | `--set-symbol VALUE` | ✓ | ✓ | File path, CC set code (`LTC`), or `customset:An`. |
 | `--custom-art PATH` | ✓ | ✓ | Use a local image (png/jpg/jpeg/webp) as the art instead of MTGPics/Scryfall. |
 | `--upscale` | ✓ | — | Run the art through Real-ESRGAN first. In the subcommand use the deck-wide `--upscale`. |
@@ -503,12 +505,28 @@ render go to `OUTDIR/fallback.txt` (a decklist you can `print`); `report.csv` re
 outcome. Re-runs skip PNGs already in OUTDIR; delete one to force a re-render. Per-card
 `#cardconjurer` flags are in the [table above](#cardconjurer-flags).
 
+To pick a frame per card instead of one for the whole deck, convert the decklist first:
+
+```bash
+uv run python scripts/decklist_to_cardconjurer.py deck.txt        # writes deck.cc.txt
+uv run mtg-proxies cardconjurer deck.cc.txt out/
+```
+
+It adds `#cardconjurer --retro-hd` to every card, except: gold cards and non-basic lands that make
+two or more colours get `--8th`; double-faced cards stay `--retro-hd` (gold transform cards `--8th`,
+transform planeswalkers `--retro`, modal double-faced planeswalkers `--modern`); flip, reversible and Station cards `--modern`;
+adventures and prepare cards stay `--retro-hd` even when gold; battles get `--skip` (Scryfall scan).
+Lines that already have a modeline are left as they are, and each card is pinned to the printing
+the rule was decided on.
+
 | Flag | Description |
 |---|---|
 | *(no frame flag)* | Frame chosen per card from Scryfall: 2015→modern, 2003→8th, 1997/1993→retro. Frames with no Card Conjurer equivalent go to `fallback.txt`. |
 | `--8th` / `--modern` / `--m15-8th` / `--retro` / `--borderless` | Force one frame for the whole deck (mutually exclusive). `--m15-8th` is a modern body with 8th-Edition trim and is never auto-selected. `--borderless` needs full-bleed MTGPics art. |
 | `--retro-scaled` / `--8th-scaled` | That frame, grown 0.75 mm per side ([sticker workflow](#sticker-workflow-scaled-frames)). Implies the base frame. |
-| `--legendary` | Legend marker on retro (gold pinline) and 8th (crown). Off = stock, no marker. |
+| `--legendary` | Kept for old decklists; does nothing. Legend crowns are on by default on 8th and retro. |
+| `--no-crown` | Leave the legend crown off legendaries. 8th draws Card Conjurer's 8th crown by default (the real 8th frame has none). Retro draws a battlement crown by default: the frame's top edge rises into the border as four raised blocks, built from the frame's own bevel and texture, so it matches hybrid, two-colour and land frames. Pinlines stay stock. |
+| `--retro-hd` | Retro with high-detail frame art (smooth textures, modern colour grading, crisp bevels) from [Gavin Bowers' Proxyshop Retro template](https://github.com/Gavin-Bowers/proxyshop_plugin) in place of Card Conjurer's Seventh Edition scans; text, white-frame readability, hybrid/two-colour frames and the crown are unchanged. Implies `--retro`, combines with `--retro-scaled`. Single-faced cards only, planeswalkers included (with loyalty badges); double-faced cards render plain retro. Build the frames once first (all CPU cores, capped by free RAM; `--jobs N` to override) (downloads the ~840 MB template into `~/.cache/mtg-proxies/retro-hd/`, never committed): `uv sync --extra retro-hd && uv run python -m mtg_proxies.cardconjurer.retro_hd`. |
 | `--set-symbol VALUE` | Override the set symbol: file path, CC set code, or `customset:An`. |
 | `--scryfall` | Skip MTGPics, use Scryfall's `art_crop`. |
 | `--dfc-flip` | Render DFCs as one Kamigawa-flip card instead of two full cards. |
@@ -518,7 +536,17 @@ outcome. Re-runs skip PNGs already in OUTDIR; delete one to force a re-render. P
 | `--upscale-target-width PX` | Downsample upscaled art before rendering (default: keep the full 4× output). |
 
 Adventure, Prepare and planeswalker cards (including Transform/MDFC planeswalker faces) render
-through their native layouts. Generated tokens use Card Conjurer's Old Bordered token frame.
+through their native layouts. Single-faced planeswalkers also render in the 8th frame with `--8th`
+(loyalty badges, even ability sizes, legend crown) and in the Seventh Edition frame with `--retro`.
+Classes also render with `--retro-hd` (the Proxyshop template's class layout; rebuild the frames once with
+`uv run python -m mtg_proxies.cardconjurer.retro_hd class-w class-u class-b class-r class-g class-m class-a class-c class-l class-extras`).
+Sagas and Classes render in the 8th frame with `--8th`: the 8th outer frame around Card Conjurer's
+modern saga / class layout (chapter badges, level headers).
+Generated tokens use Card Conjurer's Old Bordered token frame.
+A card that cannot be rendered the way you asked (an adventure or double-faced planeswalker on `--8th`,
+a flip card off `--modern`, any battle, ...) fails loudly: it is not rendered or swapped for a scan,
+the run lists it with the reason and exits with an error. Give it its own frame with a modeline
+(`#cardconjurer --modern`).
 
 ```bash
 make cardconjurer                                   # one-time lazy clone of the Card Conjurer source

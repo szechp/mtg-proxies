@@ -821,3 +821,49 @@ def test_filename_prefix_makes_a_prefixed_png_count_as_cached(tmp_path: Path) ->
     )
     assert sent == []
     assert summary["ok"] == 1
+
+
+def test_parse_response_ignores_non_object_json() -> None:
+    """Engine debug output that happens to be valid JSON (numbers, strings) is noise, not a response."""
+    from mtg_proxies.cardconjurer.runner import parse_response
+
+    for line in ("12", '"some log"', "[1, 2]", "null", "true"):
+        assert parse_response(line) is None
+    assert parse_response('{"slot": "0001", "status": "ok"}') == {"slot": "0001", "status": "ok"}
+
+
+def test_render_deck_reports_errors_without_fallback(tmp_path: Path) -> None:
+    """status=error: not rendered, not in fallback.txt, listed in the summary and report.csv."""
+    from mtg_proxies.cardconjurer.runner import render_deck
+
+    outdir = tmp_path / "out"
+
+    def fake_run(jobs: list[dict]) -> list[dict]:
+        return [
+            {"slot": jobs[0]["slot"], "status": "error", "reason": "no 8th layout for this adventure card"},
+            {"slot": jobs[1]["slot"], "status": "skip", "reason": "layout 'meld'"},
+        ]
+
+    summary = render_deck([(1, "Brazen Borrower"), (1, "Gisela, the Broken Blade")], outdir, frame="8th",
+                          run_harness=fake_run)
+    assert summary["errors"] == [("Brazen Borrower", "no 8th layout for this adventure card")]
+    assert summary["ok"] == 0 and summary["skipped"] == 1
+    fallback = (outdir / "fallback.txt").read_text()
+    assert "Gisela" in fallback and "Brazen" not in fallback
+    assert "Brazen Borrower,error," in (outdir / "report.csv").read_text()
+
+
+def test_per_card_batch_raises_on_error() -> None:
+    """A #cardconjurer card that cannot be rendered as asked must not quietly use its scan."""
+    import pytest
+
+    from mtg_proxies.cardconjurer.per_card import CardConjurerRenderError, CardConjurerRequest, render_per_card_batch
+
+    request = CardConjurerRequest(slot_id="0001", name="Brazen Borrower", frame="8th")
+    with pytest.raises(CardConjurerRenderError, match="Brazen Borrower: no 8th layout"):
+        render_per_card_batch(
+            [request],
+            cache_root=Path("."),
+            harness_path=Path("."),
+            run_harness=lambda jobs: [{"slot": "0001", "status": "error", "reason": "no 8th layout"}],
+        )

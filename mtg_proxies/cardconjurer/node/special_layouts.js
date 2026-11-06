@@ -68,6 +68,30 @@ function resolveSpecialLayout(scry, requestedFrame = 'auto') {
         };
     }
 
+    // Classic chapter sagas (Scryfall layout 'saga': History of Benalia, Urza's Saga) render on
+    // retro through CC's own saga engine (versionSaga.js: chapter split, I/II/III badges,
+    // dividers) with the Classicshifted saga frames; --retro-hd swaps in the HD template's saga
+    // frames. Other frames still skip them; transform sagas (layout 'transform') still skip.
+    if (scry.layout === 'saga' && requestedFrame === 'retro') {
+        return { kind: 'saga', frame: 'retro', pack: 'packClassicshiftedSaga.js', forceSplit: false };
+    }
+    // On --8th, sagas and classes use CC's modern saga / class engine (versionSaga.js /
+    // versionClass.js: chapter and level split, I/II/III badges) inside the 8th frame: pack8th
+    // supplies the outer frame and border, the modern pack the inner layers (harness.js
+    // EIGHTH_INSET_LAYERS). The modern pack goes last so its frame version is the live one.
+    if (scry.layout === 'saga' && requestedFrame === '8th') {
+        return { kind: 'saga', frame: '8th', pack: ['pack8th.js', 'packSagaRegular.js'], forceSplit: false };
+    }
+    // Classes on retro: CC's class engine (versionClass.js) over the Proxyshop template's class
+    // frame -- --retro-hd only (harness renderCard lets them through only then; plain --retro has
+    // no class frame and keeps the scan fallback, like sagas).
+    if (scry.layout === 'class' && requestedFrame === 'retro') {
+        return { kind: 'class', frame: 'retro', pack: 'packClass.js', forceSplit: false };
+    }
+    if (scry.layout === 'class' && requestedFrame === '8th') {
+        return { kind: 'class', frame: '8th', pack: ['pack8th.js', 'packClass.js'], forceSplit: false };
+    }
+
     const faces = Array.isArray(scry.card_faces) ? scry.card_faces : [];
     if (DFC_LAYOUTS.has(scry.layout) && faces.some(isPlaneswalkerFace)) {
         const retroTransform = requestedFrame === 'retro' && scry.layout === 'transform';
@@ -87,6 +111,12 @@ function resolveSpecialLayout(scry, requestedFrame = 'auto') {
             // placeholder, not a real Seventh-styled asset, so it must never be reached for a
             // plain single-face planeswalker).
             return { kind: 'planeswalker', frame: 'retro', pack: 'packPlaneswalkerSeventh.js', forceSplit: false };
+        }
+        if (requestedFrame === '8th') {
+            // Ours (node/packs/): the regular 8th frame plus CC's planeswalker engine, like
+            // packPlaneswalkerSeventh does for retro. Only on an explicit --8th: auto keeps
+            // planeswalkers modern (their real cards never used the 8th frame).
+            return { kind: 'planeswalker', frame: '8th', pack: 'packPlaneswalkerEighth.js', forceSplit: false };
         }
         if (requestedFrame === 'borderless') {
             return { kind: 'planeswalker', frame: 'borderless', pack: 'packPlaneswalkerBorderless.js', forceSplit: false };

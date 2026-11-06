@@ -1,0 +1,9 @@
+# MTGPics images that are known to be the wrong art for their printing. Cards listed here never
+# use MTGPics and fall back to Scryfall's art_crop (see art_check.curated_rejection). Add an entry
+# when the automatic check (art_check.py) lets a wrong image through, typically a redraw that keeps
+# the original's composition and colours.
+#
+# Format: <set code> <collector number> <reason>  (as in the MTGPics URL: /pics/art/<set>/<number>.jpg)
+
+war 169 stained-glass redraw (Secret Lair style), not the painting printed on War of the Spark
+dom 207 another card's art (a giant spider)

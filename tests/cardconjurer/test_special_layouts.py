@@ -107,12 +107,12 @@ def test_prepare_always_routes_to_dedicated_modern_pack(frame: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Single-face planeswalker: modern/auto/8th/m15-8th -> modern, retro -> Seventh,
-# borderless -> native planeswalker-borderless.
+# Single-face planeswalker: modern/auto/m15-8th -> modern, 8th -> our 8th pack,
+# retro -> Seventh, borderless -> native planeswalker-borderless.
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("frame", ["modern", "auto", "8th", "m15-8th"])
+@pytest.mark.parametrize("frame", ["modern", "auto", "m15-8th"])
 def test_single_planeswalker_unsupported_or_modern_frames_normalize_to_modern(frame: str) -> None:
-    """8th/m15-8th have no planeswalker furniture; auto/modern land on the native modern pack."""
+    """m15-8th has no planeswalker furniture; auto/modern land on the native modern pack."""
     scry = _load_fixture("ugin_the_spirit_dragon")
 
     result = _call("resolveSpecialLayout", scry, frame)
@@ -123,6 +123,24 @@ def test_single_planeswalker_unsupported_or_modern_frames_normalize_to_modern(fr
         "pack": "packPlaneswalkerRegular.js",
         "forceSplit": False,
     }
+
+
+def test_single_planeswalker_8th_uses_our_eighth_pack() -> None:
+    """--8th on a single-face planeswalker uses our packPlaneswalkerEighth.js (node/packs/)."""
+    scry = _load_fixture("ugin_the_spirit_dragon")
+
+    result = _call("resolveSpecialLayout", scry, "8th")
+
+    assert result == {"kind": "planeswalker", "frame": "8th", "pack": "packPlaneswalkerEighth.js", "forceSplit": False}
+
+
+def test_eighth_planeswalker_pack_ships_every_frame_colour() -> None:
+    """The pack is ours, so it must be in the repo with every base frame the harness may pick."""
+    pack = Path(__file__).parents[2] / "mtg_proxies/cardconjurer/node/packs/packPlaneswalkerEighth.js"
+    text = pack.read_text()
+    assert "card.version = 'planeswalkerEighth'" in text
+    for colour in ("White", "Blue", "Black", "Red", "Green", "Multicolored", "Artifact", "Colorless", "Land"):
+        assert f"name:'{colour} Frame'" in text
 
 
 def test_single_planeswalker_retro_uses_seventh_pack() -> None:
@@ -471,3 +489,34 @@ def test_engine_cross_card_state_does_not_leak_between_renders(tmp_path: Path) -
     assert len(set(outputs)) == len(outputs), "each card must write a distinct file"
     for out in outputs:
         assert Path(out).stat().st_size > 0
+
+
+_SAGA = {
+    "name": "History of Benalia",
+    "layout": "saga",
+    "type_line": "Enchantment — Saga",
+    "mana_cost": "{1}{W}{W}",
+    "oracle_text": "(As this Saga enters and after your draw step, add a lore counter. Sacrifice after III.)\n"
+    "I, II — Create a 2/2 white Knight creature token with vigilance.\n"
+    "III — Knights you control get +2/+1 until end of turn.",
+}
+
+
+def test_saga_on_retro_routes_to_the_saga_engine() -> None:
+    """Classic sagas render on retro (the harness further limits them to --retro-hd)."""
+    result = _call("resolveSpecialLayout", _SAGA, "retro")
+    assert result == {"kind": "saga", "frame": "retro", "pack": "packClassicshiftedSaga.js", "forceSplit": False}
+
+
+@pytest.mark.parametrize("frame", ["modern", "m15-8th", "borderless"])
+def test_saga_on_other_frames_keeps_the_scan_fallback(frame: str) -> None:
+    assert _call("resolveSpecialLayout", _SAGA, frame) is None
+
+
+def test_saga_and_class_on_8th_use_the_modern_engine_inside_pack8th() -> None:
+    """--8th: pack8th for the outer frame, the modern saga / class pack (last, live) for the rest."""
+    saga = _call("resolveSpecialLayout", _SAGA, "8th")
+    assert saga == {"kind": "saga", "frame": "8th", "pack": ["pack8th.js", "packSagaRegular.js"], "forceSplit": False}
+    klass = _call("resolveSpecialLayout", {**_SAGA, "layout": "class", "type_line": "Enchantment — Class"}, "8th")
+    assert klass == {"kind": "class", "frame": "8th", "pack": ["pack8th.js", "packClass.js"], "forceSplit": False}
+    assert _call("resolveSpecialLayout", {**_SAGA, "layout": "class"}, "modern") is None

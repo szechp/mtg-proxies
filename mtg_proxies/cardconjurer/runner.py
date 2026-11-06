@@ -98,6 +98,8 @@ def build_job(
     font_size: int | None = None,
     dfc_split: bool = False,
     legendary: bool = False,
+    no_crown: bool = False,
+    retro_hd: bool = False,
 ) -> dict[str, Any]:
     """Build one ND-JSON job dict for the node harness.
 
@@ -126,8 +128,15 @@ def build_job(
     separate full-size cards (``<slug>.png`` + ``<slug>_back.png``, response
     carries ``out`` + ``out_back``) instead of the default Kamigawa-flip merge.
 
-    ``legendary`` opts into the non-stock legendary markers: the Arabian Nights gold
-    pinline on retro, the legend crown on 8th. No-op on the other frames.
+    ``legendary`` is kept for old decklists and changes nothing: legend crowns are on by
+    default on the 8th and retro frames.
+
+    ``no_crown`` leaves the legend crown off a legendary card: the battlement crown on retro
+    (see ``retro_crown.py``) and CC's crown on 8th, both drawn by default. No-op on the other
+    frames.
+
+    ``retro_hd`` swaps the retro frame art for the high-detail frames built by
+    ``retro_hd.py``. No-op on the other frames.
     """
     job: dict[str, Any] = {
         "slot": f"{slot:04d}",
@@ -146,23 +155,29 @@ def build_job(
         job["dfc_split"] = True
     if legendary:
         job["legendary"] = True
+    if no_crown:
+        job["no_crown"] = True
+    if retro_hd:
+        job["retro_hd"] = True
     return job
 
 
 def parse_response(line: str) -> dict[str, Any] | None:
     """Parse one ND-JSON line from the harness's stdout.
 
-    Returns the parsed dict, or ``None`` for blank lines / malformed JSON.
-    Malformed lines are tolerated so a transient harness hiccup doesn't kill
-    the whole deck render; the caller logs and continues.
+    Returns the parsed dict, or ``None`` for blank lines, malformed JSON, and JSON that is not
+    an object. Card Conjurer's own engine code occasionally logs to stdout, and a bare number or
+    quoted string is valid JSON, so only an object counts as a response; everything else is
+    tolerated as noise so it can't kill the whole deck render.
     """
     text = line.strip()
     if not text:
         return None
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
     except json.JSONDecodeError:
         return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def format_fallback_txt(rows: Iterable[FallbackRow]) -> str:
@@ -423,6 +438,7 @@ def render_deck(
     fallback_rows: list[dict[str, Any]] = []
     report_rows: list[dict[str, Any]] = []
     ok = skipped = 0
+    errors: list[tuple[str, str]] = []
     for i, spec in enumerate(cards):
         count, name = spec[0], spec[1]
         set_code = spec[2] if len(spec) > 2 else None
@@ -463,6 +479,17 @@ def render_deck(
                 "ms": r.get("ms", 0),
             })
             ok += 1
+        elif r["status"] == "error":
+            # Cannot be rendered as asked: neither rendered nor swapped for a scan (fails loudly).
+            errors.append((name, r.get("reason", "")))
+            report_rows.append({
+                "slot": slot_str,
+                "name": name,
+                "status": "error",
+                "reason": r.get("reason", ""),
+                "png": "",
+                "ms": 0,
+            })
         else:
             fallback_rows.append({
                 "count": count,
@@ -485,7 +512,7 @@ def render_deck(
     (outdir / "fallback.txt").write_text(format_fallback_txt(fallback_rows))
     (outdir / "report.csv").write_text(format_report_csv(report_rows))
 
-    return {"ok": ok, "skipped": skipped, "total": len(cards)}
+    return {"ok": ok, "skipped": skipped, "errors": errors, "total": len(cards)}
 
 
 def format_report_csv(rows: Iterable[ReportRow]) -> str:

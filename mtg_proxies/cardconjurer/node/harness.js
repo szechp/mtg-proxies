@@ -95,7 +95,7 @@ const MANA_COMMANDER_OUTLINE = 0.0013;
 // variants real cards use. Which one applies is decided by the mana cost, not the
 // colour count: a hybrid cost is castable with EITHER colour, so the whole frame
 // splits down the middle; a cost demanding BOTH stays gold and shows its colours in
-// the pinline and textbox only.
+// the textbox only (the pinline stays stock).
 const RETRO_HYBRID_PAIR = /\{([WUBRG])\/([WUBRG])\}/;
 const WUBRG = ['W', 'U', 'B', 'R', 'G'];
 const RETRO_COLOR_FRAME = {
@@ -121,7 +121,7 @@ const RETRO_HYBRID_PIPS = ['wu', 'wb', 'ub', 'ur', 'br', 'bg', 'rg', 'rw', 'gw',
 // splits down the middle -- and since the halves are ordered WUBRG, white is always the
 // LEFT half, which is exactly where the title, type, artist and copyright lines start.
 // The AND variant does not qualify: it keeps the gold frame and shows its colours only in
-// the pinline and textbox, so the text still sits on gold.
+// the textbox, so the text still sits on gold.
 function retroNeedsTextOutline(face, scry) {
     if (PALE_RETRO_FRAMES.has(getFrameNameForFace(face))) return true;
     const twoTone = retroTwoTone(face, scry);
@@ -168,6 +168,326 @@ async function addRetroLayer(frameName, maskName, additionalMasks = []) {
     await global.addFrame(additionalMasks);
     global.selectedMaskIndex = 0;
     return true;
+}
+
+
+// 8th-Edition sagas and classes: the 8th frame's outer ring and border (pack8th, the first copy of
+// each frame name in the merged packs) plus the modern saga / class pack's inner layers -- its
+// own Frame and Border layers left out. CC's saga / class engine lays out the text on top.
+const EIGHTH_INSET_LAYERS = {
+    saga: { suffix: ' Frame', occurrence: 1, masks: ['Pinline', 'Title', 'Type', 'Banner', 'Text'] },
+    class: { suffix: ' Regular Frame', occurrence: 0, masks: ['Pinline', 'Title', 'Type', 'Rules', 'Text Boxes'] },
+};
+async function addLayerWithMask(frameName, maskName, occurrence = 0) {
+    const matches = (global.availableFrames || []).map((f, i) => ({ f, i })).filter(({ f }) => f && f.name === frameName);
+    const hit = matches[occurrence];
+    if (!hit) return false;
+    const maskIdx = (hit.f.masks || []).findIndex((m) => m && m.name === maskName);
+    if (maskIdx < 0) return false;
+    global.selectedFrameIndex = hit.i;
+    global.selectedMaskIndex = maskIdx + 1;
+    await global.addFrame([]);
+    global.selectedMaskIndex = 0;
+    return true;
+}
+async function buildEighthInsetFrame(kind, baseName) {
+    const inset = EIGHTH_INSET_LAYERS[kind];
+    const colour = baseName.replace(/ Frame$/, '');
+    // Layers are added bottom-up (addFrame unshifts): the 8th ring and border first.
+    for (const mask of ['Frame', 'Border']) {
+        if (!await addLayerWithMask(baseName, mask, 0) && !await addLayerWithMask('Multicolored Frame', mask, 0)) {
+            throw new Error(`${kind}: no 8th frame for ${baseName}`);
+        }
+    }
+    // The 8th frame art carries the rounded end caps of its own type bar in the side borders
+    // (EIGHTH_TYPE_CAPS); sagas and classes have no bar there, so the caps stuck out beside the
+    // art. Cover them with the same frame's plain border from EIGHTH_CAP_SOURCE_SHIFT px lower
+    // (ogBounds = bounds: the mask stays put, only the image moves).
+    const frameIdx = (global.availableFrames || []).findIndex((f) => f && f.name === baseName);
+    if (frameIdx >= 0) {
+        global.selectedFrameIndex = frameIdx;
+        global.selectedMaskIndex = 0;
+        await global.addFrame([{ src: rectMaskDataUri(...EIGHTH_TYPE_CAPS), name: 'Type Bar Caps' }]);
+        const shifted = { x: 0, y: -EIGHTH_CAP_SOURCE_SHIFT / 2814, width: 1, height: 1 };
+        global.card.frames[0].bounds = shifted;
+        global.card.frames[0].ogBounds = { ...shifted };
+    }
+    const name = colour + inset.suffix;
+    for (const mask of inset.masks) {
+        if (mask === 'Banner') continue;  // sagas: added last, on top (below)
+        await addLayerWithMask(name, mask, inset.occurrence)
+            || await addLayerWithMask('Multicolored' + inset.suffix, mask, inset.occurrence);
+    }
+    if (kind === 'saga') {
+        // The narrower banner uncovers the text box's old left edge and its angled corner beside
+        // the tip: cover that strip with plain text-box texture from further right (a copy of the
+        // text box shifted EIGHTH_SAGA_TEXT_SHIFT px left, through a feathered rectangle mask),
+        // then put the banner on top of everything.
+        const strip = EIGHTH_SAGA_STRIP;
+        const idx = (global.availableFrames || []).map((f, i) => ({ f, i }))
+            .filter(({ f }) => f && (f.name === colour + inset.suffix))[inset.occurrence]?.i;
+        if (idx !== undefined) {
+            global.selectedFrameIndex = idx;
+            global.selectedMaskIndex = 0;
+            await global.addFrame([{ src: rectMaskDataUri(strip), name: 'Banner Strip' }]);
+            // ogBounds = bounds: CC then draws the rectangle mask where it is and moves only the image.
+            const shifted = { x: -EIGHTH_SAGA_TEXT_SHIFT / 2010, y: 0, width: 1, height: 1 };
+            global.card.frames[0].bounds = shifted;
+            global.card.frames[0].ogBounds = { ...shifted };
+        }
+        if (await addLayerWithMask(name, 'Banner', inset.occurrence)
+            || await addLayerWithMask('Multicolored' + inset.suffix, 'Banner', inset.occurrence)) {
+            fitSagaBannerToEighth(global.card.frames[0]);
+        }
+    }
+    if (kind === 'saga' && global.card.saga) {
+        // CC centres each chapter badge on card.saga.x - 0.022 (the modern banner's centre) and
+        // starts the dividers at card.saga.x: move both with the banner, keep the dividers' ends.
+        const shift = (EIGHTH_SAGA_BANNER.centre - EIGHTH_SAGA_BANNER.modernCentre) / 2010;
+        global.card.saga.x += shift;
+        global.card.saga.width -= shift;
+        installEighthSagaBadges();
+    }
+}
+// CC's badges (versionSaga.js: sagaChapter.png at a fixed 0.0787 x 0.0629, numeral at 0.0324)
+// are wider than the squeezed banner and would hang over the black border. On 8th sagas the saga
+// canvas is redrawn after CC's sagaEdited: the same dividers, and each badge scaled evenly about
+// the banner's centre so its left edge sits on the banner's (EIGHTH_SAGA_BANNER.left).
+const SAGA_BADGE = { offset: 0.0614, width: 0.0787, height: 0.0629, textX: 0.0394, textY: 0.0429, font: 0.0324, step: 0.0358 };
+function installEighthSagaBadges() {
+    if (global.sagaEdited?._eighthWrapped || typeof global.sagaEdited !== 'function') return;
+    const original = global.sagaEdited;
+    const wrapped = function () {
+        original();
+        if (global.card._eighthSaga) drawEighthSagaBadges();
+    };
+    wrapped._eighthWrapped = true;
+    global.sagaEdited = wrapped;
+}
+function drawEighthSagaBadges() {
+    const saga = global.card.saga, ctx = global.sagaContext, chapter = global.sagaChapter, divider = global.sagaDivider;
+    if (!saga || !ctx || !chapter?.complete) return;
+    const b = EIGHTH_SAGA_BANNER;
+    const scale = 2 * (b.centre - b.left) / (SAGA_BADGE.width * 2010);
+    const w = global.scaleWidth(SAGA_BADGE.width * scale), h = global.scaleHeight(SAGA_BADGE.height * scale);
+    const left = global.scaleX(b.left / 2010);
+    ctx.clearRect(0, 0, global.sagaCanvas.width, global.sagaCanvas.height);
+    ctx.font = 'normal normal 550 ' + global.scaleHeight(SAGA_BADGE.font * scale) + 'px plantinsemibold';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'black';
+    let numeral = 1;
+    for (let i = 0; i < saga.count; i++) {
+        const ability = global.card.text['ability' + i];
+        const y = global.scaleY(ability.y), height = global.scaleHeight(ability.height);
+        if (divider?.complete) {
+            ctx.drawImage(divider, global.scaleX(saga.x), y - global.scaleHeight(0.0029) / 2,
+                global.scaleWidth(saga.width), global.scaleHeight(0.0029));
+        }
+        const count = parseInt(saga.abilities[i]) || 0;
+        const top = y + (height - h) / 2;
+        for (let j = 0; j < count; j++, numeral++) {
+            const dy = (j - (count - 1) / 2) * global.scaleHeight(SAGA_BADGE.step) * 2 * scale;
+            ctx.drawImage(chapter, left, top + dy, w, h);
+            ctx.fillText(global.romanNumeral(numeral), left + w / 2, top + dy + global.scaleHeight(SAGA_BADGE.textY * scale));
+        }
+    }
+    if (typeof global.drawCard === 'function') global.drawCard();
+}
+// The modern saga banner (x 87-220 of 2010, tip and centre stripe at 153.5) is wider than the 8th
+// frame's side: centre it on the text box's black pinline that continues below the tip (x 149-153,
+// centre 151) and squeeze it horizontally about that line until its left edge meets the card edge.
+// Height unchanged. ogBounds of the whole card makes CC draw the banner mask with the same squeeze.
+const EIGHTH_SAGA_TEXT_SHIFT = 120;
+// Card-pixel box (2010x2814) behind the banner and past the text box's old left edge (x 220) and its
+// angled corner beside the tip, over the banner's height (y 470-2342, stopping above the text box's
+// black pinline under the tip); its right edge fades out over `feather` px into the text box.
+const EIGHTH_SAGA_STRIP = { x: 156, y: 470, width: 114, height: 1872, feather: 24 };
+// The 8th type bar's end caps in the side borders (card px; the bar spans y ~1564-1750).
+// Inside the border only (its opening runs x 155-1859), faded in and out over `featherY` px.
+const EIGHTH_TYPE_CAPS = [
+    { x: 96, y: 1500, width: 59, height: 320, featherY: 40 },
+    { x: 1859, y: 1500, width: 59, height: 320, featherY: 40 },
+];
+const EIGHTH_CAP_SOURCE_SHIFT = 300;
+const _rectMasks = new Map();
+// A full-card (2010x2814) mask of white rectangles; a rectangle's right edge fades out over
+// its `feather` px, its top and bottom over `featherY` px.
+function rectMaskDataUri(...rects) {
+    const key = JSON.stringify(rects);
+    if (!_rectMasks.has(key)) {
+        const canvas = createCanvas(2010, 2814);
+        const ctx = canvas.getContext('2d');
+        for (const { x, y, width, height, feather = 0, featherY = 0 } of rects) {
+            if (featherY) {
+                const fade = ctx.createLinearGradient(0, y, 0, y + height);
+                const edge = featherY / height;
+                fade.addColorStop(0, 'rgba(255,255,255,0)');
+                fade.addColorStop(edge, 'rgba(255,255,255,1)');
+                fade.addColorStop(1 - edge, 'rgba(255,255,255,1)');
+                fade.addColorStop(1, 'rgba(255,255,255,0)');
+                ctx.fillStyle = fade;
+                ctx.fillRect(x, y, width, height);
+                continue;
+            }
+            ctx.fillStyle = 'white';
+            ctx.fillRect(x, y, width - feather, height);
+            if (feather) {
+                const fill = ctx.createLinearGradient(x + width - feather, 0, x + width, 0);
+                fill.addColorStop(0, 'rgba(255,255,255,1)');
+                fill.addColorStop(1, 'rgba(255,255,255,0)');
+                ctx.fillStyle = fill;
+                ctx.fillRect(x + width - feather, y, feather, height);
+            }
+        }
+        _rectMasks.set(key, canvas.toDataURL('image/png'));
+    }
+    return _rectMasks.get(key);
+}
+// left: x 100, two px into the black border (the 8th colour starts at x 102) so no frame colour
+// shows beside the banner; the chapter badges share that left edge (drawEighthSagaBadges).
+const EIGHTH_SAGA_BANNER = { modernCentre: 153.5, modernHalf: 66.5, centre: 151, left: 100 };
+function fitSagaBannerToEighth(layer) {
+    if (!layer) return;
+    const b = EIGHTH_SAGA_BANNER;
+    const scale = (b.centre - b.left) / b.modernHalf;
+    layer.bounds = { x: (b.centre - b.modernCentre * scale) / 2010, y: 0, width: scale, height: 1 };
+    layer.ogBounds = { x: 0, y: 0, width: 1, height: 1 };
+}
+
+// Class levels. versionClass.js reads each level's height from its '#class-height-N' input, which
+// it fills from the pack's text options when it loads -- in a browser that script loads after the
+// pack's loadTextOptions, here it runs before, so the inputs are wrong and level 1 swallows the
+// whole column. Set them here instead, the same way equalizePlaneswalkerAbilities does: one shared
+// font size for every level -- the largest at which each level's wrapped text plus CLASS_LEVEL_PAD
+// lines fits the column (CLASS_COLUMN: packClass's level0c top to the 0.8368 bottom versionClass
+// stretches the last level to, minus one 0.0481 header per extra level) -- each level sized to its
+// own content and the slack spread evenly.
+const CLASS_COLUMN = { top: 0.1129, bottom: 0.8368, header: 0.0481 };
+const CLASS_LEVEL_PAD = 0.7;
+function layoutClassLevels(column = CLASS_COLUMN) {
+    const text = global.card.text;
+    // Levels in use, from their text: classEdited replaces card.class (getCardClass) and drops the
+    // count the import put there, so card.class.count is gone by the time a retro layout runs.
+    const count = [0, 1, 2, 3].filter((i) => i === 0 || (text[`level${i}c`]?.text || '').trim()).length;
+    if (count < 1 || typeof global.classEdited !== 'function') return;
+    const cardWidth = global.card.width, cardHeight = global.card.height;
+    const levels = [...Array(count).keys()].map((i) => text[`level${i}c`]);
+    const texts = levels.map((l) => (l.text || '').replace(/\{lns\}\{bar\}\{lns\}/g, '\n\n'));
+    const widths = levels.map((l) => l.width * cardWidth * 0.95);
+    const spanPx = (column.bottom - column.top - column.header * (count - 1)) * cardHeight;
+    let fontPx = 40;
+    let lines = texts.map((t, i) => countWrappedLines(t, widths[i], fontPx));
+    for (let px = Math.round((levels[0].size || 0.0305) * cardHeight); px >= 40; px--) {
+        const candidate = texts.map((t, i) => countWrappedLines(t, widths[i], px));
+        if (candidate.reduce((sum, n) => sum + (n + CLASS_LEVEL_PAD) * px, 0) <= spanPx) {
+            fontPx = px;
+            lines = candidate;
+            break;
+        }
+    }
+    const content = lines.map((n) => (n + CLASS_LEVEL_PAD) * fontPx);
+    const slack = Math.max(0, spanPx - content.reduce((a, b) => a + b, 0)) / count;
+    text.level0c.y = column.top;
+    for (const level of levels) level.size = fontPx / cardHeight;
+    for (let i = 0; i < 4; i++) {
+        querySelector(`#class-height-${i}`).value = i < count ? Math.round(content[i] + slack) : 0;
+    }
+    global.classEdited();
+}
+
+// Why a card cannot be rendered as requested, or null. Checked before rendering so such a card
+// fails loudly (status 'error') rather than silently coming out in another frame or a broken
+// layout. With no frame flag (auto) each card takes the frame it was printed in, so only the
+// layouts we cannot draw at all count there.
+const FRAME_LABEL = { '8th': '8th', modern: 'modern', 'm15-8th': 'M15-8th', retro: 'retro', borderless: 'borderless' };
+function unsupportedRequest(scry, requestedFrame, special, { dfcSplit, retroHd }) {
+    const typeLine = scry.type_line || '';
+    if (/\bBattle\b/.test(typeLine)) return 'battles (sideways cards) are not supported in any frame';
+    if (requestedFrame === 'auto' || requestedFrame === 'station') return null;
+    const asked = FRAME_LABEL[requestedFrame] || requestedFrame;
+    if (special?.kind === 'invalid') return null;  // renderCard reports these
+    if (special && special.frame !== requestedFrame
+            && !(retroHd && requestedFrame === 'retro' && ['adventure', 'prepare'].includes(scry.layout))) {
+        const what = special.kind === 'planeswalker-dfc' ? 'double-faced planeswalker'
+            : special.kind === 'planeswalker' ? 'planeswalker' : `${scry.layout} card`;
+        return `no ${asked} layout for this ${what}: it would render in the ${FRAME_LABEL[special.frame] || special.frame} frame`;
+    }
+    if (scry.layout === 'flip' && requestedFrame !== 'modern') {
+        return `flip cards only render in the modern flip frame, not ${asked}`;
+    }
+    if (scry.layout === 'reversible_card' && requestedFrame !== 'modern') {
+        return `reversible cards only render as a modern flip card, not ${asked}`;
+    }
+    if (scry.layout === 'modal_dfc' && dfcSplit && requestedFrame === '8th') {
+        return 'no 8th layout for modal double-faced cards: it would render in the M15-8th hybrid frame';
+    }
+    if (requestedFrame === 'borderless' && ['transform', 'modal_dfc'].includes(scry.layout)) {
+        return 'no borderless layout for double-faced cards: it would render in the modern frame';
+    }
+    if (isStationCard(scry) && requestedFrame !== 'modern') {
+        return `Station cards only render in their own modern frame, not ${asked}`;
+    }
+    return null;
+}
+
+// Battlement legend crown for retro (Seventh) legendaries. Seventh predates crowns, so the
+// art is ours: mtg_proxies/cardconjurer/retro_crown.py generates one layer per Seventh frame
+// image (transparent except the crown band above the stock top edge) plus a crown version of
+// the 'Pinline' mask, committed under assets/retro-crown/.
+//
+// Rather than pick one crown per card, replay the card's frame stack: every Seventh frame
+// layer already on the card (autoFrame's base, the hybrid split, land frames) gets its crown
+// counterpart on top. autoFrame builds the base
+// from one frame image under five masks (Border, Textbox Pinline, Frame, Rules, Pinline);
+// each mask maps to its crown equivalent via RETRO_CROWN_MASK below, and a layer with any
+// mask that never reaches the crown band is skipped. So whatever combination the frame is,
+// the crown matches it, and nothing below the stock top edge changes.
+const RETRO_CROWN_DIR = path.join(ROOT, 'assets', 'retro-crown');
+const RETRO_CROWN_PINLINE_MASK = 'pinline.png';
+const RETRO_CROWN_SRC = /\/img\/frames\/seventh\/regular\/([A-Za-z]+)\.png$/;
+// Stock mask name -> what the crown layer uses instead:
+//   'drop'  -- no mask (the crown layer is already transparent outside the crown)
+//   'keep'  -- same mask (full-card masks such as the hybrid's right half)
+//   object  -- a crown-specific replacement
+// Masks not listed (Border, Rules, Textbox Pinline, Dual Land) skip the layer: Border only
+// paints the black around the frame, the others sit far below the crown band.
+const RETRO_CROWN_MASK = {
+    'Frame': 'drop',
+    'Right Half': 'keep',
+    'Pinline': { name: 'Crown Pinline' },  // src: <crown dir>/RETRO_CROWN_PINLINE_MASK
+};
+
+async function addRetroLegendCrown(crownDir = RETRO_CROWN_DIR) {
+    const bottomUp = (global.card.frames || []).slice().reverse();
+    for (const layer of bottomUp) {
+        const match = RETRO_CROWN_SRC.exec(layer.src || '');
+        if (!match) continue;
+        const crownPath = path.join(crownDir, match[1] + '.png');
+        if (!fs.existsSync(crownPath)) continue;
+        const masks = [];
+        let reachesCrown = true;
+        for (const mask of layer.masks || []) {
+            const rule = RETRO_CROWN_MASK[mask.name];
+            if (rule === undefined) { reachesCrown = false; break; }
+            if (rule === 'keep') masks.push({ name: mask.name, src: mask.src });
+            else if (rule !== 'drop') {
+                masks.push({ ...rule, src: 'file://' + path.join(crownDir, RETRO_CROWN_PINLINE_MASK) });
+            }
+        }
+        if (!reachesCrown) continue;
+        const crownLayer = {
+            name: layer.name.replace(/ Frame$/, '') + ' Crown',
+            src: 'file://' + crownPath,
+            masks,
+        };
+        for (const key of ['bounds', 'opacity', 'mode', 'preserveAlpha']) {
+            if (key in layer) crownLayer[key] = layer[key];
+        }
+        // addFrame(_, frameObj) only loads the images; registering the layer is the
+        // caller's job. unshift = on top, so walking bottom-up keeps the stack order.
+        global.card.frames.unshift(crownLayer);
+        await global.addFrame([], crownLayer);
+    }
 }
 
 
@@ -257,8 +577,108 @@ console.error('[harness] fonts:', _fontLoaded, 'loaded,', _fontFailed, 'failed (
 //    web-root paths like '/img/frames/8th/b.png'.
 // ---------------------------------------------------------------------------
 const pendingImages = [];
+// --retro-hd: while a retro-HD card is being built, packSeventh's frame images resolve to the
+// composites retro_hd.py built from Gavin Bowers' Retro template. Same geometry, different art --
+// see retro_hd.py. Set (and cleared) by renderFace; null = stock frames.
+const RETRO_HD_ROOT = process.env.CC_RETRO_HD || path.join(os.homedir(), '.cache', 'mtg-proxies', 'retro-hd');
+const SEVENTH_FRAME_SRC = /^\/img\/frames\/seventh\/regular\/([A-Za-z]+)\.png$/;
+let retroHdFrames = null;
+let retroHdAdventure = false;  // the card being built is a two-panel --retro-hd adventure
+let retroHdVariant = null;  // 'tf' / 'mdfc': a --retro-hd double-faced face (retro_hd.py frames/<variant>/)
+
+// --retro-hd text layout, taken from the template's own text layers rather than packSeventh's
+// regions, so the text sits where Gavin's frames expect it. Values are the PSD's layer metrics
+// (font size x transform scale, baseline anchor) in card pixels (the template crop is 1:1 with
+// CC's 2010x2814 card). writeText puts a one-line baseline at y + height/2 + 0.275*size, so a
+// line of size S on baseline B is the box {y: B - 0.775*S, height: S}.
+const HD_W = 2010, HD_H = 2814;
+function hdLine(baseline, size) {
+    return { y: (baseline - 0.775 * size) / HD_H, height: size / HD_H, size: size / HD_H };
+}
+const RETRO_HD_TEXT = {
+    // Card Name: Magic:theGathering 116px, left 218, baseline 225. Right edge kept from packSeventh.
+    title: { x: 218 / HD_W, width: 0.8868 - 218 / HD_W, ...hdLine(225, 116) },
+    // Mana Cost: 120px, right-aligned to 1852, baseline 233.
+    mana: { x: 0.1067, width: 1852 / HD_W - 0.1067, ...hdLine(233, 120) },
+    // Typeline: Plantin 96px, left 212, baseline 1641, ending 20px before the template's
+    // Expansion Reference (x 1689). Never widened past the set-symbol clamp already applied.
+    type: { x: 212 / HD_W, width: (1689 - 20 - 212) / HD_W, ...hdLine(1641, 96) },
+    // Rules Text: 99px, in Textbox Reference Normal (203,1697)-(1807,2481) less the layer's
+    // 46px side inset; vertically centred like Proxyshop does.
+    rules: { x: 249 / HD_W, y: 1697 / HD_H, width: 1512 / HD_W, height: 784 / HD_H, size: 99 / HD_H },
+    // Power / Toughness: centred on 1755, baseline 2625 (packSeventh's size, which matches).
+    pt: { x: (1755 - 137) / HD_W, width: 0.1367, ...hdLine(2625, 121) },
+};
+// Art Frames/Normal, the box Proxyshop fits the art into: (229,279)-(1782,1525) in card pixels.
+// retro_hd.py cuts the frame's art window at the same box (3px of the black outline left visible).
+const RETRO_HD_ART_BOUNDS = { x: 229 / HD_W, y: 279 / HD_H, width: (1782 - 229) / HD_W, height: (1525 - 279) / HD_H };
+const RETRO_HD_BOTTOM = {
+    // Artist: "Illus. <artist>", 78px, centred, baseline 2592.
+    top: { x: 0.1, width: 0.8, text: 'Illus. {elemidinfo-artist}', ...hdLine(2592, 78) },
+    // Collector: "<number> • <set>", 56px, centred, baseline 2654 -- in place of the copyright.
+    wizards: { x: 0.1, width: 0.8, text: '{elemidinfo-number} \u2022 {elemidinfo-set}', ...hdLine(2654, 56) },
+};
+function applyRetroHdLayout(regions, layout) {
+    for (const [key, geometry] of Object.entries(layout)) {
+        const region = regions?.[key];
+        if (!region) continue;
+        // The type line's width was already clamped clear of the actual set symbol (which
+        // varies in width per set); keep whichever of the two stops earlier.
+        const width = key === 'type' && region.width ? Math.min(region.width, geometry.width) : geometry.width;
+        Object.assign(region, geometry, { width });
+    }
+}
+// packSeventh masks whose HD replacement has a different shape (retro_hd.build_masks): the
+// template's land textbox, with its pinline outline, is larger than packSeventh's rules box,
+// which would clip that outline off the two-colour textbox.
+const SEVENTH_MASK_SRC = { '/img/frames/seventh/regular/rules.svg': 'rules.png' };
+// Saga (packClassicshiftedSaga + versionSaga.js) images under --retro-hd: the Classicshifted saga
+// frames become the template's saga composites, the chapter divider its own divider, and CC's
+// generic chapter hexagon a transparent pixel -- the template's own numbered badges are drawn by
+// drawRetroHdSagaBadges instead.
+const SAGA_FRAME_SRC = /^\/img\/frames\/custom\/classicshifted\/saga\/([a-z]+)\.png$/;
+const SAGA_EXTRA_SRC = {
+    '/img/frames/saga/sagaDivider.png': 'saga/divider.png',
+    '/img/frames/saga/sagaChapter.png': null,
+    // CC's class level header -> the template's (bar + divider; retro_hd.build_class_extras).
+    '/img/frames/class/header.png': 'class/header.png',
+};
+// packClass's regular frames (/img/frames/class/<code>.png) -> the template's class frames.
+const CLASS_FRAME_SRC = /^\/img\/frames\/class\/([a-z])\.png$/;
+const TRANSPARENT_PNG = createCanvas(1, 1).toDataURL('image/png');
+function retroHdFrame(src) {
+    if (!retroHdFrames) return null;
+    if (src in SAGA_EXTRA_SRC && SAGA_EXTRA_SRC[src] === null) return TRANSPARENT_PNG;
+    const classFrame = CLASS_FRAME_SRC.exec(src);
+    if (classFrame) {
+        const file = path.join(retroHdFrames, 'class', classFrame[1] + '.png');
+        return fs.existsSync(file) ? file : null;
+    }
+    const saga = SAGA_FRAME_SRC.exec(src);
+    if (saga) {
+        const file = path.join(retroHdFrames, 'saga', saga[1] + '.png');
+        return fs.existsSync(file) ? file : null;
+    }
+    const match = SEVENTH_FRAME_SRC.exec(src);
+    if (match && retroHdVariant) {
+        const file = path.join(retroHdFrames, retroHdVariant, match[1] + '.png');
+        if (fs.existsSync(file)) return file;
+    }
+    if (match && retroHdAdventure) {
+        // Every land frame (l, wl..gl) maps to the one adventure land frame.
+        const code = match[1].endsWith('l') ? 'l' : match[1];
+        const file = path.join(retroHdFrames, 'adventure', code + '.png');
+        if (fs.existsSync(file)) return file;
+    }
+    const name = match ? match[1] + '.png' : (SEVENTH_MASK_SRC[src] || SAGA_EXTRA_SRC[src]);
+    if (!name) return null;
+    const file = path.join(retroHdFrames, name);
+    return fs.existsSync(file) ? file : null;
+}
 function resolveSrc(src) {
     if (!src) return null;
+    const hd = retroHdFrame(src);
+    if (hd) return hd;
     if (src.startsWith('data:'))                    return src;
     if (src.startsWith('http://') || src.startsWith('https://')) return src;
     if (src.startsWith('file://'))                  return src.slice(7);
@@ -297,7 +717,8 @@ class HarnessImage {
         this.crossOrigin = null;
         this.width = 0; this.height = 0;
     }
-    get src() { return this._src; }
+    // Like a browser, an image with no src yet reports '' (versionClass.js calls src.endsWith).
+    get src() { return this._src ?? ''; }
     // Real browsers maintain these automatically; a vendored script that checks
     // them before drawing (versionStation.js's drawStationElement) would otherwise
     // always see `undefined` here and silently skip the draw, load or no load.
@@ -1093,6 +1514,318 @@ function countWrappedLines(text, boxWidthPx, fontPx) {
     }
     return Math.max(1, totalLines);
 }
+// Planeswalker abilities at one shared size. Card Conjurer splits the rules box evenly between
+// the abilities and then auto-shrinks each one on its own, so a one-line ability keeps a large
+// font while a five-line one drops to a much smaller one on the same card. Same idea as
+// layoutStationAbilities: find the largest font size at which every ability -- measured with its
+// real wrapping at that size, plus PW_ABILITY_PAD lines of breathing room each -- fits the box
+// together, size each ability's box to its own content at that size (spreading any slack
+// evenly), and put every loyalty badge on the vertical centre of its own ability.
+//
+// The badges are not positioned from the boxes: versionPlaneswalker.js draws each one at a fixed
+// per-ability-count fraction (planeswalkerAbilityLayout) plus '#planeswalker-shift-N'. What the
+// eye lines up is the badge's NUMBER, not the badge image (the minus/neutral shields carry a
+// pointed tail that drags their image centre well below the number): its fillText baseline is
+// P + 0.0172 / 0.0181 / 0.0191 (plus / minus / neutral) at 0.0286 size, so the number's centre is
+// about 0.35 x 0.0286 above that. It is matched to the ability's text centre, which writeText's
+// vertical centring puts 0.075 x size above the box centre. So the shift is solved per badge.
+const PW_ABILITY_PAD = 0.55;
+const EIGHTH_PW_INSET = 14;
+// Each pack's own ability x / width (packPlaneswalkerEighth.js ours, packPlaneswalkerSeventh.js CC's).
+const PW_ABILITY_BASE = {
+    planeswalkerEighth: { x: 362 / 2010, width: 1446 / 2010 },
+    planeswalkerSeventh: { x: 0.18, width: 0.70 },
+};
+// versionPlaneswalker.js draws modern's alternating ability stripes for every version except
+// SDCC15 / Seventh. An 8th card has a plain textbox like Seventh, so wrap planeswalkerEdited
+// (installed once; the engine calls it by its global name) to wipe the stripes on 8th cards.
+function hidePlaneswalkerStripesOnEighth() {
+    if (global.planeswalkerEdited?._eighthWrapped || typeof global.planeswalkerEdited !== 'function') return;
+    const original = global.planeswalkerEdited;
+    const wrapped = function () {
+        original();
+        if (global.card.version !== 'planeswalkerEighth') return;
+        const canvas = global.planeswalkerPreFrameCanvas;
+        global.planeswalkerPreFrameContext?.clearRect(0, 0, canvas.width, canvas.height);
+        if (typeof global.drawCard === 'function') global.drawCard();
+    };
+    wrapped._eighthWrapped = true;
+    global.planeswalkerEdited = wrapped;
+}
+const PW_BADGE_NUMBER_CENTER = { plus: 0.0072, minus: 0.0081, neutral: 0.0091 };
+function equalizePlaneswalkerAbilities(boxTop, boxHeight) {
+    const text = global.card.text;
+    const count = global.card.planeswalker?.count || 0;
+    if (count < 1 || typeof global.planeswalkerEdited !== 'function') return;
+    // versionPlaneswalker.js moves a cost-less (static) ability 0.044 left and remembers every
+    // ability's normal x/width in card.planeswalker.orig_ability_textbox_* the first time it sees
+    // one -- but that memory outlives the card, and it has been seen holding an already-shifted x,
+    // which pushed every costed ability's text under its badge. Reset it to the pack's own values.
+    const base = PW_ABILITY_BASE[global.card.version];
+    if (base) {
+        global.card.planeswalker.orig_ability_textbox_x = base.x;
+        global.card.planeswalker.orig_ability_textbox_width = base.width;
+        for (let i = 0; i < 4; i++) {
+            if (text['ability' + i]) Object.assign(text['ability' + i], { x: base.x, width: base.width });
+        }
+        global.planeswalkerEdited();
+    }
+    const cardWidth = global.card.width, cardHeight = global.card.height;
+    const abilities = [...Array(count).keys()].map((i) => text['ability' + i]);
+    const texts = abilities.map((a) => a?.text || '');
+    // 0.95: CC's writeText wraps a little short of the box's full width, so measuring at the
+    // full width under-counts a line now and then and that ability auto-shrinks on its own.
+    const widths = abilities.map((a) => (a?.width || 0.75) * cardWidth * 0.95);
+    const spanPx = boxHeight * cardHeight;
+
+    const startPx = Math.round((abilities[0]?.size || 0.0358) * cardHeight);
+    let fontPx = 40;
+    let lines = texts.map((t, i) => countWrappedLines(t, widths[i], fontPx));
+    for (let px = startPx; px >= 40; px--) {
+        const candidate = texts.map((t, i) => countWrappedLines(t, widths[i], px));
+        if (candidate.reduce((sum, n) => sum + (n + PW_ABILITY_PAD) * px, 0) <= spanPx) {
+            fontPx = px;
+            lines = candidate;
+            break;
+        }
+    }
+    const content = lines.map((n) => (n + PW_ABILITY_PAD) * fontPx);
+    const slack = Math.max(0, spanPx - content.reduce((a, b) => a + b, 0)) / count;
+    const heights = content.map((c) => c + slack);
+
+    text.ability0.y = boxTop;
+    for (let i = 0; i < 4; i++) {
+        querySelector(`#planeswalker-height-${i}`).value = i < count ? Math.round(heights[i]) : 0;
+    }
+    for (const ability of abilities) if (ability) ability.size = fontPx / cardHeight;
+
+    const layout = global.planeswalkerAbilityLayout?.[0]?.[count - 1];
+    if (layout) {
+        let y = boxTop;
+        for (let i = 0; i < count; i++) {
+            const centre = y + heights[i] / cardHeight / 2 - 0.075 * fontPx / cardHeight;
+            y += heights[i] / cardHeight;
+            const cost = String(querySelector(`#planeswalker-cost-${i}`).value || '');
+            const badge = cost.includes('+') ? 'plus' : cost.includes('-') ? 'minus' : 'neutral';
+            const shift = centre - PW_BADGE_NUMBER_CENTER[badge] - layout[i];
+            querySelector(`#planeswalker-shift-${i}`).value = Math.round(shift * cardHeight);
+        }
+    }
+    global.planeswalkerEdited();
+}
+
+// --- Retro sagas -------------------------------------------------------------------------------
+// CC's saga engine (versionSaga.js) splits the chapters on import, then sizes each chapter box
+// by its word count and auto-shrinks each one on its own -- the same mixed-size problem
+// equalizePlaneswalkerAbilities fixes. equalizeSagaChapters picks one shared size the same way,
+// sizes each chapter box to its content and spreads the slack evenly.
+const SAGA_CHAPTER_PAD = 0.9;
+function equalizeSagaChapters(boxTop, boxBottom) {
+    const text = global.card.text;
+    const count = global.card.saga?.count || 0;
+    if (count < 1 || typeof global.sagaEdited !== 'function') return;
+    const cardWidth = global.card.width, cardHeight = global.card.height;
+    const chapters = [...Array(count).keys()].map((i) => text['ability' + i]);
+    const texts = chapters.map((c) => c?.text || '');
+    const widths = chapters.map((c) => (c?.width || 0.33) * cardWidth);
+    const spanPx = (boxBottom - boxTop) * cardHeight;
+    const startPx = Math.round((chapters[0]?.size || 0.0305) * cardHeight * 1.15);
+    let fontPx = 40;
+    let lines = texts.map((t, i) => countWrappedLines(t, widths[i], fontPx));
+    for (let px = startPx; px >= 40; px--) {
+        const candidate = texts.map((t, i) => countWrappedLines(t, widths[i], px));
+        if (candidate.reduce((sum, n) => sum + (n + SAGA_CHAPTER_PAD) * px, 0) <= spanPx) {
+            fontPx = px;
+            lines = candidate;
+            break;
+        }
+    }
+    const content = lines.map((n) => (n + SAGA_CHAPTER_PAD) * fontPx);
+    const slack = Math.max(0, spanPx - content.reduce((a, b) => a + b, 0)) / count;
+    text.ability0.y = boxTop;
+    for (let i = 0; i < 4; i++) {
+        querySelector(`#saga-height-${i}`).value = i < count ? Math.round(content[i] + slack) : 0;
+        if (text['ability' + i]) text['ability' + i].size = fontPx / cardHeight;
+    }
+    global.sagaEdited();
+}
+
+// --retro-hd saga geometry, in card pixels (the template's Saga layers, crop offset (87, 79)):
+// chapter box (233,280)-(912,2111) with text from x 283; art (1007,278)-(1783,2114); type line
+// 587px lower than a normal card's (Proxyshop's position_type_line); reminder box
+// (238,2285)-(1779,2479); divider spans x 244-905.
+const RETRO_HD_SAGA = {
+    chapterTop: 280 / HD_H, chapterBottom: (2111 - 10) / HD_H,
+    chapterX: 283 / HD_W, chapterWidth: (895 - 283) / HD_W,
+    art: { x: 1007 / HD_W, y: 278 / HD_H, width: (1783 - 1007) / HD_W, height: (2114 - 278) / HD_H },
+    typeBaseline: 1641 + 587,
+    reminder: { x: 258 / HD_W, y: 2285 / HD_H, width: 1500 / HD_W, height: 194 / HD_H, size: 60 / HD_H },
+    divider: { x: 244 / HD_W, width: 661 / HD_W },
+};
+
+// --retro-hd classes: the Proxyshop template's class layout -- the saga layout mirrored (art left,
+// levels right; RETRO_HD_SAGA), card pixels. CC's class engine draws each level header
+// (versionClass.js: classHeader at card.class.x / width, 0.0481 tall) -- remapped to the template's
+// own header (bar + divider, x 1114-1762) -- so getCardClass reports that column, and classEdited
+// stretches the last level to its own fixed 0.8368 bottom: both are corrected for these cards.
+const RETRO_HD_CLASS = {
+    column: { top: 280 / HD_H, bottom: (2111 - 10) / HD_H, header: 0.0481 },
+    levelX: 1114 / HD_W, levelWidth: 640 / HD_W,
+    header: { x: 1114 / HD_W, width: 648 / HD_W },
+    headerText: 62 / HD_H,
+    art: { x: 227 / HD_W, y: 278 / HD_H, width: (1003 - 227) / HD_W, height: (2114 - 278) / HD_H },
+};
+function installRetroClassHooks() {
+    if (typeof global.getCardClass === 'function' && !global.getCardClass._retroHd) {
+        const original = global.getCardClass;
+        const wrapped = function () {
+            return global.card._retroHdClass ? { ...RETRO_HD_CLASS.header } : original();
+        };
+        wrapped._retroHd = true;
+        global.getCardClass = wrapped;
+    }
+    if (typeof global.classEdited === 'function' && !global.classEdited._retroHd) {
+        const original = global.classEdited;
+        const wrapped = function () {
+            original();
+            if (!global.card._retroHdClass) return;
+            const text = global.card.text;
+            const count = [0, 1, 2, 3].filter((i) => i === 0 || (text[`level${i}c`]?.text || '').trim()).length;
+            const last = text[`level${count - 1}c`];
+            if (last && last.y < 1) last.height = RETRO_HD_CLASS.column.bottom - last.y;
+            global.drawTextBuffer?.();
+            global.drawCard?.();
+        };
+        wrapped._retroHd = true;
+        global.classEdited = wrapped;
+    }
+}
+function layoutRetroClass(scry) {
+    const text = global.card.text;
+    const g = RETRO_HD_CLASS;
+    global.card._retroHdClass = true;
+    installRetroClassHooks();
+    // CC loads the class header image once; make it reload through the current (HD) remap.
+    if (global.classHeader) global.classHeader.src = '';
+    text.title.font = 'goudymedieval';
+    text.title.size = 0.041;
+    delete text.type.font;
+    // packClass is a modern pack (black title and type); retro prints them white with packSeventh's
+    // shadow, as the saga pack does.
+    for (const region of [text.title, text.type]) Object.assign(region, { color: 'white', shadowX: 0.002, shadowY: 0.0015 });
+    global.card.bottomInfo = {
+        top: { text: 'Illus. {elemidinfo-artist}', x: 0.1, y: 1908 / 2100, width: 0.8, height: 0.0267, oneLine: true,
+               size: 0.0267, align: 'center', shadowX: 0.0021, shadowY: 0.0015, color: 'white' },
+        wizards: { name: 'wizards', text: '{elemidinfo-number}', x: 0.1, y: 1933 / 2100, width: 0.8, height: 0.0172,
+                   oneLine: true, size: 0.0172, align: 'center', shadowX: 0.0014, shadowY: 0.001, color: 'white' },
+    };
+    applyRetroHdLayout(text, { title: RETRO_HD_TEXT.title, mana: RETRO_HD_TEXT.mana });
+    Object.assign(text.type, { x: RETRO_HD_TEXT.type.x, width: RETRO_HD_TEXT.type.width, ...hdLine(RETRO_HD_SAGA.typeBaseline, 96) });
+    // The reminder ("Gain the next level as a sorcery...") goes to the template's bottom box, as on
+    // the template; CC's import prefixes it to level 1 with a bar.
+    const [head, ...rest] = String(text.level0c.text || '').split('{lns}{bar}{lns}');
+    const reminder = rest.length ? head : '';
+    if (rest.length) text.level0c.text = rest.join('{lns}{bar}{lns}');
+    text.reminder = { name: 'Reminder Text', ...RETRO_HD_SAGA.reminder, text: reminder };
+    for (let i = 0; i < 4; i++) {
+        Object.assign(text[`level${i}c`], { x: g.levelX, width: g.levelWidth });
+        for (const part of ['a', 'b']) {
+            const region = text[`level${i}${part}`];
+            if (region) Object.assign(region, { x: g.levelX, width: g.levelWidth, size: g.headerText, height: g.headerText * 1.25 });
+        }
+    }
+    global.card.artBounds = { ...g.art };
+    global.autoFitArt();
+    global.card.setSymbolBounds = { ...global.card.setSymbolBounds, x: 0.9, y: 0.5739 + 587 / HD_H, width: 0.12, height: 0.0372 };
+    if (typeof global.resetSetSymbol === 'function') global.resetSetSymbol();
+    layoutClassLevels(g.column);
+}
+
+// The saga reminder line, as the template prints it: the oracle text before the first chapter
+// (CC's extractSagaReminderText only knows the standard lore-counter sentence and returns null for
+// e.g. Read ahead), with Read ahead's long reminder swapped for Proxyshop's abridged one.
+function sagaReminder(oracle) {
+    const head = String(oracle || '').split(/\n(?=[IVX]+(?:, [IVX]+)* \u2014)/)[0];
+    const reminder = /^[IVX]+(?:, [IVX]+)* \u2014/.test(head) ? '' : head.trim();
+    if (/^Read ahead\b/.test(reminder)) {
+        return 'Read ahead (Choose a chapter and start with that many lore counters. Skipped chapters don\'t trigger.)';
+    }
+    return reminder;
+}
+
+// Lay out a --retro-hd saga after its frame is added: packClassicshiftedSaga ships modern fonts
+// (Beleren), no bottom info and Classicshifted geometry, so every region moves onto the
+// template's saga geometry with packSeventh's fonts and artist line, and the chapters are sized
+// evenly.
+function layoutRetroSaga(scry) {
+    const text = global.card.text;
+    const g = RETRO_HD_SAGA;
+    text.title.font = 'goudymedieval';
+    text.title.size = 0.041;
+    delete text.type.font;
+    global.card.bottomInfo = {
+        top: { text: 'Illus. {elemidinfo-artist}', x: 0.1, y: 1908 / 2100, width: 0.8, height: 0.0267, oneLine: true,
+               size: 0.0267, align: 'center', shadowX: 0.0021, shadowY: 0.0015, color: 'white' },
+        wizards: { name: 'wizards', text: '{elemidinfo-number}', x: 0.1, y: 1933 / 2100, width: 0.8, height: 0.0172,
+                   oneLine: true, size: 0.0172, align: 'center', shadowX: 0.0014, shadowY: 0.001, color: 'white' },
+    };
+    applyRetroHdLayout(text, { title: RETRO_HD_TEXT.title, mana: RETRO_HD_TEXT.mana });
+    Object.assign(text.type, { x: RETRO_HD_TEXT.type.x, width: RETRO_HD_TEXT.type.width, ...hdLine(g.typeBaseline, 96) });
+    Object.assign(text.reminder, g.reminder);
+    delete text.reminder.shadowColor;
+    const reminder = sagaReminder(scry.oracle_text);
+    text.reminder.text = reminder ? `{i}${reminder}{/i}` : '';
+    for (let i = 0; i < 4; i++) Object.assign(text['ability' + i], { x: g.chapterX, width: g.chapterWidth });
+    global.card.artBounds = { ...g.art };
+    global.autoFitArt();
+    global.card.setSymbolBounds = { ...global.card.setSymbolBounds, x: 0.9, y: 0.5739 + 587 / HD_H, width: 0.12, height: 0.0372 };
+    if (typeof global.resetSetSymbol === 'function') global.resetSetSymbol();
+    global.card.saga.x = g.divider.x;
+    global.card.saga.width = g.divider.width;
+    equalizeSagaChapters(g.chapterTop, g.chapterBottom);
+}
+
+// Draw the template's numbered chapter badges (I-VI) on CC's saga canvas, centred on each chapter;
+// a multi-chapter ability ("I, II -- ...") stacks its badges around the chapter's centre.
+const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI'];
+const _sagaBadgeCache = new Map();
+async function drawRetroHdSagaBadges() {
+    const saga = global.card.saga, ctx = global.sagaContext;
+    if (!saga || !ctx) return;
+    const dir = path.join(RETRO_HD_ROOT, 'frames', 'saga');
+    const extras = JSON.parse(fs.readFileSync(path.join(dir, 'extras.json'), 'utf8'));
+    let chapter = 0;
+    for (let i = 0; i < saga.count; i++) {
+        const ability = global.card.text['ability' + i];
+        const n = parseInt(saga.abilities[i]) || 0;
+        const centre = ability.y + ability.height / 2;
+        for (let j = 0; j < n; j++, chapter++) {
+            const numeral = ROMAN[chapter];
+            if (!numeral) continue;
+            if (!_sagaBadgeCache.has(numeral)) {
+                _sagaBadgeCache.set(numeral, await loadImage(path.join(dir, numeral.toLowerCase() + '.png')));
+            }
+            const [x, , w, h] = extras[numeral];
+            const y = centre * HD_H + (j - (n - 1) / 2) * h * 1.02 - h / 2;
+            ctx.drawImage(_sagaBadgeCache.get(numeral), global.scaleX(x / HD_W), global.scaleY(y / HD_H),
+                global.scaleWidth(w / HD_W), global.scaleHeight(h / HD_H));
+        }
+    }
+}
+
+async function redrawRetroSaga(retroHd) {
+    if (typeof global.sagaEdited !== 'function') return;
+    if (retroHd && global.sagaContext) global.sagaContext.fillStyle = 'rgba(0,0,0,0)';  // CC's numerals off
+    global.sagaEdited();
+    if (!retroHd) return;
+    // CC draws a divider above every chapter; the template only has them between chapters.
+    const first = global.card.text.ability0;
+    const dividerHalf = 0.0029 / 2 + 0.001;
+    global.sagaContext.clearRect(0, global.scaleY(first.y - dividerHalf), global.sagaCanvas.width,
+        global.scaleHeight(2 * dividerHalf));
+    await drawRetroHdSagaBadges();
+}
+
 function estimateStationLines(text, boxWidthFraction, fontSizeFraction) {
     const cardWidth = global.card.width || 1500;
     const cardHeight = global.card.height || 2100;
@@ -1332,10 +2065,10 @@ function frameFromScryfall(scry) {
     return SCRYFALL_FRAME_TO_STYLE[scry.frame] || null;
 }
 
-// Whether a card should get an 8th-Edition legend crown. Planeswalkers are excluded --
-// pack8th has no loyalty-box geometry, so they are not renderable in this frame anyway.
+// Whether a card should get an 8th-Edition legend crown (planeswalkers included: they render
+// through our packPlaneswalkerEighth.js on --8th).
 function wantsEighthLegendCrown(typeLine) {
-    return /Legendary/.test(typeLine || '') && !/Planeswalker/.test(typeLine || '');
+    return /Legendary/.test(typeLine || '');
 }
 
 // Pack routing per Scryfall layout AND requested frame. ND-JSON's runOneJob
@@ -1552,7 +2285,9 @@ async function ensurePackLoaded(packFile) {
     if (_lastPack !== packKey) {
         const merged = [];
         for (const oneFile of packFiles) {
-            const fp = path.join(CC_ROOT, 'js/frames/', oneFile);
+            // Our own packs (node/packs/, e.g. packPlaneswalkerEighth.js) are looked up first.
+            const ownPack = path.join(__dirname, 'packs', oneFile);
+            const fp = fs.existsSync(ownPack) ? ownPack : path.join(CC_ROOT, 'js/frames/', oneFile);
             if (!fs.existsSync(fp)) throw new Error('pack not found: ' + oneFile);
             let code = fs.readFileSync(fp, 'utf8');
             code = code.replace(/^(const|let) (mana|debugging|cardConjurer|setSymbolAliases|baseWidth|baseHeight|highResScale)\b/gm, 'var $2');
@@ -1704,13 +2439,61 @@ function assertCompleteSpecialText(kind, face) {
     }
 }
 
+// Card Conjurer is a live editor: every frame image and mask it loads has
+// `onload = drawFrames`, and drawFrames ends in drawCard, so building one card redraws
+// the whole frame stack (each layer masked, at ~2000x2800) once per image that lands.
+// That was ~30 drawFrames + ~24 drawCard per card and about two thirds of render time,
+// for intermediate states nobody sees. While renderFace builds the card, both are
+// no-ops; it then draws once, explicitly, right before saving. Nothing in between reads
+// frameCanvas / cardCanvas pixels (drawFrames' own preserveAlpha read happens inside the
+// final draw), so the output is unchanged.
+let deferRedraws = false;
+function installRedrawDeferral() {
+    if (global.__redrawDeferralInstalled) return;
+    global.__redrawDeferralInstalled = true;
+    const drawFrames = global.drawFrames;
+    const drawCard = global.drawCard;
+    global.drawFrames = function (...args) { return deferRedraws ? undefined : drawFrames.apply(this, args); };
+    global.drawCard = function (...args) { return deferRedraws ? undefined : drawCard.apply(this, args); };
+}
+
 // Render a single face: load the pack, import + select the indicated face,
 // upload the matching art, autoframe, drain images, draw, save.
 async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath, fontSizeDelta = 0,
-                             dfcFace = null, frameNameSuffix = '', specialLayout = null, legendary = false }) {
+                             dfcFace = null, frameNameSuffix = '', specialLayout = null, legendary = false,
+                             crown = true, retroHd = false }) {
     resetCanvases();
+    installRedrawDeferral();
+    deferRedraws = true;
+    // --retro-hd swaps packSeventh's frame art for single-faced retro cards only: DFC faces use
+    // the Classicshifted packs. Planeswalkers are included -- packPlaneswalkerSeventh draws its
+    // loyalty badges over the same frame images, so they carry over onto the HD art.
+    const hd = retroHd && frame === 'retro' && !dfcFace;
+    if (hd && !fs.existsSync(path.join(RETRO_HD_ROOT, 'frames', 'w.png'))) {
+        throw new Error(`--retro-hd frames not built in ${RETRO_HD_ROOT} -- run `
+            + '`uv sync --extra retro-hd && uv run python -m mtg_proxies.cardconjurer.retro_hd`');
+    }
+    retroHdFrames = hd ? path.join(RETRO_HD_ROOT, 'frames') : null;
+    retroHdAdventure = hd && !!scry._adventure;
+    retroHdVariant = hd && scry._dfc ? scry._dfc.variant : null;
+    try {
+        return await buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath,
+                                        fontSizeDelta, dfcFace, frameNameSuffix, specialLayout, legendary, crown,
+                                        retroHd: hd });
+    } finally {
+        deferRedraws = false;
+        retroHdFrames = null;
+        retroHdAdventure = false;
+        retroHdVariant = null;
+    }
+}
+
+async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath,
+                                   fontSizeDelta, dfcFace, frameNameSuffix, specialLayout, legendary, crown,
+                                   retroHd }) {
     await ensurePackLoaded(packFile);
     if (specialLayout?.planeswalker) resetPlaneswalkerState(frame);
+    if (retroHd) global.card.artBounds = { ...RETRO_HD_ART_BOUNDS };
 
     // Per-render selector reset. These default to 8th at load time
     // (SELECTOR_OVERRIDES + the force-reset after engine init), but per-card frame
@@ -1749,7 +2532,8 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // dfc_split faces build their frames manually from the DFC pack below —
     // 'false' makes any stray engine-scheduled autoFrame() a no-op so it can't
     // overwrite them with the regular (non-DFC) frame art.
-    if (dfcFace || specialLayout?.planeswalker || isToken) autoFrameTarget = 'false';
+    if (dfcFace || specialLayout?.planeswalker || specialLayout?.kind === 'saga' || specialLayout?.kind === 'class'
+        || isToken) autoFrameTarget = 'false';
 
     querySelector('#autoFrame').value = autoFrameTarget;
     querySelector('#lockSetSymbolURL').checked  = harnessOwnsSetSymbol;
@@ -1768,7 +2552,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // same call by changeCardIndex's dedicated `card.version.includes('planeswalker')`
     // branch, so the stubs are discarded right after — nothing depends on them.
     const planeswalkerImportStubKeys = [];
-    if (specialLayout?.planeswalker) {
+    if (specialLayout?.planeswalker || specialLayout?.kind === 'saga' || specialLayout?.kind === 'class') {
         for (const key of ['rules', 'rules2', 'pt', 'pt2', 'defense']) {
             if (!global.card.text[key]) {
                 global.card.text[key] = { text: '', x: 0, y: 0, width: 0.0001, height: 0.0001, size: 0.0001, oneLine: true };
@@ -1778,6 +2562,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     }
     global.importCard(processed);
     for (const key of planeswalkerImportStubKeys) delete global.card.text[key];
+    if (specialLayout?.kind === 'class' && frame === '8th') layoutClassLevels();
 
     // importCard's native ability-height split (creator-23.js) divides a hardcoded
     // 0.2915 card-height budget evenly across the abilities, starting at
@@ -1832,6 +2617,20 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             }
             if (typeof global.planeswalkerEdited === 'function') global.planeswalkerEdited();
         }
+
+        // One shared ability font size and badges centred on their abilities (see
+        // equalizePlaneswalkerAbilities). --retro-hd fills the template's own textbox,
+        // (203,1697)-(1807,2481), inset 12px top and bottom so text clears its bevel.
+        if (retroHd) equalizePlaneswalkerAbilities((1697 + 12) / 2814, (784 - 24) / 2814);
+        else equalizePlaneswalkerAbilities(RULES_BOX_TOP, RULES_BOX_HEIGHT);
+    }
+
+    // 8th planeswalkers (our packPlaneswalkerEighth.js): no modern ability stripes, one shared
+    // ability size and badges centred on their abilities, in pack8th's rules box (y 1751-2521),
+    // inset EIGHTH_PW_INSET px top and bottom so text clears the box's edge.
+    if (specialLayout?.planeswalker && global.card.version === 'planeswalkerEighth') {
+        hidePlaneswalkerStripesOnEighth();
+        equalizePlaneswalkerAbilities((1751 + EIGHTH_PW_INSET) / 2814, (770 - 2 * EIGHTH_PW_INSET) / 2814);
     }
     
     // For flip layouts, move the set symbol to the top type line.
@@ -1996,7 +2795,27 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         leftRegion.width = Math.max(0.2, leftRegion.width - reserve);
     };
 
-    if (specialLayout?.planeswalker) {
+    global.card._eighthSaga = specialLayout?.kind === 'saga' && frame === '8th';
+    global.card._retroHdClass = false;  // layoutRetroClass sets it for --retro-hd classes
+    if ((specialLayout?.kind === 'saga' || specialLayout?.kind === 'class') && frame === '8th') {
+        await buildEighthInsetFrame(specialLayout.kind, getFrameNameForFace(pristineFace));
+    } else if (specialLayout?.kind === 'class') {
+        // --retro-hd: packClass's regular frame, remapped to the template's class frame.
+        const regular = getFrameNameForFace(pristineFace).replace(/ Frame$/, ' Regular Frame');
+        global.selectedMaskIndex = 0;
+        if (!await addFrameByName([regular, 'Multicolored Regular Frame'])) {
+            throw new Error(`class: no frame for ${regular}`);
+        }
+        layoutRetroClass(scry);
+    } else if (specialLayout?.kind === 'saga') {
+        // packClassicshiftedSaga ships White/Blue/Black/Red/Green/Multicolored/Land frames.
+        const sagaFrame = getFrameNameForFace(pristineFace);
+        if (!await addFrameByName([sagaFrame, 'Multicolored Frame'])) {
+            throw new Error(`saga: no frame for ${sagaFrame}`);
+        }
+        layoutRetroSaga(scry);
+        reserveRight(global.card.text.title, global.card.text.mana);
+    } else if (specialLayout?.planeswalker) {
         const baseName = getFrameNameForFace(pristineFace);
         const occurrence = specialLayout.frameOccurrence || 0;
         const added = await addFrameByName(
@@ -2010,7 +2829,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         // getSeventhLoyaltyBadgeDataUri's comment for why the real modern frame art,
         // clipped through the shared badge mask, is the fix (not a synthetic fill, not
         // the mask's own raw red pixels, not Seventh's blank texture).
-        if (frame === 'retro' && !specialLayout.classicshifted) {
+        if ((frame === 'retro' || frame === '8th') && !specialLayout.classicshifted) {
             const badgeUri = await getSeventhLoyaltyBadgeDataUri(baseName);
             if (badgeUri) {
                 const loyaltyBadge = { src: badgeUri, name: 'Loyalty Badge', masks: [] };
@@ -2610,7 +3429,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         }
     }
 
-    // 8th legend crown, opt-in via --legendary. The real Eighth Edition frame predates
+    // 8th legend crown, on by default (--no-crown leaves it off). The real Eighth Edition frame predates
     // crowns entirely (CC's own 8th auto-frame config sets supportsCrown: false), so stock
     // 8th draws none -- the crown art is CC's, from pack8thLegendCrowns, loaded alongside
     // pack8th in renderCard.
@@ -2625,7 +3444,6 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
 
     // Two-colour cards get the modern two-tone treatment. Which variant applies is
     // decided by the mana cost, not the colour count -- see RETRO_HYBRID_PAIR above.
-    // Runs before the legendary trim so that trim lands on top of the two-tone.
     if (!dfcFace && frame === 'retro' && scry.layout !== 'flip' && scry.layout !== 'token') {
         const twoTone = retroTwoTone(pristineFace, scry);
         if (twoTone) {
@@ -2637,30 +3455,59 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
                 await addRetroLayer(RETRO_COLOR_FRAME[second], null, [RETRO_RIGHT_HALF]);
             } else {
                 // Requires both colours: stays gold, with the two colours showing only in
-                // the pinline and the textbox, using the muted land-frame art.
-                for (const maskName of ['Pinline', 'Rules']) {
-                    await addRetroLayer(RETRO_COLOR_LAND_FRAME[first], maskName);
-                    await addRetroLayer(RETRO_COLOR_LAND_FRAME[second], maskName, [RETRO_RIGHT_HALF]);
+                // the textbox, using the muted land-frame art. The pinline stays stock
+                // (black): a two-tone pinline was tried and dropped along with the
+                // --legendary gold pinline, as neither is on a real Seventh-Edition card.
+                // Not on --retro-hd adventures / prepare cards: their split textbox has no
+                // two-tone version (the land frames all map to the one adventure land frame).
+                if (!scry._adventure) {
+                    await addRetroLayer(RETRO_COLOR_LAND_FRAME[first], 'Rules');
+                    await addRetroLayer(RETRO_COLOR_LAND_FRAME[second], 'Rules', [RETRO_RIGHT_HALF]);
                 }
             }
         }
     }
 
-    // Legendary look, opt-in via --legendary. The retro frame had no legend marker of its
-    // own -- pre-8th cards signalled it only in the type line -- so stock retro draws none;
-    // with the flag, legendaries get the Arabian Nights gold pinline over their base frame
-    // rather than an invented icon. One layer for every
-    // colour: the earlier per-colour opacity table looked fine on screen but muddy in
-    // print, and a single full-strength gold pinline reads cleanly on all of them.
-    //
-    // Runs after the two-colour treatment above, so on a two-colour legendary this gold
-    // pinline replaces the two-tone one while the two-tone textbox stays.
-    if (legendary && !dfcFace && frame === 'retro' && scry.layout !== 'token'
-        && /Legendary/.test(pristineFace.type_line || scry.type_line || '')
-        // Planeswalkers are out of scope for now: packSeventh has no loyalty-box
-        // geometry, so they need deciding separately.
-        && !/Planeswalker/.test(pristineFace.type_line || scry.type_line || '')) {
-        await addRetroLayer('Arabian Nights Land Frame', 'Pinline');
+    // No legendary pinline on retro: the Arabian Nights gold pinline that --legendary used
+    // to add here was removed -- it is not on any real Seventh-Edition card, and it fought
+    // the frame's own pinline. Retro legendaries are marked by the battlement crown below.
+
+    // --retro-hd adventure / prepare: the spell's half of the textbox in the spell's own colours,
+    // with the divider and the rule under its type line (retro_hd.adventure_spell_panel), over the
+    // creature-coloured adventure frame.
+    if (retroHd && scry._adventure) {
+        const { side, code } = scry._adventure;
+        const spellBox = path.join(RETRO_HD_ROOT, 'frames', 'adventure', `spell_${side}_${code}.png`);
+        if (fs.existsSync(spellBox)) {
+            const layer = { name: 'Adventure Spell Box', src: 'file://' + spellBox, masks: [] };
+            global.card.frames.unshift(layer);
+            await global.addFrame([], layer);
+        }
+    }
+
+    // --retro-hd double-faced face: the template's face icon (transform sun / moon, MDFC
+    // triangles) in the frame left of the title (retro_hd.build_dfc_extras).
+    if (retroHd && scry._dfc) {
+        const dir = path.join(RETRO_HD_ROOT, 'frames', 'dfc');
+        const key = `${scry._dfc.layout === 'modal_dfc' ? 'mdfc' : 'tf'}_${scry._dfc.side}`;
+        const icon = path.join(dir, key + '.png');
+        if (fs.existsSync(icon)) {
+            const [x, y, w, h] = JSON.parse(fs.readFileSync(path.join(dir, 'extras.json'), 'utf8'))[key];
+            const layer = { name: 'DFC Icon', src: 'file://' + icon, masks: [],
+                            bounds: { x: x / HD_W, y: y / HD_H, width: w / HD_W, height: h / HD_H } };
+            global.card.frames.unshift(layer);
+            await global.addFrame([], layer);
+        }
+    }
+
+    // Battlement legend crown on retro legendaries, on by default (`--no-crown` opts out).
+    // Runs last among the frame layers so it can replay the finished stack -- see
+    // addRetroLegendCrown. Single-faced cards only, planeswalkers included: packPlaneswalkerSeventh
+    // draws on the same Seventh frame images (DFC faces carry Classicshifted's own crown).
+    if (crown && !dfcFace && frame === 'retro' && scry.layout !== 'token' && scry.layout !== 'flip'
+        && specialLayout?.kind !== 'class'  // the crown replays Seventh frame layers; classes have none
+        && /Legendary/.test(pristineFace.type_line || scry.type_line || '')) {
+        await addRetroLegendCrown(retroHd ? path.join(RETRO_HD_ROOT, 'crown') : RETRO_CROWN_DIR);
     }
 
     // DFC indicator (small icon at top-left next to title) — pack8thTransform
@@ -2772,6 +3619,10 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // Margin loading resizes every registered canvas, including the two
     // planeswalker version canvases. Rebuild their loyalty icons and alternating
     // ability backgrounds at the final dimensions after all image assets loaded.
+    // Sagas likewise: chapter dividers and badges live on CC's saga canvas.
+    if (specialLayout?.kind === 'saga' && frame === 'retro') await redrawRetroSaga(true);
+    if (specialLayout?.kind === 'saga' && frame === '8th' && typeof global.sagaEdited === 'function') global.sagaEdited();
+    if (specialLayout?.kind === 'class' && typeof global.classEdited === 'function') global.classEdited();
     if (specialLayout?.planeswalker && typeof global.planeswalkerEdited === 'function') {
         global.planeswalkerEdited();
     }
@@ -2807,7 +3658,9 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // 215 against 168 on a 7ED scan), dropping glyph-vs-background contrast from about
     // +83 to +17. Keeping the white and outlining it in black restores the contrast while
     // staying closer to the printed card than recolouring the text outright.
-    if (frame === 'retro' && scry.layout !== 'token' && retroNeedsTextOutline(pristineFace, scry)) {
+    // Not on --retro-hd: its white frame is tinted to WotC's own retro-frame white (see
+    // retro_hd._FRAME_TINT), which white text with packSeventh's plain shadow reads on.
+    if (frame === 'retro' && !retroHd && scry.layout !== 'token' && retroNeedsTextOutline(pristineFace, scry)) {
         for (const key of ['title', 'type', 'pt']) {
             const textObject = global.card.text?.[key];
             if (!textObject) continue;
@@ -2815,6 +3668,69 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             textObject.outlineColor = 'black';
             // The name keeps packSeventh's hard shadow; everything else gets it softened.
             if (key !== 'title') textObject.shadowBlur = PALE_RETRO_SHADOW_BLUR;
+        }
+    }
+
+    if (retroHd && !specialLayout?.planeswalker && specialLayout?.kind !== 'saga' && specialLayout?.kind !== 'class') {
+        applyRetroHdLayout(global.card.text, RETRO_HD_TEXT);
+        // The HD layout resets the title's width: reserve the mana cost's room again, so a long
+        // name auto-shrinks instead of running under the cost (Elesh Norn, Mother of Machines).
+        reserveRight(global.card.text.title, global.card.text.mana);
+    }
+    // --retro-hd adventure / prepare: the textbox (203,1675)-(1807,2504) splits at x 1008. The
+    // spell's half (left for adventures, right for prepare cards) holds its name and mana, its type
+    // line above the rule at y 1900 (white on the frame, like the card's own), and its rules in the
+    // inset box; the creature's rules fill the other half. Card pixels; text positions follow the
+    // template's Adventure text layers.
+    if (retroHd && scry._adventure) {
+        const text = global.card.text;
+        const spell = scry._adventure;
+        const left = spell.side === 'left';
+        const [px0, px1] = left ? [203, 1008] : [1008, 1807];  // spell half
+        const [cx0, cx1] = left ? [1008, 1807] : [203, 1008];  // creature half
+        const [ix0, ix1] = [px0 + 17, px1 - 13];  // spell rules box: the half below the rule
+        Object.assign(text.rules, { x: (cx0 + 36) / HD_W, y: 1695 / HD_H, width: (cx1 - cx0 - 66) / HD_W,
+                                    height: 790 / HD_H, size: 92 / HD_H, align: 'left' });
+        const spellRules = String(spell.oracle_text || '').replace(/\(([^)]*)\)/g, '{i}($1){/i}');
+        text.advTitle = { ...text.title, name: 'Adventure Title', text: spell.name,
+                          x: (px0 + 47) / HD_W, width: (px1 - px0 - 77) / HD_W, ...hdLine(1787, 92) };
+        text.advMana = { ...text.mana, name: 'Adventure Mana', text: spell.mana_cost || '',
+                         x: (px0 + 47) / HD_W, width: (px1 - px0 - 77) / HD_W, ...hdLine(1792, 92) };
+        text.advType = { ...text.type, name: 'Adventure Type', text: spell.type_line || '',
+                         x: (px0 + 46) / HD_W, width: (px1 - px0 - 74) / HD_W, ...hdLine(1874, 80) };
+        text.advRules = { ...text.rules, name: 'Adventure Rules', text: spellRules,
+                          x: (ix0 + 19) / HD_W, y: 1931 / HD_H, width: (ix1 - ix0 - 38) / HD_W,
+                          height: 500 / HD_H, size: 76 / HD_H };
+        reserveRight(text.advTitle, text.advMana);
+    }
+
+    // --retro-hd double-faced face. MDFC: the rules end above the template's strip (Textbox
+    // Reference Normal MDFC, bottom 2367), which names the other face: its type line after the
+    // arrow on the left, its mana cost (or a land's mana ability) on the right. Transform front
+    // with a creature back: the back's power / toughness in grey at the template's spot.
+    if (retroHd && scry._dfc) {
+        const text = global.card.text;
+        const other = scry._dfc.other;
+        // The face icon sits left of the title: start the name past it (the template's DFC
+        // icons end at card x ~211, its titles at 218).
+        const titleShift = DFC_TITLE_X / HD_W - text.title.x;
+        if (titleShift > 0) {
+            text.title.x += titleShift;
+            text.title.width -= titleShift;
+        }
+        if (scry._dfc.layout === 'modal_dfc') {
+            text.rules.height = (2367 - text.rules.y * HD_H) / HD_H;
+            const ability = String(other.oracle_text || '').split('\n')[0];
+            const right = other.mana_cost || (/^\{T\}: Add /.test(ability) ? ability : '');
+            // The arrow sits in the notch (retro_hd.py), so the other face's type starts at the box edge.
+            text.dfcLeft = { name: 'DFC Other Face', text: other.type_line || '', x: 232 / HD_W, width: 1000 / HD_W,
+                             ...hdLine(2448, 52), oneLine: true, color: 'black' };
+            text.dfcRight = { name: 'DFC Other Cost', text: right, x: 1100 / HD_W, width: 650 / HD_W,
+                              ...hdLine(2448, 52), oneLine: true, align: 'right', color: 'black' };
+        } else if (scry._dfc.variant === 'tf') {
+            text.reversePt = { name: 'Reverse P/T', text: `${other.power}/${other.toughness}`,
+                               x: 1650 / HD_W, width: 176 / HD_W, ...hdLine(2452, 52), oneLine: true,
+                               align: 'center', color: '#555555' };
         }
     }
 
@@ -2965,8 +3881,14 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         // 7ED cards.
         if (global.card.bottomInfo.top) global.card.bottomInfo.top.y = 1881 / 2100;
         if (global.card.bottomInfo.wizards) global.card.bottomInfo.wizards.y = 1946 / 2100;
+        if (retroHd) applyRetroHdLayout(global.card.bottomInfo, RETRO_HD_BOTTOM);
     } else {
         setLeanBottomInfo();
+        if (frame === '8th') {
+            // Like --retro-hd: the collector number and set in place of the copyright line.
+            const wizards = global.card.bottomInfo.wizards;
+            wizards.text = wizards.text.replace(/\u2122 & \u00a9 .*$|™ & © .*$/, '{elemidinfo-number} \u2022 {elemidinfo-set}');
+        }
         if (dfcFace && scry.layout === 'modal_dfc') {
             // The MDFC flipside bar spans y 0.892–0.931 (height-relative),
             // right on top of lean's artist line (y 0.9129). Shift both lean
@@ -2989,7 +3911,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // retro branch above is what settles them -- so they are outlined here, after that
     // branch and before renderBottomInfo() draws them. The title / type / P-T half is
     // applied earlier, because drawText() has already rasterised those by this point.
-    if (frame === 'retro' && scry.layout !== 'token'
+    if (frame === 'retro' && !retroHd && scry.layout !== 'token'
             && PALE_RETRO_FRAMES.has(getFrameNameForFace(pristineFace))) {
         // Mono-white frame only. The outline-only treatment below still left both lines
         // borderline unreadable at print size, so: the artist line gets the type line's
@@ -3010,7 +3932,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
             wizards.shadowX = 0;
             wizards.shadowY = 0;
         }
-    } else if (frame === 'retro' && scry.layout !== 'token' && retroNeedsTextOutline(pristineFace, scry)) {
+    } else if (frame === 'retro' && !retroHd && scry.layout !== 'token' && retroNeedsTextOutline(pristineFace, scry)) {
         for (const key of ['top', 'wizards']) {
             const region = global.card.bottomInfo?.[key];
             if (!region) continue;
@@ -3025,6 +3947,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     }
 
     await renderBottomInfo();
+    deferRedraws = false;  // the one real redraw -- see installRedrawDeferral
     global.drawFrames();
 
     // stationEdited() (versionStation.js) always overwrites card.station.squares[2]
@@ -3073,11 +3996,71 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     return outPath;
 }
 
+// --retro-hd adventures (and Omens / prepare cards) use the template's two-panel adventure layout
+// (its Adventure text box masks and text layers, which Proxyshop itself leaves switched off):
+// flatten the Scryfall card into an ordinary retro card for the creature, carrying the spell in
+// `_adventure`; renderFace then swaps in the adventure frames, overlays the spell-coloured box
+// and places the spell's text in the left panel.
+function flattenAdventureForRetroHd(scry) {
+    const [main, spell] = scry.card_faces || [];
+    if (!main || !spell) return scry;
+    const colors = ['W', 'U', 'B', 'R', 'G'].filter((c) => (spell.mana_cost || '').includes(c));
+    const code = colors.length === 1 ? colors[0].toLowerCase() : (colors.length > 1 ? 'm' : 'c');
+    const flat = { ...scry, layout: 'normal' };
+    delete flat.card_faces;
+    Object.assign(flat, {
+        name: main.name, mana_cost: main.mana_cost, type_line: main.type_line, oracle_text: main.oracle_text || '',
+        power: main.power, toughness: main.toughness, flavor_text: main.flavor_text,
+        _adventure: { name: spell.name, mana_cost: spell.mana_cost, type_line: spell.type_line,
+                      oracle_text: spell.oracle_text, code,
+                      // Adventures put the spell on the left; prepare cards, like the real ones, on the right.
+                      side: scry.layout === 'prepare' ? 'right' : 'left' },
+    });
+    if (!flat.image_uris && main.image_uris) flat.image_uris = main.image_uris;
+    return flat;
+}
+
+// One face of a transform / MDFC card as a single-faced card for the --retro-hd path, carrying
+// what the face needs from the other one in `_dfc` (variant: retro_hd.py's 'tf' frame for a
+// transform front whose back has a power / toughness, 'mdfc' for both MDFC faces).
+const DFC_TITLE_X = 236;  // card px: title start on --retro-hd DFC faces, clear of the face icon
+const DFC_FACE_KEYS = ['name', 'mana_cost', 'type_line', 'oracle_text', 'colors', 'color_indicator', 'power',
+    'toughness', 'loyalty', 'defense', 'flavor_text', 'artist', 'printed_name', 'printed_type_line', 'printed_text',
+    'image_uris', 'watermark'];
+function dfcFaceForRetroHd(scry, index) {
+    const face = scry.card_faces[index];
+    const other = scry.card_faces[1 - index] || {};
+    const flat = { ...scry, layout: 'normal' };
+    delete flat.card_faces;
+    for (const key of DFC_FACE_KEYS) {
+        if (key in face) flat[key] = face[key];
+        else if (key !== 'image_uris' && key !== 'artist') delete flat[key];
+    }
+    flat.colors = face.colors || face.color_indicator || [];
+    flat.oracle_text = face.oracle_text || '';
+    const side = index ? 'back' : 'front';
+    const variant = scry.layout === 'modal_dfc' ? 'mdfc'
+        : (side === 'front' && other.power != null ? 'tf' : null);
+    flat._dfc = {
+        layout: scry.layout, side, variant,
+        other: { name: other.name, type_line: other.type_line, mana_cost: other.mana_cost,
+                 oracle_text: other.oracle_text, power: other.power, toughness: other.toughness },
+    };
+    return flat;
+}
+
 async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fontSizeDelta = 0, dfcSplit = false,
-                                        legendary = false } = {}) {
+                                        legendary = false, crown = true, retroHd = false } = {}) {
+    if (retroHd && frame === 'retro' && ['adventure', 'prepare'].includes(scry.layout)) {
+        scry = flattenAdventureForRetroHd(scry);
+    }
     const special = resolveSpecialLayout(scry, frame);
     if (special?.kind === 'invalid') throw new Error(special.reason);
-    const skipReason = shouldSkip(scry);
+    // Sagas render only under --retro-hd (the HD template's saga frames); plain --retro and every
+    // other frame keep falling back to the Scryfall scan.
+    const rendersHere = (special?.kind === 'saga' && (retroHd || special.frame === '8th'))
+        || (special?.kind === 'class' && (retroHd || special.frame === '8th'));
+    const skipReason = rendersHere ? null : shouldSkip(scry);
     if (skipReason) {
         throw new Error(`${skipReason} not supported on ${frame} frame — fall back to Scryfall image`);
     }
@@ -3110,6 +4093,24 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
     // → `face`) carries the localized text into the engine's normal render pipeline.
     const processed = [];
     global.processScryfallCard(JSON.parse(JSON.stringify(scry)), processed);
+
+    // --retro-hd transform / MDFC: each face renders as an ordinary single-faced retro-hd card
+    // (the whole retro-hd path: HD frame, template text layout, crown), on the template's
+    // double-faced frame variant, with its face icon and the other face's strip / reverse P/T
+    // (renderFace, scry._dfc).
+    if (retroHd && frame === 'retro' && dfcSplit && !special && ['transform', 'modal_dfc'].includes(scry.layout)) {
+        const outs = [];
+        for (const index of [0, 1]) {
+            const face = dfcFaceForRetroHd(scry, index);
+            const faceProcessed = [];
+            global.processScryfallCard(JSON.parse(JSON.stringify(face)), faceProcessed);
+            outs.push(await renderFace({
+                packFile: packForLayout('normal', 'retro').single, processed: faceProcessed, faceIdx: 0, scry: face,
+                outName: index ? slug + '_back' : slug, frame, setSymbolPath, fontSizeDelta, legendary, crown, retroHd,
+            }));
+        }
+        return { out: outs[0], outBack: outs[1] };
+    }
 
     // dfc_split: render each face as its own full-size card via the real DFC
     // packs. Returns { out, outBack } instead of a single path.
@@ -3169,10 +4170,11 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
     // title / type / rules regions at all.
     if (legendary && frame === '8th' && scry.layout !== 'flip' && scry.layout !== 'token'
         && wantsEighthLegendCrown(scry.type_line)) {
-        packFile = ['pack8thLegendCrowns.js', 'pack8th.js'];
+        packFile = ['pack8thLegendCrowns.js', ...[packFile].flat()];  // pack8th, packPlaneswalkerEighth, ...
     }
     return await renderFace({
-        packFile, processed, faceIdx: 0, scry, outName: slug, frame, setSymbolPath, fontSizeDelta, legendary,
+        packFile, processed, faceIdx: 0, scry, outName: slug, frame, setSymbolPath, fontSizeDelta, legendary, crown,
+        retroHd,
         specialLayout: special?.kind === 'planeswalker'
             ? { ...special, planeswalker: true, side: 'single' }
             : special,
@@ -3279,6 +4281,16 @@ async function runOneJob(job) {
             scry.card_faces[1].image_uris.art_crop = job.art_path_back;
         }
 
+        // A card that cannot be rendered the way it was asked for fails loudly (status 'error':
+        // not rendered, not swapped for a scan) instead of coming out in another frame or layout.
+        const unsupported = unsupportedRequest(scry, requestedFrame, special, {
+            dfcSplit, retroHd: !!job.retro_hd,
+        });
+        if (unsupported) {
+            writeResponse({ slot: job.slot, status: 'error', reason: unsupported });
+            return;
+        }
+
         // Intercept the remaining DFCs and route them to a Kamigawa flip card.
         // We do this at the boundary so the engine's core frame logic is untouched.
         const isDfc = ['transform', 'modal_dfc', 'reversible_card'].includes(scry.layout);
@@ -3292,6 +4304,12 @@ async function runOneJob(job) {
         // skips to fallback.txt so the raw Scryfall scan is used. An explicit style always
         // renders, even for old/oddball frames.
         let frame = special && special.kind !== 'invalid' ? special.frame : requestedFrame;
+        // --retro-hd flattens adventures / prepare cards into an ordinary retro card (see
+        // flattenAdventureForRetroHd), so they keep the retro frame instead of normalizing to the
+        // modern inset pack.
+        if (job.retro_hd && requestedFrame === 'retro' && ['adventure', 'prepare'].includes(scry.layout)) {
+            frame = 'retro';
+        }
         if (!special && frame === 'auto') {
             const resolved = frameFromScryfall(scry);
             if (!resolved) {
@@ -3311,8 +4329,13 @@ async function runOneJob(job) {
         const setSymbolPath = job.set_symbol_path || null;
         const fontSizeDelta = (job.font_size != null) ? parseInt(job.font_size) : 0;
         const slug = slugify(job.name);
-        const legendary = !!job.legendary;
-        const result = await renderCard(scry, slug, { frame, setSymbolPath, fontSizeDelta, dfcSplit, legendary });
+        // The 8th legend crown is on by default, like retro's battlement crown; --no-crown
+        // turns both off. job.legendary (--legendary) is kept for old decklists; it adds nothing.
+        const legendary = !job.no_crown;
+        const crown = !job.no_crown;
+        const retroHd = !!job.retro_hd;
+        const result = await renderCard(scry, slug,
+            { frame, setSymbolPath, fontSizeDelta, dfcSplit, legendary, crown, retroHd });
         const response = {
             slot:   job.slot,
             status: 'ok',

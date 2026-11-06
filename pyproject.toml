@@ -27,6 +27,18 @@ swaps = [
     # 3.x line: its transformers 4.x works with the project's torch 2.2 (transformers 5.x needs torch>=2.4).
     "sentence-transformers>=3.0,<4",
 ]
+# `cardconjurer --retro-hd` frame build only: composites Gavin Bowers' Proxyshop Retro template
+# (a Photoshop document) into frame images without Photoshop. Install with `uv sync --extra retro-hd`,
+# then run `uv run python -m mtg_proxies.cardconjurer.retro_hd`.
+# Optional text recogniser for the MTGPics art check (cardconjurer/art_check.py): rejects MTGPics
+# images carrying WotC credit lines, logos or watermarks. Without it only the wrong-art check runs.
+art-check = [
+    "rapidocr-onnxruntime",
+]
+retro-hd = [
+    "psd-tools[composite]>=1.10",
+    "scipy",
+]
 
 [project.scripts]
 mtg-proxies = "mtg_proxies.cli:main"

@@ -153,7 +153,7 @@ def _resolve_cc_frame(flags: dict) -> str:
         return "modern"
     if flags.get("--m15-8th"):
         return "m15-8th"
-    if flags.get("--retro") or flags.get("--retro-scaled"):
+    if flags.get("--retro") or flags.get("--retro-scaled") or flags.get("--retro-hd"):
         return "retro"
     if flags.get("--borderless"):
         return "borderless"
@@ -161,6 +161,47 @@ def _resolve_cc_frame(flags: dict) -> str:
         return "8th"
     return "auto"
 
+
+
+
+def _vet_mtgpics(card: dict, mtgpics_path: Path) -> tuple[str | None, Path]:
+    """Return why the MTGPics image may not stand in for this card's art (None when it may) and the art to use.
+
+    The card's own Scryfall ``art_crop`` is the reference (see ``cardconjurer/art_check.py``);
+    when it cannot be fetched the MTGPics image is used unverified, as before. An accepted image
+    comes back cut to the printed card's framing (``art_check.framed_art``), so Card Conjurer's
+    centring shows what the print shows.
+    """
+    from mtg_proxies import scryfall as _scryfall
+    from mtg_proxies.cardconjurer import art_check
+
+    uris = card.get("image_uris") or {}
+    art_url = uris.get("art_crop")
+    if not art_url:
+        return None, mtgpics_path
+    try:
+        reference = Path(_scryfall.get_image(art_url))
+        verdict = art_check.check_mtgpics_art(mtgpics_path, reference, card)
+        if not verdict.ok:
+            return verdict.reason, mtgpics_path
+        return None, art_check.framed_art(mtgpics_path, verdict.frame)
+    except Exception as exc:  # a failed check must never break a render
+        _warn(f"Note: art check skipped for {card.get('name')!r}: {exc}")
+        return None, mtgpics_path
+
+
+def _require_retro_hd_frames() -> None:
+    """Exit with build instructions when the ``--retro-hd`` frames have not been built."""
+    from mtg_proxies.cardconjurer import retro_hd
+
+    if not (retro_hd.FRAMES_DIR / "w.png").is_file():
+        print(
+            f"Error: --retro-hd frames are not built yet (looked in {retro_hd.FRAMES_DIR}). Build them once with:\n"
+            "  uv sync --extra retro-hd\n"
+            "  uv run python -m mtg_proxies.cardconjurer.retro_hd",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
 
 _DFC_LAYOUTS = {"transform", "modal_dfc", "reversible_card"}
 
@@ -814,6 +855,7 @@ def _apply_per_card_modelines(
     # the Scryfall scan.
     if any(any(d.verb == "cardconjurer" for d in dl) for dl in parsed):
         from mtg_proxies.cardconjurer.per_card import (
+            CardConjurerRenderError,
             CardConjurerRequest,
             _default_cache_root,
             render_per_card_batch,
@@ -919,6 +961,8 @@ def _apply_per_card_modelines(
                         set_symbol_path=resolved_sym,
                         art_path=resolved_art,
                         legendary=bool(directive.flags.get("--legendary")),
+                        no_crown=bool(directive.flags.get("--no-crown")),
+                        retro_hd=bool(directive.flags.get("--retro-hd")),
                         frame_overlap_mm=(
                             DEFAULT_OVERLAP_MM
                             if directive.flags.get("--retro-scaled") or directive.flags.get("--8th-scaled")
@@ -930,7 +974,15 @@ def _apply_per_card_modelines(
                 break  # one directive per card is enough; ignore stacked duplicates
 
         if cc_requests:
-            rendered = render_per_card_batch(cc_requests)
+            try:
+                rendered = render_per_card_batch(cc_requests)
+            except CardConjurerRenderError as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                print(
+                    "Change those cards' #cardconjurer frame (e.g. --modern) or remove the modeline.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1) from exc
             for slot_id, png_path in rendered.items():
                 for slot in cc_slots_by_id.get(slot_id, []):
                     _write(slot, str(png_path))
@@ -1595,8 +1647,18 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
             )
             raise SystemExit(2)
 
-    # ``--legendary`` only has something to draw on retro (gold pinline) and 8th (legend
-    # crown); modern and m15-8th already carry crowns, borderless has no marker.
+    # ``--retro-hd`` is retro with Gavin Bowers' frame art: it selects retro like --retro-scaled
+    # does, refuses any other frame, and needs the frames built locally first.
+    if args.retro_hd:
+        if frame == "auto":
+            frame = "retro"
+        elif frame != "retro":
+            print(f"Error: --retro-hd renders in the retro frame, which conflicts with --{frame}.", file=sys.stderr)
+            raise SystemExit(2)
+        _require_retro_hd_frames()
+
+    # ``--legendary`` is a no-op kept for old decklists (8th and retro draw legend crowns by
+    # default); modern and m15-8th already carry crowns, borderless has no marker.
     if args.legendary and frame in {"modern", "m15-8th", "borderless"}:
         print(
             f"Error: --legendary only applies to the retro and 8th frames, not --{frame}.",
@@ -1637,7 +1699,7 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
     from mtg_proxies.cardconjurer import mtgpics as _mtgpics
 
     mtgpics_cache_root = _mtgpics.default_cache_root()
-    mtgpics_stats = {"hits": 0, "misses": 0}
+    mtgpics_stats = {"hits": 0, "misses": 0, "rejected": 0}
 
     # Upscaling applies to Scryfall art_crop fallbacks only (MTGPics / custom art are
     # already hi-res). Per slot: ``#cardconjurer --upscale`` / ``--no-upscale`` modeline,
@@ -1700,6 +1762,8 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
     slot_frame: dict[int, str] = {}
     slot_scaled: set[int] = set()
     slot_legendary: set[int] = set()
+    slot_no_crown: set[int] = set()
+    slot_retro_hd: set[int] = set()
     card_payload_by_slot: dict[int, dict] = {}
     for slot_int, card in slot_to_card.items():
         effective_lang = args.language
@@ -1718,6 +1782,10 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
                     slot_scaled.add(slot_int)
                 if d.flags.get("--legendary"):
                     slot_legendary.add(slot_int)
+                if d.flags.get("--no-crown"):
+                    slot_no_crown.add(slot_int)
+                if d.flags.get("--retro-hd"):
+                    slot_retro_hd.add(slot_int)
                 if d.flags.get("--scryfall"):
                     slot_scryfall_override[slot_int] = True
                 if d.flags.get("--skip"):
@@ -1935,6 +2003,10 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
             extras["font_size"] = fs_delta
         if args.legendary or slot_int in slot_legendary:
             extras["legendary"] = True
+        if args.no_crown or slot_int in slot_no_crown:
+            extras["no_crown"] = True
+        if args.retro_hd or slot_int in slot_retro_hd:
+            extras["retro_hd"] = True
 
         # Per-card ``#cardconjurer --custom-art PATH`` wins over every art source below. This is
         # the escape hatch for borderless cards with no full-bleed MTGPics art: supply your own
@@ -2006,8 +2078,12 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
             if set_code and cn:
                 mtgp = _mtgpics.fetch_mtgpics_art(set_code, cn, cache_root=mtgpics_cache_root)
                 if mtgp is not None:
-                    mtgpics_stats["hits"] += 1
-                    return {**extras, "art_path": str(mtgp)}
+                    rejection, art = _vet_mtgpics(card.card, Path(mtgp))
+                    if rejection is None:
+                        mtgpics_stats["hits"] += 1
+                        return {**extras, "art_path": str(art)}
+                    mtgpics_stats["rejected"] += 1
+                    _warn(f"Note: {card['name']!r}: MTGPics art not used ({rejection}); using Scryfall's art.")
             mtgpics_stats["misses"] += 1
 
         # 2) Fallback: Scryfall art_crop, upscaled per _wants_upscale.
@@ -2233,7 +2309,11 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
         post_process=post_process_cb,
         filename_prefix_by_slot=filename_prefix_by_slot,
     )
-    print(f"[cardconjurer] {summary['ok']}/{summary['total']} rendered, {summary['skipped']} skipped")
+    errors = summary.get("errors") or []
+    print(
+        f"[cardconjurer] {summary['ok']}/{summary['total']} rendered, {summary['skipped']} skipped"
+        + (f", {len(errors)} FAILED" if errors else "")
+    )
     if frame_scale_stats["scaled"]:
         print(
             f"[cardconjurer] frame scaling: {frame_scale_stats['scaled']} frames grown "
@@ -2248,8 +2328,21 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
             print(
                 f"[cardconjurer] art sources: {mtgpics_stats['hits']}/{total_art} MTGPics, "
                 f"{mtgpics_stats['misses']} Scryfall fallback{upscaled_note}"
+                + (f" ({mtgpics_stats['rejected']} MTGPics images rejected: wrong art or overlay text)"
+                   if mtgpics_stats["rejected"] else "")
             )
-
+    if errors:
+        # Cards that cannot be rendered as asked were neither rendered nor replaced by a scan:
+        # say so loudly and fail the run, rather than leave a wrong or missing card unnoticed.
+        print(f"\nERROR: {len(errors)} card(s) could not be rendered as requested:", file=sys.stderr)
+        for name, reason in errors:
+            print(f"  - {name}: {reason}", file=sys.stderr)
+        print(
+            "Change their frame with a per-card modeline (e.g. `#cardconjurer --modern`) or render "
+            "them another way; they are listed in report.csv as 'error'.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
 
 
 def main() -> None:
@@ -2681,8 +2774,9 @@ def main() -> None:
         "--retro", dest="frame_retro", action="store_true",
         help=(
             "render every card in the retro (Seventh Edition, 1997) frame style — per-color"
-            " land frames, tombstone icon, no legend crowns (authentic). Transform / MDFC"
-            " split faces use the Classicshifted retro DFC frame packs."
+            " land frames, tombstone icon, and a battlement legend crown on legendaries"
+            " (not stock -- Seventh Edition had none; --no-crown leaves it off). Transform /"
+            " MDFC split faces use the Classicshifted retro DFC frame packs."
         ),
     )
     frame_group.add_argument(
@@ -2720,11 +2814,34 @@ def main() -> None:
     cardconjurer_parser.add_argument(
         "--legendary", dest="legendary", action="store_true", default=False,
         help=(
-            "mark legendary cards on frames that have no stock legend marker: the Arabian"
-            " Nights gold pinline on --retro / --retro-scaled, CC's legend crown on --8th /"
-            " --8th-scaled. Without it both frames render legendaries like stock. Also"
-            " available per card as `#cardconjurer --legendary`. Conflicts with --modern,"
+            "kept for old decklists and does nothing: legendary cards get a legend crown on"
+            " --8th / --8th-scaled (Card Conjurer's) and --retro / --retro-scaled (the"
+            " battlement crown) by default; --no-crown leaves it off. Conflicts with --modern,"
             " --m15-8th and --borderless, which already have their own crowns."
+        ),
+    )
+    cardconjurer_parser.add_argument(
+        "--no-crown", dest="no_crown", action="store_true", default=False,
+        help=(
+            "leave out the legend crown drawn on every legendary card by --retro /"
+            " --retro-scaled (the battlement crown: the Seventh Edition frame has no stock"
+            " crown; ours is drawn from the frame's own bevel, pinline and texture, and follows"
+            " hybrid, two-colour and land frames) and by --8th / --8th-scaled (Card Conjurer's"
+            " 8th crown: the real 8th frame has none either). No-op on other frames. Also"
+            " available per card as `#cardconjurer --no-crown`."
+        ),
+    )
+    cardconjurer_parser.add_argument(
+        "--retro-hd", dest="retro_hd", action="store_true", default=False,
+        help=(
+            "retro with high-detail frame art from Gavin Bowers' Proxyshop Retro template (smooth"
+            " textures, modern colour grading, crisp bevels) in place of Card Conjurer's Seventh"
+            " Edition scans. Everything else is --retro: text, white-frame readability, hybrid and"
+            " two-colour frames, the battlement crown. Implies --retro and combines with"
+            " --retro-scaled. Single-faced cards only (planeswalkers included); double-faced"
+            " cards render plain retro. Needs the frames built once: `uv sync --extra retro-hd && uv run python -m"
+            " mtg_proxies.cardconjurer.retro_hd`. Also available per card as"
+            " `#cardconjurer --retro-hd`."
         ),
     )
     # No --auto flag: auto is simply the absence of an explicit frame flag (the default).
