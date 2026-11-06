@@ -216,13 +216,72 @@ async function buildEighthInsetFrame(kind, baseName) {
             || await addLayerWithMask('Multicolored' + inset.suffix, mask, inset.occurrence);
         if (added && kind === 'saga' && mask === 'Banner') fitSagaBannerToEighth(global.card.frames[0]);
     }
+    if (kind === 'saga') {
+        // The text box's own left edge (x 221) shows as a faint seam over the shifted copy below:
+        // cover the strip from the banner to past that edge with the shifted copy on top.
+        const strip = EIGHTH_SAGA_STRIP;
+        const idx = (global.availableFrames || []).map((f, i) => ({ f, i }))
+            .filter(({ f }) => f && (f.name === colour + inset.suffix))[inset.occurrence]?.i;
+        if (idx !== undefined) {
+            global.selectedFrameIndex = idx;
+            global.selectedMaskIndex = 0;
+            await global.addFrame([{ src: rectMaskDataUri(strip), name: 'Banner Strip' }]);
+            global.card.frames[0].bounds = { x: -EIGHTH_SAGA_TEXT_SHIFT / 2010, y: 0, width: 1, height: 1 };
+            global.card.frames[0].ogBounds = { x: 0, y: 0, width: 1, height: 1 };
+        }
+    }
     if (kind === 'saga' && global.card.saga) {
         // CC centres each chapter badge on card.saga.x - 0.022 (the modern banner's centre) and
         // starts the dividers at card.saga.x: move both with the banner, keep the dividers' ends.
         const shift = (EIGHTH_SAGA_BANNER.centre - EIGHTH_SAGA_BANNER.modernCentre) / 2010;
         global.card.saga.x += shift;
         global.card.saga.width -= shift;
+        installEighthSagaBadges();
     }
+}
+// CC's badges (versionSaga.js: sagaChapter.png at a fixed 0.0787 x 0.0629, numeral at 0.0324)
+// are wider than the squeezed banner and would hang over the black border. On 8th sagas the saga
+// canvas is redrawn after CC's sagaEdited: the same dividers, and each badge scaled evenly about
+// the banner's centre so its left edge sits on the banner's (EIGHTH_SAGA_BANNER.left).
+const SAGA_BADGE = { offset: 0.0614, width: 0.0787, height: 0.0629, textX: 0.0394, textY: 0.0429, font: 0.0324, step: 0.0358 };
+function installEighthSagaBadges() {
+    if (global.sagaEdited?._eighthWrapped || typeof global.sagaEdited !== 'function') return;
+    const original = global.sagaEdited;
+    const wrapped = function () {
+        original();
+        if (global.card._eighthSaga) drawEighthSagaBadges();
+    };
+    wrapped._eighthWrapped = true;
+    global.sagaEdited = wrapped;
+}
+function drawEighthSagaBadges() {
+    const saga = global.card.saga, ctx = global.sagaContext, chapter = global.sagaChapter, divider = global.sagaDivider;
+    if (!saga || !ctx || !chapter?.complete) return;
+    const b = EIGHTH_SAGA_BANNER;
+    const scale = 2 * (b.centre - b.left) / (SAGA_BADGE.width * 2010);
+    const w = global.scaleWidth(SAGA_BADGE.width * scale), h = global.scaleHeight(SAGA_BADGE.height * scale);
+    const left = global.scaleX(b.left / 2010);
+    ctx.clearRect(0, 0, global.sagaCanvas.width, global.sagaCanvas.height);
+    ctx.font = 'normal normal 550 ' + global.scaleHeight(SAGA_BADGE.font * scale) + 'px plantinsemibold';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'black';
+    let numeral = 1;
+    for (let i = 0; i < saga.count; i++) {
+        const ability = global.card.text['ability' + i];
+        const y = global.scaleY(ability.y), height = global.scaleHeight(ability.height);
+        if (divider?.complete) {
+            ctx.drawImage(divider, global.scaleX(saga.x), y - global.scaleHeight(0.0029) / 2,
+                global.scaleWidth(saga.width), global.scaleHeight(0.0029));
+        }
+        const count = parseInt(saga.abilities[i]) || 0;
+        const top = y + (height - h) / 2;
+        for (let j = 0; j < count; j++, numeral++) {
+            const dy = (j - (count - 1) / 2) * global.scaleHeight(SAGA_BADGE.step) * 2 * scale;
+            ctx.drawImage(chapter, left, top + dy, w, h);
+            ctx.fillText(global.romanNumeral(numeral), left + w / 2, top + dy + global.scaleHeight(SAGA_BADGE.textY * scale));
+        }
+    }
+    if (typeof global.drawCard === 'function') global.drawCard();
 }
 // The modern saga banner (x 87-226, centre 156.5 of 2010) is wider than the 8th frame's side:
 // centre it on the 8th frame's black inner pinline (x 143-154, centre 149) and squeeze it
@@ -230,7 +289,30 @@ async function buildEighthInsetFrame(kind, baseName) {
 // where the black border ends). Height unchanged. ogBounds of the whole card makes CC draw the
 // banner mask with the same squeeze as the image.
 const EIGHTH_SAGA_TEXT_SHIFT = 30;
-const EIGHTH_SAGA_BANNER = { modernCentre: 156.5, modernHalf: 69.5, centre: 149, left: 102 };
+// Card-pixel box (2010x2814) from the squeezed banner's right edge past the text box's old left edge
+// and its angled corner beside the banner tip, over the banner's height (y 467-2342); its right
+// edge fades out over `feather` px so the shifted texture blends into the text box.
+const EIGHTH_SAGA_STRIP = { x: 196, y: 470, width: 76, height: 1880, feather: 24 };
+const _rectMasks = new Map();
+function rectMaskDataUri({ x, y, width, height, feather = 0 }) {
+    const key = [x, y, width, height, feather].join(',');
+    if (!_rectMasks.has(key)) {
+        const canvas = createCanvas(2010, 2814);
+        const ctx = canvas.getContext('2d');
+        const fill = ctx.createLinearGradient(x + width - feather, 0, x + width, 0);
+        fill.addColorStop(0, 'rgba(255,255,255,1)');
+        fill.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx.fillStyle = 'white';
+        ctx.fillRect(x, y, width - feather, height);
+        ctx.fillStyle = fill;
+        ctx.fillRect(x + width - feather, y, feather, height);
+        _rectMasks.set(key, canvas.toDataURL('image/png'));
+    }
+    return _rectMasks.get(key);
+}
+// left: x 100, two px into the black border (the 8th colour starts at x 102) so no frame colour
+// shows beside the banner; the chapter badges share that left edge (drawEighthSagaBadges).
+const EIGHTH_SAGA_BANNER = { modernCentre: 156.5, modernHalf: 69.5, centre: 149, left: 100 };
 function fitSagaBannerToEighth(layer) {
     if (!layer) return;
     const b = EIGHTH_SAGA_BANNER;
@@ -2538,6 +2620,7 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
         leftRegion.width = Math.max(0.2, leftRegion.width - reserve);
     };
 
+    global.card._eighthSaga = specialLayout?.kind === 'saga' && frame === '8th';
     if ((specialLayout?.kind === 'saga' || specialLayout?.kind === 'class') && frame === '8th') {
         await buildEighthInsetFrame(specialLayout.kind, getFrameNameForFace(pristineFace));
     } else if (specialLayout?.kind === 'saga') {
