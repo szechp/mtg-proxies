@@ -505,6 +505,20 @@ render go to `OUTDIR/fallback.txt` (a decklist you can `print`); `report.csv` re
 outcome. Re-runs skip PNGs already in OUTDIR; delete one to force a re-render. Per-card
 `#cardconjurer` flags are in the [table above](#cardconjurer-flags).
 
+To pick a frame per card instead of one for the whole deck, convert the decklist first:
+
+```bash
+uv run python scripts/decklist_to_cardconjurer.py deck.txt        # writes deck.cc.txt
+uv run mtg-proxies cardconjurer deck.cc.txt out/
+```
+
+It adds `#cardconjurer --retro-hd` to every card, except: gold cards and non-basic lands that make
+two or more colours get `--8th`; double-faced cards `--retro` (gold transform cards `--8th`,
+modal double-faced planeswalkers `--modern`); flip, reversible and Station cards `--modern`;
+adventures and prepare cards stay `--retro-hd` even when gold; battles get `--skip` (Scryfall scan).
+Lines that already have a modeline are left as they are, and each card is pinned to the printing
+the rule was decided on.
+
 | Flag | Description |
 |---|---|
 | *(no frame flag)* | Frame chosen per card from Scryfall: 2015→modern, 2003→8th, 1997/1993→retro. Frames with no Card Conjurer equivalent go to `fallback.txt`. |
