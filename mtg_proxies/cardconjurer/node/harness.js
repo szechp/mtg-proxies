@@ -3658,6 +3658,11 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
         if (retroHd) applyRetroHdLayout(global.card.bottomInfo, RETRO_HD_BOTTOM);
     } else {
         setLeanBottomInfo();
+        if (frame === '8th') {
+            // Like --retro-hd: the collector number and set in place of the copyright line.
+            const wizards = global.card.bottomInfo.wizards;
+            wizards.text = wizards.text.replace(/\u2122 & \u00a9 .*$|™ & © .*$/, '{elemidinfo-number} \u2022 {elemidinfo-set}');
+        }
         if (dfcFace && scry.layout === 'modal_dfc') {
             // The MDFC flipside bar spans y 0.892–0.931 (height-relative),
             // right on top of lean's artist line (y 0.9129). Shift both lean
