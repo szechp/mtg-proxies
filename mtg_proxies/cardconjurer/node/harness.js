@@ -584,6 +584,73 @@ const RETRO_HD_ROOT = process.env.CC_RETRO_HD || path.join(os.homedir(), '.cache
 const SEVENTH_FRAME_SRC = /^\/img\/frames\/seventh\/regular\/([A-Za-z]+)\.png$/;
 let retroHdFrames = null;
 let retroHdAdventure = false;  // the card being built is a two-panel --retro-hd adventure
+let squareCorners = false;  // the card being built is M15-8th: square its frame's inner corners
+// Card Conjurer's M15-8th frame art (img/frames/custom/m15-eighth/) carries an 80px black border
+// whose inner corners are rounded (~38px radius) the modern way; 8th frames are square. Corners
+// are squared in a cached copy: black pixels inside each corner square take the frame texture
+// SQUARE_CORNER px further along the side (same column, moving away from the corner).
+const SQUARE_BORDER = 80, SQUARE_CORNER = 56;
+const MISSING_BORDER_DONOR = {
+    '/img/frames/custom/m15-eighth/mdfc/front/regular/wl.png': '/img/frames/custom/m15-eighth/mdfc/front/regular/l.png',
+};
+const _squareFrames = new Map();
+function squareCornerFrame(src) {
+    if (!/^\/img\/frames\/custom\/m15-eighth\/.*\.png$/.test(src)) return null;
+    if (_squareFrames.has(src)) return _squareFrames.get(src);
+    const file = path.join(CC_ROOT, src.slice(1));
+    let out = null;
+    try {
+        const img = new (canvasPkg.Image)();
+        img.src = fs.readFileSync(file);
+        const w = img.width, h = img.height;
+        const canvas = createCanvas(w, h), ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const data = ctx.getImageData(0, 0, w, h), px = data.data;
+        const b = Math.round(SQUARE_BORDER * w / 2010), r = Math.round(SQUARE_CORNER * w / 2010);
+        const dark = (i) => px[i + 3] > 200 && px[i] + px[i + 1] + px[i + 2] < 40;
+        let changed = false;
+        // CC asset defect: the white-land MDFC front (mdfc/front/regular/wl.png) is missing the
+        // bottom of its rock border (black from ~2/3 down). Its colourless land sibling has the
+        // same border: take its pixels wherever wl is black and it is not.
+        const donorSrc = MISSING_BORDER_DONOR[src];
+        if (donorSrc) {
+            const donor = new (canvasPkg.Image)();
+            donor.src = fs.readFileSync(path.join(CC_ROOT, donorSrc.slice(1)));
+            const dctx = createCanvas(w, h).getContext('2d');
+            dctx.drawImage(donor, 0, 0, w, h);
+            const dp = dctx.getImageData(0, 0, w, h).data;
+            for (let i = 0; i < px.length; i += 4) {
+                if (dark(i) && dp[i] + dp[i + 1] + dp[i + 2] >= 40) {
+                    px[i] = dp[i]; px[i + 1] = dp[i + 1]; px[i + 2] = dp[i + 2]; px[i + 3] = dp[i + 3];
+                    changed = true;
+                }
+            }
+        }
+        // Each corner square, the pixel at its border corner (dark when the corner is rounded),
+        // and the direction to take texture from (away from the corner, vertically).
+        for (const [x0, y0, cx, cy, dy] of [[b, b, b, b, 1], [w - b - r, b, w - b - 1, b, 1],
+                                             [b, h - b - r, b, h - b - 1, -1],
+                                             [w - b - r, h - b - r, w - b - 1, h - b - 1, -1]]) {
+            if (!dark((cy * w + cx) * 4)) continue;  // no rounded border corner here
+            for (let y = y0; y < y0 + r; y++) {
+                for (let x = x0; x < x0 + r; x++) {
+                    const i = (y * w + x) * 4;
+                    if (!dark(i)) continue;
+                    const j = ((y + dy * r) * w + x) * 4;
+                    px[i] = px[j]; px[i + 1] = px[j + 1]; px[i + 2] = px[j + 2]; px[i + 3] = px[j + 3];
+                    changed = true;
+                }
+            }
+        }
+        if (changed) {
+            ctx.putImageData(data, 0, 0);
+            out = path.join(require('os').tmpdir(), 'mtgp-square-' + src.slice(1).replace(/\//g, '_'));
+            fs.writeFileSync(out, canvas.toBuffer('image/png'));
+        }
+    } catch (e) { console.warn('[square-corners]', src, e.message); }
+    _squareFrames.set(src, out);
+    return out;
+}
 let retroHdVariant = null;  // 'tf' / 'mdfc': a --retro-hd double-faced face (retro_hd.py frames/<variant>/)
 
 // --retro-hd text layout, taken from the template's own text layers rather than packSeventh's
@@ -679,6 +746,10 @@ function resolveSrc(src) {
     if (!src) return null;
     const hd = retroHdFrame(src);
     if (hd) return hd;
+    if (squareCorners) {
+        const square = squareCornerFrame(src);
+        if (square) return square;
+    }
     if (src.startsWith('data:'))                    return src;
     if (src.startsWith('http://') || src.startsWith('https://')) return src;
     if (src.startsWith('file://'))                  return src.slice(7);
@@ -2476,6 +2547,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     retroHdFrames = hd ? path.join(RETRO_HD_ROOT, 'frames') : null;
     retroHdAdventure = hd && !!scry._adventure;
     retroHdVariant = hd && scry._dfc ? scry._dfc.variant : null;
+    squareCorners = frame === 'm15-8th';
     try {
         return await buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath,
                                         fontSizeDelta, dfcFace, frameNameSuffix, specialLayout, legendary, crown,
@@ -2485,6 +2557,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         retroHdFrames = null;
         retroHdAdventure = false;
         retroHdVariant = null;
+        squareCorners = false;
     }
 }
 
