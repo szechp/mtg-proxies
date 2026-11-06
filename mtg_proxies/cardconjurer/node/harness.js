@@ -3673,6 +3673,9 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
 
     if (retroHd && !specialLayout?.planeswalker && specialLayout?.kind !== 'saga' && specialLayout?.kind !== 'class') {
         applyRetroHdLayout(global.card.text, RETRO_HD_TEXT);
+        // The HD layout resets the title's width: reserve the mana cost's room again, so a long
+        // name auto-shrinks instead of running under the cost (Elesh Norn, Mother of Machines).
+        reserveRight(global.card.text.title, global.card.text.mana);
     }
     // --retro-hd adventure / prepare: the textbox (203,1675)-(1807,2504) splits at x 1008. The
     // spell's half (left for adventures, right for prepare cards) holds its name and mana, its type
