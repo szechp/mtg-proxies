@@ -320,27 +320,38 @@ function fitSagaBannerToEighth(layer) {
 // Class levels. versionClass.js reads each level's height from its '#class-height-N' input, which
 // it fills from the pack's text options when it loads -- in a browser that script loads after the
 // pack's loadTextOptions, here it runs before, so the inputs are wrong and level 1 swallows the
-// whole column. Set them here instead: the column (CLASS_COLUMN, packClass's level0c top to the
-// 0.8368 bottom versionClass stretches the last level to) minus one 0.0481 header per extra level,
-// shared out by each level's wrapped line count plus CLASS_LEVEL_PAD lines.
+// whole column. Set them here instead, the same way equalizePlaneswalkerAbilities does: one shared
+// font size for every level -- the largest at which each level's wrapped text plus CLASS_LEVEL_PAD
+// lines fits the column (CLASS_COLUMN: packClass's level0c top to the 0.8368 bottom versionClass
+// stretches the last level to, minus one 0.0481 header per extra level) -- each level sized to its
+// own content and the slack spread evenly.
 const CLASS_COLUMN = { top: 0.1129, bottom: 0.8368, header: 0.0481 };
-const CLASS_LEVEL_PAD = 0.8;
+const CLASS_LEVEL_PAD = 0.7;
 function layoutClassLevels() {
     const text = global.card.text;
     const count = Math.min(4, global.card.class?.count || 0);
     if (count < 1 || typeof global.classEdited !== 'function') return;
     const cardWidth = global.card.width, cardHeight = global.card.height;
-    const lines = [...Array(count).keys()].map((i) => {
-        const level = text[`level${i}c`];
-        return countWrappedLines((level.text || '').replace(/\{lns\}\{bar\}\{lns\}/g, '\n\n'),
-            level.width * cardWidth * 0.95, (level.size || 0.0305) * cardHeight) + CLASS_LEVEL_PAD;
-    });
-    const span = CLASS_COLUMN.bottom - CLASS_COLUMN.top - CLASS_COLUMN.header * (count - 1);
-    const total = lines.reduce((a, b) => a + b, 0);
+    const levels = [...Array(count).keys()].map((i) => text[`level${i}c`]);
+    const texts = levels.map((l) => (l.text || '').replace(/\{lns\}\{bar\}\{lns\}/g, '\n\n'));
+    const widths = levels.map((l) => l.width * cardWidth * 0.95);
+    const spanPx = (CLASS_COLUMN.bottom - CLASS_COLUMN.top - CLASS_COLUMN.header * (count - 1)) * cardHeight;
+    let fontPx = 40;
+    let lines = texts.map((t, i) => countWrappedLines(t, widths[i], fontPx));
+    for (let px = Math.round((levels[0].size || 0.0305) * cardHeight); px >= 40; px--) {
+        const candidate = texts.map((t, i) => countWrappedLines(t, widths[i], px));
+        if (candidate.reduce((sum, n) => sum + (n + CLASS_LEVEL_PAD) * px, 0) <= spanPx) {
+            fontPx = px;
+            lines = candidate;
+            break;
+        }
+    }
+    const content = lines.map((n) => (n + CLASS_LEVEL_PAD) * fontPx);
+    const slack = Math.max(0, spanPx - content.reduce((a, b) => a + b, 0)) / count;
     text.level0c.y = CLASS_COLUMN.top;
+    for (const level of levels) level.size = fontPx / cardHeight;
     for (let i = 0; i < 4; i++) {
-        const height = i < count ? span * lines[i] / total : 0;
-        querySelector(`#class-height-${i}`).value = Math.round(height * cardHeight);
+        querySelector(`#class-height-${i}`).value = i < count ? Math.round(content[i] + slack) : 0;
     }
     global.classEdited();
 }
