@@ -366,8 +366,8 @@ honored in both:
 | *(no frame flag)* | ✓ | ✓ | `print`: frame chosen automatically from the card's Scryfall frame. Subcommand: keeps the deck-wide frame. |
 | `--8th` / `--modern` / `--m15-8th` / `--retro` / `--borderless` | ✓ | ✓ | Force a frame for this card (overrides the deck-wide one in the subcommand). |
 | `--retro-scaled` / `--8th-scaled` | ✓ | ✓ | That frame, grown by 0.75 mm per side for the sticker workflow. Implies the base frame. |
-| `--legendary` | ✓ | ✓ | Card Conjurer's legend crown on the 8th frame, which has none stock. No-op on retro, whose legendaries get the battlement crown by default. |
-| `--no-crown` | ✓ | ✓ | Leave the battlement legend crown off this retro legendary (on by default). |
+| `--legendary` | ✓ | ✓ | Kept for old decklists; does nothing (legend crowns are on by default on 8th and retro). |
+| `--no-crown` | ✓ | ✓ | Leave the legend crown off this legendary: the battlement crown on retro, Card Conjurer's crown on 8th (both on by default). |
 | `--retro-hd` | ✓ | ✓ | Retro with high-detail frame art from Gavin Bowers' Proxyshop Retro template. Implies `--retro`. |
 | `--set-symbol VALUE` | ✓ | ✓ | File path, CC set code (`LTC`), or `customset:An`. |
 | `--custom-art PATH` | ✓ | ✓ | Use a local image (png/jpg/jpeg/webp) as the art instead of MTGPics/Scryfall. |
@@ -510,8 +510,8 @@ outcome. Re-runs skip PNGs already in OUTDIR; delete one to force a re-render. P
 | *(no frame flag)* | Frame chosen per card from Scryfall: 2015→modern, 2003→8th, 1997/1993→retro. Frames with no Card Conjurer equivalent go to `fallback.txt`. |
 | `--8th` / `--modern` / `--m15-8th` / `--retro` / `--borderless` | Force one frame for the whole deck (mutually exclusive). `--m15-8th` is a modern body with 8th-Edition trim and is never auto-selected. `--borderless` needs full-bleed MTGPics art. |
 | `--retro-scaled` / `--8th-scaled` | That frame, grown 0.75 mm per side ([sticker workflow](#sticker-workflow-scaled-frames)). Implies the base frame. |
-| `--legendary` | Card Conjurer's legend crown on the 8th frame. Off = stock 8th, no marker. No-op on retro (see `--no-crown`). |
-| `--no-crown` | Leave the battlement legend crown off retro legendaries. Retro draws it by default: the frame's top edge rises into the border as four raised blocks, built from the frame's own bevel and texture, so it matches hybrid, two-colour and land frames. Pinlines stay stock. |
+| `--legendary` | Kept for old decklists; does nothing. Legend crowns are on by default on 8th and retro. |
+| `--no-crown` | Leave the legend crown off legendaries. 8th draws Card Conjurer's 8th crown by default (the real 8th frame has none). Retro draws a battlement crown by default: the frame's top edge rises into the border as four raised blocks, built from the frame's own bevel and texture, so it matches hybrid, two-colour and land frames. Pinlines stay stock. |
 | `--retro-hd` | Retro with high-detail frame art (smooth textures, modern colour grading, crisp bevels) from [Gavin Bowers' Proxyshop Retro template](https://github.com/Gavin-Bowers/proxyshop_plugin) in place of Card Conjurer's Seventh Edition scans; text, white-frame readability, hybrid/two-colour frames and the crown are unchanged. Implies `--retro`, combines with `--retro-scaled`. Single-faced cards only, planeswalkers included (with loyalty badges); double-faced cards render plain retro. Build the frames once first (all CPU cores, capped by free RAM; `--jobs N` to override) (downloads the ~840 MB template into `~/.cache/mtg-proxies/retro-hd/`, never committed): `uv sync --extra retro-hd && uv run python -m mtg_proxies.cardconjurer.retro_hd`. |
 | `--set-symbol VALUE` | Override the set symbol: file path, CC set code, or `customset:An`. |
 | `--scryfall` | Skip MTGPics, use Scryfall's `art_crop`. |

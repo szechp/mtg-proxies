@@ -3014,7 +3014,7 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
         }
     }
 
-    // 8th legend crown, opt-in via --legendary. The real Eighth Edition frame predates
+    // 8th legend crown, on by default (--no-crown leaves it off). The real Eighth Edition frame predates
     // crowns entirely (CC's own 8th auto-frame config sets supportsCrown: false), so stock
     // 8th draws none -- the crown art is CC's, from pack8thLegendCrowns, loaded alongside
     // pack8th in renderCard.
@@ -3799,7 +3799,9 @@ async function runOneJob(job) {
         const setSymbolPath = job.set_symbol_path || null;
         const fontSizeDelta = (job.font_size != null) ? parseInt(job.font_size) : 0;
         const slug = slugify(job.name);
-        const legendary = !!job.legendary;
+        // The 8th legend crown is on by default, like retro's battlement crown; --no-crown
+        // turns both off. job.legendary (--legendary) is kept for old decklists; it adds nothing.
+        const legendary = !job.no_crown;
         const crown = !job.no_crown;
         const retroHd = !!job.retro_hd;
         const result = await renderCard(scry, slug,

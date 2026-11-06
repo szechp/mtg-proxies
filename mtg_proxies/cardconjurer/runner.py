@@ -128,11 +128,12 @@ def build_job(
     separate full-size cards (``<slug>.png`` + ``<slug>_back.png``, response
     carries ``out`` + ``out_back``) instead of the default Kamigawa-flip merge.
 
-    ``legendary`` opts into CC's legend crown on the 8th frame, which has no stock
-    legend marker. No-op on the other frames (retro has its own crown; see ``no_crown``).
+    ``legendary`` is kept for old decklists and changes nothing: legend crowns are on by
+    default on the 8th and retro frames.
 
-    ``no_crown`` leaves the battlement legend crown off a retro legendary (drawn by
-    default; see ``retro_crown.py``). No-op on the other frames.
+    ``no_crown`` leaves the legend crown off a legendary card: the battlement crown on retro
+    (see ``retro_crown.py``) and CC's crown on 8th, both drawn by default. No-op on the other
+    frames.
 
     ``retro_hd`` swaps the retro frame art for the high-detail frames built by
     ``retro_hd.py``. No-op on the other frames.

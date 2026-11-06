@@ -1644,9 +1644,8 @@ def _run_cardconjurer(args: argparse.Namespace) -> None:
             raise SystemExit(2)
         _require_retro_hd_frames()
 
-    # ``--legendary`` only draws something on 8th (CC's legend crown); retro accepts it as a
-    # no-op (its legendaries get the battlement crown by default), modern and m15-8th already
-    # carry crowns, borderless has no marker.
+    # ``--legendary`` is a no-op kept for old decklists (8th and retro draw legend crowns by
+    # default); modern and m15-8th already carry crowns, borderless has no marker.
     if args.legendary and frame in {"modern", "m15-8th", "borderless"}:
         print(
             f"Error: --legendary only applies to the retro and 8th frames, not --{frame}.",
@@ -2787,22 +2786,21 @@ def main() -> None:
     cardconjurer_parser.add_argument(
         "--legendary", dest="legendary", action="store_true", default=False,
         help=(
-            "give legendary cards CC's legend crown on --8th / --8th-scaled, whose frame has"
-            " no stock legend marker. Without it 8th renders legendaries like stock. A no-op on"
-            " --retro / --retro-scaled, whose legendaries get the battlement crown by default"
-            " (see --no-crown). Also available per card as `#cardconjurer --legendary`."
-            " Conflicts with --modern, --m15-8th and --borderless, which already have their"
-            " own crowns."
+            "kept for old decklists and does nothing: legendary cards get a legend crown on"
+            " --8th / --8th-scaled (Card Conjurer's) and --retro / --retro-scaled (the"
+            " battlement crown) by default; --no-crown leaves it off. Conflicts with --modern,"
+            " --m15-8th and --borderless, which already have their own crowns."
         ),
     )
     cardconjurer_parser.add_argument(
         "--no-crown", dest="no_crown", action="store_true", default=False,
         help=(
-            "leave out the battlement legend crown that --retro / --retro-scaled draw on every"
-            " legendary card (the Seventh Edition frame has no stock crown; ours is drawn from"
-            " the frame's own bevel, pinline and texture, and follows hybrid, two-colour and"
-            " land frames). No-op on other frames. Also available per card as"
-            " `#cardconjurer --no-crown`."
+            "leave out the legend crown drawn on every legendary card by --retro /"
+            " --retro-scaled (the battlement crown: the Seventh Edition frame has no stock"
+            " crown; ours is drawn from the frame's own bevel, pinline and texture, and follows"
+            " hybrid, two-colour and land frames) and by --8th / --8th-scaled (Card Conjurer's"
+            " 8th crown: the real 8th frame has none either). No-op on other frames. Also"
+            " available per card as `#cardconjurer --no-crown`."
         ),
     )
     cardconjurer_parser.add_argument(
