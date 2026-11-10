@@ -1,0 +1,59 @@
+# Reference deck for the image comparison test (tests/golden_test.py).
+# One section per render group: a card name may appear once per group (output files are
+# named after the card). Edit, then run `uv run python tests/golden/freeze.py` to refresh
+# cards.json and `MTG_PROXIES_GOLDEN=update uv run pytest tests/golden_test.py` to re-baseline.
+
+## retro-hd
+1 Serra Angel #cardconjurer --retro-hd
+1 Counterspell #cardconjurer --retro-hd
+1 Dark Ritual #cardconjurer --retro-hd
+1 Lightning Bolt #cardconjurer --retro-hd
+1 Llanowar Elves #cardconjurer --retro-hd
+1 Sol Ring #cardconjurer --retro-hd
+1 Karn, Silver Golem #cardconjurer --retro-hd
+1 Kozilek, Butcher of Truth #cardconjurer --retro-hd
+1 Akroma, Angel of Wrath #cardconjurer --retro-hd
+1 Kitchen Finks #cardconjurer --retro-hd
+1 Forest #cardconjurer --retro-hd
+1 Wasteland #cardconjurer --retro-hd
+1 Hallowed Fountain #cardconjurer --retro-hd
+1 Jace, the Mind Sculptor #cardconjurer --retro-hd
+1 History of Benalia #cardconjurer --retro-hd
+1 Urza's Saga #cardconjurer --retro-hd
+1 Innkeeper's Talent #cardconjurer --retro-hd
+1 Brazen Borrower #cardconjurer --retro-hd
+1 Delver of Secrets #cardconjurer --retro-hd
+1 Emeria's Call #cardconjurer --retro-hd
+1 Belbe, Corrupted Observer #cardconjurer --retro-hd
+
+## retro
+1 Serra Angel #cardconjurer --retro
+1 Akroma, Angel of Wrath #cardconjurer --retro --no-crown
+1 Jace, the Mind Sculptor #cardconjurer --retro
+1 Jace, Vryn's Prodigy #cardconjurer --retro
+1 Lightning Bolt #cardconjurer --retro-scaled
+
+## 8th
+1 Serra Angel #cardconjurer --8th
+1 Akroma, Angel of Wrath #cardconjurer --8th
+1 Lightning Helix #cardconjurer --8th
+1 Ajani Vengeant #cardconjurer --8th
+1 Hallowed Fountain #cardconjurer --8th
+1 The Eldest Reborn #cardconjurer --8th
+1 Bard Class #cardconjurer --8th
+1 Delver of Secrets #cardconjurer --8th
+1 Sol Ring #cardconjurer --8th-scaled
+
+## modern
+1 Counterspell #cardconjurer --modern
+1 Omnath, Locus of Creation #cardconjurer --modern
+1 Brazen Borrower #cardconjurer --modern
+1 Valki, God of Lies #cardconjurer --modern
+1 Nezumi Graverobber #cardconjurer --modern
+1 Delver of Secrets #cardconjurer --modern --dfc-flip
+1 Liliana of the Veil #cardconjurer --modern
+
+## m15-8th
+1 Serra Angel #cardconjurer --m15-8th
+1 Omnath, Locus of Creation #cardconjurer --m15-8th
+1 Delver of Secrets #cardconjurer --m15-8th

@@ -1,5 +1,7 @@
+
 """Offline coverage for ``--retro-hd``: flag plumbing, frame-build helpers, HD crown geometry."""
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,6 +16,8 @@ def _touch_complete_build(cache_dir: Path) -> None:
     for path in [*files, cache_dir / "frames" / "rules.png", cache_dir / "crown" / retro_crown.PINLINE_MASK_NAME]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
+    stamp = {task: retro_hd._task_version(task) for task in retro_hd.all_tasks()}
+    (cache_dir / "build.json").write_text(json.dumps(stamp))
 
 
 def _run_subcommand(tmp_path: Path, deck: object, *flags: str, built: bool = True) -> dict:
@@ -244,7 +248,7 @@ def test_incomplete_build_is_refused_with_the_missing_frames(tmp_path: Path, cap
     with pytest.raises(SystemExit):
         _run_subcommand(tmp_path, Decklist([Card(1, {"name": "A"})]), "--retro-hd", built=False)
     err = capsys.readouterr().err
-    assert "incomplete (missing: saga-u)" in err
+    assert "incomplete or outdated (saga-u)" in err
     assert "retro_hd --missing" in err
 
 
@@ -253,3 +257,13 @@ def test_a_single_retro_hd_modeline_needs_the_frames_too(tmp_path: Path) -> None
 
     with pytest.raises(SystemExit):
         _run_subcommand(tmp_path, Decklist([Card(1, {"name": "A"}, "#cardconjurer --retro-hd")]), built=False)
+
+
+def test_frames_built_by_older_code_count_as_missing(tmp_path: Path) -> None:
+    from mtg_proxies.cardconjurer import retro_hd
+
+    _touch_complete_build(tmp_path)
+    (tmp_path / "build.json").unlink()  # a cache from before the stamp: every task is version 1
+    outdated = retro_hd.missing_tasks(tmp_path)
+    assert outdated
+    assert all(task.startswith(("tf-", "mdfc-")) for task in outdated)

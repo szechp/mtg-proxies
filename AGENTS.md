@@ -28,6 +28,7 @@ CLI that generates print-ready MTG proxy PDFs from decklists: parse a decklist �
 - `uv sync` to install (Python ≥3.12, uv ≥0.10 per `pyproject.toml`).
 - `uv run mtg-proxies print decklist.txt output.pdf` to run the CLI.
 - `uv run pytest tests/` for the full suite; `uv run pytest tests/decklist_test.py` for one file; `::test_name` for one test.
+- Image comparison of real Card Conjurer renders (opt-in, a few minutes, needs `make cardconjurer`, the retro-hd build and node): `MTG_PROXIES_GOLDEN=1 uv run pytest tests/golden_test.py`; `=update` accepts the current renders as the new baselines. Reference deck `tests/golden/deck.txt` (card data frozen in `cards.json` by `tests/golden/freeze.py`), baselines `tests/golden/baseline/*.jpg`, mismatch sheets in `tests/golden/failed/`. Run it before and after touching `harness.js`, `retro_hd.py` or `retro_crown.py`, and show the user the changed cards before re-baselining.
 - `uv run ruff check mtg_proxies/` (auto-fixes) and `uv run ruff format mtg_proxies/` — CI (`.github/workflows/python-package.yml`) only runs `pytest tests/`, not ruff, so lint issues won't surface in Actions.
 
 ## Conventions that differ from defaults

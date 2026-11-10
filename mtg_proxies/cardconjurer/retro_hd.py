@@ -370,9 +370,18 @@ def compose_variant(t: _Template, code: str, size: str = SIZE, dfc: str | None =
                 group = None
             else:
                 group = next((g for g in overlays if g.name == identity), None)
-            if group is not None:
-                img = t.rgba(group)
-                _over(out, img[..., :3], img[..., 3])
+            # Each overlay is a masked sub-group of colour fills with their own blend modes
+            # (overlay / multiply / screen, like the textbox bevels themselves). Flattening the
+            # group on its own drops the blend modes and paints the fills as solid colour: a
+            # heavy dark chevron around the notch. The group's loose shape layers are left out:
+            # they draw thin lines along the notch's facets that no other textbox corner has.
+            for layer in group or ():
+                if not layer.is_group():
+                    continue
+                shape = t.mask_of(layer)
+                for fill in layer:
+                    if fill.kind == "solidcolorfill":
+                        _blend(out, t.fill_color(fill), shape * (fill.opacity / 255), fill.blend_mode.name)
 
     # Outlines: art box, textbox (rectangular textboxes only), bevel and card outlines, corners.
     outlines = [*t.find("Outlines", "Art Outlines", SIZE)]
@@ -795,17 +804,46 @@ def _task_files(task: str, out_dir: Path) -> list[Path]:
     return [frames / f"{task}.png", out_dir / "crown" / f"{task}.png"]
 
 
-def missing_tasks(out_dir: Path = CACHE_DIR) -> list[str]:
-    """Return the build tasks whose output is not (all) in ``out_dir``: empty for a complete build.
+# Bump a task kind's version when its output changes, so caches built by older code get those
+# frames rebuilt (``--missing``). Kinds are the task prefix (``tf``, ``saga`` ...) or ``frame``
+# for the plain packSeventh codes; anything not listed is version 1.
+#   tf / mdfc 2: notch bevels composited with their blend modes (were solid colour).
+TASK_VERSIONS = {"tf": 2, "mdfc": 2}
+_STAMP_NAME = "build.json"
 
-    Catches a cache that was never built, an interrupted build, and one built before a frame
-    kind was added. Pass the result to :func:`build` (or the command line) to build just those.
-    ``"masks"`` stands for the mask files every build writes.
+
+def _task_version(task: str) -> int:
+    kind = task.partition("-")[0] if "-" in task else "frame"
+    return TASK_VERSIONS.get(kind, 1)
+
+
+def _built_versions(out_dir: Path) -> dict[str, int]:
+    """Return the version each task in ``out_dir`` was built at (1 when the cache predates the stamp)."""
+    import json
+
+    try:
+        return json.loads((out_dir / _STAMP_NAME).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def missing_tasks(out_dir: Path = CACHE_DIR) -> list[str]:
+    """Return the build tasks ``out_dir`` lacks or holds an outdated version of: empty when up to date.
+
+    Catches a cache that was never built, an interrupted build, one built before a frame kind
+    was added, and frames built by older compositing code (:data:`TASK_VERSIONS`). Pass the
+    result to :func:`build` (or run with ``--missing``) to build just those. ``"masks"`` stands
+    for the mask files every build writes.
     """
     from mtg_proxies.cardconjurer import retro_crown
 
+    built = _built_versions(out_dir)
     always = [out_dir / "frames" / "rules.png", out_dir / "crown" / retro_crown.PINLINE_MASK_NAME]
-    missing = [task for task in all_tasks() if not all(p.is_file() for p in _task_files(task, out_dir))]
+    missing = [
+        task
+        for task in all_tasks()
+        if not all(p.is_file() for p in _task_files(task, out_dir)) or built.get(task, 1) < _task_version(task)
+    ]
     return missing + (["masks"] if not all(p.is_file() for p in always) else [])
 
 
@@ -872,6 +910,10 @@ def build(
     mask_path = out_dir / "crown" / retro_crown.PINLINE_MASK_NAME
     Image.fromarray(mask).save(mask_path, optimize=True)
     written.append(mask_path)
+    import json
+
+    stamp = _built_versions(out_dir) | {code: _task_version(code) for code in codes}
+    (out_dir / _STAMP_NAME).write_text(json.dumps(stamp, indent=1, sort_keys=True))
     return written
 
 

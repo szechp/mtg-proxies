@@ -90,7 +90,7 @@ def _require_retro_hd_frames() -> None:
     if len(missing) > len(retro_hd.all_tasks()) // 2:
         problem, flag = f"are not built yet (looked in {cache_dir})", ""
     else:
-        problem, flag = f"in {cache_dir} are incomplete (missing: {', '.join(missing)})", " --missing"
+        problem, flag = f"in {cache_dir} are incomplete or outdated ({', '.join(missing)})", " --missing"
     die(
         f"Error: the --retro-hd frames {problem}. Build them with:\n"
         "  uv sync --extra retro-hd\n"
