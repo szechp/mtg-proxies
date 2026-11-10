@@ -47,3 +47,32 @@ def _card(
 )
 def test_mix_frame_flag(card: dict, flag: str) -> None:
     assert mix_frame_flag(card) == flag
+
+
+def _art_deck(tmp_path, *files: str):  # ruff: ignore[missing-return-type-private-function]
+    from mtg_proxies.decklists.decklist import Card, Decklist
+
+    for name in files:
+        (tmp_path / name).touch()
+    return Decklist([
+        Card(1, {"name": "Galadriel of Lothlórien"}),
+        Card(1, {"name": "Delver of Secrets // Insectile Aberration",
+                 "card_faces": [{"name": "Delver of Secrets"}, {"name": "Insectile Aberration"}]}),
+        Card(1, {"name": "Sol Ring"}),
+    ])
+
+
+def test_art_folder_matches_files_to_cards_by_name(tmp_path, capsys: pytest.CaptureFixture) -> None:
+    from mtg_proxies.cardconjurer.engine import match_art_folder
+
+    deck = _art_deck(tmp_path, "galadriel-of-lothlorien.PNG", "Delver of Secrets.jpg", "insectile_aberration.webp",
+                     "galadriel-of-lotrhriel.png", "notes.txt")
+    matches = match_art_folder(deck, tmp_path)
+
+    assert matches == {
+        1: (str(tmp_path / "galadriel-of-lothlorien.PNG"), None),
+        2: (str(tmp_path / "Delver of Secrets.jpg"), str(tmp_path / "insectile_aberration.webp")),
+    }
+    captured = capsys.readouterr()
+    assert "3 of 4 image(s) used" in captured.out
+    assert "galadriel-of-lotrhriel.png" in captured.err  # the typo is reported, not silently ignored

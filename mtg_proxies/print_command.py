@@ -13,7 +13,12 @@ from typing import Any, Literal, Self
 import numpy as np
 import requests
 
-from mtg_proxies.cardconjurer.engine import deck_options_for_frame, oracle_ids_by_language, render_cardconjurer
+from mtg_proxies.cardconjurer.engine import (
+    deck_options_for_frame,
+    match_art_folder,
+    oracle_ids_by_language,
+    render_cardconjurer,
+)
 from mtg_proxies.cli_util import die, parse_decklist_spec, warn
 from mtg_proxies.decklists.decklist import Card, Decklist
 from mtg_proxies.frame_scale import MPC_OVERLAP_MM
@@ -317,12 +322,13 @@ def _apply_mpcfill_modelines(
 
 
 def _apply_cardconjurer_renders(
-    slots: _ModelineSlots, frame: str | None, mark_bleed_render: Callable[[str], None]
+    slots: _ModelineSlots, frame: str | None, mark_bleed_render: Callable[[str], None], art_folder: Path | None = None
 ) -> dict[int, str]:
     """Swap in a Card Conjurer render for every card ``print`` should render.
 
-    That is every ``#cardconjurer`` card and, with ``print --frame``, every other card that has
-    no ``#mpcfill`` / ``#print`` source of its own. Uses the same engine as the ``cardconjurer``
+    That is every ``#cardconjurer`` card, every card with an image of its own in ``art_folder``
+    (``print --art-folder``) and, with ``print --frame``, every other card that has no
+    ``#mpcfill`` / ``#print`` source of its own. Uses the same engine as the ``cardconjurer``
     subcommand (:func:`render_cardconjurer`), rendering into a fresh temp folder. A card it
     cannot render keeps its Scryfall scan; a split double-faced card fills both of its faces.
 
@@ -334,12 +340,14 @@ def _apply_cardconjurer_renders(
     if frame is not None:
         other_source = {card_idx for verb in ("mpcfill", "print") for card_idx, _, _ in slots.with_verb(verb)}
         wanted |= set(range(n_cards)) - other_source
+    if art_folder is not None and frame is None:
+        wanted |= {slot_int - 1 for slot_int in match_art_folder(slots.decklist, art_folder)}
     wanted = {card_idx for card_idx in wanted if slots.front_slots(card_idx)}
     if not wanted:
         return {}
     result = render_cardconjurer(
         slots.decklist,
-        deck_options_for_frame(frame or "auto"),
+        deck_options_for_frame(frame or "auto", art_folder),
         Path(tempfile.mkdtemp(prefix="mtg-proxies-cc-")),
         only={card_idx + 1 for card_idx in wanted},
     )
@@ -426,6 +434,7 @@ def _apply_per_card_modelines(
     bleed_renders: set[str] | None = None,
     global_mpc_scaled: bool = False,
     cc_frame: str | None = None,
+    cc_art_folder: Path | None = None,
     cache_root: Path | None = None,
     session: requests.Session | None = None,
 ) -> list[str]:
@@ -443,7 +452,7 @@ def _apply_per_card_modelines(
     card's current paths in ``skip_upscale`` too, which the bulk upscale pass honors. Per-card
     ``#upscale`` itself runs later: see ``_apply_per_card_upscale_modelines``.
     """
-    if cc_frame is None and not any(card.modeline for card in decklist.cards):
+    if cc_frame is None and cc_art_folder is None and not any(card.modeline for card in decklist.cards):
         return image_paths
 
     slots = _ModelineSlots.build(decklist, image_paths, faces, log_warnings=True)
@@ -463,7 +472,7 @@ def _apply_per_card_modelines(
     _apply_mpcfill_modelines(
         slots, mark_bleed_render, global_scaled=global_mpc_scaled, cache_root=cache_root, session=session
     )
-    scan_language = _apply_cardconjurer_renders(slots, cc_frame, mark_bleed_render)
+    scan_language = _apply_cardconjurer_renders(slots, cc_frame, mark_bleed_render, cc_art_folder)
     _apply_language_modelines(slots, scan_language)
 
     if skip_upscale is not None:
@@ -543,8 +552,8 @@ def _validate_print_args(args: argparse.Namespace, upscale_scope: str | None) ->
         die(f"Error: the output file must be a .pdf (got {args.outfile!r})")
     if upscale_scope is not None and not args.decklist:
         die("Error: --upscale requires a decklist (it operates on Scryfall scans)")
-    if args.frame is not None and not args.decklist:
-        die("Error: --frame requires a decklist (it renders the decklist's cards)")
+    if (args.frame is not None or args.art_folder is not None) and not args.decklist:
+        die("Error: --frame and --art-folder require a decklist (they render the decklist's cards)")
     if args.split_pages is not None and args.split_pages <= 0:
         die(f"Error: --split-pages must be positive (got {args.split_pages})")
     if args.upscale_target_width <= 0:
@@ -655,6 +664,7 @@ def run_print(args: argparse.Namespace) -> None:
             bleed_renders=bleed_renders,
             global_mpc_scaled=args.scaled,
             cc_frame=args.frame,
+            cc_art_folder=args.art_folder,
         )
         if args.scaled and not any(card.modeline and "#mpcfill" in card.modeline for card in decklist.cards):
             warn(

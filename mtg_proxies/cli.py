@@ -138,6 +138,21 @@ def _add_print_parser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     print_parser.add_argument(
+        "--art-folder",
+        dest="art_folder",
+        type=Path,
+        default=None,
+        metavar="FOLDER",
+        help=(
+            "folder with your own illustrations for some cards, matched by file name: a file that spells"
+            " a card's name (case, accents, spaces and punctuation ignored, e.g."
+            " galadriel-of-lothlorien.png) is used as that card's art in place of MTGPics / Scryfall."
+            " For a double-faced card, name a file after the back face for its back art. png, jpg,"
+            " jpeg or webp. A line's own #cardconjurer --custom-art wins. Cards with a matching image"
+            " are rendered with Card Conjurer even without --frame."
+        ),
+    )
+    print_parser.add_argument(
         "--split-pages",
         help="split the output into a new PDF file every N pages",
         type=int,
@@ -442,6 +457,16 @@ def _add_cardconjurer_parser(subparsers: argparse._SubParsersAction) -> None:
             " after first use). Works with any frame. Without this flag: 8th"
             " keeps its hardcoded 8ed-<rarity>.svg default; modern uses the"
             " engine's per-card set icon."
+        ),
+    )
+    cardconjurer_parser.add_argument(
+        "--art-folder", dest="art_folder", type=Path, default=None, metavar="FOLDER",
+        help=(
+            "folder with your own illustrations for some cards, matched by file name: a file that spells"
+            " a card's name (case, accents, spaces and punctuation ignored, e.g."
+            " galadriel-of-lothlorien.png) is used as that card's art in place of MTGPics / Scryfall."
+            " For a double-faced card, name a file after the back face for its back art. png, jpg,"
+            " jpeg or webp. A line's own #cardconjurer --custom-art wins."
         ),
     )
     cardconjurer_parser.add_argument(

@@ -4,6 +4,7 @@ import argparse
 import dataclasses
 import functools
 import json
+import re
 import sys
 import tempfile
 from collections.abc import Callable, Container
@@ -404,15 +405,60 @@ class CcDeckOptions:
     upscale_model: str | None = None
     upscale_target_width: int | None = None
     language: str | None = None
+    art_folder: Path | None = None  # your own illustrations, matched to cards by file name
 
 
-def deck_options_for_frame(frame: str) -> CcDeckOptions:
+def deck_options_for_frame(frame: str, art_folder: Path | None = None) -> CcDeckOptions:
     """Build the deck options for a ``print --frame`` value (``retro-hd`` is retro + HD frame art)."""
     if frame in {"retro-hd", "mix"}:
         _require_retro_hd_frames()
     if frame == "retro-hd":
-        return CcDeckOptions(frame="retro", retro_hd=True)
-    return CcDeckOptions(frame=frame)
+        return CcDeckOptions(frame="retro", retro_hd=True, art_folder=art_folder)
+    return CcDeckOptions(frame=frame, art_folder=art_folder)
+
+
+def _art_key(name: str) -> str:
+    """Reduce a card name or file name to what must match: letters and digits, accents dropped."""
+    import unicodedata
+
+    plain = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "", plain.lower())
+
+
+def match_art_folder(decklist: Decklist, folder: Path) -> dict[int, tuple[str | None, str | None]]:
+    """Match the images in ``folder`` to the decklist's cards by name.
+
+    A file belongs to the card (or card face) whose name it spells, ignoring case, accents,
+    spaces and punctuation: ``galadriel-of-lothlorien.png`` is the art for Galadriel of
+    Lothlórien. For a double-faced card, a file named after the whole card or its front face
+    is the front art, one named after the back face the back art.
+
+    Returns ``{1-based slot: (front art, back art)}`` for the cards with at least one match,
+    and tells the user which files matched no card (usually a typo in the file name).
+    """
+    if not folder.is_dir():
+        die(f"Error: art folder '{folder}' does not exist")
+    files = {
+        _art_key(path.stem): path
+        for path in sorted(folder.iterdir())
+        if path.is_file() and path.suffix.lower() in _CUSTOM_ART_SUFFIXES
+    }
+    used: set[str] = set()
+    matches: dict[int, tuple[str | None, str | None]] = {}
+    for slot_int, card in enumerate(decklist.cards, start=1):
+        faces = [face.get("name", "") for face in card.card.get("card_faces") or []]
+        front_keys = [_art_key(name) for name in (card["name"], *faces[:1])]
+        back_keys = [_art_key(name) for name in faces[1:2]]
+        front = next((key for key in front_keys if key in files), None)
+        back = next((key for key in back_keys if key in files), None)
+        if front or back:
+            matches[slot_int] = (str(files[front]) if front else None, str(files[back]) if back else None)
+            used.update(key for key in (front, back) if key)
+    print(f"[cardconjurer] art folder: {len(used)} of {len(files)} image(s) used")
+    unused = [path.name for key, path in files.items() if key not in used]
+    if unused:
+        warn(f"Note: no card in the decklist for: {', '.join(unused)} (the file name must spell the card's name)")
+    return matches
 
 
 def deck_options_from_args(args: argparse.Namespace) -> CcDeckOptions:
@@ -478,6 +524,7 @@ def deck_options_from_args(args: argparse.Namespace) -> CcDeckOptions:
         upscale_model=args.upscale_model,
         upscale_target_width=args.upscale_target_width,
         language=args.language,
+        art_folder=args.art_folder,
     )
 
 
@@ -504,6 +551,7 @@ class _CcCardOptions:
     set_symbol: str | None = None
     font_size: int | None = None
     custom_art: str | None = None
+    custom_art_back: str | None = None  # back face of a double-faced card (art folder only)
     language: str | None = None
 
 
@@ -790,7 +838,12 @@ class _CcArtResolver:
         # the escape hatch for borderless cards with no full-bleed MTGPics art: supply your own
         # full-art image and the card renders borderless from it instead of skipping to fallback.txt.
         if opts.custom_art:
-            return {**extras, "art_path": opts.custom_art}
+            art = {"art_path": opts.custom_art}
+            if slot_int in self.dfc_split_slots:
+                # The other face: its own file from the art folder, else Scryfall's crop.
+                back = opts.custom_art_back or self._dfc_art(slot_int, card).get("art_path_back")
+                art |= {"art_path_back": back} if back else {}
+            return {**extras, **art}
 
         # Borderless render needs full-bleed art, which only MTGPics provides (for genuine
         # borderless / full-art printings). Resolve it here or signal a skip → fallback.txt
@@ -827,6 +880,7 @@ class _CcArtResolver:
             warn(f"Note: {card['name']!r} DFC art unavailable ({exc}); using harness default.")
             return {}
         [front, back] = self._maybe_upscale(slot_int, [front, back])
+        back = self.options[slot_int].custom_art_back or back
         if slot_int in self.dfc_split_slots:
             return {"art_path": str(front), "art_path_back": str(back)}
         return {"art_path": str(_composite_dfc_art(Path(front), Path(back)))}
@@ -1044,6 +1098,11 @@ def render_cardconjurer(
     ]
     slot_to_card = dict(enumerate(decklist.cards, start=1))  # 1-based, like the harness's job slots
     options = {slot_int: _cc_card_options(card, slot_int, deck) for slot_int, card in slot_to_card.items()}
+    if deck.art_folder is not None:
+        # A line's own `#cardconjurer --custom-art` wins over the folder.
+        for slot_int, (front, back) in match_art_folder(decklist, deck.art_folder).items():
+            options[slot_int].custom_art = options[slot_int].custom_art or front
+            options[slot_int].custom_art_back = back
     if any(opts.retro_hd for opts in options.values()):
         _require_retro_hd_frames()  # also for a single `#cardconjurer --retro-hd` line
 
