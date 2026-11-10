@@ -1,16 +1,6 @@
-import importlib.util
-from pathlib import Path
-
 import pytest
 
-_SCRIPT = Path(__file__).parent.parent / "scripts" / "decklist_to_cardconjurer.py"
-
-
-def _load():  # ruff: ignore[missing-return-type-private-function]
-    spec = importlib.util.spec_from_file_location("decklist_to_cardconjurer", _SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from mtg_proxies.cardconjurer.frames import mix_frame_flag
 
 
 def _card(
@@ -55,5 +45,5 @@ def _card(
         (_card(keywords=["Station"]), "--modern"),
     ],
 )
-def test_frame_flags(card: dict, flag: str) -> None:
-    assert _load().frame_flags(card) == flag
+def test_mix_frame_flag(card: dict, flag: str) -> None:
+    assert mix_frame_flag(card) == flag

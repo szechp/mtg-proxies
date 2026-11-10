@@ -59,6 +59,7 @@ def test_frame_override_survives_custom_art_and_scaling(tmp_path: Path) -> None:
         render.return_value = {"ok": 0, "skipped": 0, "total": 2}
         main()
         extras = render.call_args.kwargs["prepare_each"](1)
+        extras.pop("card_data")
         assert extras == {"frame": "modern", "art_path": str(art)}
         post = render.call_args.kwargs["post_process"]
         post(tmp_path / "legendary_override.png")
@@ -125,6 +126,7 @@ def test_borderless_override_fetches_full_bleed_art(tmp_path: Path) -> None:
         render.return_value = {"ok": 0, "skipped": 0, "total": 1}
         main()
         extras = render.call_args.kwargs["prepare_each"](1)
+        extras.pop("card_data")
         assert extras == {"frame": "borderless", "art_path": str(art)}
         assert fetch.call_args.args == ("tst", "1")
 
@@ -178,42 +180,6 @@ def test_scaled_parser_accepts_matching_base_and_rejects_other_frames(selector: 
     assert not directives[0].flags
 
 
-@pytest.mark.parametrize("frame", ["retro", "8th"])
-def test_print_batch_scales_a_separate_copy(tmp_path: Path, frame: str) -> None:
-    """Print-time scaling leaves the harness source available to unscaled slots."""
-    from mtg_proxies.cardconjurer.per_card import CardConjurerRequest, render_per_card_batch
-
-    source = tmp_path / "render.png"
-    source.write_bytes(b"rendered")
-    requests = [CardConjurerRequest("0001", "Example", frame, frame_overlap_mm=0.5)]
-    with patch("mtg_proxies.frame_scale.enlarge_frame") as scale:
-        outputs = render_per_card_batch(requests, run_harness=lambda jobs: [
-            {"slot": "0001", "status": "ok", "out": str(source)},
-        ])
-    assert outputs["0001"] != source
-    assert outputs["0001"].read_bytes() == source.read_bytes()
-    # Scaled under a temporary name next to the output, then renamed into place.
-    assert scale.call_args.args[0] != source
-    assert scale.call_args.args[0].parent == outputs["0001"].parent
-    assert scale.call_args.args[1] == pytest.approx(0.5)
-
-
-@pytest.mark.parametrize("frame", ["retro", "8th"])
-def test_print_dispatch_passes_scaling_request(frame: str) -> None:
-    """The print modeline dispatch carries both frame selection and overlap."""
-    from mtg_proxies.cli import _apply_per_card_modelines
-    from mtg_proxies.decklists.decklist import Card, Decklist
-    from mtg_proxies.frame_scale import DEFAULT_OVERLAP_MM
-
-    deck = Decklist([Card(1, {"name": "Example", "layout": "normal", "image_uris": {"normal": "scan.png"}},
-                          f"#cardconjurer --{frame}-scaled")])
-    with patch("mtg_proxies.cardconjurer.per_card.render_per_card_batch", return_value={}) as batch:
-        _apply_per_card_modelines(deck, ["original.png"])
-    request = batch.call_args.args[0][0]
-    assert request.frame == frame
-    assert request.frame_overlap_mm == pytest.approx(DEFAULT_OVERLAP_MM)
-
-
 @pytest.mark.parametrize("last", ["--modern", "--8th-scaled", "--scryfall"])
 def test_stacked_directives_keep_frame_and_scaling_consistent(tmp_path: Path, last: str) -> None:
     """A later explicit frame resets scaling; non-frame modifiers preserve it."""
@@ -238,14 +204,3 @@ def test_stacked_directives_keep_frame_and_scaling_consistent(tmp_path: Path, la
             post(tmp_path / "example.png")
             scale.assert_called_once()
 
-
-def test_print_scaling_warns_on_unmeasurable_frame(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    """Failed enlargement reports the affected card instead of silently succeeding."""
-    from mtg_proxies.cardconjurer.per_card import CardConjurerRequest, render_per_card_batch
-
-    source = tmp_path / "render.png"
-    source.write_bytes(b"rendered")
-    with patch("mtg_proxies.frame_scale.enlarge_frame", return_value=None):
-        render_per_card_batch([CardConjurerRequest("0001", "Example", "retro", frame_overlap_mm=0.5)],
-                              run_harness=lambda jobs: [{"slot": "0001", "status": "ok", "out": str(source)}])
-    assert "could not be applied to 'Example'" in caplog.text

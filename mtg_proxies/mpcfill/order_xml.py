@@ -2,8 +2,7 @@
 
 ``mtg-proxies print`` accepts such a file directly in place of a decklist
 (detected by the ``.xml`` extension, no extra flag). Only the ``<fronts>``
-section is consumed — ``<backs>`` and ``<cardback>`` are ignored; duplex
-printing stays opt-in via the existing ``--card-back`` flag. The extracted
+section is consumed — ``<backs>`` and ``<cardback>`` are ignored. The extracted
 Drive ids flow through the same fetch path the ``#mpcfill --identifier``
 modeline uses (:func:`mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill`).
 

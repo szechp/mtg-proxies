@@ -165,18 +165,3 @@ def test_build_job_serializes_no_crown_only_when_set() -> None:
     assert "no_crown" not in build_job(1, "A", "retro")
     assert build_job(1, "A", "retro", no_crown=True)["no_crown"] is True
 
-
-def test_print_dispatch_passes_no_crown() -> None:
-    from mtg_proxies.cli import _apply_per_card_modelines
-    from mtg_proxies.decklists.decklist import Card, Decklist
-
-    deck = Decklist([
-        Card(
-            1,
-            {"name": "Example", "layout": "normal", "image_uris": {"normal": "scan.png"}},
-            "#cardconjurer --retro --no-crown",
-        )
-    ])
-    with patch("mtg_proxies.cardconjurer.per_card.render_per_card_batch", return_value={}) as batch:
-        _apply_per_card_modelines(deck, ["original.png"])
-    assert batch.call_args.args[0][0].no_crown is True

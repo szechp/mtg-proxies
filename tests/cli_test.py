@@ -2,9 +2,11 @@ import random
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pytest
+from PIL import Image
+
+from mtg_proxies.decklists.decklist import Decklist
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +38,7 @@ def test_parse_decklist_spec_path_to_nonexistent_file_fails_cleanly(tmp_path: Pa
 
     Mirrors the actual Windows crash path: on Windows the user's command can pass a Path
     that doesn't match the local FS, and the function falls through to the ``elif
-    decklist_spec.lower().startswith("manastack:")`` branch — which is what crashes
+    decklist_spec.lower().startswith("archidekt:")`` branch — which is what crashes
     when ``decklist_spec`` is a ``WindowsPath``.
     """
     from mtg_proxies.cli import parse_decklist_spec
@@ -193,7 +195,7 @@ def test_main_print_forwards_split_pages(tmp_path) -> None:
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "decklist.pdf"
-    fake_decklist = object()
+    fake_decklist = Decklist()
     fake_images = ["image.png"]
 
     with (
@@ -222,7 +224,7 @@ def test_main_print_uses_true_card_size(tmp_path) -> None:
 
     with (
         patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file)]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=object()),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=Decklist()),
         patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["image.png"]),
         patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
     ):
@@ -332,41 +334,6 @@ def test_main_print_order_xml_fetch_failure_exits(tmp_path: Path) -> None:
     print_cards_fpdf.assert_not_called()
 
 
-def test_main_print_order_xml_card_back_duplex(tmp_path: Path) -> None:
-    """--card-back with order.xml input pairs every front with the generic back (duplex sheets)."""
-    from mtg_proxies.cli import main
-
-    xml_file = tmp_path / "cards.xml"
-    _write_order_xml(xml_file, [("idA", "0", "A.png"), ("idB", "1", "B.png")], quantity=2)
-    out_file = tmp_path / "out.pdf"
-    back = tmp_path / "back.png"
-    back.write_bytes(b"png")
-
-    renders = {}
-    for drive_id in ("idA", "idB"):
-        p = tmp_path / f"{drive_id}.png"
-        p.write_bytes(b"png")
-        renders[drive_id] = p
-
-    def fake_resolve(*, drive_id_override, **kwargs):
-        return renders[drive_id_override]
-
-    with (
-        patch("sys.argv", ["mtg-proxies", "print", str(xml_file), str(out_file), "--card-back", str(back)]),
-        patch("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", side_effect=fake_resolve),
-        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
-    ):
-        main()
-
-    images = print_cards_fpdf.call_args.args[0]
-    # One sheet of fronts (2 cards + filler) followed by one mirrored sheet of backs.
-    assert images[:2] == [str(renders["idA"]), str(renders["idB"])]
-    assert str(back) in images
-    # Fronts are user-supplied MPC renders → bleed placement.
-    bleed_images = print_cards_fpdf.call_args.kwargs["bleed_images"]
-    assert {str(renders["idA"]), str(renders["idB"])} <= bleed_images
-
-
 def test_main_print_order_xml_ignores_upscale_and_faces(tmp_path: Path, capsys) -> None:
     """--upscale / --faces are noted-and-ignored for XML input; no upscale pass runs."""
     from mtg_proxies.cli import main
@@ -400,7 +367,7 @@ def test_main_print_scale_multiplies_card_size(tmp_path) -> None:
 
     with (
         patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), "--scale", "2"]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=object()),
+        patch("mtg_proxies.cli.parse_decklist_spec", return_value=Decklist()),
         patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["image.png"]),
         patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
     ):
@@ -430,7 +397,7 @@ def test_main_print_does_not_forward_art_preference(tmp_path) -> None:
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "decklist.pdf"
-    fake_decklist = object()
+    fake_decklist = Decklist()
 
     with (
         patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file)]),
@@ -457,9 +424,9 @@ def test_main_print_custom_art_appends_supported_image_extensions(tmp_path) -> N
     png_b = custom_dir / "b.png"
     jpg_c = custom_dir / "c.jpg"
     ignored = custom_dir / "notes.txt"
-    plt.imsave(png_a, np.zeros((4, 4, 4), dtype=np.uint8))
-    plt.imsave(png_b, np.zeros((4, 4, 4), dtype=np.uint8))
-    plt.imsave(jpg_c, np.zeros((4, 4, 3), dtype=np.uint8))
+    Image.fromarray(np.zeros((4, 4, 4), dtype=np.uint8)).save(png_a)
+    Image.fromarray(np.zeros((4, 4, 4), dtype=np.uint8)).save(png_b)
+    Image.fromarray(np.zeros((4, 4, 3), dtype=np.uint8)).save(jpg_c)
     ignored.write_text("not an image")
 
     with (
@@ -498,7 +465,7 @@ def test_main_print_custom_art_excludes_pipeline_cache_artifacts(tmp_path) -> No
     legacy_norm = custom_dir / "card_norm.png"
     legacy_shadow = custom_dir / "card_shadow.png"
     for path in (real, norm_artifact, shadow_artifact, bg_artifact, legacy_norm, legacy_shadow):
-        plt.imsave(path, np.zeros((4, 4, 4), dtype=np.uint8))
+        Image.fromarray(np.zeros((4, 4, 4), dtype=np.uint8)).save(path)
 
     with (
         patch(
@@ -530,8 +497,8 @@ def test_main_print_custom_art_extends_decklist_images(tmp_path) -> None:
     custom_dir = tmp_path / "art"
     custom_dir.mkdir()
     custom_image = custom_dir / "extra.png"
-    plt.imsave(custom_image, np.zeros((4, 4, 4), dtype=np.uint8))
-    fake_decklist = object()
+    Image.fromarray(np.zeros((4, 4, 4), dtype=np.uint8)).save(custom_image)
+    fake_decklist = Decklist()
     fake_images = ["card1.png", "card2.png"]
     expected_images = [*fake_images, str(custom_image)]
 
@@ -597,7 +564,7 @@ def test_main_print_custom_art_empty_folder_warns_and_continues_with_decklist(
     out_file = tmp_path / "decklist.pdf"
     custom_dir = tmp_path / "art"
     custom_dir.mkdir()
-    fake_decklist = object()
+    fake_decklist = Decklist()
     fake_images = ["card1.png"]
 
     with (
@@ -701,223 +668,6 @@ def test_main_convert_preferred_set_moves_fallback_cards_to_bottom(tmp_path) -> 
     fallback_pos = content.index("Counterspell")
 
     assert ltr_pos < comment_pos < fallback_pos
-
-
-def test_main_print_card_back_duplex_mode_pairs_decklist_fronts(tmp_path) -> None:
-    """--card-back enables duplex mode: each front gets a paired back.
-
-    The renderer receives alternating sheets of fronts then mirrored backs. With 3 decklist
-    cards on an A4 3×3 grid (9-per-sheet), the single sheet is padded to 9 with the card_back.
-    """
-    from mtg_proxies.cli import main
-
-    out_file = tmp_path / "backs.pdf"
-    back_image = tmp_path / "card_back.png"
-    plt.imsave(back_image, np.zeros((4, 4, 4), dtype=np.uint8))
-    fronts = ["card1.png", "card2.png", "card3.png"]
-    backs = [str(back_image), str(back_image), str(back_image)]
-
-    with (
-        patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), "--card-back", str(back_image)]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=Mock()),
-        patch(
-            "mtg_proxies.cli.fetch_scans_paired",
-            return_value=(fronts, backs, [True, True, True], [True, True, True]),
-        ),
-        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
-    ):
-        main()
-
-    print_cards_fpdf.assert_called_once()
-    images = print_cards_fpdf.call_args.args[0]
-    # One sheet (9 slots) of fronts followed by one sheet (9 slots) of backs = 18 images.
-    assert len(images) == 18
-    # Front sheet: 3 real fronts at positions 0..2, rest filled with card_back.
-    assert images[0:3] == fronts
-    assert all(p == str(back_image) for p in images[3:9])
-    # Back sheet: all 9 slots are card_back (since no DFCs in this test).
-    assert all(p == str(back_image) for p in images[9:18])
-
-
-def test_main_print_card_back_duplex_mode_pairs_custom_art(tmp_path) -> None:
-    """--card-back enables duplex mode for custom-art fronts as well."""
-    from mtg_proxies.cli import main
-
-    out_file = tmp_path / "backs.pdf"
-    back_image = tmp_path / "card_back.png"
-    plt.imsave(back_image, np.zeros((4, 4, 4), dtype=np.uint8))
-    custom_dir = tmp_path / "art"
-    custom_dir.mkdir()
-    art1 = custom_dir / "a.png"
-    art2 = custom_dir / "b.png"
-    plt.imsave(art1, np.zeros((4, 4, 4), dtype=np.uint8))
-    plt.imsave(art2, np.zeros((4, 4, 4), dtype=np.uint8))
-
-    with (
-        patch(
-            "sys.argv",
-            [
-                "mtg-proxies",
-                "print",
-                str(out_file),
-                "--custom-art",
-                str(custom_dir),
-                "--card-back",
-                str(back_image),
-            ],
-        ),
-        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
-    ):
-        main()
-
-    print_cards_fpdf.assert_called_once()
-    images = print_cards_fpdf.call_args.args[0]
-    # 2 custom-art fronts → 1 sheet padded to 9, plus 1 sheet of 9 backs = 18 images.
-    assert len(images) == 18
-    # First two slots of front sheet are the custom-art images.
-    assert images[0] == str(art1)
-    assert images[1] == str(art2)
-    # All remaining front-sheet slots and all back-sheet slots are the card_back.
-    assert all(p == str(back_image) for p in images[2:])
-
-
-def test_main_print_card_back_duplex_mode_pairs_decklist_plus_custom_art(tmp_path) -> None:
-    """--card-back enables duplex mode covering both decklist and custom-art fronts."""
-    from mtg_proxies.cli import main
-
-    out_file = tmp_path / "backs.pdf"
-    back_image = tmp_path / "card_back.png"
-    plt.imsave(back_image, np.zeros((4, 4, 4), dtype=np.uint8))
-    custom_dir = tmp_path / "art"
-    custom_dir.mkdir()
-    custom_image = custom_dir / "extra.png"
-    plt.imsave(custom_image, np.zeros((4, 4, 4), dtype=np.uint8))
-    fronts = ["card1.png", "card2.png"]
-    backs = [str(back_image), str(back_image)]
-
-    with (
-        patch(
-            "sys.argv",
-            [
-                "mtg-proxies",
-                "print",
-                "decklist.txt",
-                str(out_file),
-                "--custom-art",
-                str(custom_dir),
-                "--card-back",
-                str(back_image),
-            ],
-        ),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=Mock()),
-        patch(
-            "mtg_proxies.cli.fetch_scans_paired",
-            return_value=(fronts, backs, [True, True], [True, True]),
-        ),
-        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
-    ):
-        main()
-
-    print_cards_fpdf.assert_called_once()
-    images = print_cards_fpdf.call_args.args[0]
-    # 2 decklist fronts + 1 custom art = 3 fronts total → 1 sheet padded to 9 + 9 backs = 18.
-    assert len(images) == 18
-    assert images[0:3] == ["card1.png", "card2.png", str(custom_image)]
-    assert all(p == str(back_image) for p in images[3:])
-
-
-def test_main_print_card_back_missing_image_file_errors(tmp_path, capsys: pytest.CaptureFixture) -> None:
-    """--card-back with a non-existent path exits with a clear error."""
-    from mtg_proxies.cli import main
-
-    out_file = tmp_path / "backs.pdf"
-    missing = tmp_path / "no_such_file.png"
-
-    with (
-        patch(
-            "sys.argv", ["mtg-proxies", "print", str(out_file), "--card-back", str(missing)]
-        ),
-        pytest.raises(SystemExit),
-    ):
-        main()
-
-    captured = capsys.readouterr()
-    assert "card back image not found" in captured.err
-
-
-def test_build_duplex_layout_mirrors_back_row_for_long_edge_flip() -> None:
-    """Front at reading-order position 0 must have its back at the mirrored back-sheet position
-    (cards_per_row - 1) — exactly the alignment a long-edge duplex flip requires.
-    """
-    from mtg_proxies.cli import _build_duplex_layout
-
-    fronts = ["F1", "F2", "F3"]
-    backs = ["B1", "B2", "B3"]
-    out = _build_duplex_layout(fronts, backs, filler="BACK", cards_per_row=3, rows_per_sheet=1)
-
-    # 3 fronts + 3 mirrored backs = 6 (single full sheet, no padding needed).
-    assert out == ["F1", "F2", "F3", "B3", "B2", "B1"]
-
-
-def test_build_duplex_layout_pads_partial_last_sheet_with_filler() -> None:
-    """Partial last sheets pad both sides with filler so mirror math stays correct."""
-    from mtg_proxies.cli import _build_duplex_layout
-
-    fronts = ["F1"]
-    backs = ["B1"]
-    out = _build_duplex_layout(fronts, backs, filler="BACK", cards_per_row=3, rows_per_sheet=1)
-
-    # Front row: [F1, BACK, BACK]; back row before mirror: [B1, BACK, BACK]; mirrored: [BACK, BACK, B1]
-    # → F1 at (0,0) on front; its back B1 at (2,0) on back. Duplex-flipped, B1 lands behind F1. ✓
-    assert out == ["F1", "BACK", "BACK", "BACK", "BACK", "B1"]
-
-
-def test_build_duplex_layout_mirrors_each_row_independently_on_multi_row_sheet() -> None:
-    """3×3 sheet: each of the 3 rows is mirrored independently for long-edge duplex flip."""
-    from mtg_proxies.cli import _build_duplex_layout
-
-    fronts = [f"F{i}" for i in range(9)]
-    backs = [f"B{i}" for i in range(9)]
-    out = _build_duplex_layout(fronts, backs, filler="BACK", cards_per_row=3, rows_per_sheet=3)
-
-    assert out[:9] == fronts
-    # Each row reversed: row0 [B0,B1,B2]→[B2,B1,B0], row1 [B3,B4,B5]→[B5,B4,B3], row2 [B6,B7,B8]→[B8,B7,B6]
-    assert out[9:] == ["B2", "B1", "B0", "B5", "B4", "B3", "B8", "B7", "B6"]
-
-
-def test_build_duplex_layout_routes_dfc_back_to_mirrored_position() -> None:
-    """DFC back face routed via the `backs` list lands at the mirrored position so it duplex-pairs
-    with its own front.
-    """
-    from mtg_proxies.cli import _build_duplex_layout
-
-    # Position 0: a DFC (Chalice of Life front, Chalice of Death back).
-    # Positions 1-2: single-faced cards with generic backs.
-    fronts = ["chalice-life", "lightning-bolt", "counterspell"]
-    backs = ["chalice-death", "GENERIC", "GENERIC"]
-    out = _build_duplex_layout(fronts, backs, filler="GENERIC", cards_per_row=3, rows_per_sheet=1)
-
-    # Chalice of Life is at front position (0,0). After mirror, its back should land at back
-    # position (2,0) — which is the last slot of the back row. That slot must be Chalice of Death.
-    assert out == ["chalice-life", "lightning-bolt", "counterspell", "GENERIC", "GENERIC", "chalice-death"]
-
-
-def test_main_print_card_back_duplex_mode_without_fronts_errors(tmp_path, capsys: pytest.CaptureFixture) -> None:
-    """--card-back in duplex mode needs at least one front (decklist or --custom-art) to pair backs with."""
-    from mtg_proxies.cli import main
-
-    out_file = tmp_path / "backs.pdf"
-    back_image = tmp_path / "card_back.png"
-    plt.imsave(back_image, np.zeros((4, 4, 4), dtype=np.uint8))
-
-    with (
-        patch("sys.argv", ["mtg-proxies", "print", str(out_file), "--card-back", str(back_image)]),
-        pytest.raises(SystemExit),
-    ):
-        main()
-
-    captured = capsys.readouterr()
-    assert "requires a decklist or --custom-art" in captured.err
 
 
 def test_main_convert_no_preferred_set_flag_no_reordering(tmp_path) -> None:
@@ -1841,8 +1591,8 @@ def test_normalize_custom_art_images_without_crop_returns_original_paths(tmp_pat
     custom_dir.mkdir()
     first = custom_dir / "a.png"
     second = custom_dir / "b.png"
-    plt.imsave(first, np.zeros((4, 4, 4), dtype=np.uint8))
-    plt.imsave(second, np.zeros((4, 4, 4), dtype=np.uint8))
+    Image.fromarray(np.zeros((4, 4, 4), dtype=np.uint8)).save(first)
+    Image.fromarray(np.zeros((4, 4, 4), dtype=np.uint8)).save(second)
 
     normalized = _normalize_custom_art_images(custom_dir)
 
@@ -2272,7 +2022,7 @@ def test_main_print_upscale_calls_upscale_images(tmp_path) -> None:
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "out.pdf"
-    fake_decklist = object()
+    fake_decklist = Decklist()
     fake_images = ["card.png"]
     fake_flags = [False]
     upscaled = ["card_4x.png"]
@@ -2295,7 +2045,7 @@ def test_main_print_upscale_all_overrides_highres_flags(tmp_path) -> None:
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "out.pdf"
-    fake_decklist = object()
+    fake_decklist = Decklist()
     # All three cards are flagged highres by Scryfall — would normally be skipped.
     fake_images = ["a.png", "b.png", "c.png"]
     fake_flags = [True, True, True]
@@ -2351,7 +2101,7 @@ def test_main_print_upscale_bare_defaults_to_auto(tmp_path) -> None:
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "out.pdf"
-    fake_decklist = object()
+    fake_decklist = Decklist()
     fake_images = ["a.png", "b.png"]
     fake_flags = [False, True]
 
@@ -2374,7 +2124,7 @@ def test_main_print_upscale_model_alone_implies_auto(tmp_path) -> None:
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "out.pdf"
-    fake_decklist = object()
+    fake_decklist = Decklist()
     fake_images = ["a.png", "b.png"]
     fake_flags = [False, True]
 
@@ -2402,7 +2152,7 @@ def test_main_print_upscale_target_width_forwarded(tmp_path) -> None:
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "out.pdf"
-    fake_decklist = object()
+    fake_decklist = Decklist()
     fake_images = ["card.png"]
     fake_flags = [False]
 
@@ -2427,7 +2177,7 @@ def test_main_print_upscale_target_width_default_745(tmp_path) -> None:
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "out.pdf"
-    fake_decklist = object()
+    fake_decklist = Decklist()
     fake_images = ["card.png"]
 
     with (
@@ -2447,7 +2197,7 @@ def test_main_print_no_upscale_does_not_call_upscale_images(tmp_path) -> None:
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "out.pdf"
-    fake_decklist = object()
+    fake_decklist = Decklist()
 
     with (
         patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file)]),
@@ -2567,7 +2317,7 @@ def test_main_print_paper(tmp_path: Path) -> None:
     for flags, expected in cases:
         with (
             patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), *flags]),
-            patch("mtg_proxies.cli.parse_decklist_spec", return_value=object()),
+            patch("mtg_proxies.cli.parse_decklist_spec", return_value=Decklist()),
             patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["a.png"]),
             patch("mtg_proxies.paper.prepare_images", return_value=["a_p.png"]) as mock_p,
             patch("mtg_proxies.cli.print_cards_fpdf") as mock_pdf,
@@ -2600,8 +2350,6 @@ def test_mpcfill_dfc_drops_scryfall_back_face_in_flat_layout() -> None:
 
     assert _mpcfill_front_only(decklist) == {0}
     flat = _build_slot_map(decklist, "all")
-    assert flat[0] == {"front": [("flat", 0)], "back": []}
-    assert flat[1] == {"front": [("flat", 1)], "back": [("flat", 2)]}
-    assert flat[2] == {"front": [("flat", 3)], "back": [("flat", 4)]}
-    # Duplex keeps the back: it prints behind the render on its own sheet.
-    assert _build_slot_map(decklist, "all", duplex=True)[0]["back"] == [("backs", 0)]
+    assert flat[0] == {"front": [0], "back": []}
+    assert flat[1] == {"front": [1], "back": [2]}
+    assert flat[2] == {"front": [3], "back": [4]}

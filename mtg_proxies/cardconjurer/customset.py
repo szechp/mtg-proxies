@@ -20,8 +20,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-# fontTools comes in transitively via matplotlib (already a hard dep) — no
-# additional pyproject entry needed.
 from fontTools.pens.boundsPen import BoundsPen
 from fontTools.pens.svgPathPen import SVGPathPen
 from fontTools.ttLib import TTFont

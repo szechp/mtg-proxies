@@ -100,4 +100,4 @@ def test_is_order_xml(tmp_path: Path) -> None:
     assert is_order_xml(str(xml_file))  # suffix check is case-insensitive
     assert not is_order_xml(str(txt_file))
     assert not is_order_xml(str(tmp_path / "missing.xml"))
-    assert not is_order_xml("manastack:12345")
+    assert not is_order_xml("archidekt:12345")

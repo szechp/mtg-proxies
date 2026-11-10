@@ -852,18 +852,3 @@ def test_render_deck_reports_errors_without_fallback(tmp_path: Path) -> None:
     assert "Gisela" in fallback and "Brazen" not in fallback
     assert "Brazen Borrower,error," in (outdir / "report.csv").read_text()
 
-
-def test_per_card_batch_raises_on_error() -> None:
-    """A #cardconjurer card that cannot be rendered as asked must not quietly use its scan."""
-    import pytest
-
-    from mtg_proxies.cardconjurer.per_card import CardConjurerRenderError, CardConjurerRequest, render_per_card_batch
-
-    request = CardConjurerRequest(slot_id="0001", name="Brazen Borrower", frame="8th")
-    with pytest.raises(CardConjurerRenderError, match="Brazen Borrower: no 8th layout"):
-        render_per_card_batch(
-            [request],
-            cache_root=Path("."),
-            harness_path=Path("."),
-            run_harness=lambda jobs: [{"slot": "0001", "status": "error", "reason": "no 8th layout"}],
-        )

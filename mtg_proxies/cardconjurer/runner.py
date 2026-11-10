@@ -313,7 +313,7 @@ def render_deck(
     fallback_modeline_by_slot: dict[int, str] | None = None,
     post_process: Callable[[Path], None] | None = None,
     filename_prefix_by_slot: dict[int, str] | None = None,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Render a whole decklist via the headless Card Conjurer harness.
 
     Each ``(count, name)`` becomes one job (count is *not* duplicated into
@@ -433,6 +433,7 @@ def render_deck(
     report_rows: list[dict[str, Any]] = []
     ok = skipped = 0
     errors: list[tuple[str, str]] = []
+    pngs: dict[int, list[str]] = {}  # 1-based slot -> [front] or [front, back]
     for i, spec in enumerate(cards):
         count, name = spec[0], spec[1]
         set_code = spec[2] if len(spec) > 2 else None
@@ -454,6 +455,7 @@ def render_deck(
                 shutil.copyfile(src, dst)
             if post_process is not None:
                 post_process(dst)
+            pngs[i + 1] = [str(dst)]
             back_name = ""
             if r.get("out_back"):
                 src_back = Path(r["out_back"])
@@ -463,6 +465,7 @@ def render_deck(
                 if post_process is not None:
                     post_process(dst_back)
                 back_name = dst_back.name
+                pngs[i + 1].append(str(dst_back))
             report_rows.append({
                 "slot": slot_str,
                 "name": name,
@@ -506,7 +509,7 @@ def render_deck(
     (outdir / "fallback.txt").write_text(format_fallback_txt(fallback_rows))
     (outdir / "report.csv").write_text(format_report_csv(report_rows))
 
-    return {"ok": ok, "skipped": skipped, "errors": errors, "total": len(cards)}
+    return {"ok": ok, "skipped": skipped, "errors": errors, "total": len(cards), "pngs": pngs}
 
 
 def format_report_csv(rows: Iterable[ReportRow]) -> str:

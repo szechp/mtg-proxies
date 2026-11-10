@@ -1,6 +1,14 @@
 ## Unreleased
 
+### Changed
+
+- `print --frame STYLE` renders the decklist with Card Conjurer and prints it in one command; `#cardconjurer` modelines in `print` now go through the same engine as the `cardconjurer` subcommand (MTGPics art, art check, split DFCs, `--language`, `--skip`, `--font-size`).
+- `cardconjurer --mix` / `print --frame mix` pick a frame per card; this replaces `scripts/decklist_to_cardconjurer.py`.
+- `print` writes PDFs only.
+
 ### Removed
+
+- Duplex printing (`print --card-back`), PNG/JPG sheet output (`--dpi`), ManaStack decklists.
 
 - `print --normalize`, `--shadow-lift`, `--vignette` and the `#normalize` / `#shadow-lift` / `#no-normalize` / `#no-shadow-lift` modelines (tone passes; `--media` / `--warm` paper preparation is unchanged).
 - `print --card-back-count` (`--card-back` is always duplex now) and `print --custom-art-bleed-crop` (already ignored).

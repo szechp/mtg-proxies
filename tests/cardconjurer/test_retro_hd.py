@@ -72,27 +72,6 @@ def test_build_job_serializes_only_when_set() -> None:
     assert build_job(1, "A", "retro", retro_hd=True)["retro_hd"] is True
 
 
-def test_print_dispatch_passes_retro_hd() -> None:
-    from mtg_proxies.cli import _apply_per_card_modelines
-    from mtg_proxies.decklists.decklist import Card, Decklist
-
-    deck = Decklist([
-        Card(
-            1,
-            {"name": "Example", "layout": "normal", "image_uris": {"normal": "scan.png"}},
-            "#cardconjurer --retro-hd",
-        )
-    ])
-    with patch("mtg_proxies.cardconjurer.per_card.render_per_card_batch", return_value={}) as batch:
-        _apply_per_card_modelines(deck, ["original.png"])
-    request = batch.call_args.args[0][0]
-    assert request.retro_hd is True
-    assert request.frame == "retro"
-
-
-# --- frame build helpers ------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     ("mode", "base", "blend", "expected"),
     [
@@ -215,3 +194,24 @@ def test_available_memory_counts_reclaimable_page_cache() -> None:
     meminfo = "MemTotal:       16000000 kB\nMemFree:         1000000 kB\nMemAvailable:    8000000 kB\n"
     with patch.dict("sys.modules", {"psutil": None}), patch.object(Path, "read_text", return_value=meminfo):
         assert retro_hd._available_memory() == 8000000 * 1024
+
+
+def test_mix_picks_a_frame_per_card_and_leaves_own_modelines_alone(tmp_path: Path) -> None:
+    from mtg_proxies.decklists.decklist import Card, Decklist
+
+    deck = Decklist([
+        Card(1, {"name": "Mono", "layout": "normal", "colors": ["G"], "mana_cost": "{G}"}),
+        Card(1, {"name": "Gold", "layout": "normal", "colors": ["R", "W"], "mana_cost": "{R}{W}"}),
+        Card(1, {"name": "Own", "layout": "normal", "colors": ["G"], "mana_cost": "{G}"}, "#cardconjurer --modern"),
+    ])
+    kwargs = _run_subcommand(tmp_path, deck, "--mix")
+    prepare = kwargs["prepare_each"]
+    assert kwargs["frame"] == "auto"
+    assert (prepare(1)["frame"], prepare(1).get("retro_hd")) == ("retro", True)
+    assert (prepare(2)["frame"], prepare(2).get("retro_hd")) == ("8th", None)
+    assert (prepare(3)["frame"], prepare(3).get("retro_hd")) == ("modern", None)
+
+
+def test_mix_needs_the_retro_hd_frames(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        _run_subcommand(tmp_path, _deck(None), "--mix", built=False)
