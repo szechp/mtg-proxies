@@ -32,8 +32,7 @@ DEFAULT_OUTPUT_SIZE = 3264
 # 0.7 %/edge on a real print. ``--bleed-crop`` overrides it per card for further fine-tuning by eye.
 # Wired at the CLI boundary as the fallback when --bleed-crop is absent.
 DEFAULT_BLEED_CROP_PERCENT = 0.7
-# Bounds for ``bleed_crop_percent`` — matches the long-standing range on the
-# CLI's ``--custom-art-bleed-crop`` flag. Values above ~50 % would crop the
+# Bounds for ``bleed_crop_percent``. Values above ~50 % would crop the
 # entire image away; the bleed package would raise ValueError anyway, but
 # rejecting at the boundary gives a clearer error.
 _MIN_BLEED_CROP_PERCENT = 0.0

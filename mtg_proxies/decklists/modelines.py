@@ -1,7 +1,7 @@
 """Per-card modeline parsing.
 
 A modeline is a trailing ``#verb [--flag value]…`` segment on a decklist line that
-selectively applies a transformation (mpcfill, upscale, normalize, shadow-lift) to a
+selectively applies a transformation (mpcfill, upscale, cardconjurer) to a
 single card. Multiple segments may stack, separated by whitespace-then-``#``.
 
 The decklist parser captures the raw modeline text on each ``Card`` so it round-trips
@@ -108,14 +108,9 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         # can swap the model for problematic cards (e.g. anime_6B for halftone-print scans).
         "--upscale-model": _path_str,
     },
-    "normalize": {},
-    "shadow-lift": {},
-    # Opt-out verbs — exclude this card from a globally-enabled pass. Mirror of
-    # ``#upscale`` / ``#normalize`` / ``#shadow-lift``: those add for a single card when
-    # the global flag is off; these subtract for a single card when the global flag is on.
+    # Opt-out verb — exclude this card from the globally-enabled upscale pass. Mirror of
+    # ``#upscale``, which adds a single card when the global flag is off.
     "no-upscale": {},
-    "no-normalize": {},
-    "no-shadow-lift": {},
     # ``#cardconjurer`` — render this single card via the headless Card Conjurer engine
     # (the ``cardconjurer`` subcommand also does the whole deck). Mutually-exclusive frame
     # selectors ``--8th`` / ``--modern`` / ``--m15-8th`` / ``--retro`` pick the style (retro =
@@ -192,10 +187,6 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     },
 }
 
-# Old verb spellings, rewritten to their current name on parse so existing decklists keep working.
-VERB_ALIASES: dict[str, str] = {"cardconjourer": "cardconjurer"}
-
-
 @dataclass(slots=True)
 class Directive:
     """One parsed modeline directive: a verb plus validated flag values."""
@@ -225,7 +216,7 @@ def split_modeline_trailer(line: str) -> tuple[str, str]:
         return line, ""
     trailer_raw = m.group(1)
     first_segment = _split_segments(trailer_raw.lstrip())
-    if not first_segment or VERB_ALIASES.get(verb := first_segment[0].split()[0], verb) not in VERB_REGISTRY:
+    if not first_segment or first_segment[0].split()[0] not in VERB_REGISTRY:
         return line, ""
     return line[: m.start()], trailer_raw
 
@@ -268,7 +259,7 @@ def parse_modeline_trailer(trailer: str) -> tuple[list[Directive], list[ParseWar
             continue
         if not tokens:
             continue
-        verb = VERB_ALIASES.get(tokens[0], tokens[0])
+        verb = tokens[0]
         if verb not in VERB_REGISTRY:
             warnings.append(ParseWarning("WARNING", f"Unknown modeline verb '#{verb}'; dropping segment."))
             continue

@@ -584,9 +584,9 @@ def test_modeline_parse_mpcfill_identifier_rejects_garbage() -> None:
 def test_modeline_parse_stacked_verbs() -> None:
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
-    directives, warnings = parse_modeline_trailer("#upscale #normalize #shadow-lift")
+    directives, warnings = parse_modeline_trailer("#upscale #no-upscale #mpcfill")
 
-    assert [d.verb for d in directives] == ["upscale", "normalize", "shadow-lift"]
+    assert [d.verb for d in directives] == ["upscale", "no-upscale", "mpcfill"]
     assert all(d.flags == {} for d in directives)
     assert warnings == []
 
@@ -726,18 +726,6 @@ def test_modeline_parse_cardconjurer_modern() -> None:
 
     assert len(directives) == 1
     assert directives[0].flags == {"--modern": True}
-    assert warnings == []
-
-
-def test_modeline_old_cardconjourer_spelling_still_parses() -> None:
-    """The pre-rename `#cardconjourer` verb still splits off and parses as `cardconjurer`."""
-    from mtg_proxies.decklists.modelines import parse_modeline_trailer, split_modeline_trailer
-
-    main, trailer = split_modeline_trailer("1 Murder #cardconjourer --modern")
-    directives, warnings = parse_modeline_trailer(trailer)
-
-    assert main == "1 Murder"
-    assert [(d.verb, d.flags) for d in directives] == [("cardconjurer", {"--modern": True})]
     assert warnings == []
 
 
@@ -1268,12 +1256,12 @@ def test_parse_decklist_url_line_with_modeline_keeps_trailer(monkeypatch: pytest
     ("trailer", "expected"),
     [
         (" #vignette --strength 0.5", "unknown modeline verb '#vignette'"),
-        (" #normalize --lift 6", "unknown flag '--lift'"),
-        (" #shadow-lift --amount 0.5", "unknown flag '--amount'"),
+        (" #normalize --lift 6", "unknown modeline verb '#normalize'"),
+        (" #shadow-lift --amount 0.5", "unknown modeline verb '#shadow-lift'"),
     ],
 )
 def test_modeline_rejects_removed_per_card_tuning(trailer: str, expected: str) -> None:
-    """These were parsed but never applied; they now warn instead of silently doing nothing."""
+    """The tone passes are gone; their modelines warn instead of silently doing nothing."""
     from mtg_proxies.decklists.modelines import parse_modeline_trailer
 
     directives, warnings = parse_modeline_trailer(trailer)

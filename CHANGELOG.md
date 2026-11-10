@@ -1,5 +1,12 @@
 ## Unreleased
 
+### Removed
+
+- `print --normalize`, `--shadow-lift`, `--vignette` and the `#normalize` / `#shadow-lift` / `#no-normalize` / `#no-shadow-lift` modelines (tone passes; `--media` / `--warm` paper preparation is unchanged).
+- `print --card-back-count` (`--card-back` is always duplex now) and `print --custom-art-bleed-crop` (already ignored).
+- The `cardconjourer` spelling of the `cardconjurer` subcommand and `#cardconjurer` modeline.
+- The `cube` subcommand, `swapfinder.py` and `commander_finder.py`: they live in commander-doctor now.
+
 ### Feat
 
 - feat: `#mpcfill --retro` modeline option now hybrid-filters candidates: source-name keywords first (`retro`, `old border`, `1993`, `1997`, `classic`, `vintage`), then a **visual classifier fallback** that detects the retro type-bar signature directly in candidate thumbnails. Pure numpy/PIL — no model load, ~10 ms per thumbnail. Algorithm: crop the type-bar zone (55-85 % from top, side-inset 10 % to exclude the card's rim), binarize at luminance ≤ 40, score = longest horizontal run of dark pixels / row width. A clear type bar yields ≥ 0.7, modern gradient bottoms yield ≈ 0. Catches contributors whose source name doesn't advertise "retro" but whose render is structurally retro. Falls back to the full candidate set when both stages empty.

@@ -59,7 +59,7 @@ def test_main(capsys: pytest.CaptureFixture) -> None:
 
     # Check output
     captured = capsys.readouterr()
-    assert "{print,convert,tokens,deck_value,cube,cardconjurer}" in captured.out
+    assert "{print,convert,tokens,deck_value,cardconjurer}" in captured.out
     assert "Prepare a decklist for printing" in captured.out
     assert "Convert a decklist to text or arena format" in captured.out
     assert "Append the created tokens to a decklist" in captured.out
@@ -77,7 +77,6 @@ def test_main_print_help_mentions_flags(capsys: pytest.CaptureFixture) -> None:
     # MR6: --art-preference was removed from print (it lives in convert now).
     assert "--art-preference" not in captured.out
     assert "--custom-art FOLDER" in captured.out
-    assert "--custom-art-bleed-crop PERCENT" in captured.out
 
 
 def test_main_convert_help_mentions_basic_lands(capsys: pytest.CaptureFixture) -> None:
@@ -472,8 +471,6 @@ def test_main_print_custom_art_appends_supported_image_extensions(tmp_path) -> N
                 "print",
                 "--custom-art",
                 str(custom_dir),
-                "--custom-art-bleed-crop",
-                "0",
                 str(out_file),
             ],
         ),
@@ -512,8 +509,6 @@ def test_main_print_custom_art_excludes_pipeline_cache_artifacts(tmp_path) -> No
                 "print",
                 "--custom-art",
                 str(custom_dir),
-                "--custom-art-bleed-crop",
-                "0",
                 str(out_file),
             ],
         ),
@@ -551,8 +546,6 @@ def test_main_print_custom_art_extends_decklist_images(tmp_path) -> None:
                 str(out_file),
                 "--custom-art",
                 str(custom_dir),
-                "--custom-art-bleed-crop",
-                "0",
             ],
         ),
         patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
@@ -593,7 +586,7 @@ def test_main_print_requires_decklist_or_custom_art(tmp_path, capsys: pytest.Cap
         main()
 
     captured = capsys.readouterr()
-    assert "Error: must provide either a decklist, --custom-art folder, or --card-back PATH" in captured.err
+    assert "Error: must provide either a decklist or a --custom-art folder" in captured.err
 
 
 def test_main_print_custom_art_empty_folder_warns_and_continues_with_decklist(
@@ -711,29 +704,8 @@ def test_main_convert_preferred_set_moves_fallback_cards_to_bottom(tmp_path) -> 
     assert ltr_pos < comment_pos < fallback_pos
 
 
-def test_main_print_card_back_explicit_count(tmp_path) -> None:
-    """--card-back-count N overrides the auto-count and appends exactly N back images."""
-    from mtg_proxies.cli import main
-
-    out_file = tmp_path / "backs.pdf"
-    back_image = tmp_path / "card_back.png"
-    plt.imsave(back_image, np.zeros((4, 4, 4), dtype=np.uint8))
-
-    with (
-        patch(
-            "sys.argv",
-            ["mtg-proxies", "print", str(out_file), "--card-back", str(back_image), "--card-back-count", "3"],
-        ),
-        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
-    ):
-        main()
-
-    print_cards_fpdf.assert_called_once()
-    assert print_cards_fpdf.call_args.args[0] == [str(back_image)] * 3
-
-
 def test_main_print_card_back_duplex_mode_pairs_decklist_fronts(tmp_path) -> None:
-    """--card-back without --card-back-count enables duplex mode: each front gets a paired back.
+    """--card-back enables duplex mode: each front gets a paired back.
 
     The renderer receives alternating sheets of fronts then mirrored backs. With 3 decklist
     cards on an A4 3×3 grid (9-per-sheet), the single sheet is padded to 9 with the card_back.
@@ -791,8 +763,6 @@ def test_main_print_card_back_duplex_mode_pairs_custom_art(tmp_path) -> None:
                 str(out_file),
                 "--custom-art",
                 str(custom_dir),
-                "--custom-art-bleed-crop",
-                "0",
                 "--card-back",
                 str(back_image),
             ],
@@ -836,8 +806,6 @@ def test_main_print_card_back_duplex_mode_pairs_decklist_plus_custom_art(tmp_pat
                 str(out_file),
                 "--custom-art",
                 str(custom_dir),
-                "--custom-art-bleed-crop",
-                "0",
                 "--card-back",
                 str(back_image),
             ],
@@ -868,7 +836,7 @@ def test_main_print_card_back_missing_image_file_errors(tmp_path, capsys: pytest
 
     with (
         patch(
-            "sys.argv", ["mtg-proxies", "print", str(out_file), "--card-back", str(missing), "--card-back-count", "3"]
+            "sys.argv", ["mtg-proxies", "print", str(out_file), "--card-back", str(missing)]
         ),
         pytest.raises(SystemExit),
     ):
@@ -1867,24 +1835,6 @@ def test_generate_basic_lands_decklist_wild_varies_across_rng_seeds() -> None:
     assert ids_one != ids_two
 
 
-def test_normalize_custom_art_images_crops_symmetrically(tmp_path) -> None:
-    from mtg_proxies.cli import _normalize_custom_art_images
-
-    custom_dir = tmp_path / "art"
-    out_dir = tmp_path / "normalized"
-    custom_dir.mkdir()
-    out_dir.mkdir()
-    image_path = custom_dir / "art.png"
-    image = np.arange(6 * 8 * 4, dtype=np.uint8).reshape(6, 8, 4)
-    plt.imsave(image_path, image)
-
-    normalized = _normalize_custom_art_images(custom_dir, bleed_crop_percent=25, output_dir=out_dir)
-
-    assert normalized == [str(out_dir / "art.png")]
-    cropped = plt.imread(normalized[0])
-    assert cropped.shape[:2] == (2, 4)
-
-
 def test_normalize_custom_art_images_without_crop_returns_original_paths(tmp_path) -> None:
     from mtg_proxies.cli import _normalize_custom_art_images
 
@@ -1898,29 +1848,6 @@ def test_normalize_custom_art_images_without_crop_returns_original_paths(tmp_pat
     normalized = _normalize_custom_art_images(custom_dir)
 
     assert normalized == [str(first), str(second)]
-
-
-def test_main_print_custom_art_bleed_crop_ignored_with_warning(tmp_path, capsys: pytest.CaptureFixture) -> None:
-    """--custom-art-bleed-crop is now ignored (print owns the bleed); a non-zero value warns, no error."""
-    from mtg_proxies.cli import main
-
-    out_file = tmp_path / "custom.pdf"
-    custom_dir = tmp_path / "art"
-    custom_dir.mkdir()
-    image_path = custom_dir / "art.png"
-    plt.imsave(image_path, np.zeros((4, 4, 4), dtype=np.uint8))
-
-    # A previously-illegal value (50) no longer errors — it's just ignored with a warning, so the
-    # custom art is passed to print untouched (no double-counted bleed / zoomed card).
-    with patch(
-        "sys.argv",
-        ["mtg-proxies", "print", "--custom-art", str(custom_dir), "--custom-art-bleed-crop", "50", str(out_file)],
-    ):
-        main()
-
-    captured = capsys.readouterr()
-    assert "ignoring --custom-art-bleed-crop" in captured.err
-    assert out_file.exists()
 
 
 def test_generate_basic_lands_decklist_standard_excludes_borderless_basics() -> None:
@@ -2443,130 +2370,6 @@ def test_main_print_upscale_bare_defaults_to_auto(tmp_path) -> None:
     mock_upscale.assert_called_once_with(fake_images, highres_flags=[False, True], model_path=None, target_width=745)
 
 
-# ---------------------------------------------------------------------------
-# parse_kv_opts + --vignette flag collapse (MR5)
-# ---------------------------------------------------------------------------
-
-
-def test_parse_kv_opts_empty_returns_defaults() -> None:
-    from mtg_proxies.cli import parse_kv_opts
-
-    schema = {"strength": float, "edge": float}
-    assert parse_kv_opts([], schema) == {}
-
-
-def test_parse_kv_opts_valid_tokens_parsed_via_schema() -> None:
-    from mtg_proxies.cli import parse_kv_opts
-
-    schema = {"strength": float, "edge": float, "max-black": float}
-    parsed = parse_kv_opts(["strength=0.8", "edge=0.04", "max-black=30"], schema)
-    assert parsed == {"strength": 0.8, "edge": 0.04, "max-black": 30.0}
-
-
-def test_parse_kv_opts_unknown_key_exits() -> None:
-    from mtg_proxies.cli import parse_kv_opts
-
-    with pytest.raises(SystemExit):
-        parse_kv_opts(["nonsense=1"], {"strength": float})
-
-
-def test_parse_kv_opts_malformed_token_exits() -> None:
-    from mtg_proxies.cli import parse_kv_opts
-
-    with pytest.raises(SystemExit):
-        parse_kv_opts(["strength"], {"strength": float})  # no '='
-
-
-def test_parse_kv_opts_invalid_value_type_exits() -> None:
-    from mtg_proxies.cli import parse_kv_opts
-
-    with pytest.raises(SystemExit):
-        parse_kv_opts(["strength=not-a-number"], {"strength": float})
-
-
-def test_main_print_vignette_bare_uses_defaults(tmp_path) -> None:
-    """`--vignette` with no values calls darken_borders_to_black with all defaults (1.0/0.05/40)."""
-    from mtg_proxies.cli import main
-
-    out_file = tmp_path / "out.pdf"
-
-    with (
-        patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), "--vignette"]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=object()),
-        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["a.png"]),
-        patch("mtg_proxies.black_vignette.darken_borders_to_black", return_value=["a.png"]) as mock_v,
-        patch("mtg_proxies.cli.print_cards_fpdf"),
-    ):
-        main()
-
-    mock_v.assert_called_once()
-    kw = mock_v.call_args.kwargs
-    assert kw["strength"] == pytest.approx(1.0)
-    assert kw["edge_fraction"] == pytest.approx(0.05)
-    assert kw["max_black_threshold"] == pytest.approx(40.0)
-
-
-def test_main_print_vignette_key_value_overrides_flow_through(tmp_path) -> None:
-    from mtg_proxies.cli import main
-
-    out_file = tmp_path / "out.pdf"
-
-    with (
-        patch(
-            "sys.argv",
-            [
-                "mtg-proxies", "print", "decklist.txt", str(out_file),
-                "--vignette", "strength=0.8", "edge=0.04", "max-black=30",
-            ],
-        ),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=object()),
-        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["a.png"]),
-        patch("mtg_proxies.black_vignette.darken_borders_to_black", return_value=["a.png"]) as mock_v,
-        patch("mtg_proxies.cli.print_cards_fpdf"),
-    ):
-        main()
-
-    kw = mock_v.call_args.kwargs
-    assert kw["strength"] == pytest.approx(0.8)
-    assert kw["edge_fraction"] == pytest.approx(0.04)
-    assert kw["max_black_threshold"] == pytest.approx(30.0)
-
-
-def test_main_print_vignette_absent_no_call(tmp_path) -> None:
-    from mtg_proxies.cli import main
-
-    out_file = tmp_path / "out.pdf"
-
-    with (
-        patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file)]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=object()),
-        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["a.png"]),
-        patch("mtg_proxies.black_vignette.darken_borders_to_black") as mock_v,
-        patch("mtg_proxies.cli.print_cards_fpdf"),
-    ):
-        main()
-
-    mock_v.assert_not_called()
-
-
-def test_main_print_vignette_unknown_key_exits(tmp_path) -> None:
-    from mtg_proxies.cli import main
-
-    out_file = tmp_path / "out.pdf"
-
-    with (
-        patch(
-            "sys.argv",
-            ["mtg-proxies", "print", "decklist.txt", str(out_file), "--vignette", "nope=1"],
-        ),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=object()),
-        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["a.png"]),
-        patch("mtg_proxies.cli.print_cards_fpdf"),
-        pytest.raises(SystemExit),
-    ):
-        main()
-
-
 def test_main_print_upscale_model_alone_implies_auto(tmp_path) -> None:
     """`--upscale-model PATH` without `--upscale` enables auto-scope upscale with that model."""
     from mtg_proxies.cli import main
@@ -2593,163 +2396,6 @@ def test_main_print_upscale_model_alone_implies_auto(tmp_path) -> None:
     assert mock_upscale.call_args.kwargs["model_path"] == "/tmp/m.pth"
     # Auto scope → flagged paths unchanged.
     assert mock_upscale.call_args.kwargs["highres_flags"] == [False, True]
-
-
-def test_main_print_no_upscale_modeline_survives_normalize_and_shadow_lift(tmp_path) -> None:
-    """Regression: ``#no-upscale`` must skip a card from bulk upscale.
-
-    Pipeline order is upscale → normalize → shadow-lift, so by the time bulk upscale runs
-    the paths are still the original Scryfall ones — but the skip-set logic must still
-    correctly opt the modelined card out of the bulk model.
-    """
-    from mtg_proxies.cli import main
-    from mtg_proxies.decklists.decklist import Card, Decklist
-
-    out_file = tmp_path / "out.pdf"
-
-    # Two cards: one carrying #no-upscale, one without.
-    cards = [
-        Card(
-            count=1,
-            card={
-                "id": "a",
-                "name": "A",
-                "set": "x",
-                "collector_number": "1",
-                "layout": "normal",
-                "image_uris": {"png": "a"},
-            },
-            modeline="",
-        ),
-        Card(
-            count=1,
-            card={
-                "id": "b",
-                "name": "B",
-                "set": "x",
-                "collector_number": "2",
-                "layout": "normal",
-                "image_uris": {"png": "b"},
-            },
-            modeline=" #no-upscale",
-        ),
-    ]
-    decklist = Decklist()
-    decklist.entries.extend(cards)
-
-    fetched_paths = ["a.png", "b.png"]
-    fetched_flags = [False, False]
-    # Bulk upscale runs first under the new order — paths are still the original Scryfall
-    # ones when the bulk upscaler is invoked. normalize and shadow-lift run after.
-    fake_normalize = MagicMock(side_effect=lambda paths, **kw: [f"{p}_norm" for p in paths])
-    fake_shadow_lift = MagicMock(side_effect=lambda paths, **kw: [f"{p}_shadow" for p in paths])
-    fake_upscale = MagicMock(side_effect=lambda paths, highres_flags, **kw: list(paths))
-
-    with (
-        patch(
-            "sys.argv",
-            [
-                "mtg-proxies",
-                "print",
-                "decklist.txt",
-                str(out_file),
-                "--normalize",
-                "--shadow-lift",
-                "--upscale",
-                "all",
-            ],
-        ),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
-        patch("mtg_proxies.cli.fetch_scans_scryfall_flagged", return_value=(fetched_paths, fetched_flags)),
-        patch("mtg_proxies.normalize.normalize_images", fake_normalize),
-        patch("mtg_proxies.shadow_lift.lift_shadows_images", fake_shadow_lift),
-        patch("mtg_proxies.upscale.upscale_images", fake_upscale),
-        patch("mtg_proxies.cli.print_cards_fpdf"),
-    ):
-        main()
-
-    # Bulk upscale receives the original Scryfall paths (it runs first). The #no-upscale
-    # modeline must cause the upscaler to receive highres=True for that slot.
-    fake_upscale.assert_called_once()
-    upscaled_paths = fake_upscale.call_args.args[0]
-    upscaled_flags = fake_upscale.call_args.kwargs["highres_flags"]
-    flag_by_path = dict(zip(upscaled_paths, upscaled_flags, strict=True))
-    # Card A: not modelined → goes through the model (flag False)
-    assert flag_by_path["a.png"] is False
-    # Card B: #no-upscale → skipped by the model (flag True)
-    assert flag_by_path["b.png"] is True
-
-
-def test_main_print_pipeline_order_is_upscale_then_normalize_then_shadow_lift(tmp_path) -> None:
-    """Lock the dispatch order so a future refactor can't silently swap it.
-
-    Why this order: iterative tuning of normalize / shadow-lift / black-vignette params
-    must not re-trigger the slow 4x upscale pass. Running upscale first means the
-    upscale output is cached once and the tone passes operate on it cheaply.
-    """
-    from mtg_proxies.cli import main
-    from mtg_proxies.decklists.decklist import Card, Decklist
-
-    out_file = tmp_path / "out.pdf"
-    decklist = Decklist()
-    decklist.entries.append(
-        Card(
-            count=1,
-            card={
-                "id": "a",
-                "name": "A",
-                "set": "x",
-                "collector_number": "1",
-                "layout": "normal",
-                "image_uris": {"png": "a"},
-            },
-            modeline="",
-        )
-    )
-    fetched_paths = ["card.png"]
-    fetched_flags = [False]
-
-    call_order: list[str] = []
-
-    def _record(name: str, suffix: str):  # noqa: ANN202
-        def _fake(paths, **_kw):  # noqa: ANN001, ANN202
-            call_order.append(name)
-            return [f"{p}_{suffix}" for p in paths]
-
-        return _fake
-
-    fake_upscale = MagicMock(side_effect=_record("upscale", "4x"))
-    fake_normalize = MagicMock(side_effect=_record("normalize", "norm"))
-    fake_shadow = MagicMock(side_effect=_record("shadow", "sh"))
-
-    with (
-        patch(
-            "sys.argv",
-            [
-                "mtg-proxies",
-                "print",
-                "decklist.txt",
-                str(out_file),
-                "--upscale",
-                "--normalize",
-                "--shadow-lift",
-            ],
-        ),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
-        patch("mtg_proxies.cli.fetch_scans_scryfall_flagged", return_value=(fetched_paths, fetched_flags)),
-        patch("mtg_proxies.upscale.upscale_images", fake_upscale),
-        patch("mtg_proxies.normalize.normalize_images", fake_normalize),
-        patch("mtg_proxies.shadow_lift.lift_shadows_images", fake_shadow),
-        patch("mtg_proxies.cli.print_cards_fpdf"),
-    ):
-        main()
-
-    assert call_order == ["upscale", "normalize", "shadow"], (
-        f"Pipeline order regressed; expected upscale → normalize → shadow-lift, got {call_order}"
-    )
-    # Confirm chaining: each later pass received the previous pass's output.
-    assert fake_normalize.call_args.args[0] == ["card.png_4x"]
-    assert fake_shadow.call_args.args[0] == ["card.png_4x_norm"]
 
 
 def test_main_print_upscale_target_width_forwarded(tmp_path) -> None:
@@ -2904,80 +2550,6 @@ def test_has_any_localized_field_false_when_all_fields_empty() -> None:
 
     assert _has_any_localized_field({"printed_name": "", "printed_type_line": None}) is False
     assert _has_any_localized_field({"card_faces": [{"printed_name": ""}, {}]}) is False
-
-
-def test_main_cube_owned_not_found_exits_cleanly(capsys: pytest.CaptureFixture) -> None:
-    from mtg_proxies.cli import main
-
-    with (
-        patch("sys.argv", ["mtg-proxies", "cube", "--sets", "ecl", "--owned", "/no/such/file.txt"]),
-        pytest.raises(SystemExit),
-    ):
-        main()
-
-    assert "owned decklist not found" in capsys.readouterr().err
-
-
-def test_main_cube_rejects_nonpositive_target(capsys: pytest.CaptureFixture) -> None:
-    from mtg_proxies.cli import main
-
-    with (
-        patch("sys.argv", ["mtg-proxies", "cube", "--sets", "ecl", "--target", "0"]),
-        pytest.raises(SystemExit),
-    ):
-        main()
-
-    assert "--target must be positive" in capsys.readouterr().err
-
-
-def test_main_cube_no_17lands_skips_ratings_fetch(tmp_path: Path) -> None:
-    from mtg_proxies.cli import main
-
-    out_file = tmp_path / "cube.csv"
-
-    with (
-        patch("sys.argv", ["mtg-proxies", "cube", "--sets", "ecl", "--no-17lands", "--out", str(out_file)]),
-        patch("mtg_proxies.cli.fetch_set_cards", return_value=[]) as fetch_set_cards,
-        patch("mtg_proxies.cli.fetch_17lands_ratings") as fetch_17lands_ratings,
-        patch("mtg_proxies.cli.build_cube", return_value=([], {})) as build_cube,
-        patch("mtg_proxies.cli.write_cube_csv") as write_cube_csv,
-    ):
-        main()
-
-    fetch_set_cards.assert_called_once_with(["ecl"])
-    fetch_17lands_ratings.assert_not_called()
-    build_cube.assert_called_once_with([], {}, target=360, keep_lands=False)  # empty lands_ratings passed through
-    write_cube_csv.assert_called_once_with(str(out_file), [], {}, {}, archetypes=None)
-
-
-def test_main_cube_merges_ratings_first_set_wins_on_name_collision(tmp_path: Path) -> None:
-    """Same card name rated in two --sets: the first set's row must not be clobbered."""
-    from mtg_proxies.cli import main
-
-    out_file = tmp_path / "cube.csv"
-    shared_card = {
-        "name": "Shared Card",
-        "type_line": "Creature — Human",
-        "oracle_text": "",
-        "colors": [],
-        "keywords": [],
-        "set": "ecl",
-        "rarity": "common",
-    }
-    first_set_rating = {"shared card": {"ever_drawn_win_rate": 0.6, "ever_drawn_game_count": 500, "avg_seen": 2.0}}
-    second_set_rating = {"shared card": {"ever_drawn_win_rate": 0.4, "ever_drawn_game_count": 500, "avg_seen": 5.0}}
-
-    with (
-        patch("sys.argv", ["mtg-proxies", "cube", "--sets", "ecl", "eoe", "--out", str(out_file)]),
-        patch("mtg_proxies.cli.fetch_set_cards", return_value=[shared_card]),
-        patch("mtg_proxies.cli.fetch_17lands_ratings", side_effect=[first_set_rating, second_set_rating]),
-        patch("mtg_proxies.cli.build_cube", return_value=([shared_card], {})) as build_cube,
-        patch("mtg_proxies.cli.write_cube_csv"),
-    ):
-        main()
-
-    merged_ratings = build_cube.call_args.args[1]
-    assert merged_ratings["shared card"]["ever_drawn_win_rate"] == pytest.approx(0.6)
 
 
 def test_main_print_paper(tmp_path: Path) -> None:

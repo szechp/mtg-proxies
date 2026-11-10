@@ -154,16 +154,6 @@ mtg-proxies print deck.txt out.pdf --upscale --upscale-target-width 480
 mtg-proxies print deck.txt out.pdf --upscale --upscale-target-width 1500
 ```
 
-**Pipeline order** when you combine the post-processing flags: `--upscale` → `--normalize` → `--shadow-lift` → `--vignette` → composite. Upscale runs first so that iteratively tuning the tone passes doesn't re-trigger the slow 4× pass; the upscaler is cached once, the tone passes operate on it cheaply. `--vignette` is last (before the optional `--background` composite), so its edge fraction is interpreted on the final-resolution image. The cache file names include each step's parameters, so changing any of them invalidates only what's downstream.
-
-**Fix gray card rims:** Scryfall scans often render the outer black border at luminance 15-30 instead of pure #000. With `--background black` and `--border_crop 0` this shows up as a visible gray halo around each card on the page. `--vignette` pulls those rim pixels to true black without touching the art or white-bordered cards. Bare `--vignette` uses the safe defaults (strength=1.0, edge=0.05, max-black=40); tune with `key=value` tokens:
-
-```bash
-mtg-proxies print deck.txt out.pdf --vignette                          # defaults
-mtg-proxies print deck.txt out.pdf --vignette strength=0.8 edge=0.04   # gentler pull, narrower band
-mtg-proxies print deck.txt out.pdf --vignette max-black=60             # affects lighter rim pixels
-```
-
 **Choose art style (convert only):**
 
 ```bash
@@ -231,9 +221,6 @@ mtg-proxies print decklist.txt output.pdf --card-back card_back.png
 
 # Works with custom art too, with or without a decklist:
 mtg-proxies print output.pdf --custom-art ./my-art/ --card-back card_back.png
-
-# Legacy, no duplex: just append N copies of the back after the fronts.
-mtg-proxies print backs.pdf --card-back card_back.png --card-back-count 9
 ```
 
 `--card-back` takes any PNG/JPG path. Double-faced cards get their real back face; every other
@@ -322,7 +309,6 @@ treatment to that one card. Several verbs can stack on one line:
 1 Caves of Koilos (DRC) 148  #mpcfill --identifier 1nUk_jZc6JtMxr-WrFlqHO5MGNkAS--XS --scaled
 1 Birds of Paradise (RVR) 133 #upscale
 1 Exploration (DMR) 339      #cardconjurer --retro-scaled
-4 Mountain (RVR) 271         #normalize #shadow-lift
 1 Sol Ring (C21) 263         #no-upscale
 ```
 
@@ -347,14 +333,9 @@ Rules:
 | `#cardconjurer` | see [table below](#cardconjurer-flags) | Render this card with the headless Card Conjurer engine instead of using the Scryfall scan. |
 | `#print` | `--language LANG` | Use the real scanned print of this card in language `LANG` (e.g. `de`) instead of the English scan. If no such print exists, the normal scan is used. The `cardconjurer` subcommand writes this into its `fallback.txt` for cards whose translation it can't render. |
 | `#upscale` | `--upscale-model PATH` | Run this card through Real-ESRGAN. Bare `#upscale` does nothing extra when `--upscale` is already on deck-wide. With `--upscale-model` it always runs, using that model, even under `--upscale all`. |
-| `#normalize` | — | Run auto-levels on this card. No-op when `--normalize` is on deck-wide. |
-| `#shadow-lift` | — | Lift crushed shadows on this card. No-op when `--shadow-lift` is on deck-wide. |
 | `#no-upscale` | — | Exclude this card from the deck-wide `--upscale`. |
-| `#no-normalize` | — | Exclude this card from the deck-wide `--normalize`. |
-| `#no-shadow-lift` | — | Exclude this card from the deck-wide `--shadow-lift`. |
 
-Only `print` acts on `#mpcfill`, `#print`, `#upscale`, `#normalize`, `#shadow-lift` and the
-`#no-*` verbs. The `cardconjurer` subcommand reads `#cardconjurer` only.
+Only `print` acts on `#mpcfill`, `#print`, `#upscale` and `#no-upscale`. The `cardconjurer` subcommand reads `#cardconjurer` only.
 
 ### `#cardconjurer` flags
 
@@ -457,18 +438,13 @@ and adds no detail the source doesn't have; it only keeps the enlargement step h
 | `--faces all\|front\|back` | `all` | Which DFC faces to print. |
 | `--split-pages N` | off | Start a new PDF file every N pages. |
 | `--custom-art FOLDER` | — | Append every `.png` in FOLDER, sorted, after the decklist cards. Expects Card Conjurer / MPCFill renders with bleed. |
-| `--custom-art-bleed-crop PCT` | `0` | Legacy. Renders' bleed is now placed exactly by the print step, so a non-zero value is ignored with a note. |
 | `--scaled` | off | Grow the frame of every MPCFill render (sticker workflow). |
 | `--upscale [auto\|all]` | off | Real-ESRGAN upscaling: `auto` (bare flag) = cards Scryfall marks lowres, `all` = every card. |
 | `--upscale-model PATH` | RealESRNet_x4plus | Any ESRGAN-compatible `.pth`; implies `--upscale auto`. |
 | `--upscale-target-width PX` | `745` | Downsample upscaled cards to this width. |
-| `--normalize` | off | Per-card auto-levels. |
-| `--shadow-lift` | off | Lift crushed shadow detail in dark art. |
-| `--vignette [k=v …]` | off | Pull near-black rim pixels to true black. Keys: `strength` (1.0), `edge` (0.05), `max-black` (40). |
 | `--warm STRENGTH` | from `--media` | Override the cream card-stock tint of `--media` (glossy 1.5, matte 1; `0` = no tint). |
 | `--media glossy\|matte\|none` | `glossy` | Prepare the cards for the paper so proxies look like real cards: glossy gets a cream card-stock tint and +10 % saturation; matte gets the tint, +6 % saturation and deeper shadows (print it with the driver's matte media setting, `lp -o MediaType=PMMATT_HIGH`). `none` leaves the images as they are, e.g. when printing from another computer. |
 | `--card-back PATH` | — | Duplex layout: alternating front sheets and mirrored back sheets for long-edge flip. DFCs get their real back face. |
-| `--card-back-count N` | — | Legacy: append N copies of `--card-back` instead of duplex sheets. |
 
 ### convert
 
@@ -576,23 +552,6 @@ partial, sparse git clone of a pinned commit, ~50 MB) by `make cardconjurer` or
 `python scripts/setup.py --cardconjurer-only`. On a fresh checkout `make install` does the
 clone, the harness's `npm install` and `uv sync` in one go.
 
-### cube
-
-`mtg-proxies cube --sets SET … [options]` — score a set's cards for a draft cube (tribal/keyword
-synergy plus 17lands GIH win rate and ALSA) and write the top `--target` cards to CSV.
-
-| Flag | Default | Description |
-|---|---|---|
-| `--sets SET …` | required | Scryfall set code(s), e.g. `ecl eoe`. |
-| `--target N` | `360` | Cube size. |
-| `--out PATH` | `cube.csv` | Output CSV. |
-| `--txt-out PATH` | — | Also write the cube as a decklist ready for `print`. |
-| `--format FORMAT` | `PremierDraft` | 17lands draft format. |
-| `--no-17lands` | off | Score on the synergy heuristic alone. |
-| `--owned PATH` | — | Only consider cards in this owned-collection decklist. |
-| `--archetypes PATH` | — | JSON archetype skeleton (color pair → name, tags); scores only those lanes. |
-| `--keep-lands` | off | Exempt lands from the archetype/lane-fit cut. |
-
 ### deck_value
 
 `mtg-proxies deck_value DECKLIST [--lump-threshold F]` — chart the deck's value by card. Cards
@@ -608,8 +567,6 @@ docstring.
 | Script | Purpose |
 |---|---|
 | `scripts/mpc_xml_to_decklist.py` | MPC Autofill `order.xml` → decklist with `#mpcfill` lines ([above](#mpc-autofill-orders)). |
-| `swapfinder.py` | Offline functional-substitute suggester for cube building from a bulk collection. Needs `uv sync --extra swaps`. |
-| `commander_finder.py` | Ranks commanders you're closest to building from a bulk collection (EDHREC data). Needs `uv sync --extra swaps`. |
 
 ## Acknowledgements
 

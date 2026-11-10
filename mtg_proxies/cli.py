@@ -9,7 +9,6 @@ import re
 import sys
 import tempfile
 from collections.abc import Callable, Container
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Literal, NoReturn, Self, cast
 
@@ -18,16 +17,6 @@ import requests
 
 import mtg_proxies.scryfall as scryfall
 from mtg_proxies import fetch_scans_scryfall, print_cards_fpdf, print_cards_matplotlib
-from mtg_proxies.cube_builder import (
-    build_cube,
-    derive_archetype_lanes,
-    fetch_17lands_ratings,
-    fetch_set_cards,
-    load_archetype_config,
-    load_owned_cards,
-    write_cube_csv,
-    write_cube_txt,
-)
 from mtg_proxies.deck_value import show_deck_value
 from mtg_proxies.decklists import archidekt, manastack, parse_decklist
 from mtg_proxies.decklists.decklist import Card, Comment, Decklist
@@ -40,12 +29,6 @@ from mtg_proxies.tokens import get_tokens
 
 _mpcfill_log = logging.getLogger("mtg_proxies.mpcfill.cli")
 
-# 0 by default: cardconjurer / MPCFill custom-art renders carry a known bleed margin that the
-# print step itself handles (placed exactly at 63x88, bleed into the gap on negative crop / the
-# margin stripped on positive crop). Pre-trimming here as well double-counts the bleed and zooms
-# the card, so custom art is passed to print untouched. The flag is kept for the rare hand-made
-# image but is otherwise unused — a non-zero value is ignored with a warning.
-DEFAULT_CUSTOM_ART_BLEED_CROP_PERCENT = 0.0
 BASIC_LAND_NAMES = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
 # Prepended to the output filename of legendary cards rendered by `cardconjurer`.
 LEGENDARY_FILENAME_PREFIX = "legendary_"
@@ -87,11 +70,7 @@ def _warn(msg: str) -> None:
 
 
 def _float_in_range(lo: float, hi: float) -> Callable[[str], float]:
-    """Build a parser that accepts a float in ``[lo, hi]``; raises ValueError otherwise.
-
-    Mirrors the same-named helper in ``decklists.modelines`` so ``parse_kv_opts``
-    can share validation semantics with the per-card modeline registry.
-    """
+    """Build an argparse ``type=`` parser that accepts a float in ``[lo, hi]``; raises ValueError otherwise."""
 
     def _check(s: str) -> float:
         v = float(s)
@@ -100,32 +79,6 @@ def _float_in_range(lo: float, hi: float) -> Callable[[str], float]:
         return v
 
     return _check
-
-
-def parse_kv_opts(tokens: list[str], schema: dict[str, Callable[[str], Any]]) -> dict[str, Any]:
-    """Parse ``key=value`` CLI tokens against a schema; SystemExit on any error.
-
-    Used by flags like ``--vignette`` that take optional ``key=value`` configuration
-    bundles. Empty token list returns an empty dict (caller uses its own defaults).
-    Unknown keys, malformed tokens, and values the validator rejects all hard-exit
-    with a clear message — this is a top-level CLI arg, so fail loud rather than
-    warn-and-drop the way modelines do.
-    """
-    if not tokens:
-        return {}
-    parsed: dict[str, Any] = {}
-    allowed = ", ".join(sorted(schema))
-    for tok in tokens:
-        if "=" not in tok:
-            _die(f"Error: expected key=value, got {tok!r}. Allowed keys: {allowed}.")
-        key, raw = tok.split("=", 1)
-        if key not in schema:
-            _die(f"Error: unknown key {key!r}. Allowed keys: {allowed}.")
-        try:
-            parsed[key] = schema[key](raw)
-        except (ValueError, TypeError) as exc:
-            _die(f"Error: invalid value for {key}: {exc}.")
-    return parsed
 
 
 def resolve_upscale_scope(args: argparse.Namespace) -> Literal["auto", "all"] | None:
@@ -533,73 +486,29 @@ def papersize(string: str) -> np.ndarray:
 
 
 # Suffixes that indicate a pipeline-stage derivative file, NOT a user-supplied source
-# image. Used by ``_normalize_custom_art_images`` to exclude cached intermediates from
-# the next run's ``--custom-art FOLDER`` ingestion — otherwise the folder gradually
-# accumulates ``_norm``, ``_shadow``, ``_bg``, etc. variants that look like new cards.
+# image: pipeline stages write their caches alongside their source, and re-running with
+# ``--custom-art`` pointing at such a folder would otherwise ingest them as new cards.
 #
 # Add a matching alternation entry when introducing a new pipeline stage. Current set:
-#   ``_norm`` / ``_norm_cp<lift>``  — normalize.py (output: ``_norm_l<lift>``; cp form is legacy)
-#   ``_shadow`` / ``_shadow_a<a>``  — shadow_lift.py
+#   ``_norm…`` / ``_shadow…``       — the removed --normalize / --shadow-lift passes (old caches)
 #   ``_bg<RGB>``                    — composite.py (e.g. ``_bg000000128``)
 #   ``_crop<N>``                    — print_cards.py per-card layout crop cache
 #   ``_bleed<pct>``                 — bleed.py
 #   ``_paper_w<w>_s<s>_g<g>``       — paper.py
-# NOTE: black_vignette.py (``_bv<…>``) is NOT yet in this list — its outputs would be
-# re-ingested on the next ``--custom-art`` pass. Add when the renderer is updated to
-# emit user-visible bv-suffixed caches.
 _PIPELINE_CACHE_SUFFIX_RE = re.compile(
     r"(_norm(_cp[\d.eE+-]+)?|_shadow(_a[\d.eE+-]+)?|_bg\d{9}|_crop\d+|_bleed[\d.]+|_paper_w[\d.]+_s[\d.]+_g[\d.]+)$"
 )
 
 
-def _normalize_custom_art_images(
-    custom_folder: Path, bleed_crop_percent: float = 0.0, output_dir: Path | None = None
-) -> list[str]:
-    # Pipeline stages (normalize/shadow_lift/composite) write derivative caches alongside
-    # their source. Re-running with --custom-art pointing at a folder that already contains
-    # those artifacts would otherwise ingest them as new cards.
-    images = sorted(
-        p
+def _normalize_custom_art_images(custom_folder: Path) -> list[str]:
+    """Return the images in a ``--custom-art`` folder, sorted, without cached pipeline derivatives."""
+    return sorted(
+        str(p)
         for p in custom_folder.iterdir()
         if p.is_file()
         and p.suffix.lower() in (".png", ".jpg", ".jpeg")
         and not _PIPELINE_CACHE_SUFFIX_RE.search(p.stem)
     )
-    if bleed_crop_percent == 0:
-        return [str(path) for path in images]
-
-    if output_dir is None:
-        raise ValueError("output_dir must be provided when custom art bleed crop is non-zero")
-
-    from tqdm import tqdm
-
-    from mtg_proxies.bleed import crop_bleed
-
-    # crop_bleed is a tight PIL open → crop → save loop, embarrassingly parallel.
-    # Serially over a 100-card custom-art folder it was the silent stall after
-    # "Fetching artwork: 100%" (no tqdm, no log) that made the print command
-    # look hung. Show a progress bar and run a few in parallel so users see
-    # movement and finish faster on multi-card decks.
-    pairs = [(src, output_dir / f"{src.stem}.png") for src in images]
-
-    def _one(src: Path, dst: Path) -> tuple[Path, str | None]:
-        try:
-            crop_bleed(src, dst, bleed_crop_percent)
-        except ValueError as exc:
-            return src, str(exc)
-        return src, None
-
-    with ThreadPoolExecutor(max_workers=4) as pool, tqdm(
-        total=len(pairs), desc="Cropping custom art bleed", unit="img"
-    ) as bar:
-        futures = [pool.submit(_one, src, dst) for src, dst in pairs]
-        for fut in as_completed(futures):
-            src, err = fut.result()
-            if err is not None:
-                raise ValueError(f"Custom art bleed crop too large for '{src}': {err}")
-            bar.update(1)
-
-    return [str(dst) for _src, dst in pairs]
 
 
 # Slot identifier: (list_name, idx_within_list). ``list_name`` keys into the ``target_lists``
@@ -1068,17 +977,9 @@ def _apply_per_card_modelines(
     backs: list[str] | None = None,
     faces: Literal["all", "front", "back"] = "all",
     duplex: bool = False,
-    user_supplied: set[str] | None = None,
-    skip_normalize: set[str] | None = None,
-    skip_shadow_lift: set[str] | None = None,
     skip_upscale: set[str] | None = None,
     bleed_renders: set[str] | None = None,
-    global_upscale: bool = False,  # unused: see _apply_per_card_upscale_modelines
-    global_normalize: bool = False,
-    global_shadow_lift: bool = False,
     global_mpc_scaled: bool = False,
-    upscale_model: Path | None = None,  # unused
-    upscale_target_width: int | None = None,  # unused
     cache_root: Path | None = None,
     session: requests.Session | None = None,
 ) -> list[str]:
@@ -1090,31 +991,20 @@ def _apply_per_card_modelines(
     Duplex mode (``duplex=True``): ``image_paths`` is the ``fronts`` list and ``backs`` is
     the parallel ``backs`` list — both produced by ``fetch_scans_paired``.
 
-    Pass 1 — source selection (``#mpcfill`` / ``#cardconjurer`` / ``#print --language``): swap
-    the front-face slot(s) of each flagged card for the requested render or scan. In non-duplex
+    Source selection (``#mpcfill`` / ``#cardconjurer`` / ``#print --language``): swap the
+    front-face slot(s) of each flagged card for the requested render or scan. In non-duplex
     mode a DFC carrying ``#mpcfill`` has no back slot at all (see ``_mpcfill_front_only``); in
     duplex its back slot keeps the Scryfall back face. Single-faced cards in duplex mode have
     empty back-slot lists, so the user-supplied generic card-back stays untouched.
     ``#mpcfill --scaled`` (or ``global_mpc_scaled``, from ``print --scaled``) swaps in a
     frame-grown copy of the render; one with no measurable frame stays as-is.
 
-    Pass 2 — per-card transforms (``#normalize`` / ``#shadow-lift``): when the corresponding
-    global flag is OFF, run the batch transform on the flagged cards only. Paths in
-    ``user_supplied`` (e.g. the generic card-back) are skipped. ``#no-normalize`` /
-    ``#no-shadow-lift`` / ``#no-upscale`` record the card's current paths in the caller's skip
-    sets, which the globally-enabled bulk passes honor.
-
-    Per-card ``#upscale`` intentionally runs OUTSIDE this helper — see
-    ``_apply_per_card_upscale_modelines``. It must execute AFTER the bulk normalize and
-    shadow-lift passes so the upscaler sees a cleanly toned input (consistent with the global
-    pipeline order). Doing it here would feed un-normalized art to the model AND cause the bulk
-    upscale to redundantly re-run on the already-upscaled output because the
-    post-normalize+shadow-lift path no longer matches ``skip_upscale``.
+    ``#no-upscale`` records the card's current paths in ``skip_upscale``, which the bulk upscale
+    pass honors. Per-card ``#upscale`` itself runs later: see ``_apply_per_card_upscale_modelines``.
     """
     if not any(card.modeline for card in decklist.cards):
         return image_paths
 
-    user_supplied = user_supplied or set()
     slots = _ModelineSlots.build(decklist, image_paths, backs, faces, duplex, log_warnings=True)
 
     def mark_bleed_render(path: str) -> None:
@@ -1122,45 +1012,22 @@ def _apply_per_card_modelines(
 
         It carries the same MPC bleed as ``--custom-art`` renders, so it must be scaled the same
         way at print time (recorded in ``bleed_renders`` → print's ``bleed_images``). It's also a
-        finished render, so it skips every bulk transform — that keeps its path stable so the
+        finished render, so it skips the bulk upscale — that keeps its path stable so the
         ``bleed_renders`` entry still matches the image handed to print.
         """
-        for s in (bleed_renders, skip_normalize, skip_shadow_lift, skip_upscale):
+        for s in (bleed_renders, skip_upscale):
             if s is not None:
                 s.add(path)
 
-    # Pass 1: source selection.
     _apply_mpcfill_modelines(
         slots, mark_bleed_render, global_scaled=global_mpc_scaled, cache_root=cache_root, session=session
     )
     _apply_cardconjurer_modelines(slots, mark_bleed_render)
     _apply_language_modelines(slots)
 
-    # Opt-outs: collect the affected slots' *current* paths into the caller-provided skip sets.
-    for verb, skip_set in (
-        ("no-normalize", skip_normalize),
-        ("no-shadow-lift", skip_shadow_lift),
-        ("no-upscale", skip_upscale),
-    ):
-        if skip_set is not None:
-            for card_idx in slots.cards_with_verb(verb):
-                skip_set.update(slots.paths(slots.all_slots(card_idx)))
-
-    # Pass 2: per-card transforms (additive subset; no-ops when the global flag is on).
-    # Order mirrors the bulk pipeline: normalize → shadow-lift.
-    def slots_with(verb: str) -> list[SlotKey]:
-        return [slot for card_idx in slots.cards_with_verb(verb) for slot in slots.all_slots(card_idx)]
-
-    if not global_normalize and (normalize_slots := slots_with("normalize")):
-        from mtg_proxies.normalize import normalize_images
-
-        slots.transform(normalize_slots, lambda paths: normalize_images(paths), user_supplied)
-
-    if not global_shadow_lift and (shadow_lift_slots := slots_with("shadow-lift")):
-        from mtg_proxies.shadow_lift import lift_shadows_images
-
-        slots.transform(shadow_lift_slots, lambda paths: lift_shadows_images(paths), user_supplied)
-
+    if skip_upscale is not None:
+        for card_idx in slots.cards_with_verb("no-upscale"):
+            skip_upscale.update(slots.paths(slots.all_slots(card_idx)))
     return image_paths
 
 
@@ -1177,7 +1044,7 @@ def _apply_per_card_upscale_modelines(
     upscale_model: Path | None = None,
     upscale_target_width: int | None = None,
 ) -> None:
-    """Apply per-card upscale directives. Runs BEFORE the bulk upscale + tone passes.
+    """Apply per-card upscale directives. Runs BEFORE the bulk upscale pass.
 
     Two effects:
 
@@ -1191,8 +1058,7 @@ def _apply_per_card_upscale_modelines(
 
     Called from the print dispatch immediately before the bulk upscale pass, so the
     per-card output is the same as what the bulk pass would do — just with a different
-    model (or with no global flag involved at all). Tone passes (normalize / shadow-lift /
-    black-vignette) run after both upscale paths.
+    model (or with no global flag involved at all).
     """
     if not any(card.modeline for card in decklist.cards):
         return
@@ -2402,18 +2268,6 @@ def _add_print_parser(subparsers: argparse._SubParsersAction) -> None:
         metavar="FOLDER",
     )
     print_parser.add_argument(
-        "--custom-art-bleed-crop",
-        help=(
-            "percent to trim from each edge of custom art images before printing"
-            " (default: %(default)s). Negative values pad outward with black instead"
-            " of cropping — useful when an image has too little bleed and you've set"
-            " --border_crop large enough to absorb the extra padding."
-        ),
-        type=float,
-        default=DEFAULT_CUSTOM_ART_BLEED_CROP_PERCENT,
-        metavar="PERCENT",
-    )
-    print_parser.add_argument(
         "--scaled",
         action="store_true",
         default=False,
@@ -2465,41 +2319,6 @@ def _add_print_parser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     print_parser.add_argument(
-        "--normalize",
-        action="store_true",
-        default=False,
-        help=(
-            "per-card auto-levels (Photoshop Auto-Color style): clip 0.5%% extremes per channel"
-            " and stretch the remaining range to [0, 255]. Each card is normalized on its own,"
-            " no reference. Reduces washed-out scans without forcing the batch to look uniform."
-            " Cached as {path}_norm.png."
-        ),
-    )
-    print_parser.add_argument(
-        "--shadow-lift",
-        action="store_true",
-        default=False,
-        help=(
-            "selectively lift shadow detail in dark art so printers don't smear it into a flat"
-            " black blob. Only applies to cards whose art region has both dark pixels AND local"
-            " detail; flat-black cards and bright-art cards are left untouched. The base black"
-            " level (lum < 5) is preserved exactly — lift kicks in above it. Borders, frames,"
-            " and text boxes stay intact (the lift is masked to the art rectangle)."
-        ),
-    )
-    print_parser.add_argument(
-        "--vignette",
-        nargs="*",
-        default=None,
-        metavar="KEY=VALUE",
-        help=(
-            "pull near-black edge pixels to true #000. Bare --vignette uses defaults. "
-            "Tune with key=value tokens: strength (0..1, default 1.0), "
-            "edge (0..1, default 0.05), max-black (0..255, default 40). "
-            "E.g. --vignette strength=0.8 edge=0.04"
-        ),
-    )
-    print_parser.add_argument(
         "--media",
         choices=["glossy", "matte", "none"],
         default="glossy",
@@ -2528,17 +2347,7 @@ def _add_print_parser(subparsers: argparse._SubParsersAction) -> None:
         help=(
             "path to a card back image; enables duplex layout (alternating sheets of fronts then "
             "mirrored backs for long-edge duplex printing). DFCs use their actual back face; all "
-            "other cards use this image. Pass --card-back-count for the legacy non-duplex behavior."
-        ),
-    )
-    print_parser.add_argument(
-        "--card-back-count",
-        type=int,
-        default=None,
-        metavar="N",
-        help=(
-            "legacy: append N copies of the --card-back image after the front images (no duplex "
-            "interleaving). Setting this disables duplex mode."
+            "other cards use this image."
         ),
     )
 
@@ -2671,54 +2480,6 @@ def _add_deck_value_parser(subparsers: argparse._SubParsersAction) -> None:
         type=float,
         default=0.03,
         metavar="FLOAT",
-    )
-
-
-def _add_cube_parser(subparsers: argparse._SubParsersAction) -> None:
-    cube_parser = subparsers.add_parser(
-        "cube",
-        help="Build a draft cube CSV from Scryfall set(s), scored by tribal synergy + 17lands data",
-        description=(
-            "Score a Scryfall set's cards for cube construction using a tribal/keyword synergy"
-            " heuristic plus 17lands draft performance data (GIH win rate, ALSA), then write the"
-            " top --target cards to a CSV."
-        ),
-    )
-    cube_parser.add_argument("--sets", nargs="+", required=True, help="Scryfall set code(s), e.g. ecl eoe")
-    cube_parser.add_argument("--target", type=int, default=360, help="cube size (default: %(default)s)")
-    cube_parser.add_argument("--out", default="cube.csv", help="output CSV path (default: %(default)s)")
-    cube_parser.add_argument(
-        "--txt-out",
-        default=None,
-        metavar="PATH",
-        help="also write the cube as a decklist (1 Name (SET) NUMBER per line) ready for"
-        " `mtg-proxies print`",
-    )
-    cube_parser.add_argument("--format", default="PremierDraft", help="17lands draft format (default: %(default)s)")
-    cube_parser.add_argument(
-        "--no-17lands", action="store_true", help="skip 17lands entirely; score on the tribal heuristic alone"
-    )
-    cube_parser.add_argument(
-        "--owned",
-        default=None,
-        metavar="PATH",
-        help="path to a text/Arena decklist of owned cards; restricts candidates to the"
-        " intersection of the fetched set(s) and this collection before scoring",
-    )
-    cube_parser.add_argument(
-        "--archetypes",
-        default=None,
-        metavar="PATH",
-        help="path to a JSON archetype skeleton (color pair -> {name, tags}, e.g. from a WotC"
-        " limited-archetype guide); restricts scoring to exactly these curated lanes instead of"
-        " every auto-derived Scryfall tag",
-    )
-    cube_parser.add_argument(
-        "--keep-lands",
-        action="store_true",
-        help="exempt lands from the archetype/lane-fit cut -- mana fixing (shocklands, etc.) is"
-        " infrastructure, not archetype identity, so it can otherwise get dropped under"
-        " --archetypes for not carrying any curated archetype tag",
     )
 
 
@@ -2921,17 +2682,12 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_convert_parser(subparsers)
     _add_tokens_parser(subparsers)
     _add_deck_value_parser(subparsers)
-    _add_cube_parser(subparsers)
     _add_cardconjurer_parser(subparsers)
     return parser
 
 
 def _validate_print_args(args: argparse.Namespace, upscale_scope: str | None) -> None:
     """Exit with a message when the ``print`` flags contradict each other."""
-    if args.card_back is None and args.card_back_count is not None:
-        _die("Error: --card-back-count requires --card-back PATH")
-    if args.card_back_count is not None and args.card_back_count <= 0:
-        _die(f"Error: --card-back-count must be positive (got {args.card_back_count})")
     if upscale_scope is not None and not args.decklist:
         _die("Error: --upscale requires a decklist (it operates on Scryfall scans)")
     if args.split_pages is not None and args.split_pages <= 0:
@@ -2948,15 +2704,6 @@ def _load_custom_art(args: argparse.Namespace) -> list[str]:
     if not custom_folder.exists():
         _die(f"Error: custom art folder '{args.custom_art}' does not exist")
 
-    # Custom art (cardconjurer / MPCFill renders) carries a known bleed that the print
-    # step places exactly (63x88 + bleed into the gap). Pass it raw — pre-trimming here
-    # would double-count the bleed and zoom the card into the cut area.
-    if args.custom_art_bleed_crop != 0:
-        _warn(
-            f"Note: ignoring --custom-art-bleed-crop {args.custom_art_bleed_crop}; the print "
-            "step now handles the bleed automatically (card placed at 63x88, bleed into the "
-            "inter-card gap). Trimming it here too would zoom the card past the cut marks."
-        )
     try:
         custom_images = _normalize_custom_art_images(custom_folder)
     except ValueError as exc:
@@ -2964,21 +2711,6 @@ def _load_custom_art(args: argparse.Namespace) -> list[str]:
     if not custom_images:
         _warn(f"Warning: no PNG files found in '{args.custom_art}'")
     return custom_images
-
-
-def _remap_skip_set(before: list[str], after: list[str], *skip_sets: set[str]) -> None:
-    """Update ``skip_sets`` so entries pointing at ``before[i]`` now point at ``after[i]``.
-
-    Each bulk image pass may rewrite paths (e.g. ``card.png`` becomes ``card_4x_w<w>_m<hash>.png``),
-    so a DOWNSTREAM skip set still keyed on the old path would stop matching.
-    """
-    for old, new in zip(before, after, strict=True):
-        if old == new:
-            continue
-        for s in skip_sets:
-            if old in s:
-                s.discard(old)
-                s.add(new)
 
 
 def _background_rgb(color: str) -> np.ndarray:
@@ -3038,16 +2770,16 @@ def _render_sheets(args: argparse.Namespace, images: list[str], bleed_images: se
 
 
 def _cmd_print(args: argparse.Namespace) -> None:
-    """Run the ``print`` subcommand: collect the card images, run the image passes, write the sheets."""
+    """Run the ``print`` subcommand: collect the card images, upscale them, write the sheets."""
     upscale_scope = resolve_upscale_scope(args)
     _validate_print_args(args, upscale_scope)
 
-    # Duplex mode is triggered by --card-back PATH alone (without --card-back-count).
-    # In duplex mode the renderer outputs alternating sheets of fronts and (mirrored) backs
-    # so a long-edge duplex flip lines each card's back up with its front. DFCs use their
-    # own back face; all other cards (single-faced + custom art) use the supplied card_back.
-    # Duplex collects ``fronts`` / ``backs`` (+ their highres flags); non-duplex one flat ``images``.
-    duplex_mode = args.card_back is not None and args.card_back_count is None
+    # Duplex mode (--card-back PATH): the renderer outputs alternating sheets of fronts and
+    # (mirrored) backs so a long-edge duplex flip lines each card's back up with its front.
+    # DFCs use their own back face; all other cards (single-faced + custom art) use the
+    # supplied card back. Duplex collects ``fronts`` / ``backs`` (+ their highres flags);
+    # non-duplex one flat ``images``.
+    duplex_mode = args.card_back is not None
     images: list[str] = []
     highres_flags: list[bool] = []
     fronts: list[str] = []
@@ -3055,13 +2787,11 @@ def _cmd_print(args: argparse.Namespace) -> None:
     front_flags: list[bool] = []
     back_flags: list[bool] = []
 
-    # Per-card modeline opt-out skip sets, filled by ``_apply_per_card_modelines``.
-    skip_normalize: set[str] = set()
-    skip_shadow_lift: set[str] = set()
+    # Paths the bulk upscale must leave alone: ``#no-upscale`` cards and modeline renders.
     skip_upscale: set[str] = set()
     # Paths of mpcfill/cardconjurer renders — they carry the MPC bleed and must be placed like
     # --custom-art (scaled, bleed into the gap), so they're unioned into both ``user_supplied``
-    # (skip composite/transforms) and the print step's ``bleed_images``.
+    # (skip upscale/composite) and the print step's ``bleed_images``.
     bleed_renders: set[str] = set()
     decklist = None
     has_modelines = False
@@ -3104,27 +2834,17 @@ def _cmd_print(args: argparse.Namespace) -> None:
         else:
             images = fetch_scans_scryfall(decklist, faces=args.faces, front_only=front_only)
 
-        # Per-card #verb modelines (#mpcfill / #cardconjurer / #normalize / #shadow-lift, plus
-        # #no-* opt-outs). Runs BEFORE the bulk transform passes so swapped images flow through
-        # them naturally. The helper populates the skip sets in place; the bulk passes union
-        # them with ``user_supplied`` to drop the affected cards from each global transform.
+        # Per-card #verb modelines (#mpcfill / #cardconjurer / #print --language, plus
+        # #no-upscale). Runs BEFORE the bulk upscale so swapped images are in place for it.
         has_modelines = isinstance(decklist, Decklist) and any(card.modeline for card in decklist.cards)
         if has_modelines:
             result = _apply_per_card_modelines(
                 decklist,
                 fronts if duplex_mode else images,
                 **modeline_target,
-                user_supplied={args.card_back} if args.card_back is not None else set(),
-                skip_normalize=skip_normalize,
-                skip_shadow_lift=skip_shadow_lift,
                 skip_upscale=skip_upscale,
                 bleed_renders=bleed_renders,
-                global_upscale=upscale_scope is not None,
-                global_normalize=bool(args.normalize),
-                global_shadow_lift=bool(args.shadow_lift),
                 global_mpc_scaled=args.scaled,
-                upscale_model=args.upscale_model,
-                upscale_target_width=args.upscale_target_width,
             )
             if not duplex_mode:
                 images = result
@@ -3158,45 +2878,25 @@ def _cmd_print(args: argparse.Namespace) -> None:
         # padding cells, which print as the card back, are never upscaled).
         image_flags = _build_duplex_layout(front_flags, back_flags, True, cards_per_row, rows_per_sheet)
     else:
-        if args.card_back is not None:
-            # Non-duplex card-back: legacy "append N backs at the end" behavior.
-            n_backs = args.card_back_count if args.card_back_count is not None else len(images)
-            if n_backs == 0:
-                print("Error: --card-back without --card-back-count requires front images (decklist or --custom-art)")
-                raise SystemExit(1)
-            images.extend([args.card_back] * n_backs)
-        # Decklist slots use the Scryfall flags collected earlier (if any); custom art and the
-        # appended card-back copies are user-supplied → highres=True so upscale skips them.
+        # Decklist slots use the Scryfall flags collected earlier (if any); custom art is
+        # user-supplied → highres=True so upscale skips it.
         image_flags = list(highres_flags) if args.decklist and upscale_scope is not None else []
         image_flags.extend([True] * (len(images) - len(image_flags)))
 
     if not images:
-        _die("Error: must provide either a decklist, --custom-art folder, or --card-back PATH")
+        _die("Error: must provide either a decklist or a --custom-art folder")
 
-    # Custom art and card-back images are user-supplied and assumed pristine — they
-    # shouldn't be touched by the auto-correct passes. Decklist scans (Scryfall) get
-    # the full normalize/shadow_lift/upscale treatment. mpcfill/cardconjurer modeline
-    # renders are final, bleed-carrying images: they skip the bulk transforms + the
-    # background composite too, so their paths stay stable for bleed_images.
+    # Custom art, the card back and mpcfill/cardconjurer modeline renders are final images:
+    # they skip the upscale and the background composite, so their paths stay stable for
+    # bleed_images. Decklist scans (Scryfall) get the full treatment.
     user_supplied = set(custom_images) | bleed_renders
     if args.card_back is not None:
         user_supplied.add(args.card_back)
-
-    # Order: upscale → normalize → shadow-lift → black-vignette → composite.
-    # Upscale runs first so iterative tuning of normalize / shadow-lift /
-    # black-vignette parameters doesn't re-trigger the slow 4× pass. The
-    # AI upscaler doesn't care much about tone (it sharpens edges and structure,
-    # not luminance), so doing tone fixes on the upscaled output costs a small
-    # amount of extra per-pixel work but avoids re-upscaling every time you
-    # tweak a tone knob. Each pass skips ``user_supplied`` plus the cards carrying
-    # its ``#no-<verb>`` modeline; after every pass that may rewrite paths, the
-    # downstream skip sets are remapped (see ``_remap_skip_set``).
 
     # Per-card upscale modelines (#upscale --upscale-model PATH overrides + bare
     # #upscale subset). Each override writes its already-upscaled output into its
     # slot and records the new path in ``skip_upscale`` so the bulk pass skips it.
     if has_modelines:
-        before = list(images)
         _apply_per_card_upscale_modelines(
             decklist,
             fronts if duplex_mode else images,
@@ -3207,7 +2907,6 @@ def _cmd_print(args: argparse.Namespace) -> None:
             upscale_model=args.upscale_model,
             upscale_target_width=args.upscale_target_width,
         )
-        _remap_skip_set(before, images, skip_normalize, skip_shadow_lift)
 
     if args.decklist and upscale_scope is not None:
         from mtg_proxies.upscale import upscale_images
@@ -3217,7 +2916,6 @@ def _cmd_print(args: argparse.Namespace) -> None:
         # ``#upscale --upscale-model PATH`` overrides (already upscaled above).
         upscale_skip = user_supplied | skip_upscale
         force_all = upscale_scope == "all"
-        before = list(images)
         images = upscale_images(
             images,
             highres_flags=[
@@ -3226,41 +2924,6 @@ def _cmd_print(args: argparse.Namespace) -> None:
             ],
             model_path=args.upscale_model,
             target_width=args.upscale_target_width,
-        )
-        _remap_skip_set(before, images, skip_normalize, skip_shadow_lift)
-
-    if args.normalize:
-        from mtg_proxies.normalize import normalize_images
-
-        before = list(images)
-        images = normalize_images(images, skip_paths=user_supplied | skip_normalize)
-        _remap_skip_set(before, images, skip_shadow_lift)
-
-    if args.shadow_lift:
-        from mtg_proxies.shadow_lift import lift_shadows_images
-
-        images = lift_shadows_images(images, skip_paths=user_supplied | skip_shadow_lift)
-
-    # Vignette pass: pulls near-black pixels near the card rim to true #000.
-    # Runs on the final-resolution image (edge fraction is geometrically meaningful)
-    # and BEFORE composite (operates on RGBA, preserving alpha for the corner flatten).
-    if args.vignette is not None:
-        from mtg_proxies.black_vignette import darken_borders_to_black
-
-        vignette_opts = parse_kv_opts(
-            args.vignette,
-            {
-                "strength": _float_in_range(0.0, 1.0),
-                "edge": _float_in_range(0.0, 1.0),
-                "max-black": _float_in_range(0.0, 255.0),
-            },
-        )
-        images = darken_borders_to_black(
-            images,
-            strength=vignette_opts.get("strength", 1.0),
-            edge_fraction=vignette_opts.get("edge", 0.05),
-            max_black_threshold=vignette_opts.get("max-black", 40.0),
-            skip_paths=user_supplied,
         )
 
     # Pre-flatten RGBA cards against the chosen background color: fpdf2 composites alpha
@@ -3500,81 +3163,9 @@ def _cmd_deck_value(args: argparse.Namespace) -> None:
     show_deck_value(decklist, lump_threshold=args.lump_threshold)
 
 
-def _cmd_cube(args: argparse.Namespace) -> None:
-    """Run the ``cube`` subcommand: score set cards for a draft cube and write the top picks."""
-    if args.owned is not None and not Path(args.owned).is_file():
-        _die(f"Error: owned decklist not found: {args.owned}")
-    if args.archetypes is not None and not Path(args.archetypes).is_file():
-        _die(f"Error: archetype config not found: {args.archetypes}")
-    if args.target <= 0:
-        _die(f"Error: --target must be positive (got {args.target})")
-
-    print(f"Fetching cards from Scryfall for sets: {args.sets}")
-    cube_cards = fetch_set_cards(args.sets)
-    print(f"Fetched {len(cube_cards)} non-basic-land cards")
-
-    if args.owned is not None:
-        owned_names = {scryfall.canonic_card_name(c["name"]) for c in load_owned_cards(args.owned)}
-        cube_cards = [c for c in cube_cards if scryfall.canonic_card_name(c["name"]) in owned_names]
-        print(f"Restricted to {len(cube_cards)} cards owned per {args.owned}")
-
-    lands_ratings: dict[str, dict] = {}
-    if not args.no_17lands:
-        for set_code in args.sets:
-            print(f"Fetching 17lands ratings for {set_code.upper()}...")
-            ratings = fetch_17lands_ratings(set_code.upper(), fmt=args.format)
-            if not ratings:
-                print(
-                    f"  Warning: no 17lands data for {set_code.upper()}"
-                    " (unreachable, or set not on Arena); continuing with lane-fit-only scoring."
-                )
-            # A card name shared by two requested sets keeps the first set's rating --
-            # rows are per-set/per-format, so blending them would misattribute one
-            # printing's win rate/ALSA to the other.
-            for name, row in ratings.items():
-                lands_ratings.setdefault(name, row)
-        matched = sum(1 for c in cube_cards if scryfall.canonic_card_name(c["name"]) in lands_ratings)
-        print(f"Matched 17lands data for {matched} / {len(cube_cards)} cards")
-
-    archetypes = None
-    if args.archetypes is not None:
-        archetypes = load_archetype_config(args.archetypes)
-        archetype_lanes = derive_archetype_lanes(cube_cards, archetypes)
-        selected, lanes = build_cube(
-            cube_cards, lands_ratings, target=args.target, lanes=archetype_lanes, keep_lands=args.keep_lands
-        )
-        print(f"\nRestricted to {len(archetypes)} official archetypes from {args.archetypes}:")
-        for pair, arche in archetypes.items():
-            print(f"  {pair}: {arche['name']}")
-    else:
-        selected, lanes = build_cube(
-            cube_cards, lands_ratings, target=args.target, keep_lands=args.keep_lands
-        )
-        print(f"\nDerived {len(lanes)} archetype lanes (Scryfall function tags + tribes + keywords)")
-        print("Top lanes (by representation):")
-        for lane_name in sorted(lanes, key=lanes.get)[:10]:
-            label = lane_name.split(":", 1)[-1].replace("-", " ").title()
-            print(f"  {label}")
-
-    print(
-        f"\n{len(selected)} of {len(cube_cards)} cards fit an archetype lane"
-        f" (capped at --target {args.target})"
-    )
-
-    write_cube_csv(args.out, selected, lanes, lands_ratings, archetypes=archetypes)
-    print(f"\nWrote {len(selected)} cards to {Path(args.out).resolve()}")
-
-    if args.txt_out is not None:
-        write_cube_txt(args.txt_out, selected)
-        print(f"Wrote {len(selected)} cards to {Path(args.txt_out).resolve()}")
-
-
 def main() -> None:
     """Run mtg-proxies CLI."""
-    argv = sys.argv[1:]
-    if argv[:1] == ["cardconjourer"]:  # pre-rename misspelling: still runs, but stays out of --help
-        argv[0] = "cardconjurer"
-    args = _build_parser().parse_args(argv)
+    args = _build_parser().parse_args()
 
     match args.command:
         case "print":
@@ -3585,7 +3176,5 @@ def main() -> None:
             _cmd_tokens(args)
         case "deck_value":
             _cmd_deck_value(args)
-        case "cube":
-            _cmd_cube(args)
         case "cardconjurer":
             _run_cardconjurer(args)

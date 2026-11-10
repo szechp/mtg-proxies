@@ -349,7 +349,7 @@ def print_cards_fpdf(
             spills into the gap; on positive/zero crop the exact per-axis margin is stripped
             (``_strip_cc_margin``) so the card places pixel-identically to a no-bleed scan, with no
             aspect stretch. Plain scans (not listed) are never scaled or stripped. These renders
-            must be passed raw (``--custom-art-bleed-crop 0``) so the strip math is correct.
+            must be passed raw (untrimmed) so the strip math is correct.
         target_dpi: Upsample every card below this resolution (at its placed size) before
             embedding it; see ``PDF_TARGET_DPI``. ``None`` embeds sources as-is.
     """

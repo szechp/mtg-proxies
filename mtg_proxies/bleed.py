@@ -6,9 +6,8 @@ When laid out in our PDF as a 63 x 88 mm card, the extra bleed sticks out past t
 card boundaries, so we trim each side by a percentage of the image dimensions
 before placing it in the grid.
 
-This used to be ``--custom-art-bleed-crop``'s private helper inside cli.py. Pulled
-out so the ``#mpcfill`` modeline can reuse it with the same default (4%) when
-swapping the Scryfall path for an MPCFill render.
+Used by the ``#mpcfill`` modeline and ``order.xml`` input when swapping the Scryfall
+scan for an MPCFill render.
 """
 
 from __future__ import annotations

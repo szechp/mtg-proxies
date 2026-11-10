@@ -80,23 +80,6 @@ def test_main_cardconjurer_invokes_render_deck(tmp_path: Path) -> None:
     assert kwargs.get("upscale", False) is False
 
 
-def test_main_old_cardconjourer_spelling_still_runs(tmp_path: Path) -> None:
-    """The pre-rename `cardconjourer` subcommand is an alias for `cardconjurer`."""
-    from mtg_proxies.cli import main
-
-    deck = tmp_path / "d.txt"
-    deck.write_text("1 Murder\n")
-
-    with (
-        patch("sys.argv", ["mtg-proxies", "cardconjourer", "--8th", str(deck), str(tmp_path / "out")]),
-        patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
-    ):
-        mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
-        main()
-
-    mock_render.assert_called_once()
-
-
 def test_main_cardconjurer_upscale_flag_propagates(tmp_path: Path) -> None:
     """``--upscale`` enables the ESRGAN pass for cards where MTGPics misses."""
     from PIL import Image
