@@ -17,7 +17,6 @@ import requests
 
 import mtg_proxies.scryfall as scryfall
 from mtg_proxies import fetch_scans_scryfall, print_cards_fpdf, print_cards_matplotlib
-from mtg_proxies.deck_value import show_deck_value
 from mtg_proxies.decklists import archidekt, manastack, parse_decklist
 from mtg_proxies.decklists.decklist import Card, Comment, Decklist
 from mtg_proxies.frame_scale import DEFAULT_OVERLAP_MM, MPC_OVERLAP_MM
@@ -868,7 +867,6 @@ def _apply_cardconjurer_modelines(slots: _ModelineSlots, mark_bleed_render: Call
             upscale=bool(flags.get("--upscale")),
             set_symbol_path=set_symbol,
             art_path=art,
-            legendary=bool(flags.get("--legendary")),
             no_crown=bool(flags.get("--no-crown")),
             retro_hd=bool(flags.get("--retro-hd")),
             frame_overlap_mm=(
@@ -1501,11 +1499,6 @@ def _resolve_cc_deck_frame(args: argparse.Namespace) -> tuple[str, bool]:
         elif frame != "retro":
             _die(f"Error: --retro-hd renders in the retro frame, which conflicts with --{frame}.", code=2)
         _require_retro_hd_frames()
-
-    # ``--legendary`` is a no-op kept for old decklists (8th and retro draw legend crowns by
-    # default); modern and m15-8th already carry crowns, borderless has no marker.
-    if args.legendary and frame in {"modern", "m15-8th", "borderless"}:
-        _die(f"Error: --legendary only applies to the retro and 8th frames, not --{frame}.", code=2)
     return frame, bool(scaled_flags)
 
 
@@ -1521,7 +1514,6 @@ class _CcCardOptions:
 
     frame: str | None = None
     scaled: bool = False
-    legendary: bool = False
     no_crown: bool = False
     retro_hd: bool = False
     scryfall: bool = False
@@ -1551,7 +1543,6 @@ def _cc_card_options(card: Card, slot_int: int, deck_language: str | None) -> _C
             opts.scaled = False
         if flags.get("--retro-scaled") or flags.get("--8th-scaled"):
             opts.scaled = True
-        opts.legendary |= bool(flags.get("--legendary"))
         opts.no_crown |= bool(flags.get("--no-crown"))
         opts.retro_hd |= bool(flags.get("--retro-hd"))
         opts.scryfall |= bool(flags.get("--scryfall"))
@@ -1806,8 +1797,6 @@ class _CcArtResolver:
             extras["frame"] = opts.frame
         if opts.font_size is not None:
             extras["font_size"] = opts.font_size
-        if args.legendary or opts.legendary:
-            extras["legendary"] = True
         if args.no_crown or opts.no_crown:
             extras["no_crown"] = True
         if args.retro_hd or opts.retro_hd:
@@ -2466,23 +2455,6 @@ def _add_tokens_parser(subparsers: argparse._SubParsersAction) -> None:
     )
 
 
-def _add_deck_value_parser(subparsers: argparse._SubParsersAction) -> None:
-    deck_value_parser = subparsers.add_parser(
-        "deck_value", help="Show deck value decomposition", description="Show deck value decomposition."
-    )
-    deck_value_parser.add_argument(
-        "decklist",
-        help="path to a decklist in text/arena format, or manastack:{manastack_id}, or archidekt:{archidekt_id}",
-    )
-    deck_value_parser.add_argument(
-        "--lump-threshold",
-        help="lump together cards with lesser proportional value (default: %(default)s)",
-        type=float,
-        default=0.03,
-        metavar="FLOAT",
-    )
-
-
 def _add_cardconjurer_parser(subparsers: argparse._SubParsersAction) -> None:
     cardconjurer_parser = subparsers.add_parser(
         "cardconjurer",
@@ -2567,15 +2539,6 @@ def _add_cardconjurer_parser(subparsers: argparse._SubParsersAction) -> None:
             " blocks are within 0.06 mm of each other, so both end up the same printed"
             " size. Implies --8th; conflicts with the other frame flags and with"
             " --retro-scaled."
-        ),
-    )
-    cardconjurer_parser.add_argument(
-        "--legendary", dest="legendary", action="store_true", default=False,
-        help=(
-            "kept for old decklists and does nothing: legendary cards get a legend crown on"
-            " --8th / --8th-scaled (Card Conjurer's) and --retro / --retro-scaled (the"
-            " battlement crown) by default; --no-crown leaves it off. Conflicts with --modern,"
-            " --m15-8th and --borderless, which already have their own crowns."
         ),
     )
     cardconjurer_parser.add_argument(
@@ -2681,7 +2644,6 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_print_parser(subparsers)
     _add_convert_parser(subparsers)
     _add_tokens_parser(subparsers)
-    _add_deck_value_parser(subparsers)
     _add_cardconjurer_parser(subparsers)
     return parser
 
@@ -3154,15 +3116,6 @@ def _cmd_tokens(args: argparse.Namespace) -> None:
     print(f"Successfully updated token section in {out_file.resolve()}.")
 
 
-def _cmd_deck_value(args: argparse.Namespace) -> None:
-    """Run the ``deck_value`` subcommand."""
-    # Parse decklist
-    decklist = parse_decklist_spec(args.decklist, warn_levels=["ERROR", "WARNING"])
-
-    # Show deck value decomposition
-    show_deck_value(decklist, lump_threshold=args.lump_threshold)
-
-
 def main() -> None:
     """Run mtg-proxies CLI."""
     args = _build_parser().parse_args()
@@ -3174,7 +3127,5 @@ def main() -> None:
             _cmd_convert(args)
         case "tokens":
             _cmd_tokens(args)
-        case "deck_value":
-            _cmd_deck_value(args)
         case "cardconjurer":
             _run_cardconjurer(args)

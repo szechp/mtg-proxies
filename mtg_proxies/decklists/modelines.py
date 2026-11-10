@@ -147,8 +147,6 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
     # for short-text DFCs you want on a single physical card. Per-card
     # ``--dfc-split`` also overrides a deck-wide ``--dfc-flip`` flag. Both are
     # no-ops on single-faced cards; mutually exclusive on one segment.
-    # ``--legendary`` is kept for old decklists and does nothing (legend crowns are on by
-    # default on 8th and retro).
     # ``--no-crown`` leaves the legend crown off a legendary: the battlement crown on retro,
     # CC's crown on 8th (both on by default). No-op on the other frames.
     # ``--retro-hd`` renders the card retro with Gavin Bowers' high-detail frame art
@@ -161,7 +159,6 @@ VERB_REGISTRY: dict[str, dict[str, FlagValidator]] = {
         "--borderless": NO_VALUE,
         "--retro-scaled": NO_VALUE,
         "--8th-scaled": NO_VALUE,
-        "--legendary":  NO_VALUE,
         "--no-crown":   NO_VALUE,
         "--retro-hd":   NO_VALUE,
         "--upscale":    NO_VALUE,

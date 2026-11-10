@@ -3,7 +3,7 @@
 
 ## mtg-proxies
 
-CLI that generates print-ready MTG proxy PDFs/PNGs from decklists: parse a decklist → resolve cards via Scryfall → download scans → render to PDF/PNG. Python 3.12+, uv-managed. Entry point `mtg_proxies/cli.py` → `main()` → subcommands `print`, `convert`, `tokens`, `deck_value`, `cardconjurer`. Cube building, card substitutes and commander ranking live in the separate commander-doctor repo (`deckdoctor cube …` / `brew`); this repo only prints the lists it writes.
+CLI that generates print-ready MTG proxy PDFs/PNGs from decklists: parse a decklist → resolve cards via Scryfall → download scans → render to PDF/PNG. Python 3.12+, uv-managed. Entry point `mtg_proxies/cli.py` → `main()` → subcommands `print`, `convert`, `tokens`, `cardconjurer`. Cube building, card substitutes, commander ranking and deck value live in the separate commander-doctor repo (`deckdoctor cube …` / `brew`); this repo only prints the lists it writes.
 
 ## Where things are
 
@@ -32,7 +32,7 @@ CLI that generates print-ready MTG proxy PDFs/PNGs from decklists: parse a deckl
 ## Conventions that differ from defaults
 
 - Type hints required on all public functions (`ANN` rules enforced); Google-style docstrings required on public functions/classes (`D` rules, pydocstyle convention `google`); line length 120; `ruff` handles both linting and formatting.
-- `T20` (print statements) is ignored only in `cli.py`, `deck_value.py`, `tokens.py`, `upscale.py`; tests suppress `D103`.
+- `T20` (print statements) is ignored only in `cli.py`, `tokens.py`, `upscale.py`; tests suppress `D103`.
 - Never import `mtg_proxies` at module level (`ruff` `TID253`) — use a lazy import inside the function.
 
 <!-- /bmad:context -->

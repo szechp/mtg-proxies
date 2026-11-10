@@ -97,7 +97,6 @@ def build_job(
     set_symbol_path: str | None = None,
     font_size: int | None = None,
     dfc_split: bool = False,
-    legendary: bool = False,
     no_crown: bool = False,
     retro_hd: bool = False,
 ) -> dict[str, Any]:
@@ -128,9 +127,6 @@ def build_job(
     separate full-size cards (``<slug>.png`` + ``<slug>_back.png``, response
     carries ``out`` + ``out_back``) instead of the default Kamigawa-flip merge.
 
-    ``legendary`` is kept for old decklists and changes nothing: legend crowns are on by
-    default on the 8th and retro frames.
-
     ``no_crown`` leaves the legend crown off a legendary card: the battlement crown on retro
     (see ``retro_crown.py``) and CC's crown on 8th, both drawn by default. No-op on the other
     frames.
@@ -153,8 +149,6 @@ def build_job(
         job["font_size"] = font_size
     if dfc_split:
         job["dfc_split"] = True
-    if legendary:
-        job["legendary"] = True
     if no_crown:
         job["no_crown"] = True
     if retro_hd:

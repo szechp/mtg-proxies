@@ -129,7 +129,6 @@ future-annotations = true
 "!tests/*" = ["TID253"]
 "cli.py" = ["T20"]
 "convert.py" = ["T20"]
-"deck_value.py" = ["T20"]
 "tokens.py" = ["T20"]
 "upscale.py" = ["T20"]
 "picker.py" = ["T20"]

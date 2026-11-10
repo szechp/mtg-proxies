@@ -37,7 +37,6 @@ class CardConjurerRequest:
     set_symbol_path: str | None = None
     art_path: str | None = None
     frame_overlap_mm: float | None = None
-    legendary: bool = False
     no_crown: bool = False
     retro_hd: bool = False
 
@@ -109,7 +108,6 @@ def render_per_card_batch(
             upscale=req.upscale,
             set_symbol_path=req.set_symbol_path,
             art_path=req.art_path,
-            legendary=req.legendary,
             no_crown=req.no_crown,
             retro_hd=req.retro_hd,
         )

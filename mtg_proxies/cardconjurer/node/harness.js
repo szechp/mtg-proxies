@@ -4163,7 +4163,7 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
     // packs (no loyalty/ability text regions, no versionPlaneswalker.js load), which would
     // silently produce a loyalty-less card. Only override for non-special borderless cards.
     if (!special && frame === 'borderless' && scry.layout !== 'flip') packFile = borderlessPack(scry);
-    // 8th legend crowns (--legendary) live in their own pack, so load it alongside pack8th
+    // 8th legend crowns live in their own pack, so load it alongside pack8th
     // to get the crown frames into availableFrames. pack8th goes LAST because ensurePackLoaded
     // re-triggers only the final file's loadFrameVersion onclick, and the crown pack
     // registers no text options -- letting its handler win would leave the card with no
@@ -4330,7 +4330,7 @@ async function runOneJob(job) {
         const fontSizeDelta = (job.font_size != null) ? parseInt(job.font_size) : 0;
         const slug = slugify(job.name);
         // The 8th legend crown is on by default, like retro's battlement crown; --no-crown
-        // turns both off. job.legendary (--legendary) is kept for old decklists; it adds nothing.
+        // turns both off.
         const legendary = !job.no_crown;
         const crown = !job.no_crown;
         const retroHd = !!job.retro_hd;

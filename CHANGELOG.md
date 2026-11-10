@@ -5,7 +5,8 @@
 - `print --normalize`, `--shadow-lift`, `--vignette` and the `#normalize` / `#shadow-lift` / `#no-normalize` / `#no-shadow-lift` modelines (tone passes; `--media` / `--warm` paper preparation is unchanged).
 - `print --card-back-count` (`--card-back` is always duplex now) and `print --custom-art-bleed-crop` (already ignored).
 - The `cardconjourer` spelling of the `cardconjurer` subcommand and `#cardconjurer` modeline.
-- The `cube` subcommand, `swapfinder.py` and `commander_finder.py`: they live in commander-doctor now.
+- The `cube` and `deck_value` subcommands, `swapfinder.py` and `commander_finder.py`: they live in commander-doctor now.
+- `cardconjurer --legendary` and `#cardconjurer --legendary` (a no-op: legend crowns are on by default, `--no-crown` turns them off).
 
 ### Feat
 
