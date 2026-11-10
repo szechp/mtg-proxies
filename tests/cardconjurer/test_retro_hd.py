@@ -13,7 +13,8 @@ def _touch_complete_build(cache_dir: Path) -> None:
     from mtg_proxies.cardconjurer import retro_crown, retro_hd
 
     files = [p for task in retro_hd.all_tasks() for p in retro_hd._task_files(task, cache_dir)]
-    for path in [*files, cache_dir / "frames" / "rules.png", cache_dir / "crown" / retro_crown.PINLINE_MASK_NAME]:
+    masks = [cache_dir / "frames" / sub / "rules.png" for sub in ("", "tf", "mdfc")]
+    for path in [*files, *masks, cache_dir / "crown" / retro_crown.PINLINE_MASK_NAME]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
     stamp = {task: retro_hd._task_version(task) for task in retro_hd.all_tasks()}

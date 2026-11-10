@@ -619,11 +619,23 @@ def build_masks(t: _Template, frames_dir: Path) -> list[Path]:
 
     # The shape is the outline ring only (a stroke); the mask is the ring plus everything in it.
     ring = t.mask_of(t.find("Pinlines", "Textbox Background", SIZE))
-    alpha = np.zeros((t.height, t.width, 4), np.float32)
-    alpha[..., 3] = np.maximum(ring, binary_fill_holes(ring > 0.5).astype(np.float32))
-    path = frames_dir / "rules.png"
-    card_area(alpha).save(path, optimize=True)
-    return [path]
+    written = []
+    for dfc in (None, "TF", "MDFC"):
+        shape = ring
+        if dfc:
+            # A double-faced textbox has a notch outside the box. Without it in the mask, a
+            # coloured land's notch showed the generic land frame underneath: an orange notch
+            # on a textbox with (say) a white pinline.
+            pins = t.find("Card Frame", f"Textbox Bevel Overlays {dfc}", "Pinlines")
+            background = t.rgba(t.find("Card Frame", f"Textbox Bevel Overlays {dfc}", "Pinlines", "Background"))
+            shape = np.maximum(ring, background[..., 3] * t.mask_of(pins))
+        alpha = np.zeros((t.height, t.width, 4), np.float32)
+        alpha[..., 3] = np.maximum(shape, binary_fill_holes(shape > 0.5).astype(np.float32))
+        path = frames_dir / dfc.lower() / "rules.png" if dfc else frames_dir / "rules.png"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        card_area(alpha).save(path, optimize=True)
+        written.append(path)
+    return written
 
 
 def download_template(dest: Path = CACHE_DIR / "retro.psd") -> Path:
@@ -838,7 +850,9 @@ def missing_tasks(out_dir: Path = CACHE_DIR) -> list[str]:
     from mtg_proxies.cardconjurer import retro_crown
 
     built = _built_versions(out_dir)
-    always = [out_dir / "frames" / "rules.png", out_dir / "crown" / retro_crown.PINLINE_MASK_NAME]
+    frames = out_dir / "frames"
+    masks = [frames / "rules.png", frames / "tf" / "rules.png", frames / "mdfc" / "rules.png"]
+    always = [*masks, out_dir / "crown" / retro_crown.PINLINE_MASK_NAME]
     missing = [
         task
         for task in all_tasks()

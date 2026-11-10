@@ -670,6 +670,11 @@ function retroHdFrame(src) {
         const file = path.join(retroHdFrames, 'adventure', code + '.png');
         if (fs.existsSync(file)) return file;
     }
+    if (retroHdVariant && src in SEVENTH_MASK_SRC) {
+        // A double-faced textbox mask includes the face's notch (retro_hd.build_masks).
+        const file = path.join(retroHdFrames, retroHdVariant, SEVENTH_MASK_SRC[src]);
+        if (fs.existsSync(file)) return file;
+    }
     const name = match ? match[1] + '.png' : (SEVENTH_MASK_SRC[src] || SAGA_EXTRA_SRC[src]);
     if (!name) return null;
     const file = path.join(retroHdFrames, name);
