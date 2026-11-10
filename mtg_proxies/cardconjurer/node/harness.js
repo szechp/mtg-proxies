@@ -3446,8 +3446,21 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     if (legendary && !dfcFace && frame === '8th'
         && wantsEighthLegendCrown(pristineFace.type_line || scry.type_line)) {
         await addFrameByName(['Legend Crown Border Cover']);
-        const crown = getFrameNameForFace(pristineFace).replace(' Frame', ' Legend Crown');
-        await addFrameByName([crown, 'Artifact Legend Crown', 'Colorless Legend Crown']);
+        // A two-colour card's crown follows its pinlines, like a printed two-colour legend:
+        // the left colour's crown, then the right colour's through the right-half mask (the
+        // plain gold crown sat on green / blue pinlines on Galadriel of Lothlórien).
+        const crownName = { W: 'White', U: 'Blue', B: 'Black', R: 'Red', G: 'Green' };
+        const props = global.cardFrameProperties(
+            pristineFace.colors || scry.colors || [], pristineFace.mana_cost || '',
+            pristineFace.type_line || scry.type_line || '', pristineFace.power || '');
+        const left = crownName[props.pinline], right = crownName[props.pinlineRight];
+        if (left && right) {
+            await addFrameByName([left + ' Legend Crown']);
+            await addFrameByName([right + ' Legend Crown'], [{ name: 'Right Half', src: '/img/frames/maskRightHalf.png' }]);
+        } else {
+            const crown = getFrameNameForFace(pristineFace).replace(' Frame', ' Legend Crown');
+            await addFrameByName([crown, 'Artifact Legend Crown', 'Colorless Legend Crown']);
+        }
     }
 
     // Two-colour cards get the modern two-tone treatment. Which variant applies is
