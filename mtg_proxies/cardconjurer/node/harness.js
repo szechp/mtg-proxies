@@ -557,6 +557,9 @@ reg('matrix-b.ttf',               'matrixb');
 reg('Matrix Bold Small Caps.ttf', 'matrixbsc');
 reg('mplantin.ttf',               'mplantin');
 reg('mplantin-i.ttf',             'mplantini');
+// Plantin MT Pro Bold, converted from Card Conjurer's fonts/PlantinMTProBold.woff2 (node-canvas
+// cannot load WOFF2). The Seventh Edition frame's power / toughness font.
+reg('plantin-bold.ttf',           'plantinbold');
 reg('beleren-b.ttf',              'belerenb');
 reg('beleren-bsc.ttf',            'belerenbsc');
 reg('gotham-medium.ttf',          'gothammedium');
@@ -3665,6 +3668,12 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     // staying closer to the printed card than recolouring the text outright.
     // Not on --retro-hd: its white frame is tinted to WotC's own retro-frame white (see
     // retro_hd._FRAME_TINT), which white text with packSeventh's plain shadow reads on.
+    // packSeventh sets no font on power / toughness, so it fell back to the rules text's regular
+    // Plantin; a real Seventh Edition card prints it in Plantin Bold (Card Conjurer issue #213).
+    // Packs that do name a P/T font (the Classicshifted double-faced ones) keep theirs.
+    if (frame === 'retro' && scry.layout !== 'token' && global.card.text?.pt && !global.card.text.pt.font) {
+        global.card.text.pt.font = 'plantinbold';
+    }
     if (frame === 'retro' && !retroHd && scry.layout !== 'token' && retroNeedsTextOutline(pristineFace, scry)) {
         for (const key of ['title', 'type', 'pt']) {
             const textObject = global.card.text?.[key];
