@@ -981,40 +981,6 @@ def test_main_convert_basic_lands_only_skips_parsing(tmp_path) -> None:
     fake_decklist.save.assert_called_once_with(out_file, fmt="arena")
 
 
-def test_main_convert_basic_lands_accepts_outfile_after_specs(tmp_path) -> None:
-    from mtg_proxies.cli import main
-
-    out_file = tmp_path / "basics.txt"
-    fake_decklist = Mock()
-    fake_decklist.entries = []
-
-    with (
-        patch(
-            "sys.argv",
-            [
-                "mtg-proxies",
-                "convert",
-                "--art-preference=wild",
-                "--basic-lands",
-                "mountain=9",
-                "forest=9",
-                "plains=9",
-                "swamp=9",
-                "island=9",
-                str(out_file),
-            ],
-        ),
-        patch("mtg_proxies.convert_command._generate_basic_lands_decklist", return_value=fake_decklist) as generate_basic_lands,
-    ):
-        main()
-
-    generate_basic_lands.assert_called_once_with(
-        ["mountain=9", "forest=9", "plains=9", "swamp=9", "island=9"],
-        art_preference="wild",
-    )
-    fake_decklist.save.assert_called_once_with(out_file, fmt="arena")
-
-
 def test_main_convert_basic_lands_accepts_premium_art_preference(tmp_path) -> None:
     from mtg_proxies.cli import main
 
@@ -1031,6 +997,7 @@ def test_main_convert_basic_lands_accepts_premium_art_preference(tmp_path) -> No
                 "--art-preference=premium",
                 "--basic-lands",
                 "mountain=9",
+                "-o",
                 str(out_file),
             ],
         ),
@@ -1080,7 +1047,7 @@ def test_main_convert_basic_lands_invalid_spec_errors(tmp_path, capsys: pytest.C
     with (
         patch(
             "sys.argv",
-            ["mtg-proxies", "convert", str(out_file), "--basic-lands", "mountain"],
+            ["mtg-proxies", "convert", "--basic-lands", "mountain", "-o", str(out_file)],
         ),
         pytest.raises(SystemExit),
     ):

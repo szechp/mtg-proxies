@@ -218,7 +218,7 @@ def _add_convert_parser(subparsers: argparse._SubParsersAction) -> None:
         type=Path,
         default=None,
         metavar="PATH",
-        help="output file (recommended; overrides the positional outfile if both are given)",
+        help="output file (overrides the positional outfile if both are given; required with --basic-lands alone)",
     )
     convert_parser.add_argument(
         "--format", help="output format (default: %(default)s)", choices=["arena", "text"], default="arena"

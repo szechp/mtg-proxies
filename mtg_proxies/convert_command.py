@@ -291,49 +291,25 @@ def _move_to_sections(decklist: Decklist, sections: list[tuple[str, Callable[[Ca
 
 def run_convert(args: argparse.Namespace) -> None:
     """Run the ``convert`` subcommand: resolve prints for a decklist and/or generate basic lands."""
-    # Resolution order: explicit `-o/--out` > positional `outfile` > legacy shifts (for
-    # backward compat with `convert deck.txt out.txt` and `convert --basic-lands mountain=9 out.txt`).
+    # `-o/--out` wins over the positional outfile (`convert deck.txt out.txt`).
     outfile = args.out if args.out is not None else args.outfile
-    basic_land_specs = args.basic_lands
     art_roll_seed = args.seed if args.seed is not None else random.randrange(10_000)
-
-    # Legacy shifts: without an explicit outfile, the positional decklist arg or a trailing
-    # non-NAME=COUNT basic-land spec is the output path.
-    input_decklist_spec = args.decklist
-    if basic_land_specs and outfile is None:
-        if args.decklist is not None:
-            # Refuse to overwrite an existing decklist file with --basic-lands output.
-            if Path(args.decklist).is_file():
-                print(
-                    f"Error: refusing to overwrite existing decklist {args.decklist!r} with"
-                    " --basic-lands output. Use -o/--out PATH to specify the output."
-                )
-                raise SystemExit(1)
-            outfile = Path(args.decklist)
-            input_decklist_spec = None
-        if len(basic_land_specs) > 1 and "=" not in basic_land_specs[-1]:
-            candidate = basic_land_specs[-1]
-            # Catch typos like `--basic-lands mountain=9 forest` (forgot `=COUNT` on the last spec).
-            if candidate.strip().lower() in BASIC_LAND_NAMES:
-                die(f"Error: basic land spec {candidate!r} is missing a count. Expected NAME=COUNT.")
-            outfile = Path(candidate)
-            basic_land_specs = basic_land_specs[:-1]
 
     if args.basic_lands:
         if outfile is None:
-            die("Error: must provide an output file for convert")
+            die("Error: must provide an output file for convert --basic-lands (-o PATH)")
         try:
-            decklist = _generate_basic_lands_decklist(basic_land_specs, art_preference=args.art_preference)
+            decklist = _generate_basic_lands_decklist(args.basic_lands, art_preference=args.art_preference)
         except ValueError as exc:
             die(f"Error: {exc}")
 
         # When an input decklist is also provided, parse it and append the basics.
-        if input_decklist_spec is not None:
+        if args.decklist is not None:
             if args.art_preference == "premium":
                 print("Error: --art-preference premium is only supported with --basic-lands without an input decklist")
                 raise SystemExit(1)
             basics = decklist
-            decklist = _parse_convert_decklist(args, input_decklist_spec, art_roll_seed)
+            decklist = _parse_convert_decklist(args, args.decklist, art_roll_seed)
             if decklist.entries and not (
                 isinstance(decklist.entries[-1], Comment) and not decklist.entries[-1].text.strip()
             ):
