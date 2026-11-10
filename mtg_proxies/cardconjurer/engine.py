@@ -75,17 +75,28 @@ def _vet_mtgpics(card: dict, mtgpics_path: Path) -> tuple[str | None, Path]:
 
 
 def _require_retro_hd_frames() -> None:
-    """Exit with build instructions when the ``--retro-hd`` frames have not been built."""
+    """Exit with build instructions unless the ``--retro-hd`` frames are built, and built completely.
+
+    A cache missing some frames (an interrupted build, or one made before a frame kind was
+    added) would otherwise only show when a card needs the missing frame, as a quiet fall
+    back to that card's scan.
+    """
     from mtg_proxies.cardconjurer import retro_hd
 
-    if not (retro_hd.FRAMES_DIR / "w.png").is_file():
-        print(
-            f"Error: --retro-hd frames are not built yet (looked in {retro_hd.FRAMES_DIR}). Build them once with:\n"
-            "  uv sync --extra retro-hd\n"
-            "  uv run python -m mtg_proxies.cardconjurer.retro_hd",
-            file=sys.stderr,
-        )
-        raise SystemExit(2)
+    cache_dir = retro_hd.FRAMES_DIR.parent
+    missing = retro_hd.missing_tasks(cache_dir)
+    if not missing:
+        return
+    if len(missing) > len(retro_hd.all_tasks()) // 2:
+        problem, flag = f"are not built yet (looked in {cache_dir})", ""
+    else:
+        problem, flag = f"in {cache_dir} are incomplete (missing: {', '.join(missing)})", " --missing"
+    die(
+        f"Error: the --retro-hd frames {problem}. Build them with:\n"
+        "  uv sync --extra retro-hd\n"
+        f"  uv run python -m mtg_proxies.cardconjurer.retro_hd{flag}",
+        code=2,
+    )
 
 
 _DFC_LAYOUTS = {"transform", "modal_dfc", "reversible_card"}
@@ -1033,6 +1044,8 @@ def render_cardconjurer(
     ]
     slot_to_card = dict(enumerate(decklist.cards, start=1))  # 1-based, like the harness's job slots
     options = {slot_int: _cc_card_options(card, slot_int, deck) for slot_int, card in slot_to_card.items()}
+    if any(opts.retro_hd for opts in options.values()):
+        _require_retro_hd_frames()  # also for a single `#cardconjurer --retro-hd` line
 
     # Splittable layouts (transform / modal_dfc — reversible_card has two fronts
     # and stays on the flip path) render as two separate faces BY DEFAULT.

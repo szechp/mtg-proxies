@@ -762,6 +762,53 @@ def default_jobs(tasks: int) -> int:
     return max(1, min(jobs, tasks))
 
 
+def all_tasks() -> list[str]:
+    """Return every build task code a complete build runs (see :func:`build` for what each one is)."""
+    return [
+        *VARIANTS,
+        *(f"saga-{c}" for c in SAGA_CODES),
+        "saga-extras",
+        *(f"adventure-{c}" for c in ADVENTURE_CODES),
+        *(f"class-{c}" for c in CLASS_CODES),
+        "class-extras",
+        *(f"tf-{c}" for c in VARIANTS),
+        *(f"mdfc-{c}" for c in VARIANTS),
+        "dfc-extras",
+    ]
+
+
+def _task_files(task: str, out_dir: Path) -> list[Path]:
+    """Return the files build task ``task`` leaves in ``out_dir``."""
+    frames = out_dir / "frames"
+    kind, _, code = task.partition("-")
+    if task == "saga-extras":
+        return [frames / "saga" / "extras.json", *(frames / "saga" / f"{n.lower()}.png" for n in SAGA_EXTRAS)]
+    if task == "class-extras":
+        return [frames / "class" / "extras.json", frames / "class" / "header.png"]
+    if task == "dfc-extras":
+        return [frames / "dfc" / "extras.json", *(frames / "dfc" / f"{key}.png" for key in DFC_ICONS)]
+    if kind == "adventure":
+        panels = (frames / kind / f"spell_{side}_{code}.png" for side in ("left", "right"))
+        return [frames / kind / f"{code}.png", *panels]
+    if kind in {"saga", "class", "tf", "mdfc"} and code:
+        return [frames / kind / f"{code}.png"]
+    return [frames / f"{task}.png", out_dir / "crown" / f"{task}.png"]
+
+
+def missing_tasks(out_dir: Path = CACHE_DIR) -> list[str]:
+    """Return the build tasks whose output is not (all) in ``out_dir``: empty for a complete build.
+
+    Catches a cache that was never built, an interrupted build, and one built before a frame
+    kind was added. Pass the result to :func:`build` (or the command line) to build just those.
+    ``"masks"`` stands for the mask files every build writes.
+    """
+    from mtg_proxies.cardconjurer import retro_crown
+
+    always = [out_dir / "frames" / "rules.png", out_dir / "crown" / retro_crown.PINLINE_MASK_NAME]
+    missing = [task for task in all_tasks() if not all(p.is_file() for p in _task_files(task, out_dir))]
+    return missing + (["masks"] if not all(p.is_file() for p in always) else [])
+
+
 def build(
     psd_path: Path | None = None, out_dir: Path = CACHE_DIR, codes: list[str] | None = None, jobs: int | None = None
 ) -> list[Path]:
@@ -793,17 +840,7 @@ def build(
     psd = psd_path or download_template()
     (out_dir / "frames").mkdir(parents=True, exist_ok=True)
     (out_dir / "crown").mkdir(parents=True, exist_ok=True)
-    codes = codes or [
-        *VARIANTS,
-        *(f"saga-{c}" for c in SAGA_CODES),
-        "saga-extras",
-        *(f"adventure-{c}" for c in ADVENTURE_CODES),
-        *(f"class-{c}" for c in CLASS_CODES),
-        "class-extras",
-        *(f"tf-{c}" for c in VARIANTS),
-        *(f"mdfc-{c}" for c in VARIANTS),
-        "dfc-extras",
-    ]
+    codes = codes or all_tasks()
     jobs = jobs or default_jobs(len(codes) + 1)
     sys.stdout.write(f"building {len(codes)} frames + masks with {jobs} worker(s)\n")
     sys.stdout.write("the bar starts moving once the workers have parsed the template\n")
@@ -850,8 +887,16 @@ def main() -> None:
         default=None,
         help="parallel workers (default: all cores, capped by free RAM, ~2.5 GB each)",
     )
+    parser.add_argument("--missing", action="store_true", help="build only what is not in the cache yet")
     parser.add_argument("codes", nargs="*", help="frame codes to build (default: all)")
     args = parser.parse_args()
+    if args.missing:
+        missing = missing_tasks(args.out)
+        if not missing:
+            sys.stdout.write(f"nothing to do: the build in {args.out} is complete\n")
+            return
+        # "masks" is not a frame code: every build writes the masks, so any build covers it.
+        args.codes = [task for task in missing if task != "masks"] or [next(iter(VARIANTS))]
     if args.masks_only:
         frames_dir = args.out / "frames"
         frames_dir.mkdir(parents=True, exist_ok=True)

@@ -7,13 +7,21 @@ import numpy as np
 import pytest
 
 
+def _touch_complete_build(cache_dir: Path) -> None:
+    from mtg_proxies.cardconjurer import retro_crown, retro_hd
+
+    files = [p for task in retro_hd.all_tasks() for p in retro_hd._task_files(task, cache_dir)]
+    for path in [*files, cache_dir / "frames" / "rules.png", cache_dir / "crown" / retro_crown.PINLINE_MASK_NAME]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+
+
 def _run_subcommand(tmp_path: Path, deck: object, *flags: str, built: bool = True) -> dict:
     from mtg_proxies.cli import main
 
     frames = tmp_path / "hd" / "frames"
     if built:
-        frames.mkdir(parents=True)
-        (frames / "w.png").touch()
+        _touch_complete_build(tmp_path / "hd")
     argv = ["mtg-proxies", "cardconjurer", "unused.txt", str(tmp_path / "out"), *flags]
     with (
         patch("sys.argv", argv),
@@ -215,3 +223,33 @@ def test_mix_picks_a_frame_per_card_and_leaves_own_modelines_alone(tmp_path: Pat
 def test_mix_needs_the_retro_hd_frames(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         _run_subcommand(tmp_path, _deck(None), "--mix", built=False)
+
+
+def test_missing_tasks_names_what_an_incomplete_build_lacks(tmp_path: Path) -> None:
+    from mtg_proxies.cardconjurer import retro_hd
+
+    assert set(retro_hd.missing_tasks(tmp_path)) == {*retro_hd.all_tasks(), "masks"}
+    _touch_complete_build(tmp_path)
+    assert retro_hd.missing_tasks(tmp_path) == []
+    (tmp_path / "frames" / "saga" / "u.png").unlink()
+    (tmp_path / "frames" / "adventure" / "spell_left_g.png").unlink()
+    assert retro_hd.missing_tasks(tmp_path) == ["saga-u", "adventure-g"]
+
+
+def test_incomplete_build_is_refused_with_the_missing_frames(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    from mtg_proxies.decklists.decklist import Card, Decklist
+
+    _touch_complete_build(tmp_path / "hd")
+    (tmp_path / "hd" / "frames" / "saga" / "u.png").unlink()
+    with pytest.raises(SystemExit):
+        _run_subcommand(tmp_path, Decklist([Card(1, {"name": "A"})]), "--retro-hd", built=False)
+    err = capsys.readouterr().err
+    assert "incomplete (missing: saga-u)" in err
+    assert "retro_hd --missing" in err
+
+
+def test_a_single_retro_hd_modeline_needs_the_frames_too(tmp_path: Path) -> None:
+    from mtg_proxies.decklists.decklist import Card, Decklist
+
+    with pytest.raises(SystemExit):
+        _run_subcommand(tmp_path, Decklist([Card(1, {"name": "A"}, "#cardconjurer --retro-hd")]), built=False)
