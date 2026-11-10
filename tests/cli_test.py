@@ -1,6 +1,6 @@
 import random
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
@@ -22,7 +22,7 @@ def test_parse_decklist_spec_accepts_pathlib_path(tmp_path: Path) -> None:
     On Windows, ``args.decklist`` arrives as a ``WindowsPath``; calling ``.lower()`` /
     ``.startswith(...)`` on it crashes. The function has to coerce to ``str`` up front.
     """
-    from mtg_proxies.cli import parse_decklist_spec
+    from mtg_proxies.cli_util import parse_decklist_spec
 
     deck = tmp_path / "d.txt"
     deck.write_text("1 Sol Ring\n")
@@ -41,7 +41,7 @@ def test_parse_decklist_spec_path_to_nonexistent_file_fails_cleanly(tmp_path: Pa
     decklist_spec.lower().startswith("archidekt:")`` branch — which is what crashes
     when ``decklist_spec`` is a ``WindowsPath``.
     """
-    from mtg_proxies.cli import parse_decklist_spec
+    from mtg_proxies.cli_util import parse_decklist_spec
 
     missing = tmp_path / "does-not-exist.txt"
     with pytest.raises(SystemExit):
@@ -92,7 +92,7 @@ def test_main_convert_help_mentions_basic_lands(capsys: pytest.CaptureFixture) -
 
 def test_will_render_borderless() -> None:
     """Borderless candidate = single-faced AND (explicit --borderless OR auto+borderless print)."""
-    from mtg_proxies.cli import _will_render_borderless
+    from mtg_proxies.cardconjurer.engine import _will_render_borderless
 
     bl = {"border_color": "borderless", "layout": "normal"}
     normal = {"border_color": "black", "layout": "normal"}
@@ -114,7 +114,7 @@ def _png(path: Path, w: int, h: int) -> str:
 
 def test_is_full_bleed_art(tmp_path) -> None:
     """Portrait art (taller than wide) is full-bleed; landscape window crops are not."""
-    from mtg_proxies.cli import _is_full_bleed_art
+    from mtg_proxies.cardconjurer.engine import _is_full_bleed_art
 
     assert _is_full_bleed_art(_png(tmp_path / "tall.png", 1078, 1321)) is True   # real borderless art
     assert _is_full_bleed_art(_png(tmp_path / "wide.png", 878, 640)) is False    # MTGPics window crop
@@ -123,7 +123,7 @@ def test_is_full_bleed_art(tmp_path) -> None:
 
 def test_borderless_art_or_skip_uses_portrait_art(tmp_path) -> None:
     """A full-bleed (portrait) MTGPics art is used for the borderless render."""
-    from mtg_proxies.cli import _borderless_art_or_skip
+    from mtg_proxies.cardconjurer.engine import _borderless_art_or_skip
 
     art = _png(tmp_path / "tall.png", 1078, 1321)
     assert _borderless_art_or_skip("Hullbreaker Horror", lambda: art) == {"art_path": art}
@@ -131,7 +131,7 @@ def test_borderless_art_or_skip_uses_portrait_art(tmp_path) -> None:
 
 def test_borderless_art_or_skip_skips_landscape_art(tmp_path) -> None:
     """A landscape MTGPics window crop (Exsanguinate/Kodama case) is rejected → skip, not a ~40% zoom."""
-    from mtg_proxies.cli import _borderless_art_or_skip
+    from mtg_proxies.cardconjurer.engine import _borderless_art_or_skip
 
     art = _png(tmp_path / "wide.png", 878, 640)
     out = _borderless_art_or_skip("Exsanguinate", lambda: art)
@@ -139,7 +139,7 @@ def test_borderless_art_or_skip_skips_landscape_art(tmp_path) -> None:
 
 
 def test_borderless_art_or_skip_skips_on_mtgpics_miss() -> None:
-    from mtg_proxies.cli import _borderless_art_or_skip
+    from mtg_proxies.cardconjurer.engine import _borderless_art_or_skip
 
     out = _borderless_art_or_skip("X", lambda: None)
     assert "skip" in out and "art_path" not in out
@@ -161,7 +161,7 @@ def test_main_convert_prefer_borderless_threads_flag(tmp_path) -> None:
 
     with (
         patch("sys.argv", ["mtg-proxies", "convert", "--prefer-borderless", str(deck), str(out)]),
-        patch("mtg_proxies.cli.parse_decklist_spec", side_effect=fake_parse),
+        patch("mtg_proxies.convert_command.parse_decklist_spec", side_effect=fake_parse),
     ):
         main()
 
@@ -184,7 +184,7 @@ def test_main_convert_prefer_borderless_defaults_off(tmp_path) -> None:
 
     with (
         patch("sys.argv", ["mtg-proxies", "convert", str(deck), str(out)]),
-        patch("mtg_proxies.cli.parse_decklist_spec", side_effect=fake_parse),
+        patch("mtg_proxies.convert_command.parse_decklist_spec", side_effect=fake_parse),
     ):
         main()
 
@@ -200,9 +200,9 @@ def test_main_print_forwards_split_pages(tmp_path) -> None:
 
     with (
         patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), "--split-pages", "3"]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
-        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=fake_images),
-        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+        patch("mtg_proxies.print_command.parse_decklist_spec", return_value=fake_decklist),
+        patch("mtg_proxies.print_command.fetch_scans_scryfall", return_value=fake_images),
+        patch("mtg_proxies.print_command.print_cards_fpdf") as print_cards_fpdf,
     ):
         main()
 
@@ -224,9 +224,9 @@ def test_main_print_uses_true_card_size(tmp_path) -> None:
 
     with (
         patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file)]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=Decklist()),
-        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["image.png"]),
-        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+        patch("mtg_proxies.print_command.parse_decklist_spec", return_value=Decklist()),
+        patch("mtg_proxies.print_command.fetch_scans_scryfall", return_value=["image.png"]),
+        patch("mtg_proxies.print_command.print_cards_fpdf") as print_cards_fpdf,
     ):
         main()
 
@@ -270,7 +270,7 @@ def test_main_print_order_xml_slot_order_dedupe_and_bleed(tmp_path: Path) -> Non
     with (
         patch("sys.argv", ["mtg-proxies", "print", str(xml_file), str(out_file)]),
         patch("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", side_effect=fake_resolve),
-        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+        patch("mtg_proxies.print_command.print_cards_fpdf") as print_cards_fpdf,
     ):
         main()
 
@@ -304,7 +304,7 @@ def test_main_print_order_xml_scaled_grows_bordered_fronts_only(tmp_path: Path) 
     with (
         patch("sys.argv", ["mtg-proxies", "print", str(xml_file), str(out_file), "--scaled"]),
         patch("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", side_effect=fake_resolve),
-        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+        patch("mtg_proxies.print_command.print_cards_fpdf") as print_cards_fpdf,
     ):
         main()
 
@@ -326,7 +326,7 @@ def test_main_print_order_xml_fetch_failure_exits(tmp_path: Path) -> None:
     with (
         patch("sys.argv", ["mtg-proxies", "print", str(xml_file), str(out_file)]),
         patch("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", return_value=None),
-        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+        patch("mtg_proxies.print_command.print_cards_fpdf") as print_cards_fpdf,
         pytest.raises(SystemExit),
     ):
         main()
@@ -347,7 +347,7 @@ def test_main_print_order_xml_ignores_upscale_and_faces(tmp_path: Path, capsys) 
     with (
         patch("sys.argv", ["mtg-proxies", "print", str(xml_file), str(out_file), "--upscale", "--faces", "front"]),
         patch("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", return_value=render),
-        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+        patch("mtg_proxies.print_command.print_cards_fpdf") as print_cards_fpdf,
         patch("mtg_proxies.upscale.upscale_images") as upscale_images,
     ):
         main()
@@ -367,9 +367,9 @@ def test_main_print_scale_multiplies_card_size(tmp_path) -> None:
 
     with (
         patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), "--scale", "2"]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=Decklist()),
-        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["image.png"]),
-        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+        patch("mtg_proxies.print_command.parse_decklist_spec", return_value=Decklist()),
+        patch("mtg_proxies.print_command.fetch_scans_scryfall", return_value=["image.png"]),
+        patch("mtg_proxies.print_command.print_cards_fpdf") as print_cards_fpdf,
     ):
         main()
 
@@ -401,9 +401,9 @@ def test_main_print_does_not_forward_art_preference(tmp_path) -> None:
 
     with (
         patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file)]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist) as parse_decklist_spec,
-        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["image.png"]),
-        patch("mtg_proxies.cli.print_cards_fpdf"),
+        patch("mtg_proxies.print_command.parse_decklist_spec", return_value=fake_decklist) as parse_decklist_spec,
+        patch("mtg_proxies.print_command.fetch_scans_scryfall", return_value=["image.png"]),
+        patch("mtg_proxies.print_command.print_cards_fpdf"),
     ):
         main()
 
@@ -440,9 +440,9 @@ def test_main_print_custom_art_appends_supported_image_extensions(tmp_path) -> N
                 str(out_file),
             ],
         ),
-        patch("mtg_proxies.cli.parse_decklist_spec") as parse_decklist_spec,
-        patch("mtg_proxies.cli.fetch_scans_scryfall") as fetch_scans_scryfall,
-        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+        patch("mtg_proxies.print_command.parse_decklist_spec") as parse_decklist_spec,
+        patch("mtg_proxies.print_command.fetch_scans_scryfall") as fetch_scans_scryfall,
+        patch("mtg_proxies.print_command.print_cards_fpdf") as print_cards_fpdf,
     ):
         main()
 
@@ -478,9 +478,9 @@ def test_main_print_custom_art_excludes_pipeline_cache_artifacts(tmp_path) -> No
                 str(out_file),
             ],
         ),
-        patch("mtg_proxies.cli.parse_decklist_spec") as parse_decklist_spec,
-        patch("mtg_proxies.cli.fetch_scans_scryfall") as fetch_scans_scryfall,
-        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+        patch("mtg_proxies.print_command.parse_decklist_spec") as parse_decklist_spec,
+        patch("mtg_proxies.print_command.fetch_scans_scryfall") as fetch_scans_scryfall,
+        patch("mtg_proxies.print_command.print_cards_fpdf") as print_cards_fpdf,
     ):
         main()
 
@@ -514,9 +514,9 @@ def test_main_print_custom_art_extends_decklist_images(tmp_path) -> None:
                 str(custom_dir),
             ],
         ),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
-        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=fake_images),
-        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+        patch("mtg_proxies.print_command.parse_decklist_spec", return_value=fake_decklist),
+        patch("mtg_proxies.print_command.fetch_scans_scryfall", return_value=fake_images),
+        patch("mtg_proxies.print_command.print_cards_fpdf") as print_cards_fpdf,
     ):
         main()
 
@@ -572,9 +572,9 @@ def test_main_print_custom_art_empty_folder_warns_and_continues_with_decklist(
             "sys.argv",
             ["mtg-proxies", "print", "decklist.txt", str(out_file), "--custom-art", str(custom_dir)],
         ),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
-        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=fake_images),
-        patch("mtg_proxies.cli.print_cards_fpdf") as print_cards_fpdf,
+        patch("mtg_proxies.print_command.parse_decklist_spec", return_value=fake_decklist),
+        patch("mtg_proxies.print_command.fetch_scans_scryfall", return_value=fake_images),
+        patch("mtg_proxies.print_command.print_cards_fpdf") as print_cards_fpdf,
     ):
         main()
 
@@ -605,7 +605,7 @@ def test_main_convert_prefer_retro_frame_groups_non_retro_under_comment(tmp_path
             "sys.argv",
             ["mtg-proxies", "convert", "deck.txt", str(out_file), "--prefer-retro-frame"],
         ),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
+        patch("mtg_proxies.convert_command.parse_decklist_spec", return_value=decklist),
     ):
         main()
 
@@ -637,7 +637,7 @@ def test_main_convert_prefer_retro_frame_no_comment_when_all_retro(tmp_path) -> 
             "sys.argv",
             ["mtg-proxies", "convert", "deck.txt", str(out_file), "--prefer-retro-frame"],
         ),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
+        patch("mtg_proxies.convert_command.parse_decklist_spec", return_value=decklist),
     ):
         main()
 
@@ -658,7 +658,7 @@ def test_main_convert_preferred_set_moves_fallback_cards_to_bottom(tmp_path) -> 
 
     with (
         patch("sys.argv", ["mtg-proxies", "convert", "deck.txt", str(out_file), "--set", "LTR"]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
+        patch("mtg_proxies.convert_command.parse_decklist_spec", return_value=decklist),
     ):
         main()
 
@@ -683,7 +683,7 @@ def test_main_convert_no_preferred_set_flag_no_reordering(tmp_path) -> None:
 
     with (
         patch("sys.argv", ["mtg-proxies", "convert", "deck.txt", str(out_file)]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
+        patch("mtg_proxies.convert_command.parse_decklist_spec", return_value=decklist),
     ):
         main()
 
@@ -706,7 +706,7 @@ def test_main_convert_allow_low_res_keeps_lowres_preferred_set_cards(tmp_path) -
 
     with (
         patch("sys.argv", ["mtg-proxies", "convert", "deck.txt", str(out_file), "--set", "LTR", "--allow-low-res"]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
+        patch("mtg_proxies.convert_command.parse_decklist_spec", return_value=decklist),
     ):
         main()
 
@@ -734,7 +734,7 @@ def test_main_convert_allow_low_res_no_not_in_set_section_when_all_cards_in_pref
 
     with (
         patch("sys.argv", ["mtg-proxies", "convert", "deck.txt", str(out_file), "--set", "LTR", "--allow-low-res"]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
+        patch("mtg_proxies.convert_command.parse_decklist_spec", return_value=decklist),
     ):
         main()
 
@@ -757,7 +757,7 @@ def test_main_convert_without_allow_low_res_uses_combined_section(tmp_path) -> N
 
     with (
         patch("sys.argv", ["mtg-proxies", "convert", "deck.txt", str(out_file), "--set", "LTR"]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
+        patch("mtg_proxies.convert_command.parse_decklist_spec", return_value=decklist),
     ):
         main()
 
@@ -779,7 +779,7 @@ def test_main_convert_lowres_cards_moved_to_bottom(tmp_path) -> None:
 
     with (
         patch("sys.argv", ["mtg-proxies", "convert", "deck.txt", str(out_file)]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
+        patch("mtg_proxies.convert_command.parse_decklist_spec", return_value=decklist),
     ):
         main()
 
@@ -804,7 +804,7 @@ def test_main_convert_all_highres_no_lowres_comment(tmp_path) -> None:
 
     with (
         patch("sys.argv", ["mtg-proxies", "convert", "deck.txt", str(out_file)]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
+        patch("mtg_proxies.convert_command.parse_decklist_spec", return_value=decklist),
     ):
         main()
 
@@ -827,7 +827,7 @@ def test_main_convert_lowres_below_preferred_set_fallback_section(tmp_path) -> N
 
     with (
         patch("sys.argv", ["mtg-proxies", "convert", "deck.txt", str(out_file), "--set", "LTR"]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=decklist),
+        patch("mtg_proxies.convert_command.parse_decklist_spec", return_value=decklist),
     ):
         main()
 
@@ -853,7 +853,7 @@ def test_main_convert_forwards_art_preference(tmp_path) -> None:
             "sys.argv",
             ["mtg-proxies", "convert", "decklist.txt", str(out_file), "--art-preference", "wild"],
         ),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist) as parse_decklist_spec,
+        patch("mtg_proxies.convert_command.parse_decklist_spec", return_value=fake_decklist) as parse_decklist_spec,
     ):
         main()
 
@@ -875,7 +875,7 @@ def test_main_convert_art_before_forwards_to_parse_decklist_spec(tmp_path) -> No
             "sys.argv",
             ["mtg-proxies", "convert", "decklist.txt", str(out_file), "--art-before", "2023"],
         ),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist) as parse_decklist_spec,
+        patch("mtg_proxies.convert_command.parse_decklist_spec", return_value=fake_decklist) as parse_decklist_spec,
     ):
         main()
 
@@ -892,7 +892,7 @@ def test_main_convert_art_before_defaults_to_none(tmp_path) -> None:
 
     with (
         patch("sys.argv", ["mtg-proxies", "convert", "decklist.txt", str(out_file)]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist) as parse_decklist_spec,
+        patch("mtg_proxies.convert_command.parse_decklist_spec", return_value=fake_decklist) as parse_decklist_spec,
     ):
         main()
 
@@ -934,8 +934,8 @@ def test_main_convert_basic_lands_appends_to_input_decklist(tmp_path) -> None:
                 "wild",
             ],
         ),
-        patch("mtg_proxies.cli._generate_basic_lands_decklist", return_value=basics_decklist) as generate_basic_lands,
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=input_decklist) as parse_decklist_spec,
+        patch("mtg_proxies.convert_command._generate_basic_lands_decklist", return_value=basics_decklist) as generate_basic_lands,
+        patch("mtg_proxies.convert_command.parse_decklist_spec", return_value=input_decklist) as parse_decklist_spec,
         patch.object(Decklist, "save", autospec=True, side_effect=lambda self, path, fmt: fake_save(path, fmt)),
     ):
         main()
@@ -971,8 +971,8 @@ def test_main_convert_basic_lands_only_skips_parsing(tmp_path) -> None:
                 str(out_file),
             ],
         ),
-        patch("mtg_proxies.cli._generate_basic_lands_decklist", return_value=fake_decklist) as generate_basic_lands,
-        patch("mtg_proxies.cli.parse_decklist_spec") as parse_decklist_spec,
+        patch("mtg_proxies.convert_command._generate_basic_lands_decklist", return_value=fake_decklist) as generate_basic_lands,
+        patch("mtg_proxies.convert_command.parse_decklist_spec") as parse_decklist_spec,
     ):
         main()
 
@@ -1004,7 +1004,7 @@ def test_main_convert_basic_lands_accepts_outfile_after_specs(tmp_path) -> None:
                 str(out_file),
             ],
         ),
-        patch("mtg_proxies.cli._generate_basic_lands_decklist", return_value=fake_decklist) as generate_basic_lands,
+        patch("mtg_proxies.convert_command._generate_basic_lands_decklist", return_value=fake_decklist) as generate_basic_lands,
     ):
         main()
 
@@ -1034,7 +1034,7 @@ def test_main_convert_basic_lands_accepts_premium_art_preference(tmp_path) -> No
                 str(out_file),
             ],
         ),
-        patch("mtg_proxies.cli._generate_basic_lands_decklist", return_value=fake_decklist) as generate_basic_lands,
+        patch("mtg_proxies.convert_command._generate_basic_lands_decklist", return_value=fake_decklist) as generate_basic_lands,
     ):
         main()
 
@@ -1103,7 +1103,7 @@ def test_main_convert_basic_lands_accepts_explicit_out_flag(tmp_path) -> None:
             "sys.argv",
             ["mtg-proxies", "convert", "--basic-lands", "mountain=9", "-o", str(out_file)],
         ),
-        patch("mtg_proxies.cli._generate_basic_lands_decklist", return_value=fake_decklist) as generate_basic_lands,
+        patch("mtg_proxies.convert_command._generate_basic_lands_decklist", return_value=fake_decklist) as generate_basic_lands,
     ):
         main()
 
@@ -1132,7 +1132,7 @@ def test_main_convert_out_flag_overrides_positional(tmp_path) -> None:
                 str(explicit_out),
             ],
         ),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
+        patch("mtg_proxies.convert_command.parse_decklist_spec", return_value=fake_decklist),
     ):
         main()
 
@@ -1156,12 +1156,12 @@ def test_main_convert_basic_lands_requires_output_file(capsys: pytest.CaptureFix
 
 
 def test_generate_basic_lands_decklist_prefers_unique_art_before_repeats() -> None:
-    from mtg_proxies.cli import _generate_basic_lands_decklist
+    from mtg_proxies.convert_command import _generate_basic_lands_decklist
 
     first = {"id": "m1", "name": "Mountain", "set": "a", "collector_number": "1", "type_line": "Basic Land — Mountain"}
     second = {"id": "m2", "name": "Mountain", "set": "b", "collector_number": "2", "type_line": "Basic Land — Mountain"}
 
-    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[first, second]):
+    with patch("mtg_proxies.scryfall.recommend_print", return_value=[first, second]):
         decklist = _generate_basic_lands_decklist(["mountain=3"], rng=random.Random(0))
 
     ids = [entry.card["id"] for entry in decklist.cards]
@@ -1171,7 +1171,7 @@ def test_generate_basic_lands_decklist_prefers_unique_art_before_repeats() -> No
 
 
 def test_generate_basic_lands_decklist_standard_avoids_full_art_when_regular_exists() -> None:
-    from mtg_proxies.cli import _generate_basic_lands_decklist
+    from mtg_proxies.convert_command import _generate_basic_lands_decklist
 
     regular = {
         "id": "regular",
@@ -1194,14 +1194,14 @@ def test_generate_basic_lands_decklist_standard_avoids_full_art_when_regular_exi
         "set_type": "expansion",
     }
 
-    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[regular, full_art]):
+    with patch("mtg_proxies.scryfall.recommend_print", return_value=[regular, full_art]):
         decklist = _generate_basic_lands_decklist(["mountain=1"], art_preference="standard", rng=random.Random(0))
 
     assert decklist.cards[0].card["id"] == "regular"
 
 
 def test_generate_basic_lands_decklist_standard_repeats_regular_before_using_full_art() -> None:
-    from mtg_proxies.cli import _generate_basic_lands_decklist
+    from mtg_proxies.convert_command import _generate_basic_lands_decklist
 
     first_regular = {
         "id": "regular-1",
@@ -1234,7 +1234,7 @@ def test_generate_basic_lands_decklist_standard_repeats_regular_before_using_ful
         "set_type": "expansion",
     }
 
-    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[first_regular, second_regular, full_art]):
+    with patch("mtg_proxies.scryfall.recommend_print", return_value=[first_regular, second_regular, full_art]):
         decklist = _generate_basic_lands_decklist(["mountain=3"], art_preference="standard", rng=random.Random(0))
 
     ids = [entry.card["id"] for entry in decklist.cards]
@@ -1243,7 +1243,7 @@ def test_generate_basic_lands_decklist_standard_repeats_regular_before_using_ful
 
 
 def test_generate_basic_lands_decklist_standard_avoids_flashy_non_full_art_when_plain_exists() -> None:
-    from mtg_proxies.cli import _generate_basic_lands_decklist
+    from mtg_proxies.convert_command import _generate_basic_lands_decklist
 
     plain = {
         "id": "plain",
@@ -1270,14 +1270,14 @@ def test_generate_basic_lands_decklist_standard_avoids_flashy_non_full_art_when_
         "digital": False,
     }
 
-    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[plain, flashy]):
+    with patch("mtg_proxies.scryfall.recommend_print", return_value=[plain, flashy]):
         decklist = _generate_basic_lands_decklist(["forest=1"], art_preference="standard", rng=random.Random(0))
 
     assert decklist.cards[0].card["id"] == "plain"
 
 
 def test_generate_basic_lands_decklist_premium_prefers_elegant_full_art() -> None:
-    from mtg_proxies.cli import _generate_basic_lands_decklist
+    from mtg_proxies.convert_command import _generate_basic_lands_decklist
 
     elegant_full_art = {
         "id": "premium",
@@ -1307,7 +1307,7 @@ def test_generate_basic_lands_decklist_premium_prefers_elegant_full_art() -> Non
     }
 
     premium_count = 0
-    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[loud_gimmick, elegant_full_art]):
+    with patch("mtg_proxies.scryfall.recommend_print", return_value=[loud_gimmick, elegant_full_art]):
         for seed in range(100):
             decklist = _generate_basic_lands_decklist(["mountain=1"], art_preference="premium", rng=random.Random(seed))
             if decklist.cards[0].card["id"] == "premium":
@@ -1317,7 +1317,7 @@ def test_generate_basic_lands_decklist_premium_prefers_elegant_full_art() -> Non
 
 
 def test_generate_basic_lands_decklist_wild_prefers_flashy_over_elegant() -> None:
-    from mtg_proxies.cli import _generate_basic_lands_decklist
+    from mtg_proxies.convert_command import _generate_basic_lands_decklist
 
     elegant_full_art = {
         "id": "premium",
@@ -1347,7 +1347,7 @@ def test_generate_basic_lands_decklist_wild_prefers_flashy_over_elegant() -> Non
     }
 
     wild_count = 0
-    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[elegant_full_art, loud_gimmick]):
+    with patch("mtg_proxies.scryfall.recommend_print", return_value=[elegant_full_art, loud_gimmick]):
         for seed in range(100):
             decklist = _generate_basic_lands_decklist(["mountain=1"], art_preference="wild", rng=random.Random(seed))
             if decklist.cards[0].card["id"] == "wild":
@@ -1357,7 +1357,7 @@ def test_generate_basic_lands_decklist_wild_prefers_flashy_over_elegant() -> Non
 
 
 def test_generate_basic_lands_decklist_excludes_cross_over_and_racing_basics() -> None:
-    from mtg_proxies.cli import _generate_basic_lands_decklist
+    from mtg_proxies.convert_command import _generate_basic_lands_decklist
 
     excluded = [
         {
@@ -1402,14 +1402,14 @@ def test_generate_basic_lands_decklist_excludes_cross_over_and_racing_basics() -
         "type_line": "Basic Land — Mountain",
     }
 
-    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[*excluded, allowed]):
+    with patch("mtg_proxies.scryfall.recommend_print", return_value=[*excluded, allowed]):
         decklist = _generate_basic_lands_decklist(["mountain=1"], rng=random.Random(0))
 
     assert decklist.cards[0].card["id"] == "ok"
 
 
 def test_generate_basic_lands_decklist_excludes_explanation_style_sld_basics_only() -> None:
-    from mtg_proxies.cli import _generate_basic_lands_decklist
+    from mtg_proxies.convert_command import _generate_basic_lands_decklist
 
     excluded = [
         {
@@ -1462,14 +1462,14 @@ def test_generate_basic_lands_decklist_excludes_explanation_style_sld_basics_onl
         "type_line": "Basic Land — Forest",
     }
 
-    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[*excluded, allowed]):
+    with patch("mtg_proxies.scryfall.recommend_print", return_value=[*excluded, allowed]):
         decklist = _generate_basic_lands_decklist(["forest=1"], rng=random.Random(0))
 
     assert decklist.cards[0].card["id"] == "sld-allowed"
 
 
 def test_generate_basic_lands_decklist_excludes_vector_style_sld_basics_only() -> None:
-    from mtg_proxies.cli import _generate_basic_lands_decklist
+    from mtg_proxies.convert_command import _generate_basic_lands_decklist
 
     excluded = [
         {
@@ -1522,14 +1522,14 @@ def test_generate_basic_lands_decklist_excludes_vector_style_sld_basics_only() -
         "type_line": "Basic Land — Forest",
     }
 
-    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[*excluded, allowed]):
+    with patch("mtg_proxies.scryfall.recommend_print", return_value=[*excluded, allowed]):
         decklist = _generate_basic_lands_decklist(["forest=1"], rng=random.Random(0))
 
     assert decklist.cards[0].card["id"] == "sld-allowed-420"
 
 
 def test_generate_basic_lands_decklist_wild_varies_across_rng_seeds() -> None:
-    from mtg_proxies.cli import _generate_basic_lands_decklist
+    from mtg_proxies.convert_command import _generate_basic_lands_decklist
 
     cards = [
         {
@@ -1573,7 +1573,7 @@ def test_generate_basic_lands_decklist_wild_varies_across_rng_seeds() -> None:
         },
     ]
 
-    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=cards):
+    with patch("mtg_proxies.scryfall.recommend_print", return_value=cards):
         decklist_one = _generate_basic_lands_decklist(["mountain=3"], art_preference="wild", rng=random.Random(1))
         decklist_two = _generate_basic_lands_decklist(["mountain=3"], art_preference="wild", rng=random.Random(2))
 
@@ -1585,7 +1585,7 @@ def test_generate_basic_lands_decklist_wild_varies_across_rng_seeds() -> None:
 
 
 def test_normalize_custom_art_images_without_crop_returns_original_paths(tmp_path) -> None:
-    from mtg_proxies.cli import _normalize_custom_art_images
+    from mtg_proxies.print_command import _normalize_custom_art_images
 
     custom_dir = tmp_path / "art"
     custom_dir.mkdir()
@@ -1600,7 +1600,7 @@ def test_normalize_custom_art_images_without_crop_returns_original_paths(tmp_pat
 
 
 def test_generate_basic_lands_decklist_standard_excludes_borderless_basics() -> None:
-    from mtg_proxies.cli import _generate_basic_lands_decklist
+    from mtg_proxies.convert_command import _generate_basic_lands_decklist
 
     borderless = {
         "id": "dmu-281",
@@ -1631,7 +1631,7 @@ def test_generate_basic_lands_decklist_standard_excludes_borderless_basics() -> 
         "digital": False,
     }
 
-    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[borderless, plain]):
+    with patch("mtg_proxies.scryfall.recommend_print", return_value=[borderless, plain]):
         decklist = _generate_basic_lands_decklist(["forest=2"], art_preference="standard", rng=random.Random(0))
 
     ids = [entry.card["id"] for entry in decklist.cards]
@@ -1640,7 +1640,7 @@ def test_generate_basic_lands_decklist_standard_excludes_borderless_basics() -> 
 
 
 def test_generate_basic_lands_decklist_standard_excludes_old_frame_basics() -> None:
-    from mtg_proxies.cli import _generate_basic_lands_decklist
+    from mtg_proxies.convert_command import _generate_basic_lands_decklist
 
     old_frame = {
         "id": "usg-vintage",
@@ -1671,7 +1671,7 @@ def test_generate_basic_lands_decklist_standard_excludes_old_frame_basics() -> N
         "digital": False,
     }
 
-    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[old_frame, modern]):
+    with patch("mtg_proxies.scryfall.recommend_print", return_value=[old_frame, modern]):
         decklist = _generate_basic_lands_decklist(["forest=2"], art_preference="standard", rng=random.Random(0))
 
     ids = [entry.card["id"] for entry in decklist.cards]
@@ -1680,7 +1680,7 @@ def test_generate_basic_lands_decklist_standard_excludes_old_frame_basics() -> N
 
 
 def test_generate_basic_lands_decklist_wild_accepts_borderless_and_old_frame() -> None:
-    from mtg_proxies.cli import _generate_basic_lands_decklist
+    from mtg_proxies.convert_command import _generate_basic_lands_decklist
 
     borderless = {
         "id": "dmu-281",
@@ -1711,7 +1711,7 @@ def test_generate_basic_lands_decklist_wild_accepts_borderless_and_old_frame() -
         "digital": False,
     }
 
-    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[borderless, old_frame]):
+    with patch("mtg_proxies.scryfall.recommend_print", return_value=[borderless, old_frame]):
         decklist = _generate_basic_lands_decklist(["forest=2"], art_preference="wild", rng=random.Random(0))
 
     ids = [entry.card["id"] for entry in decklist.cards]
@@ -1719,7 +1719,7 @@ def test_generate_basic_lands_decklist_wild_accepts_borderless_and_old_frame() -
 
 
 def test_generate_basic_lands_decklist_default_preference_excludes_like_standard() -> None:
-    from mtg_proxies.cli import _generate_basic_lands_decklist
+    from mtg_proxies.convert_command import _generate_basic_lands_decklist
 
     borderless = {
         "id": "dmu-281",
@@ -1764,7 +1764,7 @@ def test_generate_basic_lands_decklist_default_preference_excludes_like_standard
         "digital": False,
     }
 
-    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[borderless, old_frame, plain]):
+    with patch("mtg_proxies.scryfall.recommend_print", return_value=[borderless, old_frame, plain]):
         decklist = _generate_basic_lands_decklist(["forest=2"], art_preference="standard", rng=random.Random(0))
 
     ids = [entry.card["id"] for entry in decklist.cards]
@@ -1774,7 +1774,7 @@ def test_generate_basic_lands_decklist_default_preference_excludes_like_standard
 
 
 def test_generate_basic_lands_decklist_standard_varies_across_consecutive_runs() -> None:
-    from mtg_proxies.cli import _generate_basic_lands_decklist
+    from mtg_proxies.convert_command import _generate_basic_lands_decklist
 
     cards = [
         {
@@ -1794,7 +1794,7 @@ def test_generate_basic_lands_decklist_standard_varies_across_consecutive_runs()
         for i in range(6)
     ]
 
-    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=cards):
+    with patch("mtg_proxies.scryfall.recommend_print", return_value=cards):
         decklist_a = _generate_basic_lands_decklist(["forest=10"], art_preference="standard", rng=random.Random(1))
         decklist_b = _generate_basic_lands_decklist(["forest=10"], art_preference="standard", rng=random.Random(2))
 
@@ -1807,7 +1807,7 @@ def test_generate_basic_lands_decklist_standard_varies_across_consecutive_runs()
 
 
 def test_generate_basic_lands_decklist_wild_weight_curve_distributes_selection() -> None:
-    from mtg_proxies.cli import _generate_basic_lands_decklist
+    from mtg_proxies.convert_command import _generate_basic_lands_decklist
 
     all_promos = ["boosterfun", "concept", "galaxyfoil", "halofoil", "poster"]
     cards = [
@@ -1829,7 +1829,7 @@ def test_generate_basic_lands_decklist_wild_weight_curve_distributes_selection()
     ]
 
     top_card_count = 0
-    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=cards):
+    with patch("mtg_proxies.scryfall.recommend_print", return_value=cards):
         for seed in range(500):
             decklist = _generate_basic_lands_decklist(["mountain=1"], art_preference="wild", rng=random.Random(seed))
             if decklist.cards[0].card["id"] == "mountain-0":
@@ -1841,7 +1841,7 @@ def test_generate_basic_lands_decklist_wild_weight_curve_distributes_selection()
 
 
 def test_generate_basic_lands_decklist_small_pool_completes_without_error() -> None:
-    from mtg_proxies.cli import _generate_basic_lands_decklist
+    from mtg_proxies.convert_command import _generate_basic_lands_decklist
 
     cards = [
         {
@@ -1874,7 +1874,7 @@ def test_generate_basic_lands_decklist_small_pool_completes_without_error() -> N
         },
     ]
 
-    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=cards):
+    with patch("mtg_proxies.scryfall.recommend_print", return_value=cards):
         decklist = _generate_basic_lands_decklist(["plains=5"], art_preference="standard", rng=random.Random(0))
 
     assert len(decklist.cards) == 5
@@ -1882,7 +1882,7 @@ def test_generate_basic_lands_decklist_small_pool_completes_without_error() -> N
 
 def test_generate_basic_lands_decklist_standard_avoids_full_art_flag_when_regular_exists() -> None:
     """Cards with full_art=True (but no 'fullart' frame_effect) must be excluded in standard mode."""
-    from mtg_proxies.cli import _generate_basic_lands_decklist
+    from mtg_proxies.convert_command import _generate_basic_lands_decklist
 
     regular = {
         "id": "regular",
@@ -1915,7 +1915,7 @@ def test_generate_basic_lands_decklist_standard_avoids_full_art_flag_when_regula
         "set_name": "Foundations",
     }
 
-    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[regular, full_art_via_flag]):
+    with patch("mtg_proxies.scryfall.recommend_print", return_value=[regular, full_art_via_flag]):
         decklist = _generate_basic_lands_decklist(["forest=2"], art_preference="standard", rng=random.Random(0))
 
     ids = [entry.card["id"] for entry in decklist.cards]
@@ -1924,7 +1924,7 @@ def test_generate_basic_lands_decklist_standard_avoids_full_art_flag_when_regula
 
 def test_generate_basic_lands_decklist_standard_prefers_duplicate_over_lowres() -> None:
     """In standard mode, repeat a highres basic rather than pick a lowres one."""
-    from mtg_proxies.cli import _generate_basic_lands_decklist
+    from mtg_proxies.convert_command import _generate_basic_lands_decklist
 
     highres = {
         "id": "highres",
@@ -1959,7 +1959,7 @@ def test_generate_basic_lands_decklist_standard_prefers_duplicate_over_lowres() 
         "set_name": "Tarkir: Dragonstorm",
     }
 
-    with patch("mtg_proxies.cli.scryfall.recommend_print", return_value=[highres, lowres]):
+    with patch("mtg_proxies.scryfall.recommend_print", return_value=[highres, lowres]):
         decklist = _generate_basic_lands_decklist(["mountain=3"], art_preference="standard", rng=random.Random(0))
 
     ids = [entry.card["id"] for entry in decklist.cards]
@@ -2029,10 +2029,10 @@ def test_main_print_upscale_calls_upscale_images(tmp_path) -> None:
 
     with (
         patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), "--upscale"]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
-        patch("mtg_proxies.cli.fetch_scans_scryfall_flagged", return_value=(fake_images, fake_flags)) as flagged_fetch,
+        patch("mtg_proxies.print_command.parse_decklist_spec", return_value=fake_decklist),
+        patch("mtg_proxies.print_command.fetch_scans_scryfall_flagged", return_value=(fake_images, fake_flags)) as flagged_fetch,
         patch("mtg_proxies.upscale.upscale_images", return_value=upscaled) as mock_upscale,
-        patch("mtg_proxies.cli.print_cards_fpdf"),
+        patch("mtg_proxies.print_command.print_cards_fpdf"),
     ):
         main()
 
@@ -2052,10 +2052,10 @@ def test_main_print_upscale_all_overrides_highres_flags(tmp_path) -> None:
 
     with (
         patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), "--upscale", "all"]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
-        patch("mtg_proxies.cli.fetch_scans_scryfall_flagged", return_value=(fake_images, fake_flags)),
+        patch("mtg_proxies.print_command.parse_decklist_spec", return_value=fake_decklist),
+        patch("mtg_proxies.print_command.fetch_scans_scryfall_flagged", return_value=(fake_images, fake_flags)),
         patch("mtg_proxies.upscale.upscale_images", return_value=fake_images) as mock_upscale,
-        patch("mtg_proxies.cli.print_cards_fpdf"),
+        patch("mtg_proxies.print_command.print_cards_fpdf"),
     ):
         main()
 
@@ -2089,7 +2089,7 @@ def test_main_print_upscale_all_overrides_highres_flags(tmp_path) -> None:
 def test_resolve_upscale_scope(upscale: str | None, upscale_model: str | None, expected: str | None) -> None:
     import argparse
 
-    from mtg_proxies.cli import resolve_upscale_scope
+    from mtg_proxies.print_command import resolve_upscale_scope
 
     args = argparse.Namespace(upscale=upscale, upscale_model=upscale_model)
 
@@ -2107,10 +2107,10 @@ def test_main_print_upscale_bare_defaults_to_auto(tmp_path) -> None:
 
     with (
         patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), "--upscale"]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
-        patch("mtg_proxies.cli.fetch_scans_scryfall_flagged", return_value=(fake_images, fake_flags)) as flagged,
+        patch("mtg_proxies.print_command.parse_decklist_spec", return_value=fake_decklist),
+        patch("mtg_proxies.print_command.fetch_scans_scryfall_flagged", return_value=(fake_images, fake_flags)) as flagged,
         patch("mtg_proxies.upscale.upscale_images", return_value=fake_images) as mock_upscale,
-        patch("mtg_proxies.cli.print_cards_fpdf"),
+        patch("mtg_proxies.print_command.print_cards_fpdf"),
     ):
         main()
 
@@ -2133,10 +2133,10 @@ def test_main_print_upscale_model_alone_implies_auto(tmp_path) -> None:
             "sys.argv",
             ["mtg-proxies", "print", "decklist.txt", str(out_file), "--upscale-model", "/tmp/m.pth"],
         ),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
-        patch("mtg_proxies.cli.fetch_scans_scryfall_flagged", return_value=(fake_images, fake_flags)) as flagged,
+        patch("mtg_proxies.print_command.parse_decklist_spec", return_value=fake_decklist),
+        patch("mtg_proxies.print_command.fetch_scans_scryfall_flagged", return_value=(fake_images, fake_flags)) as flagged,
         patch("mtg_proxies.upscale.upscale_images", return_value=fake_images) as mock_upscale,
-        patch("mtg_proxies.cli.print_cards_fpdf"),
+        patch("mtg_proxies.print_command.print_cards_fpdf"),
     ):
         main()
 
@@ -2161,10 +2161,10 @@ def test_main_print_upscale_target_width_forwarded(tmp_path) -> None:
             "sys.argv",
             ["mtg-proxies", "print", "decklist.txt", str(out_file), "--upscale", "--upscale-target-width", "1500"],
         ),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
-        patch("mtg_proxies.cli.fetch_scans_scryfall_flagged", return_value=(fake_images, fake_flags)),
+        patch("mtg_proxies.print_command.parse_decklist_spec", return_value=fake_decklist),
+        patch("mtg_proxies.print_command.fetch_scans_scryfall_flagged", return_value=(fake_images, fake_flags)),
         patch("mtg_proxies.upscale.upscale_images", return_value=fake_images) as mock_upscale,
-        patch("mtg_proxies.cli.print_cards_fpdf"),
+        patch("mtg_proxies.print_command.print_cards_fpdf"),
     ):
         main()
 
@@ -2182,10 +2182,10 @@ def test_main_print_upscale_target_width_default_745(tmp_path) -> None:
 
     with (
         patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), "--upscale"]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
-        patch("mtg_proxies.cli.fetch_scans_scryfall_flagged", return_value=(fake_images, [False])),
+        patch("mtg_proxies.print_command.parse_decklist_spec", return_value=fake_decklist),
+        patch("mtg_proxies.print_command.fetch_scans_scryfall_flagged", return_value=(fake_images, [False])),
         patch("mtg_proxies.upscale.upscale_images", return_value=fake_images) as mock_upscale,
-        patch("mtg_proxies.cli.print_cards_fpdf"),
+        patch("mtg_proxies.print_command.print_cards_fpdf"),
     ):
         main()
 
@@ -2201,10 +2201,10 @@ def test_main_print_no_upscale_does_not_call_upscale_images(tmp_path) -> None:
 
     with (
         patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file)]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=fake_decklist),
-        patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["card.png"]),
-        patch("mtg_proxies.cli.fetch_scans_scryfall_flagged") as flagged_fetch,
-        patch("mtg_proxies.cli.print_cards_fpdf"),
+        patch("mtg_proxies.print_command.parse_decklist_spec", return_value=fake_decklist),
+        patch("mtg_proxies.print_command.fetch_scans_scryfall", return_value=["card.png"]),
+        patch("mtg_proxies.print_command.fetch_scans_scryfall_flagged") as flagged_fetch,
+        patch("mtg_proxies.print_command.print_cards_fpdf"),
     ):
         main()
 
@@ -2218,7 +2218,7 @@ def test_main_print_no_upscale_does_not_call_upscale_images(tmp_path) -> None:
 
 def test_localize_card_payload_single_face_attaches_localized_fields() -> None:
     """A single-faced card gets printed_name/printed_type_line/printed_text attached, copy-safe."""
-    from mtg_proxies.cli import _localize_card_payload
+    from mtg_proxies.cardconjurer.engine import _localize_card_payload
 
     card = {"name": "Serra Angel", "type_line": "Creature — Angel", "oracle_text": "Flying\nVigilance"}
     localized = {
@@ -2241,7 +2241,7 @@ def test_localize_card_payload_single_face_attaches_localized_fields() -> None:
 
 def test_localize_card_payload_dfc_matches_faces_positionally() -> None:
     """Each card_faces[i] gets its own localized fields from localized['card_faces'][i]."""
-    from mtg_proxies.cli import _localize_card_payload
+    from mtg_proxies.cardconjurer.engine import _localize_card_payload
 
     card = {
         "layout": "transform",
@@ -2262,7 +2262,7 @@ def test_localize_card_payload_dfc_matches_faces_positionally() -> None:
 
 def test_localize_card_payload_face_count_mismatch_returns_original_unchanged() -> None:
     """A face-count mismatch between card and localized print skips localization entirely."""
-    from mtg_proxies.cli import _localize_card_payload
+    from mtg_proxies.cardconjurer.engine import _localize_card_payload
 
     card = {"card_faces": [{"name": "Front"}, {"name": "Back"}]}
     localized = {"card_faces": [{"printed_name": "Nur eine Seite"}]}
@@ -2274,7 +2274,7 @@ def test_localize_card_payload_face_count_mismatch_returns_original_unchanged() 
 
 def test_localize_card_payload_missing_field_falls_back_by_omission() -> None:
     """A localized field missing on the chosen print is simply left unset on the copy."""
-    from mtg_proxies.cli import _localize_card_payload
+    from mtg_proxies.cardconjurer.engine import _localize_card_payload
 
     card = {"name": "Delver of Secrets"}
     localized = {"printed_name": "", "printed_type_line": "Kreatur — Mensch, Zauberer"}
@@ -2286,7 +2286,7 @@ def test_localize_card_payload_missing_field_falls_back_by_omission() -> None:
 
 
 def test_has_any_localized_field_true_when_any_face_has_text() -> None:
-    from mtg_proxies.cli import _has_any_localized_field
+    from mtg_proxies.cardconjurer.engine import _has_any_localized_field
 
     assert _has_any_localized_field({"printed_name": "Serra-Engel"}) is True
     assert _has_any_localized_field(
@@ -2295,7 +2295,7 @@ def test_has_any_localized_field_true_when_any_face_has_text() -> None:
 
 
 def test_has_any_localized_field_false_when_all_fields_empty() -> None:
-    from mtg_proxies.cli import _has_any_localized_field
+    from mtg_proxies.cardconjurer.engine import _has_any_localized_field
 
     assert _has_any_localized_field({"printed_name": "", "printed_type_line": None}) is False
     assert _has_any_localized_field({"card_faces": [{"printed_name": ""}, {}]}) is False
@@ -2317,10 +2317,10 @@ def test_main_print_paper(tmp_path: Path) -> None:
     for flags, expected in cases:
         with (
             patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), *flags]),
-            patch("mtg_proxies.cli.parse_decklist_spec", return_value=Decklist()),
-            patch("mtg_proxies.cli.fetch_scans_scryfall", return_value=["a.png"]),
+            patch("mtg_proxies.print_command.parse_decklist_spec", return_value=Decklist()),
+            patch("mtg_proxies.print_command.fetch_scans_scryfall", return_value=["a.png"]),
             patch("mtg_proxies.paper.prepare_images", return_value=["a_p.png"]) as mock_p,
-            patch("mtg_proxies.cli.print_cards_fpdf") as mock_pdf,
+            patch("mtg_proxies.print_command.print_cards_fpdf") as mock_pdf,
         ):
             main()
 
@@ -2333,8 +2333,8 @@ def test_main_print_paper(tmp_path: Path) -> None:
 
 
 def test_mpcfill_dfc_drops_scryfall_back_face_in_flat_layout() -> None:
-    from mtg_proxies.cli import _build_slot_map, _mpcfill_front_only
     from mtg_proxies.decklists.decklist import Decklist
+    from mtg_proxies.print_command import _build_slot_map, _mpcfill_front_only
 
     def dfc(name: str) -> dict:
         return {

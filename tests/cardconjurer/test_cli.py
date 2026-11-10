@@ -343,7 +343,7 @@ def test_main_cardconjurer_borderless_and_modern_mutex(capsys: pytest.CaptureFix
 
 def test_resolve_cc_frame_borderless_modeline() -> None:
     """A per-card `#cardconjurer --borderless` modeline resolves to 'borderless'."""
-    from mtg_proxies.cli import _resolve_cc_frame
+    from mtg_proxies.cardconjurer.engine import _resolve_cc_frame
 
     assert _resolve_cc_frame({"--borderless": True}) == "borderless"
 
@@ -392,7 +392,7 @@ def test_main_cardconjurer_help_mentions_retro(capsys: pytest.CaptureFixture) ->
 
 def test_resolve_cc_frame_retro_modeline() -> None:
     """A per-card `#cardconjurer` modeline resolves each frame flag; bare → 'auto'."""
-    from mtg_proxies.cli import _resolve_cc_frame
+    from mtg_proxies.cardconjurer.engine import _resolve_cc_frame
 
     assert _resolve_cc_frame({"--retro": True}) == "retro"
     assert _resolve_cc_frame({"--modern": True}) == "modern"
@@ -464,7 +464,7 @@ def test_main_cardconjurer_help_mentions_m15_8th(capsys: pytest.CaptureFixture) 
 
 def test_resolve_cc_frame_m15_8th_modeline() -> None:
     """A per-card `#cardconjurer --m15-8th` modeline resolves to 'm15-8th'."""
-    from mtg_proxies.cli import _resolve_cc_frame
+    from mtg_proxies.cardconjurer.engine import _resolve_cc_frame
 
     assert _resolve_cc_frame({"--m15-8th": True}) == "m15-8th"
     assert _resolve_cc_frame({}) == "auto"  # bare #cardconjurer never resolves to m15-8th
@@ -759,7 +759,7 @@ def test_main_cardconjurer_dfc_split_prepare_each_returns_per_face_art(tmp_path:
         patch("sys.argv", ["mtg-proxies", "cardconjurer", "--8th", str(deck), str(tmp_path / "out")]),
         patch("mtg_proxies.scryfall.get_image", side_effect=fake_get_image),
         patch("mtg_proxies.cardconjurer.mtgpics.fetch_mtgpics_art") as mock_mtgpics,
-        patch("mtg_proxies.cli._composite_dfc_art") as mock_composite,
+        patch("mtg_proxies.cardconjurer.engine._composite_dfc_art") as mock_composite,
         patch("mtg_proxies.cardconjurer.runner.render_deck") as mock_render,
     ):
         mock_render.return_value = {"ok": 1, "skipped": 0, "total": 1}
@@ -859,21 +859,21 @@ def test_cc_upscale_helper_skips_wide_art_and_caches_transcode(tmp_path: Path) -
     """Art crops already at the target width pass through; JPEGs land in the persistent PNG cache."""
     from PIL import Image
 
-    from mtg_proxies import cli
+    from mtg_proxies.cardconjurer import engine
 
     wide = tmp_path / "wide.jpg"
-    Image.new("RGB", (cli.CC_UPSCALE_TARGET_WIDTH, 100)).save(wide, format="JPEG")
+    Image.new("RGB", (engine.CC_UPSCALE_TARGET_WIDTH, 100)).save(wide, format="JPEG")
     with patch("mtg_proxies.upscale.upscale_images") as mock_upscale:
-        assert cli._cc_upscale_scryfall_art([str(wide)]) == [str(wide)]
+        assert engine._cc_upscale_scryfall_art([str(wide)]) == [str(wide)]
     mock_upscale.assert_not_called()
 
     small = tmp_path / "small.jpg"
     Image.new("RGB", (626, 457)).save(small, format="JPEG")
     with patch("mtg_proxies.upscale.upscale_images", return_value=["/up.png"]) as mock_upscale:
-        assert cli._cc_upscale_scryfall_art([str(small)]) == ["/up.png"]
+        assert engine._cc_upscale_scryfall_art([str(small)]) == ["/up.png"]
     [src] = mock_upscale.call_args.args[0]
-    assert Path(src) == cli._CC_UPSCALE_SRC_CACHE / "small.png"
-    assert mock_upscale.call_args.kwargs["target_width"] == cli.CC_UPSCALE_TARGET_WIDTH
+    assert Path(src) == engine._CC_UPSCALE_SRC_CACHE / "small.png"
+    assert mock_upscale.call_args.kwargs["target_width"] == engine.CC_UPSCALE_TARGET_WIDTH
 
 
 def test_cc_upscale_defaults_to_mtg_model(tmp_path: Path) -> None:

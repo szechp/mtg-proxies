@@ -24,7 +24,7 @@ def test_modeline_frame_overrides_deck(tmp_path: Path, frame: str, deck_frame: s
         argv.append(f"--{deck_frame}")
     with (
         patch("sys.argv", argv),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=deck),
+        patch("mtg_proxies.cardconjurer.engine.parse_decklist_spec", return_value=deck),
         patch("mtg_proxies.cardconjurer.runner.render_deck") as render,
     ):
         render.return_value = {"ok": 0, "skipped": 0, "total": 4}
@@ -52,7 +52,7 @@ def test_frame_override_survives_custom_art_and_scaling(tmp_path: Path) -> None:
     ])
     with (
         patch("sys.argv", ["mtg-proxies", "cardconjurer", "unused.txt", str(tmp_path / "out"), "--retro-scaled"]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=deck),
+        patch("mtg_proxies.cardconjurer.engine.parse_decklist_spec", return_value=deck),
         patch("mtg_proxies.cardconjurer.runner.render_deck") as render,
         patch("mtg_proxies.frame_scale.enlarge_frame", return_value=1.0) as scale,
     ):
@@ -95,7 +95,7 @@ def test_frame_reaches_serialized_harness_job(tmp_path: Path, frame: str) -> Non
     with (
         patch("sys.argv", ["mtg-proxies", "cardconjurer", "unused.txt", str(tmp_path / "out"), "--8th"]),
         patch("pathlib.Path.home", return_value=tmp_path),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=deck),
+        patch("mtg_proxies.cardconjurer.engine.parse_decklist_spec", return_value=deck),
         patch("subprocess.Popen", return_value=process),
     ):
         main()
@@ -118,7 +118,7 @@ def test_borderless_override_fetches_full_bleed_art(tmp_path: Path) -> None:
     ])
     with (
         patch("sys.argv", ["mtg-proxies", "cardconjurer", "unused.txt", str(tmp_path / "out"), "--retro"]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=deck),
+        patch("mtg_proxies.cardconjurer.engine.parse_decklist_spec", return_value=deck),
         patch("mtg_proxies.cardconjurer.set_symbol.cc_symbol_exists", return_value=True),
         patch("mtg_proxies.cardconjurer.mtgpics.fetch_mtgpics_art", return_value=art) as fetch,
         patch("mtg_proxies.cardconjurer.runner.render_deck") as render,
@@ -144,7 +144,7 @@ def test_scaled_modeline_scales_only_eligible_cards(tmp_path: Path, selector: st
     ])
     with (
         patch("sys.argv", ["mtg-proxies", "cardconjurer", "unused.txt", str(tmp_path / "out"), deck_flag]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=deck),
+        patch("mtg_proxies.cardconjurer.engine.parse_decklist_spec", return_value=deck),
         patch("mtg_proxies.cardconjurer.runner.render_deck") as render,
         patch("mtg_proxies.frame_scale.enlarge_frame", return_value=1.0) as scale,
     ):
@@ -189,7 +189,7 @@ def test_stacked_directives_keep_frame_and_scaling_consistent(tmp_path: Path, la
     deck = Decklist([Card(1, {"name": "Example"}, f"#cardconjurer --retro-scaled #cardconjurer {last}")])
     with (
         patch("sys.argv", ["mtg-proxies", "cardconjurer", "unused.txt", str(tmp_path / "out")]),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=deck),
+        patch("mtg_proxies.cardconjurer.engine.parse_decklist_spec", return_value=deck),
         patch("mtg_proxies.cardconjurer.runner.render_deck") as render,
         patch("mtg_proxies.frame_scale.enlarge_frame", return_value=1.0) as scale,
     ):

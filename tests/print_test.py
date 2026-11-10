@@ -155,7 +155,7 @@ def _fake_decklist(*cards: object) -> object:
 
 
 def test_apply_per_card_modelines_noop_when_no_modelines(monkeypatch: pytest.MonkeyPatch) -> None:
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
 
     fake_resolve = MagicMock()
     monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", fake_resolve)
@@ -163,7 +163,7 @@ def test_apply_per_card_modelines_noop_when_no_modelines(monkeypatch: pytest.Mon
     decklist = _fake_decklist(_fake_card("Sol Ring"), _fake_card("Lightning Bolt"))
     image_paths = ["sol.png", "bolt.png"]
 
-    result = cli._apply_per_card_modelines(decklist, image_paths)
+    result = print_command._apply_per_card_modelines(decklist, image_paths)
 
     assert result == ["sol.png", "bolt.png"]
     fake_resolve.assert_not_called()
@@ -171,7 +171,7 @@ def test_apply_per_card_modelines_noop_when_no_modelines(monkeypatch: pytest.Mon
 
 def test_apply_per_card_modelines_mpcfill_identifier_swap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """`#mpcfill --identifier <id>` fetches that specific render and swaps the slot."""
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
 
     swapped = tmp_path / "mpcfill_render.png"
     swapped.write_bytes(b"PNG")
@@ -185,7 +185,7 @@ def test_apply_per_card_modelines_mpcfill_identifier_swap(monkeypatch: pytest.Mo
     )
     image_paths = ["sol.png", "caves_scryfall.png"]
 
-    result = cli._apply_per_card_modelines(decklist, image_paths)
+    result = print_command._apply_per_card_modelines(decklist, image_paths)
 
     assert result[0] == "sol.png"
     assert result[1] == str(swapped)
@@ -197,7 +197,7 @@ def test_apply_per_card_modelines_mpcfill_identifier_swap(monkeypatch: pytest.Mo
 
 def test_apply_per_card_modelines_mpcfill_without_identifier_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     """Bare `#mpcfill` (no --identifier) is now a no-op + warning; slot keeps its Scryfall art."""
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
 
     fake_resolve = MagicMock(return_value=None)
     monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", fake_resolve)
@@ -205,7 +205,7 @@ def test_apply_per_card_modelines_mpcfill_without_identifier_is_noop(monkeypatch
     decklist = _fake_decklist(_fake_card("Sol Ring", modeline="#mpcfill"))
     image_paths = ["sol_scryfall.png"]
 
-    result = cli._apply_per_card_modelines(decklist, image_paths)
+    result = print_command._apply_per_card_modelines(decklist, image_paths)
 
     assert result == ["sol_scryfall.png"]
     fake_resolve.assert_not_called()
@@ -213,7 +213,7 @@ def test_apply_per_card_modelines_mpcfill_without_identifier_is_noop(monkeypatch
 
 def test_apply_per_card_modelines_mpcfill_fetch_failure_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
     """When fetch_thumbnail fails, resolver returns None and the slot keeps the Scryfall scan."""
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
 
     fake_resolve = MagicMock(return_value=None)
     monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", fake_resolve)
@@ -221,7 +221,7 @@ def test_apply_per_card_modelines_mpcfill_fetch_failure_falls_back(monkeypatch: 
     decklist = _fake_decklist(_fake_card("Sol Ring", modeline="#mpcfill --identifier 1A2b3C4d5E6f7G8h9I0jKlMnOpQrStUvW"))
     image_paths = ["sol_scryfall.png"]
 
-    result = cli._apply_per_card_modelines(decklist, image_paths)
+    result = print_command._apply_per_card_modelines(decklist, image_paths)
 
     assert result == ["sol_scryfall.png"]
     fake_resolve.assert_called_once()
@@ -229,7 +229,7 @@ def test_apply_per_card_modelines_mpcfill_fetch_failure_falls_back(monkeypatch: 
 
 def test_apply_per_card_modelines_mpcfill_count_expansion(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """count=3 → 3 identical slots, all should swap to the same identifier-fetched render."""
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
 
     swapped = tmp_path / "mpcfill_render.png"
     swapped.write_bytes(b"PNG")
@@ -239,7 +239,7 @@ def test_apply_per_card_modelines_mpcfill_count_expansion(monkeypatch: pytest.Mo
     decklist = _fake_decklist(_fake_card("Mountain", count=3, modeline="#mpcfill --identifier 1A2b3C4d5E6f7G8h9I0jKlMnOpQrStUvW"))
     image_paths = ["m.png", "m.png", "m.png"]
 
-    result = cli._apply_per_card_modelines(decklist, image_paths)
+    result = print_command._apply_per_card_modelines(decklist, image_paths)
 
     assert result == [str(swapped), str(swapped), str(swapped)]
     fake_resolve.assert_called_once()
@@ -248,7 +248,7 @@ def test_apply_per_card_modelines_mpcfill_count_expansion(monkeypatch: pytest.Mo
 def test_apply_per_card_modelines_per_card_upscale_when_global_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
 
     fake_upscale = MagicMock(side_effect=lambda paths, **kw: [f"{p}_up" for p in paths])
     monkeypatch.setattr("mtg_proxies.upscale.upscale_images", fake_upscale)
@@ -261,7 +261,7 @@ def test_apply_per_card_modelines_per_card_upscale_when_global_off(
 
     # Bare ``#upscale`` lives in the upscale-phase helper now (split from the pre-upscale
     # phase so it runs after bulk normalize/shadow-lift instead of before).
-    cli._apply_per_card_upscale_modelines(decklist, image_paths, global_upscale=False)
+    print_command._apply_per_card_upscale_modelines(decklist, image_paths, global_upscale=False)
 
     assert image_paths[0] == "sol.png"
     assert image_paths[1] == "birds.png_up"
@@ -296,7 +296,7 @@ def test_apply_per_card_modelines_mpcfill_dfc_swaps_front_only(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Post-MR8: `#mpcfill --identifier` swaps the FRONT slot only. DFC backs stay on Scryfall."""
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
 
     front_render = tmp_path / "front.png"
     front_render.write_bytes(b"FRONT")
@@ -307,7 +307,7 @@ def test_apply_per_card_modelines_mpcfill_dfc_swaps_front_only(
         _fake_dfc_card("Disciple // Garden", modeline="#mpcfill --identifier 1A2b3C4d5E6f7G8h9I0jKlMnOpQrStUvW"),
     )
     image_paths = ["front_scryfall.png", "back_scryfall.png"]
-    result = cli._apply_per_card_modelines(decklist, image_paths)
+    result = print_command._apply_per_card_modelines(decklist, image_paths)
 
     assert result[0] == str(front_render)
     assert result[1] == "back_scryfall.png"  # back untouched — no back-face identifier in the slim contract
@@ -319,7 +319,7 @@ def test_apply_per_card_modelines_upscale_model_override_runs_with_global_on(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """``#upscale --upscale-model PATH`` must run even when global ``--upscale-all`` is on."""
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
 
     fake_upscale = MagicMock(side_effect=lambda paths, **kw: [f"{p}_anime" for p in paths])
     monkeypatch.setattr("mtg_proxies.upscale.upscale_images", fake_upscale)
@@ -335,7 +335,7 @@ def test_apply_per_card_modelines_upscale_model_override_runs_with_global_on(
     skip_upscale: set[str] = set()
 
     # Upscale logic (override + bare subset) lives in the dedicated upscale-phase helper now.
-    cli._apply_per_card_upscale_modelines(
+    print_command._apply_per_card_upscale_modelines(
         decklist,
         image_paths,
         global_upscale=True,  # mimic --upscale-all
@@ -354,7 +354,7 @@ def test_apply_per_card_modelines_upscale_model_override_runs_with_global_on(
 
 def test_apply_per_card_modelines_no_upscale_adds_to_skip_set(monkeypatch: pytest.MonkeyPatch) -> None:
     """``#no-upscale`` records the card's path in the caller-provided skip set."""
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
 
     decklist = _fake_decklist(
         _fake_card("Sol Ring", modeline="#no-upscale"),
@@ -363,7 +363,7 @@ def test_apply_per_card_modelines_no_upscale_adds_to_skip_set(monkeypatch: pytes
     image_paths = ["sol.png", "bolt.png"]
     skip_upscale: set[str] = set()
 
-    cli._apply_per_card_modelines(
+    print_command._apply_per_card_modelines(
         decklist,
         image_paths,
         skip_upscale=skip_upscale,
@@ -379,7 +379,7 @@ def test_apply_per_card_modelines_mpcfill_implies_no_upscale(monkeypatch: pytest
     bulk upscale would be both wasteful and prone to hang on CPU. The implicit opt-out
     keeps users from having to remember ``#no-upscale`` on every ``#mpcfill`` line.
     """
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
 
     swapped = tmp_path / "mpcfill_render.png"
     swapped.write_bytes(b"PNG")
@@ -389,7 +389,7 @@ def test_apply_per_card_modelines_mpcfill_implies_no_upscale(monkeypatch: pytest
     image_paths = ["scry.png"]
     skip_upscale: set[str] = set()
 
-    cli._apply_per_card_modelines(decklist, image_paths, skip_upscale=skip_upscale)
+    print_command._apply_per_card_modelines(decklist, image_paths, skip_upscale=skip_upscale)
 
     assert image_paths == [str(swapped)]
     # The MPCFill render path must be in skip_upscale so the bulk upscale pass skips it.
@@ -400,7 +400,7 @@ def test_apply_per_card_modelines_upscale_override_skips_subset_pass(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A card with ``#upscale --upscale-model PATH`` must NOT be re-upscaled by the subset pass."""
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
 
     # Each call returns a distinguishable suffix so we can tell which path ran.
     def _fake_upscale(paths: list[str], **kw: object) -> list[str]:
@@ -420,7 +420,7 @@ def test_apply_per_card_modelines_upscale_override_skips_subset_pass(
 
     # Global upscale is OFF so the bare-subset pass would normally run for #upscale,
     # but the override has already handled this card.
-    cli._apply_per_card_upscale_modelines(
+    print_command._apply_per_card_upscale_modelines(
         decklist,
         image_paths,
         global_upscale=False,
@@ -436,7 +436,7 @@ def test_apply_per_card_modelines_upscale_override_skips_subset_pass(
 
 def test_apply_per_card_modelines_print_language_swap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """`#print --language de` fetches that card's German print's own scan and swaps the slot."""
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
 
     localized_print = {
         "image_uris": {"png": "https://cards.scryfall.io/png/front/x/elegy.png"},
@@ -453,7 +453,7 @@ def test_apply_per_card_modelines_print_language_swap(monkeypatch: pytest.Monkey
     decklist = _fake_decklist(_fake_card("Sol Ring"), card)
     image_paths = ["sol.png", "elegy_scryfall.png"]
 
-    result = cli._apply_per_card_modelines(decklist, image_paths)
+    result = print_command._apply_per_card_modelines(decklist, image_paths)
 
     assert result[0] == "sol.png"
     assert result[1] == str(downloaded)
@@ -468,7 +468,7 @@ def test_apply_per_card_modelines_print_language_batches_across_cards(
 
     All their oracle ids get batched into a single set — not one all_cards scan per card.
     """
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
 
     localized_prints = {
         "oracle-a": {"image_uris": {"png": "https://cards.scryfall.io/png/front/a.png"}},
@@ -488,7 +488,7 @@ def test_apply_per_card_modelines_print_language_batches_across_cards(
     decklist = _fake_decklist(card_a, card_b)
     image_paths = ["a_scryfall.png", "b_scryfall.png"]
 
-    result = cli._apply_per_card_modelines(decklist, image_paths)
+    result = print_command._apply_per_card_modelines(decklist, image_paths)
 
     assert result == [str(downloaded), str(downloaded)]
     fake_get_localized_prints.assert_called_once_with({"oracle-a", "oracle-b"}, "de")
@@ -498,7 +498,7 @@ def test_apply_per_card_modelines_print_language_no_match_falls_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """No print in the requested language → slot keeps its existing (English) Scryfall scan."""
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
 
     fake_get_localized_prints = MagicMock(return_value={})
     monkeypatch.setattr("mtg_proxies.scryfall.get_localized_prints", fake_get_localized_prints)
@@ -508,7 +508,7 @@ def test_apply_per_card_modelines_print_language_no_match_falls_back(
     decklist = _fake_decklist(card)
     image_paths = ["elegy_scryfall.png"]
 
-    result = cli._apply_per_card_modelines(decklist, image_paths)
+    result = print_command._apply_per_card_modelines(decklist, image_paths)
 
     assert result == ["elegy_scryfall.png"]
 
@@ -517,7 +517,7 @@ def test_apply_per_card_modelines_print_language_skips_when_no_directives(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """If no card has `#print --language`, get_localized_prints is never called."""
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
 
     fake_get_localized_prints = MagicMock()
     monkeypatch.setattr("mtg_proxies.scryfall.get_localized_prints", fake_get_localized_prints)
@@ -525,7 +525,7 @@ def test_apply_per_card_modelines_print_language_skips_when_no_directives(
     decklist = _fake_decklist(_fake_card("Sol Ring", modeline="#upscale"))
     image_paths = ["sol.png"]
 
-    cli._apply_per_card_modelines(decklist, image_paths)
+    print_command._apply_per_card_modelines(decklist, image_paths)
 
     fake_get_localized_prints.assert_not_called()
 
@@ -644,7 +644,7 @@ def test_apply_per_card_modelines_mpcfill_scaled_swaps_in_grown_copy(
     """`#mpcfill --scaled` (or `print --scaled`) prints a frame-grown copy; the cached render stays as is."""
     from PIL import Image
 
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
     from mtg_proxies.frame_scale import MPC_OVERLAP_MM
 
     render = _bordered_render(tmp_path / "render.png")
@@ -652,7 +652,7 @@ def test_apply_per_card_modelines_mpcfill_scaled_swaps_in_grown_copy(
     monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", MagicMock(return_value=render))
 
     bleed_renders: set[str] = set()
-    result = cli._apply_per_card_modelines(
+    result = print_command._apply_per_card_modelines(
         _fake_decklist(_fake_card("Sol Ring", modeline=modeline)),
         ["sol_scryfall.png"],
         bleed_renders=bleed_renders,
@@ -672,12 +672,12 @@ def test_apply_per_card_modelines_mpcfill_scaled_borderless_keeps_render(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A render with no black border can't be grown; the slot still gets the render, unscaled."""
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
 
     render = _borderless_render(tmp_path / "render.png")
     monkeypatch.setattr("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", MagicMock(return_value=render))
 
-    result = cli._apply_per_card_modelines(
+    result = print_command._apply_per_card_modelines(
         _fake_decklist(
             _fake_card("Sol Ring", modeline="#mpcfill --identifier 1A2b3C4d5E6f7G8h9I0jKlMnOpQrStUvW --scaled")
         ),
@@ -692,15 +692,17 @@ def test_apply_per_card_modelines_mpcfill_scaled_borderless_keeps_render(
 
 def _cc_engine(monkeypatch: pytest.MonkeyPatch, pngs: dict, languages: dict | None = None) -> MagicMock:
     """Stub the shared Card Conjurer engine; returns the mock so tests can inspect its call."""
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
+    from mtg_proxies.cardconjurer import engine
 
-    engine = MagicMock(return_value=cli._CcRender(pngs, languages or {}))
-    monkeypatch.setattr(cli, "_render_cardconjurer", engine)
-    return engine
+    stub = MagicMock(return_value=engine.CcRender(pngs, languages or {}))
+    monkeypatch.setattr(print_command, "render_cardconjurer", stub)
+    return stub
 
 
 def test_print_cardconjurer_modeline_swaps_every_copy_and_marks_the_render(monkeypatch: pytest.MonkeyPatch) -> None:
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
+    from mtg_proxies.cardconjurer import engine
 
     engine = _cc_engine(monkeypatch, {1: ["/r/sol.png"]})
     decklist = _fake_decklist(_fake_card("Sol Ring", count=2, modeline="#cardconjurer --8th"), _fake_card("Bolt"))
@@ -708,7 +710,7 @@ def test_print_cardconjurer_modeline_swaps_every_copy_and_marks_the_render(monke
     bleed: set[str] = set()
     skip: set[str] = set()
 
-    cli._apply_per_card_modelines(decklist, images, bleed_renders=bleed, skip_upscale=skip)
+    print_command._apply_per_card_modelines(decklist, images, bleed_renders=bleed, skip_upscale=skip)
 
     assert images == ["/r/sol.png", "/r/sol.png", "bolt.png"]
     assert bleed == skip == {"/r/sol.png"}
@@ -717,13 +719,13 @@ def test_print_cardconjurer_modeline_swaps_every_copy_and_marks_the_render(monke
 
 
 def test_print_cardconjurer_miss_keeps_the_scan(monkeypatch: pytest.MonkeyPatch) -> None:
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
 
     _cc_engine(monkeypatch, {})
     decklist = _fake_decklist(_fake_card("Sol Ring", modeline="#cardconjurer"))
     images = ["sol.png"]
 
-    cli._apply_per_card_modelines(decklist, images)
+    print_command._apply_per_card_modelines(decklist, images)
 
     assert images == ["sol.png"]
 
@@ -731,7 +733,8 @@ def test_print_cardconjurer_miss_keeps_the_scan(monkeypatch: pytest.MonkeyPatch)
 def test_print_frame_renders_every_card_without_a_source_of_its_own(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
+    from mtg_proxies.cardconjurer import engine
 
     mpc_render = tmp_path / "mpc.png"
     mpc_render.write_bytes(b"PNG")
@@ -743,7 +746,7 @@ def test_print_frame_renders_every_card_without_a_source_of_its_own(
     )
     images = ["plain.png", "mpc_scan.png"]
 
-    cli._apply_per_card_modelines(decklist, images, cc_frame="8th")
+    print_command._apply_per_card_modelines(decklist, images, cc_frame="8th")
 
     assert images == ["/r/plain.png", str(mpc_render)]
     assert engine.call_args.kwargs["only"] == {1}
@@ -751,19 +754,19 @@ def test_print_frame_renders_every_card_without_a_source_of_its_own(
 
 
 def test_print_cardconjurer_split_dfc_fills_both_faces(monkeypatch: pytest.MonkeyPatch) -> None:
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
 
     _cc_engine(monkeypatch, {1: ["/r/front.png", "/r/back.png"]})
     decklist = _fake_decklist(_fake_dfc_card("Disciple // Garden", modeline="#cardconjurer --retro"))
     images = ["front_scan.png", "back_scan.png"]
 
-    cli._apply_per_card_modelines(decklist, images)
+    print_command._apply_per_card_modelines(decklist, images)
 
     assert images == ["/r/front.png", "/r/back.png"]
 
 
 def test_print_cardconjurer_unreliable_translation_prints_the_real_scan(monkeypatch: pytest.MonkeyPatch) -> None:
-    from mtg_proxies import cli
+    from mtg_proxies import print_command
 
     _cc_engine(monkeypatch, {}, {1: "de"})
     card = _fake_card("Sol Ring", modeline="#cardconjurer --language de")
@@ -773,7 +776,7 @@ def test_print_cardconjurer_unreliable_translation_prints_the_real_scan(monkeypa
     monkeypatch.setattr("mtg_proxies.scryfall.get_image", lambda url, **kw: f"local:{url}")
     images = ["sol.png"]
 
-    cli._apply_per_card_modelines(_fake_decklist(card), images)
+    print_command._apply_per_card_modelines(_fake_decklist(card), images)
 
     assert images == ["local:https://img.example/sol-de.png"]
 
@@ -781,12 +784,12 @@ def test_print_cardconjurer_unreliable_translation_prints_the_real_scan(monkeypa
 def test_cardconjurer_engine_only_renders_the_slots_asked_for(tmp_path: Path) -> None:
     from unittest.mock import patch
 
-    from mtg_proxies import cli
+    from mtg_proxies.cardconjurer import engine
 
     decklist = _fake_decklist(_fake_card("Sol Ring"), _fake_card("Bolt"))
     with patch("mtg_proxies.cardconjurer.runner.render_deck") as render:
         render.return_value = {"ok": 1, "skipped": 1, "total": 2, "pngs": {2: ["/r/bolt.png"]}}
-        result = cli._render_cardconjurer(decklist, cli._CcDeckOptions(), tmp_path / "out", only={2})
+        result = engine.render_cardconjurer(decklist, engine.CcDeckOptions(), tmp_path / "out", only={2})
 
     assert render.call_args.kwargs["run_harness"].keywords["skip_slots"] == {1}
     assert result.pngs == {2: ["/r/bolt.png"]}

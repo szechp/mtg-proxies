@@ -132,7 +132,7 @@ def _run_subcommand(tmp_path: Path, deck: object, *flags: str) -> dict:
     argv = ["mtg-proxies", "cardconjurer", "unused.txt", str(tmp_path / "out"), *flags]
     with (
         patch("sys.argv", argv),
-        patch("mtg_proxies.cli.parse_decklist_spec", return_value=deck),
+        patch("mtg_proxies.cardconjurer.engine.parse_decklist_spec", return_value=deck),
         patch("mtg_proxies.cardconjurer.runner.render_deck") as render,
     ):
         render.return_value = {"ok": 0, "skipped": 0, "total": 2}

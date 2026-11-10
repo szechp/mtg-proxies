@@ -15,6 +15,6 @@ def _no_cuda(tmp_path: Path) -> Iterator[None]:
     """
     with (
         patch("mtg_proxies.upscale.cuda_available", return_value=False),
-        patch("mtg_proxies.cli._CC_UPSCALE_SRC_CACHE", tmp_path / "upscale-src"),
+        patch("mtg_proxies.cardconjurer.engine._CC_UPSCALE_SRC_CACHE", tmp_path / "upscale-src"),
     ):
         yield

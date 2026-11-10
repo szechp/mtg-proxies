@@ -1,0 +1,415 @@
+"""The ``convert`` subcommand: resolve a decklist's prints and generate basic lands."""
+
+import argparse
+import contextlib
+import random
+from collections.abc import Callable
+from pathlib import Path
+from typing import Literal, cast
+
+import mtg_proxies.scryfall as scryfall
+from mtg_proxies.cli_util import die, parse_decklist_spec
+from mtg_proxies.decklists.decklist import Card, Comment, Decklist
+
+BASIC_LAND_NAMES = {"plains", "island", "swamp", "mountain", "forest", "wastes"}
+
+
+ArtPreference = Literal["standard", "wild", "premium"]
+
+
+EXCLUDED_BASIC_LAND_PRINTS = {
+    ("sld", "415"),
+    ("sld", "416"),
+    ("sld", "417"),
+    ("sld", "418"),
+    ("sld", "419"),
+    ("sld", "254"),
+    ("sld", "255"),
+    ("sld", "256"),
+    ("sld", "257"),
+    ("sld", "258"),
+}
+
+
+def _parse_basic_land_specs(specs: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for spec in specs:
+        if "=" not in spec:
+            raise ValueError(f"Invalid basic land spec {spec!r}. Expected NAME=COUNT.")
+        raw_name, raw_count = spec.split("=", 1)
+        name = raw_name.strip().lower()
+        if name not in BASIC_LAND_NAMES:
+            valid_names = ", ".join(sorted(BASIC_LAND_NAMES))
+            raise ValueError(f"Unknown basic land {raw_name!r}. Expected one of: {valid_names}.")
+        try:
+            count = int(raw_count)
+        except ValueError as exc:
+            raise ValueError(f"Invalid count for {raw_name!r}: {raw_count!r}.") from exc
+        if count <= 0:
+            raise ValueError(f"Count for {raw_name!r} must be positive.")
+        counts[name] = counts.get(name, 0) + count
+    return counts
+
+
+def _generate_basic_lands_decklist(
+    specs: list[str],
+    *,
+    art_preference: ArtPreference = "standard",
+    rng: random.Random | None = None,
+) -> Decklist:
+    land_counts = _parse_basic_land_specs(specs)
+    rng = rng or random.Random()
+    decklist = Decklist()
+
+    def is_full_art(card: dict) -> bool:
+        frame_effects = set(card.get("frame_effects", []))
+        promo_types = set(card.get("promo_types", []))
+        return (
+            card.get("full_art")
+            or "fullart" in frame_effects
+            or "fullart" in promo_types
+            or "full_art" in promo_types
+            or card.get("set_type") in {"memorabilia", "masterpiece"}
+        )
+
+    def is_plain_standard_basic(card: dict) -> bool:
+        frame_effects = set(card.get("frame_effects", []))
+        promo_types = set(card.get("promo_types", []))
+        set_name = card.get("set_name", "").lower()
+        flashy_effects = {
+            "extendedart",
+            "showcase",
+            "shatteredglass",
+            "upside_down",
+            "inverted",
+            "borderless",
+            "fullart",
+        }
+        flashy_promos = {
+            "boosterfun",
+            "bundle",
+            "concept",
+            "datestamped",
+            "firstplacefoil",
+            "galaxyfoil",
+            "halofoil",
+            "poster",
+            "prerelease",
+            "promopack",
+            "serialized",
+            "setpromo",
+            "stamped",
+            "surgefoil",
+            "universesbeyond",
+        }
+        return not (
+            is_full_art(card)
+            or card.get("border_color") == "borderless"
+            or card.get("frame") not in {"2003", "2015"}
+            or card.get("set") == "sld"
+            or "secret lair" in set_name
+            or card.get("set_type") in {"funny", "promo"}
+            or card.get("digital")
+            or flashy_effects & frame_effects
+            or flashy_promos & promo_types
+        )
+
+    def is_excluded_basic_land(card: dict) -> bool:
+        excluded_sets = {"dft", "pip", "who", "tmt"}
+        excluded_set_names = {
+            "aetherdrift",
+            "fallout",
+            "doctor who",
+            "teenage mutant ninja turtles",
+        }
+        return (
+            card.get("set") in excluded_sets
+            or card.get("set_name", "").lower() in excluded_set_names
+            or (card.get("set"), str(card.get("collector_number", ""))) in EXCLUDED_BASIC_LAND_PRINTS
+        )
+
+    def premium_score(card: dict) -> tuple[int, int, int, int, int, int, int, str, str]:
+        frame_effects = set(card.get("frame_effects", []))
+        promo_types = set(card.get("promo_types", []))
+        set_name = card.get("set_name", "").lower()
+        premium_keywords = {
+            "unstable",
+            "unsanctioned",
+            "unfinity",
+            "unstable lands",
+            "zendikar",
+            "battle for zendikar",
+            "oath of the gatewatch",
+            "modern horizons",
+            "modern horizons 2",
+            "modern horizons 3",
+            "bloomburrow",
+        }
+        elegant_special = {"showcase", "borderless", "extendedart"} & frame_effects
+        loud_special = {"galaxyfoil", "halofoil", "serialized", "poster", "surgefoil"} & promo_types
+        return (
+            1 if is_full_art(card) else 0,
+            1 if elegant_special else 0,
+            1 if any(keyword in set_name for keyword in premium_keywords) else 0,
+            1 if card.get("set") == "sld" else 0,
+            0 if card.get("lang") == "en" else -1,
+            0 if not card.get("digital") else -1,
+            -len(loud_special),
+            card.get("set", ""),
+            card.get("collector_number", ""),
+        )
+
+    def wild_score(card: dict) -> tuple[int, int, int, int, int, str, str]:
+        frame_effects = set(card.get("frame_effects", []))
+        promo_types = set(card.get("promo_types", []))
+        flashy_effects = {"showcase", "borderless", "extendedart", "fullart"} & frame_effects
+        flashy_promos = {
+            "boosterfun",
+            "concept",
+            "galaxyfoil",
+            "halofoil",
+            "poster",
+            "serialized",
+            "surgefoil",
+        } & promo_types
+        weird_sets = {"sld", "und", "unf", "ust"}
+        return (
+            len(flashy_promos),
+            1 if card.get("set") in weird_sets else 0,
+            len(flashy_effects),
+            1 if is_full_art(card) else 0,
+            0 if not card.get("digital") else -1,
+            card.get("set", ""),
+            card.get("collector_number", ""),
+        )
+
+    def weighted_unique_order(cards: list[dict], score_fn: Callable[[dict], object]) -> list[dict]:
+        ranked = sorted(cards, key=score_fn, reverse=True)
+        pool = list(ranked)
+        ordered: list[dict] = []
+
+        while pool:
+            weights = [2 ** (len(pool) - index - 1) for index in range(len(pool))]
+            choice = rng.choices(pool, weights=weights, k=1)[0]
+            ordered.append(choice)
+            pool.remove(choice)
+
+        return ordered
+
+    for land_name, count in land_counts.items():
+        recommendation_preference = cast(
+            Literal["standard", "wild"],
+            art_preference if art_preference != "premium" else "wild",
+        )
+        choices = [
+            card
+            for card in scryfall.recommend_print(
+                card_name=land_name.title(),
+                art_preference=recommendation_preference,
+                mode="choices",
+            )
+            if "Basic Land" in card.get("type_line", "") and not is_excluded_basic_land(card)
+        ]
+        if not choices:
+            raise ValueError(f"Unable to find printable basic land choices for {land_name!r}.")
+
+        if art_preference == "premium":
+            choices = weighted_unique_order(choices, premium_score)
+        elif art_preference == "wild":
+            choices = weighted_unique_order(choices, wild_score)
+        else:
+            plain_standard_choices = [card for card in choices if is_plain_standard_basic(card)]
+            if plain_standard_choices:
+                choices = plain_standard_choices
+            else:
+                non_full_art_choices = [card for card in choices if not is_full_art(card)]
+                if non_full_art_choices:
+                    choices = non_full_art_choices
+            highres_choices = [card for card in choices if card.get("highres_image", True)]
+            if highres_choices:
+                choices = highres_choices
+            rng.shuffle(choices)
+
+        pool = list(choices)
+        selected: list[dict] = []
+        while len(selected) < count:
+            if not pool:
+                pool = list(choices)
+                if art_preference == "premium":
+                    pool = weighted_unique_order(pool, premium_score)
+                elif art_preference == "wild":
+                    pool = weighted_unique_order(pool, wild_score)
+                else:
+                    rng.shuffle(pool)
+            selected.append(pool.pop(0))
+
+        for card in selected:
+            decklist.append_card(1, card)
+
+    return decklist
+
+
+def _parse_convert_decklist(args: argparse.Namespace, decklist_spec: str, art_roll_seed: int) -> Decklist:
+    """Parse ``convert``'s input decklist with the art options, under the seeded art roll in standard mode."""
+    art_roll: contextlib.AbstractContextManager[None] = contextlib.nullcontext()
+    if args.art_preference == "standard":
+        print(f"Art roll: seed {art_roll_seed} (repeat with --seed {art_roll_seed})")
+        art_roll = scryfall.art_roll(art_roll_seed)
+    with art_roll:
+        return parse_decklist_spec(
+            decklist_spec,
+            warn_levels=["ERROR", "WARNING", "COSMETIC"],
+            art_preference=args.art_preference,
+            preferred_sets=args.set or None,
+            allow_low_res=args.allow_low_res,
+            prefer_retro_frame=args.prefer_retro_frame,
+            prefer_borderless=args.prefer_borderless,
+            art_before=args.art_before,
+        )
+
+
+def _move_to_sections(decklist: Decklist, sections: list[tuple[str, Callable[[Card], bool]]]) -> None:
+    """Move cards to commented sections at the bottom of the decklist.
+
+    Each card goes to the first ``(title, belongs)`` section it belongs to, or stays where it
+    is. Non-empty sections are appended in order, each under a blank line and its ``title``.
+    """
+    kept: list = []
+    moved: list[list[Card]] = [[] for _ in sections]
+    for entry in decklist.entries:
+        section = None
+        if isinstance(entry, Card):
+            section = next((cards for cards, (_, belongs) in zip(moved, sections, strict=True) if belongs(entry)), None)
+        (kept if section is None else section).append(entry)
+    for (title, _), cards in zip(sections, moved, strict=True):
+        if cards:
+            while kept and isinstance(kept[-1], Comment) and not kept[-1].text.strip():
+                kept.pop()
+            kept.extend([Comment(""), Comment(title), *cards])
+    decklist.entries = kept
+
+
+def run_convert(args: argparse.Namespace) -> None:
+    """Run the ``convert`` subcommand: resolve prints for a decklist and/or generate basic lands."""
+    # Resolution order: explicit `-o/--out` > positional `outfile` > legacy shifts (for
+    # backward compat with `convert deck.txt out.txt` and `convert --basic-lands mountain=9 out.txt`).
+    outfile = args.out if args.out is not None else args.outfile
+    basic_land_specs = args.basic_lands
+    art_roll_seed = args.seed if args.seed is not None else random.randrange(10_000)
+
+    # Legacy shifts: without an explicit outfile, the positional decklist arg or a trailing
+    # non-NAME=COUNT basic-land spec is the output path.
+    input_decklist_spec = args.decklist
+    if basic_land_specs and outfile is None:
+        if args.decklist is not None:
+            # Refuse to overwrite an existing decklist file with --basic-lands output.
+            if Path(args.decklist).is_file():
+                print(
+                    f"Error: refusing to overwrite existing decklist {args.decklist!r} with"
+                    " --basic-lands output. Use -o/--out PATH to specify the output."
+                )
+                raise SystemExit(1)
+            outfile = Path(args.decklist)
+            input_decklist_spec = None
+        if len(basic_land_specs) > 1 and "=" not in basic_land_specs[-1]:
+            candidate = basic_land_specs[-1]
+            # Catch typos like `--basic-lands mountain=9 forest` (forgot `=COUNT` on the last spec).
+            if candidate.strip().lower() in BASIC_LAND_NAMES:
+                die(f"Error: basic land spec {candidate!r} is missing a count. Expected NAME=COUNT.")
+            outfile = Path(candidate)
+            basic_land_specs = basic_land_specs[:-1]
+
+    if args.basic_lands:
+        if outfile is None:
+            die("Error: must provide an output file for convert")
+        try:
+            decklist = _generate_basic_lands_decklist(basic_land_specs, art_preference=args.art_preference)
+        except ValueError as exc:
+            die(f"Error: {exc}")
+
+        # When an input decklist is also provided, parse it and append the basics.
+        if input_decklist_spec is not None:
+            if args.art_preference == "premium":
+                print("Error: --art-preference premium is only supported with --basic-lands without an input decklist")
+                raise SystemExit(1)
+            basics = decklist
+            decklist = _parse_convert_decklist(args, input_decklist_spec, art_roll_seed)
+            if decklist.entries and not (
+                isinstance(decklist.entries[-1], Comment) and not decklist.entries[-1].text.strip()
+            ):
+                decklist.entries.append(Comment(""))
+            decklist.entries.append(Comment("# Basic lands"))
+            decklist.entries.extend(basics.entries)
+    else:
+        if args.art_preference == "premium":
+            die("Error: --art-preference premium is only supported with --basic-lands")
+        if args.decklist is not None and outfile is None:
+            spec = args.decklist
+            if Path(spec).is_file() or spec.lower().startswith("archidekt:"):
+                die("Error: must provide an output file for convert")
+        if args.decklist is None or outfile is None:
+            die("Error: must provide either a decklist or --basic-lands")
+        decklist = _parse_convert_decklist(args, args.decklist, art_roll_seed)
+
+    # If preferred sets were specified, move cards not from those sets to the bottom.
+    if args.set:
+        preferred = {code.lower() for code in args.set}
+        sets_str = ", ".join(code.upper() for code in args.set)
+
+        def in_preferred_set(card: Card) -> bool:
+            return card.card.get("set") in preferred
+
+        def is_highres(card: Card) -> bool:
+            return card.card.get("highres_image", True)
+
+        if args.allow_low_res:
+            _move_to_sections(
+                decklist,
+                [
+                    (
+                        f"# Only low-quality version available in {sets_str}",
+                        lambda card: in_preferred_set(card) and not is_highres(card),
+                    ),
+                    ("# Card not in set", lambda card: not in_preferred_set(card)),
+                ],
+            )
+        else:
+            # Default: prints were auto-upgraded to highres, which may have left the preferred sets.
+            _move_to_sections(
+                decklist,
+                [
+                    (
+                        f"# Only low-quality version available in {sets_str}, or card not in set",
+                        lambda card: not in_preferred_set(card),
+                    )
+                ],
+            )
+
+    # --prefer-retro-frame: mirror the --set pattern. recommend_print silently
+    # returns the best modern print when no retro candidate exists, so the user
+    # has no idea which cards missed. Group those under a comment at the bottom
+    # so they're easy to spot and re-resolve (manually, with #mpcfill --retro,
+    # or by adding a retro reprint set via --set).
+    if args.prefer_retro_frame:
+        from mtg_proxies.scryfall.scryfall import RETRO_FRAMES
+
+        _move_to_sections(
+            decklist, [("# No retro frame available", lambda card: card.card.get("frame") not in RETRO_FRAMES)]
+        )
+
+    # Move low-res cards to the bottom (skip when --allow-low-res is set; those
+    # are already in their own section).
+    if not args.allow_low_res:
+        _move_to_sections(
+            decklist,
+            [
+                (
+                    "# Low resolution scan — no high-res version available",
+                    lambda card: not card.card.get("highres_image", True),
+                )
+            ],
+        )
+
+    decklist.save(outfile, fmt=args.format)
+
+    print(f"Successfully wrote decklist to {outfile.resolve()}.")
