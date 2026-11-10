@@ -116,6 +116,59 @@ mtg-proxies convert decklist_text.txt decklist.txt
 mtg-proxies print decklist.txt output.pdf
 ```
 
+## Proxies in old frames: the short version
+
+One command renders a decklist in Card Conjurer frames and lays it out for printing:
+
+```bash
+# once per machine: Card Conjurer source, then the retro-hd frames (~840 MB template download)
+make cardconjurer
+uv sync --extra retro-hd && uv run python -m mtg_proxies.cardconjurer.retro_hd
+
+# pin the prints you want, then render + print
+mtg-proxies convert deck.txt -o deck.pinned.txt
+mtg-proxies print deck.pinned.txt deck.pdf --frame mix
+```
+
+`--frame mix` picks a frame per card: retro-hd by default, 8th for gold cards and lands that make
+two or more colours, and whatever frame a special layout needs. Other values: `retro-hd`, `retro`,
+`8th`, `modern`, `m15-8th`, `borderless`, `auto` (each card's own printed frame). What happens to a
+card:
+
+| The decklist line has… | The card is… |
+|---|---|
+| nothing special | rendered in the `--frame` style |
+| `#cardconjurer --8th` (or any other flag) | rendered as that line asks; the line wins over `--frame` |
+| `#mpcfill --identifier ID` | that MPCFill render |
+| `#print --language de` | the real scan in that language |
+| a card Card Conjurer cannot render (e.g. a battle) | its normal Scryfall scan |
+
+Double-faced cards come out as two cards on the sheet, front and back; stick them together.
+
+**Your own art.** Put images in a folder, named after the card, and pass `--art-folder`:
+
+```bash
+mtg-proxies print deck.pinned.txt deck.pdf --frame mix --art-folder ./my-art/
+```
+
+`galadriel-of-lothlorien.png` is used for Galadriel of Lothlórien: case, accents, spaces and
+punctuation don't matter, and png / jpg / jpeg / webp all work. For a double-faced card, a file
+named after the back face is the back's art. Files that match no card are listed, so a typo in a
+file name doesn't go unnoticed. Without `--frame`, only the cards that have an image are rendered.
+
+**Iterating on a deck.** `print --frame` renders everything fresh each run. To tweak a few cards
+without re-rendering the rest, render into a folder (existing PNGs are reused; delete one to redo
+it), then print the folder:
+
+```bash
+mtg-proxies cardconjurer deck.pinned.txt out/ --mix --art-folder ./my-art/
+mtg-proxies print out/fallback.txt deck.pdf --custom-art out/   # fallback.txt = cards that kept their scan
+```
+
+**After updating this tool**, pick up frame fixes with
+`uv run python -m mtg_proxies.cardconjurer.retro_hd --missing`: it rebuilds only frames that are
+missing or were built by older code. A run tells you when this is needed.
+
 ## Common workflows
 
 **Pin cards to a specific set, keep lowres versions from that set:**
@@ -263,6 +316,27 @@ full token scan is never embedded inside the token frame.
 ```bash
 mtg-proxies print archidekt:123456 output.pdf
 ```
+
+## Changes from the older version
+
+If a command you used to run now fails, it is probably one of these:
+
+| Before | Now |
+|---|---|
+| `scripts/decklist_to_cardconjurer.py`, then `cardconjurer`, then `print` | `print deck.txt out.pdf --frame mix` (or `cardconjurer deck.txt out/ --mix`) |
+| `print … out.png` / `out.jpg`, `--dpi` | PDF only |
+| `print --card-back`, `--card-back-count` | removed: double-faced cards print front and back side by side |
+| `print --normalize`, `--shadow-lift`, `--vignette`, and their `#…` modelines | removed (`--media` / `--warm` are unchanged) |
+| `print --custom-art-bleed-crop` | removed: the bleed of renders is placed automatically |
+| `convert --basic-lands mountain=9 lands.txt` | `convert --basic-lands mountain=9 -o lands.txt` |
+| `cardconjurer --legendary`, `#cardconjurer --legendary` | removed: legend crowns are on by default, `--no-crown` turns them off |
+| `cardconjourer` (old spelling) | `cardconjurer` |
+| `manastack:ID` decklists | removed (`archidekt:ID` still works) |
+| `cube`, `deck_value`, `swapfinder.py`, `commander_finder.py` | moved to commander-doctor (`deckdoctor cube …`, `brew`, `value`) |
+
+New since then: `print --frame`, `--mix`, `--art-folder`, `retro_hd --missing`, two-tone 8th legend
+crowns on two-colour cards, bold power / toughness and evenly spaced set symbols on retro frames.
+`#cardconjurer` modelines now behave the same in `print` and in the `cardconjurer` subcommand.
 
 ## Updating
 
@@ -420,6 +494,7 @@ and adds no detail the source doesn't have; it only keeps the enlargement step h
 | `--split-pages N` | off | Start a new PDF file every N pages. |
 | `--custom-art FOLDER` | — | Append every `.png` in FOLDER, sorted, after the decklist cards. Expects Card Conjurer / MPCFill renders with bleed. |
 | `--scaled` | off | Grow the frame of every MPCFill render (sticker workflow). |
+| `--art-folder FOLDER` | — | Your own illustrations, matched to cards by file name (see [above](#proxies-in-old-frames-the-short-version)). |
 | `--frame STYLE` | off | Render the cards with Card Conjurer: `mix` (a frame per card), `auto` (each card's printed frame), `retro-hd`, `retro`, `8th`, `modern`, `m15-8th`, `borderless`. Without it only `#cardconjurer` lines are rendered. Lines with `#mpcfill` / `#print` keep that source. |
 | `--upscale [auto\|all]` | off | Real-ESRGAN upscaling: `auto` (bare flag) = cards Scryfall marks lowres, `all` = every card. |
 | `--upscale-model PATH` | RealESRNet_x4plus | Any ESRGAN-compatible `.pth`; implies `--upscale auto`. |
@@ -480,6 +555,8 @@ the rule was decided on.
 |---|---|
 | *(no frame flag)* | Frame chosen per card from Scryfall: 2015→modern, 2003→8th, 1997/1993→retro. Frames with no Card Conjurer equivalent go to `fallback.txt`. |
 | `--8th` / `--modern` / `--m15-8th` / `--retro` / `--borderless` | Force one frame for the whole deck (mutually exclusive). `--m15-8th` is a modern body with 8th-Edition trim and is never auto-selected. `--borderless` needs full-bleed MTGPics art. |
+| `--mix` | Pick a frame per card (retro-hd; 8th for gold cards and multicolour lands; the frame a special layout needs). Lines with a modeline of their own are left alone. |
+| `--art-folder FOLDER` | Your own illustrations, matched to cards by file name (`galadriel-of-lothlorien.png`). |
 | `--retro-scaled` / `--8th-scaled` | That frame, grown 0.75 mm per side ([sticker workflow](#sticker-workflow-scaled-frames)). Implies the base frame. |
 | `--no-crown` | Leave the legend crown off legendaries. 8th draws Card Conjurer's 8th crown by default (the real 8th frame has none). Retro draws a battlement crown by default: the frame's top edge rises into the border as four raised blocks, built from the frame's own bevel and texture, so it matches hybrid, two-colour and land frames. Pinlines stay stock. |
 | `--retro-hd` | Retro with high-detail frame art (smooth textures, modern colour grading, crisp bevels) from [Gavin Bowers' Proxyshop Retro template](https://github.com/Gavin-Bowers/proxyshop_plugin) in place of Card Conjurer's Seventh Edition scans; text, white-frame readability, hybrid/two-colour frames and the crown are unchanged. Implies `--retro`, combines with `--retro-scaled`. Single-faced cards only, planeswalkers included (with loyalty badges); double-faced cards render plain retro. Build the frames once first (all CPU cores, capped by free RAM; `--jobs N` to override) (downloads the ~840 MB template into `~/.cache/mtg-proxies/retro-hd/`, never committed): `uv sync --extra retro-hd && uv run python -m mtg_proxies.cardconjurer.retro_hd`. |
