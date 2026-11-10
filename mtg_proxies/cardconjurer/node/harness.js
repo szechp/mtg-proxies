@@ -595,6 +595,12 @@ let retroHdVariant = null;  // 'tf' / 'mdfc': a --retro-hd double-faced face (re
 // CC's 2010x2814 card). writeText puts a one-line baseline at y + height/2 + 0.275*size, so a
 // line of size S on baseline B is the box {y: B - 0.775*S, height: S}.
 const HD_W = 2010, HD_H = 2814;
+// --retro-hd set symbol. The free band on the frame runs from the lower edge of the art box's
+// bevel (outline ends at y 1550) to the textbox outline (starts 1674): 123px, centred on 1612.
+// packSeventh's box (105px tall, centred on 1615) filled it nearly edge to edge. 94px tall and
+// centred on the band, a tall symbol keeps about 14px above and below; wide symbols are
+// width-limited and were already smaller.
+const RETRO_HD_SET_SYMBOL = { y: 1612 / HD_H, height: 94 / HD_H };
 function hdLine(baseline, size) {
     return { y: (baseline - 0.775 * size) / HD_H, height: size / HD_H, size: size / HD_H };
 }
@@ -1744,7 +1750,7 @@ function layoutRetroClass(scry) {
     }
     global.card.artBounds = { ...g.art };
     global.autoFitArt();
-    global.card.setSymbolBounds = { ...global.card.setSymbolBounds, x: 0.9, y: 0.5739 + 587 / HD_H, width: 0.12, height: 0.0372 };
+    global.card.setSymbolBounds = { ...global.card.setSymbolBounds, x: 0.9, y: 0.5739 + 587 / HD_H, width: 0.12, height: RETRO_HD_SET_SYMBOL.height };
     if (typeof global.resetSetSymbol === 'function') global.resetSetSymbol();
     layoutClassLevels(g.column);
 }
@@ -1786,7 +1792,7 @@ function layoutRetroSaga(scry) {
     for (let i = 0; i < 4; i++) Object.assign(text['ability' + i], { x: g.chapterX, width: g.chapterWidth });
     global.card.artBounds = { ...g.art };
     global.autoFitArt();
-    global.card.setSymbolBounds = { ...global.card.setSymbolBounds, x: 0.9, y: 0.5739 + 587 / HD_H, width: 0.12, height: 0.0372 };
+    global.card.setSymbolBounds = { ...global.card.setSymbolBounds, x: 0.9, y: 0.5739 + 587 / HD_H, width: 0.12, height: RETRO_HD_SET_SYMBOL.height };
     if (typeof global.resetSetSymbol === 'function') global.resetSetSymbol();
     global.card.saga.x = g.divider.x;
     global.card.saga.width = g.divider.width;
@@ -2670,6 +2676,11 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
             global.card.setSymbolBounds.height = 0.0391 * 0.94;
             global.card.setSymbolBounds.width  = 0.12   * 0.94;
         }
+    }
+    // Sagas and classes place their own (layoutRetroSaga / layoutRetroClass).
+    if (retroHd && frame === 'retro' && global.card.setSymbolBounds
+        && specialLayout?.kind !== 'saga' && specialLayout?.kind !== 'class') {
+        Object.assign(global.card.setSymbolBounds, RETRO_HD_SET_SYMBOL);
     }
 
     // Modern (M15) layout fixes. Bypass for flip layouts. m15-8th shares M15's bounds, so it

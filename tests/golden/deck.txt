@@ -37,6 +37,7 @@
 1 Serra Angel #cardconjurer --8th
 1 Akroma, Angel of Wrath #cardconjurer --8th
 1 Lightning Helix #cardconjurer --8th
+1 Galadriel of Lothlórien #cardconjurer --8th
 1 Ajani Vengeant #cardconjurer --8th
 1 Hallowed Fountain #cardconjurer --8th
 1 The Eldest Reborn #cardconjurer --8th

@@ -18,7 +18,8 @@ Headless Card Conjurer frame rendering, orchestrated by `engine.py`'s `render_ca
 
 ## Frame styles
 
-- Set symbols come from CC's local official library per card set (no 8ED hardcode); `--set-symbol` overrides.
+- Set symbols come from CC's local official library per card set (no 8ED hardcode); `--set-symbol` overrides. Under `--retro-hd` the symbol box is `RETRO_HD_SET_SYMBOL` (94px tall, centred on y 1612): the free band runs from the art bevel's lower outline (1550) to the textbox outline (1674), so a tall symbol keeps ~14px above and below (the user's rule: never edge to edge, and measured from the bevel, not the art).
+- 8th legend crown on a two-colour card is two-tone: the left pinline colour's crown plus the right colour's through the right-half mask (`cardFrameProperties` gives the pair); other cards keep the single crown.
 - `--8th` (2003), `--modern` (M15), `--m15-8th`, `--retro` (Seventh Edition 1997) are mutually exclusive (CLI group + modeline mutex).
 - `--m15-8th`: a modern M15 card body restyled with 8th-Edition trim — shares modern's size/legend-crown/P-T-box geometry via engine-native `autoFrameUnified('M15Eighth')` and the `makeM15EighthFrameByLetter` crown builder; transform/MDFC split faces use `packM15Eighth*` DFC packs. Never auto-selected — no Scryfall `frame` value maps to it. Its bottom-info line drops the real-card copyright/legal text and shows a compact `(SET) NUMBER` print-staging tag instead, right-aligned to mirror the artist icon's left-margin gap, capped before the P/T box on creatures/vehicles — a long copyright string was found to collide with long artist names there.
 - `--8th` bottom line: the lean artist line stays; the copyright line is replaced by `<number> • <set>` like `--retro-hd` (in the `setLeanBottomInfo` branch of renderFace, 8th only).
