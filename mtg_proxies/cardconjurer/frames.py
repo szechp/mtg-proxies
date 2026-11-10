@@ -71,6 +71,11 @@ def mix_frame_flag(card: dict[str, Any]) -> str:
         if layout == "modal_dfc" and planeswalker:
             return "--modern"
         if planeswalker:
+            # TODO(retro-hd planeswalker DFCs): plain retro, i.e. Card Conjurer's Classicshifted
+            # planeswalker transform frames. --retro-hd would render them in those same frames
+            # (harness.js renderFace applies the HD art to single-faced cards only), so they need
+            # HD transform-planeswalker frames first. Until then plain --retro has to stay: this
+            # is the last card that needs it in `mix`.
             return "--retro"
         if layout == "transform" and is_gold(card):
             return "--8th"

@@ -2482,6 +2482,11 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     // --retro-hd swaps packSeventh's frame art for single-faced retro cards only: DFC faces use
     // the Classicshifted packs. Planeswalkers are included -- packPlaneswalkerSeventh draws its
     // loyalty badges over the same frame images, so they carry over onto the HD art.
+    // TODO(retro-hd planeswalker DFCs): transform planeswalkers (Jace, Vryn's Prodigy; Nissa,
+    // Vastwood Seer) asked for --retro-hd still get the Classicshifted planeswalker frames here,
+    // silently. Ordinary transform / MDFC cards already use the HD frames (retro_hd tf-* / mdfc-*);
+    // planeswalker faces need the ability layout fitted onto them. Once they do, plain --retro
+    // (pale-white text outline, assets/retro-crown, retro_crown.build_assets) can be removed.
     const hd = retroHd && frame === 'retro' && !dfcFace;
     if (hd && !fs.existsSync(path.join(RETRO_HD_ROOT, 'frames', 'w.png'))) {
         throw new Error(`--retro-hd frames not built in ${RETRO_HD_ROOT} -- run `
