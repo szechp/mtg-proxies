@@ -63,16 +63,36 @@ def _art_deck(tmp_path, *files: str):  # ruff: ignore[missing-return-type-privat
 
 
 def test_art_folder_matches_files_to_cards_by_name(tmp_path, capsys: pytest.CaptureFixture) -> None:
-    from mtg_proxies.cardconjurer.engine import match_art_folder
+    from mtg_proxies.cardconjurer.engine import ArtMatch, match_art_folder
 
-    deck = _art_deck(tmp_path, "galadriel-of-lothlorien.PNG", "Delver of Secrets.jpg", "insectile_aberration.webp",
-                     "galadriel-of-lotrhriel.png", "notes.txt")
+    deck = _art_deck(tmp_path, "galadriel-of-lothlorien (R.K. Post).PNG", "Delver of Secrets.jpg",
+                     "insectile_aberration (Nils Hamm).webp", "galadriel-of-lotrhriel.png", "notes.txt")
     matches = match_art_folder(deck, tmp_path)
 
     assert matches == {
-        1: (str(tmp_path / "galadriel-of-lothlorien.PNG"), None),
-        2: (str(tmp_path / "Delver of Secrets.jpg"), str(tmp_path / "insectile_aberration.webp")),
+        1: ArtMatch(front=str(tmp_path / "galadriel-of-lothlorien (R.K. Post).PNG"), front_artist="R.K. Post"),
+        2: ArtMatch(front=str(tmp_path / "Delver of Secrets.jpg"),
+                    back=str(tmp_path / "insectile_aberration (Nils Hamm).webp"), back_artist="Nils Hamm"),
     }
     captured = capsys.readouterr()
     assert "3 of 4 image(s) used" in captured.out
     assert "galadriel-of-lotrhriel.png" in captured.err  # the typo is reported, not silently ignored
+
+
+def test_a_card_whose_name_ends_in_parentheses_still_matches(tmp_path) -> None:
+    from mtg_proxies.cardconjurer.engine import match_art_folder
+    from mtg_proxies.decklists.decklist import Card, Decklist
+
+    (tmp_path / "BFM (Big Furry Monster).png").touch()
+    deck = Decklist([Card(1, {"name": "B.F.M. (Big Furry Monster)"})])
+    assert match_art_folder(deck, tmp_path)[1].front_artist is None
+
+
+def test_credited_artist_replaces_the_printed_one_per_face() -> None:
+    from mtg_proxies.cardconjurer.engine import _credit_artists
+
+    card = {"artist": "Nils Hamm", "card_faces": [{"artist": "Nils Hamm"}, {"artist": "Nils Hamm"}]}
+    credited = _credit_artists(card, None, "Me")
+    assert credited["artist"] == "Nils Hamm"
+    assert [face["artist"] for face in credited["card_faces"]] == ["Nils Hamm", "Me"]
+    assert card["card_faces"][1]["artist"] == "Nils Hamm"  # the original is never edited

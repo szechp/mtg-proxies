@@ -425,40 +425,80 @@ def _art_key(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", plain.lower())
 
 
-def match_art_folder(decklist: Decklist, folder: Path) -> dict[int, tuple[str | None, str | None]]:
+@dataclasses.dataclass
+class ArtMatch:
+    """A card's images (and credited artists) from an ``--art-folder``; ``None`` keeps the card's own."""
+
+    front: str | None = None
+    back: str | None = None
+    front_artist: str | None = None
+    back_artist: str | None = None
+
+
+# ``Card Name (Artist Name).png``: the artist is the text in trailing parentheses.
+_ART_FILE_ARTIST = re.compile(r"^(?P<card>.*?)\s*\((?P<artist>[^()]*)\)\s*$")
+
+
+def match_art_folder(decklist: Decklist, folder: Path) -> dict[int, ArtMatch]:
     """Match the images in ``folder`` to the decklist's cards by name.
 
     A file belongs to the card (or card face) whose name it spells, ignoring case, accents,
     spaces and punctuation: ``galadriel-of-lothlorien.png`` is the art for Galadriel of
     Lothlórien. For a double-faced card, a file named after the whole card or its front face
-    is the front art, one named after the back face the back art.
+    is the front art, one named after the back face the back art. A name in trailing
+    parentheses is the artist to credit instead of the printed one, exactly as written:
+    ``galadriel-of-lothlorien (Rebecca Guay).png``.
 
-    Returns ``{1-based slot: (front art, back art)}`` for the cards with at least one match,
-    and tells the user which files matched no card (usually a typo in the file name).
+    Returns ``{1-based slot: ArtMatch}`` for the cards with at least one match, and tells the
+    user which files matched no card (usually a typo in the file name).
     """
     if not folder.is_dir():
         die(f"Error: art folder '{folder}' does not exist")
-    files = {
-        _art_key(path.stem): path
-        for path in sorted(folder.iterdir())
-        if path.is_file() and path.suffix.lower() in _CUSTOM_ART_SUFFIXES
-    }
-    used: set[str] = set()
-    matches: dict[int, tuple[str | None, str | None]] = {}
+    # Each file under its whole name and, when it ends in "(...)", under the name before that
+    # with the parentheses as its artist; so a card whose own name ends in parentheses
+    # (B.F.M. (Big Furry Monster)) still matches.
+    files: dict[str, tuple[Path, str | None]] = {}
+    for path in sorted(folder.iterdir()):
+        if not (path.is_file() and path.suffix.lower() in _CUSTOM_ART_SUFFIXES):
+            continue
+        files.setdefault(_art_key(path.stem), (path, None))
+        if credited := _ART_FILE_ARTIST.match(path.stem):
+            artist = credited["artist"].strip() or None
+            files.setdefault(_art_key(credited["card"]), (path, artist))
+    used: set[Path] = set()
+    matches: dict[int, ArtMatch] = {}
     for slot_int, card in enumerate(decklist.cards, start=1):
         faces = [face.get("name", "") for face in card.card.get("card_faces") or []]
-        front_keys = [_art_key(name) for name in (card["name"], *faces[:1])]
-        back_keys = [_art_key(name) for name in faces[1:2]]
-        front = next((key for key in front_keys if key in files), None)
-        back = next((key for key in back_keys if key in files), None)
+        front = next((files[k] for k in map(_art_key, (card["name"], *faces[:1])) if k in files), None)
+        back = next((files[k] for k in map(_art_key, faces[1:2]) if k in files), None)
         if front or back:
-            matches[slot_int] = (str(files[front]) if front else None, str(files[back]) if back else None)
-            used.update(key for key in (front, back) if key)
-    print(f"[cardconjurer] art folder: {len(used)} of {len(files)} image(s) used")
-    unused = [path.name for key, path in files.items() if key not in used]
+            matches[slot_int] = ArtMatch(
+                front=str(front[0]) if front else None,
+                back=str(back[0]) if back else None,
+                front_artist=front[1] if front else None,
+                back_artist=back[1] if back else None,
+            )
+            used.update(match[0] for match in (front, back) if match)
+    images = {path for path, _ in files.values()}
+    print(f"[cardconjurer] art folder: {len(used)} of {len(images)} image(s) used")
+    unused = sorted(path.name for path in images - used)
     if unused:
         warn(f"Note: no card in the decklist for: {', '.join(unused)} (the file name must spell the card's name)")
     return matches
+
+
+def _credit_artists(payload: dict, front: str | None, back: str | None) -> dict:
+    """Return a copy of a card's payload crediting ``front`` / ``back`` (``None`` keeps the printed artist)."""
+    import copy
+
+    payload = copy.deepcopy(payload)
+    faces = payload.get("card_faces") or []
+    for face, artist in zip(faces, (front, back), strict=False):
+        if artist:
+            face["artist"] = artist
+    if front:
+        payload["artist"] = front
+    return payload
 
 
 def deck_options_from_args(args: argparse.Namespace) -> CcDeckOptions:
@@ -552,6 +592,8 @@ class _CcCardOptions:
     font_size: int | None = None
     custom_art: str | None = None
     custom_art_back: str | None = None  # back face of a double-faced card (art folder only)
+    artist: str | None = None  # credited instead of the printed artist (art folder only)
+    artist_back: str | None = None
     language: str | None = None
 
 
@@ -1100,9 +1142,11 @@ def render_cardconjurer(
     options = {slot_int: _cc_card_options(card, slot_int, deck) for slot_int, card in slot_to_card.items()}
     if deck.art_folder is not None:
         # A line's own `#cardconjurer --custom-art` wins over the folder.
-        for slot_int, (front, back) in match_art_folder(decklist, deck.art_folder).items():
-            options[slot_int].custom_art = options[slot_int].custom_art or front
-            options[slot_int].custom_art_back = back
+        for slot_int, art in match_art_folder(decklist, deck.art_folder).items():
+            opts = options[slot_int]
+            if opts.custom_art is None and art.front:
+                opts.custom_art, opts.artist = art.front, art.front_artist
+            opts.custom_art_back, opts.artist_back = art.back, art.back_artist
     if any(opts.retro_hd for opts in options.values()):
         _require_retro_hd_frames()  # also for a single `#cardconjurer --retro-hd` line
 
@@ -1138,6 +1182,9 @@ def render_cardconjurer(
     cc_cache = Path.home() / ".cache" / "mtg-proxies" / "cardconjurer"
     set_symbol_by_slot = _cc_set_symbols(slot_to_card, options, deck.set_symbol, cc_cache)
     payload_by_slot, fallback_language_by_slot = _cc_card_payloads(slot_to_card, options)
+    for slot_int, opts in options.items():
+        if opts.artist or opts.artist_back:
+            payload_by_slot[slot_int] = _credit_artists(payload_by_slot[slot_int], opts.artist, opts.artist_back)
     skip_slots = {slot_int for slot_int, opts in options.items() if opts.skip} | set(fallback_language_by_slot)
     if only is not None:
         skip_slots |= set(slot_to_card) - only

@@ -154,7 +154,11 @@ mtg-proxies print deck.pinned.txt deck.pdf --frame mix --art-folder ./my-art/
 `galadriel-of-lothlorien.png` is used for Galadriel of Lothlórien: case, accents, spaces and
 punctuation don't matter, and png / jpg / jpeg / webp all work. For a double-faced card, a file
 named after the back face is the back's art. Files that match no card are listed, so a typo in a
-file name doesn't go unnoticed. Without `--frame`, only the cards that have an image are rendered.
+file name doesn't go unnoticed.
+
+To credit someone else than the printed artist, put the name in parentheses at the end, written
+exactly as it should appear on the card: `galadriel-of-lothlorien (R.K. Post).png` prints
+"Illus. R.K. Post". Without parentheses the card keeps its printed artist. Without `--frame`, only the cards that have an image are rendered.
 
 **Iterating on a deck.** `print --frame` renders everything fresh each run. To tweak a few cards
 without re-rendering the rest, render into a folder (existing PNGs are reused; delete one to redo
@@ -556,7 +560,7 @@ the rule was decided on.
 | *(no frame flag)* | Frame chosen per card from Scryfall: 2015→modern, 2003→8th, 1997/1993→retro. Frames with no Card Conjurer equivalent go to `fallback.txt`. |
 | `--8th` / `--modern` / `--m15-8th` / `--retro` / `--borderless` | Force one frame for the whole deck (mutually exclusive). `--m15-8th` is a modern body with 8th-Edition trim and is never auto-selected. `--borderless` needs full-bleed MTGPics art. |
 | `--mix` | Pick a frame per card (retro-hd; 8th for gold cards and multicolour lands; the frame a special layout needs). Lines with a modeline of their own are left alone. |
-| `--art-folder FOLDER` | Your own illustrations, matched to cards by file name (`galadriel-of-lothlorien.png`). |
+| `--art-folder FOLDER` | Your own illustrations, matched to cards by file name (`galadriel-of-lothlorien.png`; `… (Artist Name).png` credits that artist). |
 | `--retro-scaled` / `--8th-scaled` | That frame, grown 0.75 mm per side ([sticker workflow](#sticker-workflow-scaled-frames)). Implies the base frame. |
 | `--no-crown` | Leave the legend crown off legendaries. 8th draws Card Conjurer's 8th crown by default (the real 8th frame has none). Retro draws a battlement crown by default: the frame's top edge rises into the border as four raised blocks, built from the frame's own bevel and texture, so it matches hybrid, two-colour and land frames. Pinlines stay stock. |
 | `--retro-hd` | Retro with high-detail frame art (smooth textures, modern colour grading, crisp bevels) from [Gavin Bowers' Proxyshop Retro template](https://github.com/Gavin-Bowers/proxyshop_plugin) in place of Card Conjurer's Seventh Edition scans; text, white-frame readability, hybrid/two-colour frames and the crown are unchanged. Implies `--retro`, combines with `--retro-scaled`. Single-faced cards only, planeswalkers included (with loyalty badges); double-faced cards render plain retro. Build the frames once first (all CPU cores, capped by free RAM; `--jobs N` to override) (downloads the ~840 MB template into `~/.cache/mtg-proxies/retro-hd/`, never committed): `uv sync --extra retro-hd && uv run python -m mtg_proxies.cardconjurer.retro_hd`. |

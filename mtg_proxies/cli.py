@@ -147,9 +147,10 @@ def _add_print_parser(subparsers: argparse._SubParsersAction) -> None:
             "folder with your own illustrations for some cards, matched by file name: a file that spells"
             " a card's name (case, accents, spaces and punctuation ignored, e.g."
             " galadriel-of-lothlorien.png) is used as that card's art in place of MTGPics / Scryfall."
-            " For a double-faced card, name a file after the back face for its back art. png, jpg,"
-            " jpeg or webp. A line's own #cardconjurer --custom-art wins. Cards with a matching image"
-            " are rendered with Card Conjurer even without --frame."
+            " For a double-faced card, name a file after the back face for its back art. An artist in"
+            " parentheses is credited instead of the printed one: 'galadriel-of-lothlorien (Rebecca"
+            " Guay).png'. png, jpg, jpeg or webp. A line's own #cardconjurer --custom-art wins."
+            " Cards with a matching image are rendered with Card Conjurer even without --frame."
         ),
     )
     print_parser.add_argument(
@@ -465,8 +466,9 @@ def _add_cardconjurer_parser(subparsers: argparse._SubParsersAction) -> None:
             "folder with your own illustrations for some cards, matched by file name: a file that spells"
             " a card's name (case, accents, spaces and punctuation ignored, e.g."
             " galadriel-of-lothlorien.png) is used as that card's art in place of MTGPics / Scryfall."
-            " For a double-faced card, name a file after the back face for its back art. png, jpg,"
-            " jpeg or webp. A line's own #cardconjurer --custom-art wins."
+            " For a double-faced card, name a file after the back face for its back art. An artist in"
+            " parentheses is credited instead of the printed one: 'galadriel-of-lothlorien (Rebecca"
+            " Guay).png'. png, jpg, jpeg or webp. A line's own #cardconjurer --custom-art wins."
         ),
     )
     cardconjurer_parser.add_argument(
