@@ -75,8 +75,11 @@ _BEVEL_THICKNESS = {
 # white parchment (mean ~(222, 211, 184), luma ~210) is far paler than WotC's own retro-frame
 # white -- the Secret Lair 1997-frame reprints (e.g. SLD 7137 Fiend Hunter, 7138 Glowrider)
 # measure ~(180, 175, 134), luma ~170, a warm khaki -- and white title/type text with a thin
-# shadow only reads on the latter. Scaling every pixel keeps the template's texture intact.
-_FRAME_TINT = {"W": (0.809, 0.828, 0.727)}
+# shadow only reads on a darker frame. Scaling every pixel keeps the template's texture intact.
+# The full match (gain 0.809, 0.828, 0.727) looked too dark in print; half of it (frame luma ~183,
+# white-text contrast 1.83 against 2.26) was picked from a test print as the lightest that still
+# reads (2026-11-11).
+_FRAME_TINT = {"W": (0.9045, 0.914, 0.8635)}
 
 # Per-channel affine tone match (spread scale, then shift the mean) on the frame, per identity:
 # (template mean, target mean, spread scale), in 0-255. The template's gold has the same texture
@@ -816,17 +819,20 @@ def _task_files(task: str, out_dir: Path) -> list[Path]:
     return [frames / f"{task}.png", out_dir / "crown" / f"{task}.png"]
 
 
-# Bump a task kind's version when its output changes, so caches built by older code get those
-# frames rebuilt (``--missing``). Kinds are the task prefix (``tf``, ``saga`` ...) or ``frame``
-# for the plain packSeventh codes; anything not listed is version 1.
+# Bump a version when output changes, so caches built by older code get those frames rebuilt
+# (``--missing``). TASK_VERSIONS is per task kind: the task prefix (``tf``, ``saga`` ...) or
+# ``frame`` for the plain packSeventh codes. CODE_VERSIONS is per frame code, across every kind
+# built from it (``w``: w, saga-w, class-w, adventure-w, tf-w, mdfc-w). Unlisted is version 1.
 #   tf / mdfc 2: notch bevels composited with their blend modes (were solid colour).
+#   w 2: white frame tint halved.
 TASK_VERSIONS = {"tf": 2, "mdfc": 2}
+CODE_VERSIONS = {"w": 2}
 _STAMP_NAME = "build.json"
 
 
 def _task_version(task: str) -> int:
-    kind = task.partition("-")[0] if "-" in task else "frame"
-    return TASK_VERSIONS.get(kind, 1)
+    kind, _, code = task.rpartition("-")
+    return TASK_VERSIONS.get(kind or "frame", 1) + CODE_VERSIONS.get(code, 1) - 1
 
 
 def _built_versions(out_dir: Path) -> dict[str, int]:
