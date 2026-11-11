@@ -612,9 +612,12 @@ const RETRO_HD_TEXT = {
     // Typeline: Plantin 96px, left 212, baseline 1641, ending 20px before the template's
     // Expansion Reference (x 1689). Never widened past the set-symbol clamp already applied.
     type: { x: 212 / HD_W, width: (1689 - 20 - 212) / HD_W, ...hdLine(1641, 96) },
-    // Rules Text: 99px, in Textbox Reference Normal (203,1697)-(1807,2481) less the layer's
-    // 46px side inset; vertically centred like Proxyshop does.
-    rules: { x: 249 / HD_W, y: 1697 / HD_H, width: 1512 / HD_W, height: 784 / HD_H, size: 99 / HD_H },
+    // Rules Text: 99px. The textbox's flat inside (inside its bevel) runs x 232-1780 and, on a
+    // two-colour textbox, whose pinline pushes the bevel in, y 1716-2466 (1704-2476 single-colour).
+    // The template's own text box (Textbox Reference less a 46px inset: x 249-1761, y 1697-2481)
+    // left the text 17px off the bevel and let a long text run into it top and bottom (Galadriel
+    // of Lothlórien); this keeps it 36px off the sides and 24px off top and bottom on both kinds.
+    rules: { x: 268 / HD_W, y: 1740 / HD_H, width: 1476 / HD_W, height: 702 / HD_H, size: 99 / HD_H },
     // Power / Toughness: centred on 1755, baseline 2625 (packSeventh's size, which matches).
     pt: { x: (1755 - 137) / HD_W, width: 0.1367, ...hdLine(2625, 121) },
 };
