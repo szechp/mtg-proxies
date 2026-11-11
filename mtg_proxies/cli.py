@@ -197,7 +197,7 @@ def _add_print_parser(subparsers: argparse._SubParsersAction) -> None:
         default="glossy",
         help=(
             "prepare the cards for the paper so they look like real cards: glossy (default) gets a"
-            " cream card-stock tint and a little more saturation; matte also gets deeper shadows, print"
+            " cream card-stock tint; matte also gets a little more saturation and deeper shadows, print"
             " it with the driver's matte media setting. none leaves the images as they are (e.g. when"
             " printing from another computer)."
         ),
@@ -208,7 +208,7 @@ def _add_print_parser(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         metavar="STRENGTH",
         help=(
-            "override the cream card-stock tint of --media (glossy 1.5, matte 1; 0 = no tint)."
+            "override the cream card-stock tint of --media (1 for both glossy and matte; 0 = no tint)."
             " E.g. --warm 1"
         ),
     )

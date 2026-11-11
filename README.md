@@ -507,8 +507,8 @@ and adds no detail the source doesn't have; it only keeps the enlargement step h
 | `--upscale [auto\|all]` | off | Real-ESRGAN upscaling: `auto` (bare flag) = cards Scryfall marks lowres, `all` = every card. |
 | `--upscale-model PATH` | RealESRNet_x4plus | Any ESRGAN-compatible `.pth`; implies `--upscale auto`. |
 | `--upscale-target-width PX` | `745` | Downsample upscaled cards to this width. |
-| `--warm STRENGTH` | from `--media` | Override the cream card-stock tint of `--media` (glossy 1.5, matte 1; `0` = no tint). |
-| `--media glossy\|matte\|none` | `glossy` | Prepare the cards for the paper so proxies look like real cards: glossy gets a cream card-stock tint and +10 % saturation; matte gets the tint, +6 % saturation and deeper shadows (print it with the driver's matte media setting, `lp -o MediaType=PMMATT_HIGH`). `none` leaves the images as they are, e.g. when printing from another computer. |
+| `--warm STRENGTH` | from `--media` | Override the cream card-stock tint of `--media` (1 for glossy and matte; lower = less yellow, `0` = no tint). |
+| `--media glossy\|matte\|none` | `glossy` | Prepare the cards for the paper so proxies look like real cards: glossy gets a cream card-stock tint; matte gets the tint, +6 % saturation and deeper shadows (print it with the driver's matte media setting, `lp -o MediaType=PMMATT_HIGH`). `none` leaves the images as they are, e.g. when printing from another computer. |
 
 ### convert
 

@@ -31,14 +31,20 @@ def test_matte_keeps_black_and_darkens_shadows() -> None:
     assert all(v < 64 for v in prepare_rgb(_px(64, 64, 64), PAPERS["matte"])[0, 0])
 
 
-def test_glossy_adds_saturation() -> None:
-    """Glossy's saturation boost widens the spread between channels of a muted colour."""
-    from mtg_proxies.paper import PAPERS, Paper, prepare_rgb
+def test_saturation_widens_the_spread_of_a_muted_colour() -> None:
+    from mtg_proxies.paper import Paper, prepare_rgb
 
     rgb = _px(150, 100, 90)
-    tint_only = prepare_rgb(rgb, Paper(warm=PAPERS["glossy"].warm))[0, 0].astype(int)
-    glossy = prepare_rgb(rgb, PAPERS["glossy"])[0, 0].astype(int)
-    assert glossy.max() - glossy.min() > tint_only.max() - tint_only.min()
+    plain = prepare_rgb(rgb, Paper(warm=0.0))[0, 0].astype(int)
+    saturated = prepare_rgb(rgb, Paper(warm=0.0, saturation=1.1))[0, 0].astype(int)
+    assert saturated.max() - saturated.min() > plain.max() - plain.min()
+
+
+def test_glossy_is_the_printed_warmth_only() -> None:
+    """Glossy is warmth 1 from the calibration print; 1.5 with +10 % saturation printed far too yellow."""
+    from mtg_proxies.paper import PAPERS, Paper
+
+    assert PAPERS["glossy"] == Paper(warm=1.0)
 
 
 def test_prepare_images_keeps_alpha_and_names_cache_by_values(tmp_path: Path) -> None:

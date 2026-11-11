@@ -16,10 +16,9 @@ Values come from prints on an Epson ET-2820 via the ``EPSON_ET-2820_MTG`` queues
 - ``matte`` (Koala matte sticker paper, media Epson Matte): picked from a 3x3 calibration print.
   Lowering the queue's brightness and raising contrast for deeper black was tried and crushed
   the art.
-- ``glossy`` (glossy sticker paper, media Photo Paper Glossy): warmth 1 was picked from a
-  calibration print. A photo of both papers next to the Scryfall scan then showed glossy flat
-  (about 75 % of matte's colourfulness) and too blue, so warmth 1.5 and saturation +10 % are
-  estimates from that photo, not yet printed as a test page.
+- ``glossy`` (glossy sticker paper, media Photo Paper Glossy): warmth 1, picked from a
+  calibration print. Warmth 1.5 with saturation +10 %, estimated from a photo that showed glossy
+  flat and too blue, printed far too yellow (2026-11-11), so glossy is back to the printed value.
 
 Emulating the Mac driver's Adobe RGB mode and magenta/yellow sliders was tried too and lost.
 """
@@ -48,7 +47,7 @@ class Paper:
 
 
 PAPERS = {
-    "glossy": Paper(warm=1.5, saturation=1.10),
+    "glossy": Paper(warm=1.0),
     "matte": Paper(warm=1.0, saturation=1.06, gamma=1.12),
 }
 
