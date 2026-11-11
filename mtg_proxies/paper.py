@@ -19,6 +19,9 @@ Values come from prints on an Epson ET-2820 via the ``EPSON_ET-2820_MTG`` queues
 - ``glossy`` (glossy sticker paper, media Photo Paper Glossy): warmth 1, picked from a
   calibration print. Warmth 1.5 with saturation +10 %, estimated from a photo that showed glossy
   flat and too blue, printed far too yellow (2026-11-11), so glossy is back to the printed value.
+  Tinting every pixel then matched green cards but turned blue frames teal and gold olive, so on
+  glossy the tint only reaches light, low-saturation areas (``light_only``): where cream card
+  stock would show through, not where ink covers it. Not yet test-printed.
 
 Emulating the Mac driver's Adobe RGB mode and magenta/yellow sliders was tried too and lost.
 """
@@ -39,15 +42,20 @@ WARM = (0.97, 0.99, 0.92)
 
 @dataclass(frozen=True)
 class Paper:
-    """How to prepare images for one paper: warmth (0 = none, 1 = :data:`WARM`), saturation, gamma."""
+    """How to prepare images for one paper: warmth (0 = none, 1 = :data:`WARM`), saturation, gamma.
+
+    ``light_only`` tints only light, pale pixels (white text boxes, pale frame parts) and leaves
+    saturated colours alone, instead of tinting every pixel.
+    """
 
     warm: float
     saturation: float = 1.0
     gamma: float = 1.0
+    light_only: bool = False
 
 
 PAPERS = {
-    "glossy": Paper(warm=1.0),
+    "glossy": Paper(warm=1.0, light_only=True),
     "matte": Paper(warm=1.0, saturation=1.06, gamma=1.12),
 }
 
@@ -64,8 +72,27 @@ def prepare_rgb(rgb: np.ndarray, paper: Paper) -> np.ndarray:
         out = np.round(255.0 * (out.astype(np.float32) / 255.0) ** paper.gamma).astype(np.uint8)
     if abs(paper.saturation - 1.0) > 1e-9:
         out = np.asarray(ImageEnhance.Color(Image.fromarray(out)).enhance(paper.saturation))
-    out = out.astype(np.float32) * warm_factors(paper.warm)
+    tint = 1.0 - warm_factors(paper.warm)  # how much each channel loses at full tint
+    if paper.light_only:
+        tint = tint * _paper_showing(out)[..., None]
+    out = out.astype(np.float32) * (1.0 - tint)
     return np.round(np.clip(out, 0.0, 255.0)).astype(np.uint8)
+
+
+def _smoothstep(edge0: float, edge1: float, x: np.ndarray) -> np.ndarray:
+    t = np.clip((x - edge0) / (edge1 - edge0), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _paper_showing(rgb: np.ndarray) -> np.ndarray:
+    """Per pixel, 0..1: how much of the paper would show through, i.e. how light and unsaturated it is.
+
+    Full for near-white, fading out over lightness 0.92 -> 0.55 and over chroma 0.06 -> 0.28
+    (max - min channel, 0..1), so saturated blues, golds and reds and anything dark get no tint.
+    """
+    f = rgb.astype(np.float32) / 255.0
+    high, low = f.max(axis=-1), f.min(axis=-1)
+    return _smoothstep(0.55, 0.92, (high + low) / 2) * (1.0 - _smoothstep(0.06, 0.28, high - low))
 
 
 def prepare_images(paths: Sequence[str | Path], paper: Paper) -> list[str]:
@@ -75,7 +102,7 @@ def prepare_images(paths: Sequence[str | Path], paper: Paper) -> list[str]:
         Per input path, the converted PNG ``{stem}_paper_w{warm}_s{saturation}_g{gamma}.png``. The name
         holds the values, so changing a preset never reuses an old cache file.
     """
-    suffix = f"_paper_w{paper.warm:g}_s{paper.saturation:g}_g{paper.gamma:g}"
+    suffix = f"_paper_w{paper.warm:g}_s{paper.saturation:g}_g{paper.gamma:g}" + ("_light" if paper.light_only else "")
     out_paths: list[str] = []
     done: dict[str, str] = {}
     for path in tqdm(paths, desc="Preparing for the paper"):

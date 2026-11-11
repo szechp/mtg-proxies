@@ -1,3 +1,4 @@
+import dataclasses
 import random
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -6,7 +7,11 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from mtg_proxies.decklists.decklist import Decklist
+
+def _empty_decklist() -> object:
+    from mtg_proxies.decklists.decklist import Decklist
+
+    return Decklist()
 
 
 @pytest.fixture(autouse=True)
@@ -148,7 +153,6 @@ def test_borderless_art_or_skip_skips_on_mtgpics_miss() -> None:
 def test_main_convert_prefer_borderless_threads_flag(tmp_path) -> None:
     """`convert --prefer-borderless` reaches parse_decklist_spec with prefer_borderless=True."""
     from mtg_proxies.cli import main
-    from mtg_proxies.decklists.decklist import Decklist
 
     deck = tmp_path / "d.txt"
     deck.write_text("1 Murder\n")
@@ -157,7 +161,7 @@ def test_main_convert_prefer_borderless_threads_flag(tmp_path) -> None:
 
     def fake_parse(_spec, **kwargs):
         captured.update(kwargs)
-        return Decklist()
+        return _empty_decklist()
 
     with (
         patch("sys.argv", ["mtg-proxies", "convert", "--prefer-borderless", str(deck), str(out)]),
@@ -171,7 +175,6 @@ def test_main_convert_prefer_borderless_threads_flag(tmp_path) -> None:
 def test_main_convert_prefer_borderless_defaults_off(tmp_path) -> None:
     """Without the flag, prefer_borderless is False (no behavior change for normal convert)."""
     from mtg_proxies.cli import main
-    from mtg_proxies.decklists.decklist import Decklist
 
     deck = tmp_path / "d.txt"
     deck.write_text("1 Murder\n")
@@ -180,7 +183,7 @@ def test_main_convert_prefer_borderless_defaults_off(tmp_path) -> None:
 
     def fake_parse(_spec, **kwargs):
         captured.update(kwargs)
-        return Decklist()
+        return _empty_decklist()
 
     with (
         patch("sys.argv", ["mtg-proxies", "convert", str(deck), str(out)]),
@@ -195,7 +198,7 @@ def test_main_print_forwards_split_pages(tmp_path) -> None:
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "decklist.pdf"
-    fake_decklist = Decklist()
+    fake_decklist = _empty_decklist()
     fake_images = ["image.png"]
 
     with (
@@ -224,7 +227,7 @@ def test_main_print_uses_true_card_size(tmp_path) -> None:
 
     with (
         patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file)]),
-        patch("mtg_proxies.print_command.parse_decklist_spec", return_value=Decklist()),
+        patch("mtg_proxies.print_command.parse_decklist_spec", return_value=_empty_decklist()),
         patch("mtg_proxies.print_command.fetch_scans_scryfall", return_value=["image.png"]),
         patch("mtg_proxies.print_command.print_cards_fpdf") as print_cards_fpdf,
     ):
@@ -367,7 +370,7 @@ def test_main_print_scale_multiplies_card_size(tmp_path) -> None:
 
     with (
         patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), "--scale", "2"]),
-        patch("mtg_proxies.print_command.parse_decklist_spec", return_value=Decklist()),
+        patch("mtg_proxies.print_command.parse_decklist_spec", return_value=_empty_decklist()),
         patch("mtg_proxies.print_command.fetch_scans_scryfall", return_value=["image.png"]),
         patch("mtg_proxies.print_command.print_cards_fpdf") as print_cards_fpdf,
     ):
@@ -397,7 +400,7 @@ def test_main_print_does_not_forward_art_preference(tmp_path) -> None:
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "decklist.pdf"
-    fake_decklist = Decklist()
+    fake_decklist = _empty_decklist()
 
     with (
         patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file)]),
@@ -498,7 +501,7 @@ def test_main_print_custom_art_extends_decklist_images(tmp_path) -> None:
     custom_dir.mkdir()
     custom_image = custom_dir / "extra.png"
     Image.fromarray(np.zeros((4, 4, 4), dtype=np.uint8)).save(custom_image)
-    fake_decklist = Decklist()
+    fake_decklist = _empty_decklist()
     fake_images = ["card1.png", "card2.png"]
     expected_images = [*fake_images, str(custom_image)]
 
@@ -564,7 +567,7 @@ def test_main_print_custom_art_empty_folder_warns_and_continues_with_decklist(
     out_file = tmp_path / "decklist.pdf"
     custom_dir = tmp_path / "art"
     custom_dir.mkdir()
-    fake_decklist = Decklist()
+    fake_decklist = _empty_decklist()
     fake_images = ["card1.png"]
 
     with (
@@ -905,9 +908,9 @@ def test_main_convert_basic_lands_appends_to_input_decklist(tmp_path) -> None:
 
     out_file = tmp_path / "lands.txt"
     input_card = Card(count=1, card={"name": "Lightning Bolt", "set": "lea", "collector_number": "161"})
-    input_decklist = Decklist()
+    input_decklist = _empty_decklist()
     input_decklist.entries = [input_card]
-    basics_decklist = Decklist()
+    basics_decklist = _empty_decklist()
     basics_decklist.entries = [
         Card(count=1, card={"name": "Mountain", "set": "scd", "collector_number": "346"}),
     ]
@@ -1989,7 +1992,7 @@ def test_main_print_upscale_calls_upscale_images(tmp_path) -> None:
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "out.pdf"
-    fake_decklist = Decklist()
+    fake_decklist = _empty_decklist()
     fake_images = ["card.png"]
     fake_flags = [False]
     upscaled = ["card_4x.png"]
@@ -2012,7 +2015,7 @@ def test_main_print_upscale_all_overrides_highres_flags(tmp_path) -> None:
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "out.pdf"
-    fake_decklist = Decklist()
+    fake_decklist = _empty_decklist()
     # All three cards are flagged highres by Scryfall — would normally be skipped.
     fake_images = ["a.png", "b.png", "c.png"]
     fake_flags = [True, True, True]
@@ -2068,7 +2071,7 @@ def test_main_print_upscale_bare_defaults_to_auto(tmp_path) -> None:
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "out.pdf"
-    fake_decklist = Decklist()
+    fake_decklist = _empty_decklist()
     fake_images = ["a.png", "b.png"]
     fake_flags = [False, True]
 
@@ -2091,7 +2094,7 @@ def test_main_print_upscale_model_alone_implies_auto(tmp_path) -> None:
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "out.pdf"
-    fake_decklist = Decklist()
+    fake_decklist = _empty_decklist()
     fake_images = ["a.png", "b.png"]
     fake_flags = [False, True]
 
@@ -2119,7 +2122,7 @@ def test_main_print_upscale_target_width_forwarded(tmp_path) -> None:
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "out.pdf"
-    fake_decklist = Decklist()
+    fake_decklist = _empty_decklist()
     fake_images = ["card.png"]
     fake_flags = [False]
 
@@ -2144,7 +2147,7 @@ def test_main_print_upscale_target_width_default_745(tmp_path) -> None:
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "out.pdf"
-    fake_decklist = Decklist()
+    fake_decklist = _empty_decklist()
     fake_images = ["card.png"]
 
     with (
@@ -2164,7 +2167,7 @@ def test_main_print_no_upscale_does_not_call_upscale_images(tmp_path) -> None:
     from mtg_proxies.cli import main
 
     out_file = tmp_path / "out.pdf"
-    fake_decklist = Decklist()
+    fake_decklist = _empty_decklist()
 
     with (
         patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file)]),
@@ -2277,14 +2280,14 @@ def test_main_print_paper(tmp_path: Path) -> None:
     cases = [
         ([], PAPERS["glossy"]),
         (["--media", "matte"], PAPERS["matte"]),
-        (["--media", "glossy", "--warm", "1"], Paper(warm=1.0, saturation=PAPERS["glossy"].saturation)),
+        (["--media", "glossy", "--warm", "1"], dataclasses.replace(PAPERS["glossy"], warm=1.0)),
         (["--media", "none"], None),
         (["--media", "none", "--warm", "1"], Paper(warm=1.0)),
     ]
     for flags, expected in cases:
         with (
             patch("sys.argv", ["mtg-proxies", "print", "decklist.txt", str(out_file), *flags]),
-            patch("mtg_proxies.print_command.parse_decklist_spec", return_value=Decklist()),
+            patch("mtg_proxies.print_command.parse_decklist_spec", return_value=_empty_decklist()),
             patch("mtg_proxies.print_command.fetch_scans_scryfall", return_value=["a.png"]),
             patch("mtg_proxies.paper.prepare_images", return_value=["a_p.png"]) as mock_p,
             patch("mtg_proxies.print_command.print_cards_fpdf") as mock_pdf,
@@ -2300,7 +2303,6 @@ def test_main_print_paper(tmp_path: Path) -> None:
 
 
 def test_mpcfill_dfc_drops_scryfall_back_face_in_flat_layout() -> None:
-    from mtg_proxies.decklists.decklist import Decklist
     from mtg_proxies.print_command import _build_slot_map, _mpcfill_front_only
 
     def dfc(name: str) -> dict:
@@ -2310,7 +2312,7 @@ def test_mpcfill_dfc_drops_scryfall_back_face_in_flat_layout() -> None:
             "card_faces": [{"image_uris": {"png": "front"}}, {"image_uris": {"png": "back"}}],
         }
 
-    decklist = Decklist()
+    decklist = _empty_decklist()
     decklist.append_card(1, dfc("Swapped"), " #mpcfill --identifier 1bnoXedsOrXtMKhJmoCfVQEDGEtD6GrjP")
     decklist.append_card(1, dfc("Plain"))
     decklist.append_card(1, dfc("No id"), " #mpcfill")

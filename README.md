@@ -508,7 +508,7 @@ and adds no detail the source doesn't have; it only keeps the enlargement step h
 | `--upscale-model PATH` | RealESRNet_x4plus | Any ESRGAN-compatible `.pth`; implies `--upscale auto`. |
 | `--upscale-target-width PX` | `745` | Downsample upscaled cards to this width. |
 | `--warm STRENGTH` | from `--media` | Override the cream card-stock tint of `--media` (1 for glossy and matte; lower = less yellow, `0` = no tint). |
-| `--media glossy\|matte\|none` | `glossy` | Prepare the cards for the paper so proxies look like real cards: glossy gets a cream card-stock tint; matte gets the tint, +6 % saturation and deeper shadows (print it with the driver's matte media setting, `lp -o MediaType=PMMATT_HIGH`). `none` leaves the images as they are, e.g. when printing from another computer. |
+| `--media glossy\|matte\|none` | `glossy` | Prepare the cards for the paper so proxies look like real cards: glossy gets a cream card-stock tint on light, pale areas only (white text boxes, pale frame parts; saturated blues and golds keep their hue); matte gets the tint, +6 % saturation and deeper shadows (print it with the driver's matte media setting, `lp -o MediaType=PMMATT_HIGH`). `none` leaves the images as they are, e.g. when printing from another computer. |
 
 ### convert
 

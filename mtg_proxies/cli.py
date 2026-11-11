@@ -197,7 +197,8 @@ def _add_print_parser(subparsers: argparse._SubParsersAction) -> None:
         default="glossy",
         help=(
             "prepare the cards for the paper so they look like real cards: glossy (default) gets a"
-            " cream card-stock tint; matte also gets a little more saturation and deeper shadows, print"
+            " cream card-stock tint on light, pale areas (saturated colours keep their hue); matte"
+            " gets the tint everywhere, a little more saturation and deeper shadows, print"
             " it with the driver's matte media setting. none leaves the images as they are (e.g. when"
             " printing from another computer)."
         ),
