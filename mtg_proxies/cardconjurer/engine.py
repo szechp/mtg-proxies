@@ -146,6 +146,32 @@ CC_DEFAULT_UPSCALE_MODEL = "mtg"
 
 
 _CC_UPSCALE_SRC_CACHE = Path.home() / ".cache" / "mtg-proxies" / "upscale-src"
+# Your own art (--art-folder, #cardconjurer --custom-art) narrower than this is upscaled like a
+# Scryfall art crop: it is the art window's width on a 2010px card (retro-hd: 1553px), so
+# anything smaller would be stretched to fit it.
+CUSTOM_ART_MIN_WIDTH = 1550
+
+
+def _copy_for_upscale(path: str) -> str:
+    """Copy your own art into the upscale cache as PNG and return the copy.
+
+    The upscaler writes its output next to its input; working on a copy keeps it out of your
+    art folder. The copy is named by content, so an edited image is upscaled again.
+    """
+    import hashlib
+
+    from PIL import Image
+
+    source = Path(path)
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()[:12]
+    copy = _CC_UPSCALE_SRC_CACHE / f"custom-{_art_key(source.stem)[:40]}-{digest}.png"
+    if not copy.is_file():
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        tmp = copy.with_suffix(".png.tmp")
+        with Image.open(source) as im:
+            im.convert("RGB").save(tmp, format="PNG")
+        tmp.replace(copy)
+    return str(copy)
 
 
 def _cc_upscale_scryfall_art(
@@ -830,7 +856,7 @@ class _CcArtResolver:
             self.deck_upscale = cuda_available()
             if not self.deck_upscale:
                 print(
-                    "[cardconjurer] no CUDA GPU: Scryfall art fallbacks stay un-upscaled "
+                    "[cardconjurer] no CUDA GPU: Scryfall art fallbacks and small custom art stay un-upscaled "
                     "(force with --upscale or a per-card `#cardconjurer --upscale`)."
                 )
         return bool(self.deck_upscale)
@@ -843,6 +869,20 @@ class _CcArtResolver:
             kwargs = {**kwargs, "model_path": self.options[slot_int].upscale_model}
         out = _cc_upscale_scryfall_art(paths, **kwargs)
         self.upscaled += sum(o != p for o, p in zip(out, paths, strict=True))
+        return out
+
+    def _maybe_upscale_custom(self, slot_int: int, path: str | None) -> str | None:
+        """Upscale your own art narrower than :data:`CUSTOM_ART_MIN_WIDTH`, by the rule Scryfall art follows."""
+        from PIL import Image
+
+        if path is None:
+            return None
+        with Image.open(path) as im:
+            if im.width >= CUSTOM_ART_MIN_WIDTH:
+                return path
+        if not self._wants_upscale(slot_int):
+            return path
+        [out] = self._maybe_upscale(slot_int, [_copy_for_upscale(path)])
         return out
 
     def _use_scryfall_only(self, slot_int: int) -> bool:
@@ -880,10 +920,11 @@ class _CcArtResolver:
         # the escape hatch for borderless cards with no full-bleed MTGPics art: supply your own
         # full-art image and the card renders borderless from it instead of skipping to fallback.txt.
         if opts.custom_art:
-            art = {"art_path": opts.custom_art}
+            art = {"art_path": self._maybe_upscale_custom(slot_int, opts.custom_art)}
             if slot_int in self.dfc_split_slots:
                 # The other face: its own file from the art folder, else Scryfall's crop.
-                back = opts.custom_art_back or self._dfc_art(slot_int, card).get("art_path_back")
+                back = self._maybe_upscale_custom(slot_int, opts.custom_art_back)
+                back = back or self._dfc_art(slot_int, card).get("art_path_back")
                 art |= {"art_path_back": back} if back else {}
             return {**extras, **art}
 
@@ -922,7 +963,7 @@ class _CcArtResolver:
             warn(f"Note: {card['name']!r} DFC art unavailable ({exc}); using harness default.")
             return {}
         [front, back] = self._maybe_upscale(slot_int, [front, back])
-        back = self.options[slot_int].custom_art_back or back
+        back = self._maybe_upscale_custom(slot_int, self.options[slot_int].custom_art_back) or back
         if slot_int in self.dfc_split_slots:
             return {"art_path": str(front), "art_path_back": str(back)}
         return {"art_path": str(_composite_dfc_art(Path(front), Path(back)))}

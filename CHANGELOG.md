@@ -5,7 +5,7 @@
 - `print --frame STYLE` renders the decklist with Card Conjurer and prints it in one command; `#cardconjurer` modelines in `print` now go through the same engine as the `cardconjurer` subcommand (MTGPics art, art check, split DFCs, `--language`, `--skip`, `--font-size`).
 - `cardconjurer --mix` / `print --frame mix` pick a frame per card; this replaces `scripts/decklist_to_cardconjurer.py`.
 - `print` writes PDFs only.
-- `--art-folder FOLDER` (`print`, `cardconjurer`): your own illustrations, matched to cards by file name; `Card Name (Artist Name).png` credits that artist.
+- `--art-folder FOLDER` (`print`, `cardconjurer`): your own illustrations, matched to cards by file name; `Card Name (Artist Name).png` credits that artist; images narrower than the art window are upscaled.
 - `retro_hd --missing` rebuilds only missing or outdated retro-hd frames; a run refuses an incomplete build.
 - Retro: power / toughness in Plantin Bold, set symbols centred with clear space, double-faced notch bevels and coloured-land notches fixed. 8th: two-tone legend crown on two-colour cards.
 - `tests/golden_test.py`: opt-in image comparison of real renders against committed baselines.

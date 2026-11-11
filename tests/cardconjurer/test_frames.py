@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from mtg_proxies.cardconjurer.frames import mix_frame_flag
@@ -96,3 +98,39 @@ def test_credited_artist_replaces_the_printed_one_per_face() -> None:
     assert credited["artist"] == "Nils Hamm"
     assert [face["artist"] for face in credited["card_faces"]] == ["Nils Hamm", "Me"]
     assert card["card_faces"][1]["artist"] == "Nils Hamm"  # the original is never edited
+
+
+def _resolver(tmp_path, upscale: bool | None):  # ruff: ignore[missing-return-type-private-function]
+    from mtg_proxies.cardconjurer.engine import CcDeckOptions, _CcArtResolver, _CcCardOptions
+    from mtg_proxies.decklists.decklist import Card
+
+    card = Card(1, {"name": "Sol Ring"})
+    return _CcArtResolver(CcDeckOptions(upscale=upscale), "retro", {1: card}, {1: _CcCardOptions()}, {1: {}}, {}, set())
+
+
+@pytest.mark.parametrize(("width", "upscale", "expect_upscale"), [
+    (800, True, True),     # too small: upscaled
+    (1600, True, False),   # wide enough: used as it is
+    (800, False, False),   # --no-upscale
+])
+def test_small_custom_art_is_upscaled_from_a_copy(tmp_path, monkeypatch, width, upscale, expect_upscale) -> None:
+    from PIL import Image
+
+    from mtg_proxies.cardconjurer import engine
+
+    art_dir, cache = tmp_path / "my-art", tmp_path / "cache"
+    art_dir.mkdir()
+    art = art_dir / "sol-ring.jpg"
+    Image.new("RGB", (width, width * 3 // 4)).save(art)
+    monkeypatch.setattr(engine, "_CC_UPSCALE_SRC_CACHE", cache)
+    seen = []
+    monkeypatch.setattr(engine, "_cc_upscale_scryfall_art", lambda paths, **kw: seen.extend(paths) or ["/up.png"])
+
+    out = _resolver(tmp_path, upscale)._maybe_upscale_custom(1, str(art))
+
+    assert (out == "/up.png") is expect_upscale
+    if expect_upscale:
+        assert Path(seen[0]).parent == cache  # the upscaler never writes into your art folder
+    else:
+        assert out == str(art)
+    assert sorted(p.name for p in art_dir.iterdir()) == ["sol-ring.jpg"]

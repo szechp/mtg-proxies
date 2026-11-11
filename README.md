@@ -156,6 +156,10 @@ punctuation don't matter, and png / jpg / jpeg / webp all work. For a double-fac
 named after the back face is the back's art. Files that match no card are listed, so a typo in a
 file name doesn't go unnoticed.
 
+Images narrower than the art window (1550 px) are upscaled first, by the same rule as Scryfall's
+art: on by default with an NVIDIA GPU, `--upscale` forces it, `--no-upscale` turns it off. Your
+folder is never written to; the upscaled copies live in `~/.cache/mtg-proxies/upscale-src/`.
+
 To credit someone else than the printed artist, put the name in parentheses at the end, written
 exactly as it should appear on the card: `galadriel-of-lothlorien (R.K. Post).png` prints
 "Illus. R.K. Post". Without parentheses the card keeps its printed artist. Without `--frame`, only the cards that have an image are rendered.
