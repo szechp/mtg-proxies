@@ -265,6 +265,9 @@ def test_frames_built_by_older_code_count_as_missing(tmp_path: Path) -> None:
 
     _touch_complete_build(tmp_path)
     (tmp_path / "build.json").unlink()  # a cache from before the stamp: every task is version 1
-    outdated = retro_hd.missing_tasks(tmp_path)
-    assert outdated
-    assert all(task.startswith(("tf-", "mdfc-")) for task in outdated)
+    outdated = set(retro_hd.missing_tasks(tmp_path))
+    # Exactly the frames whose code has changed since the first build: the double-faced ones
+    # (notch bevels) and every white frame (lighter tint).
+    assert outdated == {task for task in retro_hd.all_tasks() if retro_hd._task_version(task) > 1}
+    assert {"tf-u", "mdfc-r", "w", "saga-w", "adventure-w"} <= outdated
+    assert not outdated & {"u", "saga-u", "class-r", "saga-extras"}
