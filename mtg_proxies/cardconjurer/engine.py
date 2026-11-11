@@ -877,9 +877,13 @@ class _CcArtResolver:
 
         if path is None:
             return None
-        with Image.open(path) as im:
-            if im.width >= CUSTOM_ART_MIN_WIDTH:
-                return path
+        try:
+            with Image.open(path) as im:
+                if im.width >= CUSTOM_ART_MIN_WIDTH:
+                    return path
+        except OSError as exc:  # not an image Pillow reads: pass it on as it is, like before
+            warn(f"Note: could not read {Path(path).name} to check its size ({exc}); using it as it is.")
+            return path
         if not self._wants_upscale(slot_int):
             return path
         [out] = self._maybe_upscale(slot_int, [_copy_for_upscale(path)])

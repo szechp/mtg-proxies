@@ -824,8 +824,21 @@ def test_cc_upscale_never_touches_mtgpics_art(tmp_path: Path) -> None:
     assert extras["art_path"] == str(mtgp)
 
 
-def test_cc_upscale_never_touches_custom_art(tmp_path: Path) -> None:
-    """`#cardconjurer --custom-art` is user art: never upscaled."""
+def test_cc_upscale_leaves_wide_enough_custom_art_alone(tmp_path: Path) -> None:
+    """`#cardconjurer --custom-art` at least as wide as the art window is used as it is."""
+    from PIL import Image
+
+    art = tmp_path / "mine.png"
+    Image.new("RGB", (1600, 1200)).save(art)
+    extras, mock_upscale = _prepare_each_for(
+        tmp_path, f"1 Murder #cardconjurer --custom-art {art}", ["--upscale"], cuda=True
+    )
+    mock_upscale.assert_not_called()
+    assert extras["art_path"] == str(art)
+
+
+def test_cc_upscale_unreadable_custom_art_is_passed_on(tmp_path: Path) -> None:
+    """Art Pillow cannot read is handed to the renderer as it is, not a crash."""
     art = tmp_path / "mine.png"
     art.write_bytes(b"png")
     extras, mock_upscale = _prepare_each_for(
