@@ -679,9 +679,8 @@ let retroHdAdventure = false;  // the card being built is a two-panel --retro-hd
 let squareCorners = false;  // the card being built is M15-8th: square its frame's inner corners
 // Card Conjurer's M15-8th frame art (img/frames/custom/m15-eighth/) carries an 80px black border
 // whose inner corners are rounded (~38px radius) the modern way; 8th frames are square. Corners
-// are squared in a cached copy: black pixels inside each corner square take the frame texture
-// SQUARE_CORNER px further along the side (same column, moving away from the corner).
-const SQUARE_BORDER = 80, SQUARE_CORNER = 56;
+// are squared in a cached copy; SQUARE_CORNER is the largest radius looked for.
+const SQUARE_BORDER = 80, SQUARE_CORNER = 56, SQUARE_FRINGE = 6;
 const MISSING_BORDER_DONOR = {
     '/img/frames/custom/m15-eighth/mdfc/front/regular/wl.png': '/img/frames/custom/m15-eighth/mdfc/front/regular/l.png',
 };
@@ -700,6 +699,11 @@ function squareCornerFrame(src) {
         const data = ctx.getImageData(0, 0, w, h), px = data.data;
         const b = Math.round(SQUARE_BORDER * w / 2010), r = Math.round(SQUARE_CORNER * w / 2010);
         const dark = (i) => px[i + 3] > 200 && px[i] + px[i + 1] + px[i + 2] < 40;
+        // The pack's `Frame.png` is the mask single-faced cards draw their frame through, and it
+        // is rounded too: there the corner is missing where the mask is transparent. Without it
+        // only the double-faced frames (which use no such mask) came out square.
+        const mask = /\/Frame\.png$/.test(src);
+        const missing = mask ? (i) => px[i + 3] <= 200 : dark;
         let changed = false;
         // CC asset defect: the white-land MDFC front (mdfc/front/regular/wl.png) is missing the
         // bottom of its rock border (black from ~2/3 down). Its colourless land sibling has the
@@ -718,18 +722,31 @@ function squareCornerFrame(src) {
                 }
             }
         }
-        // Each corner square, the pixel at its border corner (dark when the corner is rounded),
-        // and the direction to take texture from (away from the corner, vertically).
-        for (const [x0, y0, cx, cy, dy] of [[b, b, b, b, 1], [w - b - r, b, w - b - 1, b, 1],
-                                             [b, h - b - r, b, h - b - 1, -1],
-                                             [w - b - r, h - b - r, w - b - 1, h - b - 1, -1]]) {
-            if (!dark((cy * w + cx) * 4)) continue;  // no rounded border corner here
-            for (let y = y0; y < y0 + r; y++) {
-                for (let x = x0; x < x0 + r; x++) {
-                    const i = (y * w + x) * 4;
-                    if (!dark(i)) continue;
-                    const j = ((y + dy * r) * w + x) * 4;
-                    px[i] = px[j]; px[i + 1] = px[j + 1]; px[i + 2] = px[j + 2]; px[i + 3] = px[j + 3];
+        // Each rounded corner: its border-corner pixel (missing when the corner is rounded) and
+        // the direction into the frame. The arc's radius is how far the missing run reaches
+        // along the border edge; every pixel beyond the arc takes the pixel mirrored across it,
+        // towards the arc's centre. That continues the frame's own edge shading into the corner
+        // (texture taken from further along the side was a visibly lighter or darker patch).
+        // SQUARE_FRINGE px inside the arc go too: its anti-aliased rim stayed behind as a hairline.
+        const from = new Uint8ClampedArray(px);
+        for (const [cx, cy, sx, sy] of [[b, b, 1, 1], [w - b - 1, b, -1, 1],
+                                         [b, h - b - 1, 1, -1], [w - b - 1, h - b - 1, -1, -1]]) {
+            let radius = 0;
+            while (radius < r && missing((cy * w + cx + sx * radius) * 4)) radius++;
+            if (!radius) continue;  // no rounded border corner here
+            const keep = radius - SQUARE_FRINGE;
+            // A few px past the arc's ends too, where its rim tapers into the straight edge.
+            const reach = radius + SQUARE_FRINGE;
+            for (let v = 0; v < reach; v++) {
+                for (let u = 0; u < reach; u++) {
+                    // (u, v): steps in from the corner; the arc's centre is at (radius, radius).
+                    const dx = radius - u, dy = radius - v, dist = Math.hypot(dx, dy);
+                    if (dist <= keep || (dx <= 0 && dy <= 0)) continue;
+                    const scale = Math.max(0, 2 * keep - dist) / dist;
+                    const mu = Math.round(radius - dx * scale), mv = Math.round(radius - dy * scale);
+                    const i = ((cy + sy * v) * w + cx + sx * u) * 4;
+                    const j = ((cy + sy * mv) * w + cx + sx * mu) * 4;
+                    px[i] = from[j]; px[i + 1] = from[j + 1]; px[i + 2] = from[j + 2]; px[i + 3] = from[j + 3];
                     changed = true;
                 }
             }
