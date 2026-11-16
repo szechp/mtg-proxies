@@ -1,0 +1,13 @@
+// Modern and old-frame cards on one sheet: mtg-proxies calibrate THIS out.pdf --rows 12
+1 Yoked Ox (M20) 41
+1 Coral Merfolk (M20) 315
+1 Mind Rot (M21) 115
+1 Shock (M20) 160
+1 Woodland Mystic (M20) 344
+1 Stone Golem (M20) 240
+1 Knight Errant (S00) 7
+1 Stormwatch Eagle (PCY) 50
+1 Strongarm Thug (MMQ) 165
+1 Turf Wound (INV) 177
+1 Titanic Bulvox (SCG) 129
+1 Bargaining Table (MMQ) 288

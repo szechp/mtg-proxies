@@ -516,13 +516,14 @@ A test sheet for tuning `print --media` to your paper and printer. Give it a dec
 
 ```bash
 mtg-proxies calibrate calibration/glossy.txt calibration.pdf
+mtg-proxies calibrate calibration/glossy-and-retro.txt calibration.pdf --rows 12
 mtg-proxies calibrate cards.txt calibration.pdf --variant none --variant glossy,warm=0.5 --variant warm=1,all,sat=1.1
 ```
 
 | Flag | Default | What it does |
 |---|---|---|
 | `--variant SPEC` | nine glossy candidates | One column, repeatable: comma-separated `warm=N`, `sat=N`, `gamma=N`, and `light` (tint light, pale areas only) or `all`; may start from a preset (`glossy`, `matte`, `none`). |
-| `--rows N` | all cards on one page, up to 6 on A4 | Cards per page; `--rows 3` on A4 keeps the strips full height over more pages. |
+| `--rows N` | all cards on one page, up to 6 on A4 | Cards per page; `--rows 3` on A4 keeps the strips full height over more pages, `--rows 12` squeezes twelve cards onto one sheet as 19 mm bands. |
 | `--paper` | `a4` | Paper size, `a4` or `WIDTHxHEIGHT` in inches. |
 
 Labels read like `C  w1 light s1.06`: column C, warmth 1 on light areas only, saturation +6 %. The command also prints the list of columns.

@@ -44,15 +44,16 @@ DEFAULT_VARIANTS = (
 )
 
 PAGE_MARGIN_MM = 6.0  # inside what an inkjet without borderless mode can print
-LABEL_HEIGHT_MM = 4.0
+LABEL_HEIGHT_MM = 3.0
 ROW_GAP_MM = 1.5
 LABEL_FONT_PT = 6.5
-#: Shortest band a row is squeezed to before a second page starts: about 26 mm of art and
-#: 13 mm of text box around the type line, which is six rows on A4.
+#: Shortest band a row is squeezed to by default before a second page starts, which is six
+#: rows on A4: about 18 mm of art, the type line and 18 mm of text box. ``--rows`` goes below.
 MIN_BAND_MM = 40.0
-#: Where a band shorter than the card is centred, as a fraction of the card's height: just
-#: above the type line of the modern frames, so it shows art and text box alike.
-BAND_CENTRE = 0.54
+#: Where a band shorter than the card is centred, as a fraction of the card's height: the
+#: type line of the old and modern frames, so even a 19 mm band (``--rows 12`` on A4) shows
+#: art above it and text box below.
+BAND_CENTRE = 0.60
 
 _KEYS = {"warm": "warm", "w": "warm", "sat": "saturation", "s": "saturation", "gamma": "gamma", "g": "gamma"}
 

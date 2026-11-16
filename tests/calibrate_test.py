@@ -51,6 +51,7 @@ def test_up_to_three_cards_on_a4_are_full_height_and_six_share_one_page_as_bands
     assert MIN_BAND_MM <= height < 44.0
     assert sheet_layout(a4, 9, n_cards=20)[2] == 6  # more cards: more pages, not thinner bands
     assert sheet_layout(a4, 9, n_cards=6, rows=3)[1:] == (pytest.approx(88.0), 3)
+    assert sheet_layout(a4, 9, n_cards=12, rows=12)[1] > 19.0  # two card lists on one sheet
 
 
 def test_a_band_is_cut_around_the_type_line(tmp_path: Path) -> None:
@@ -60,7 +61,7 @@ def test_a_band_is_cut_around_the_type_line(tmp_path: Path) -> None:
     Image.fromarray(rows).save(tmp_path / "rows.png")
     band = card_strip(tmp_path / "rows.png", 21.0, 44.0)
     assert band.shape == (100, 21, 3)
-    assert (band[0, 0, 0], band[-1, 0, 0]) == (58, 157)  # 54 % of the height sits in the middle
+    assert (band[0, 0, 0], band[-1, 0, 0]) == (70, 169)  # 60 % of the height sits in the middle
 
 
 def test_sheet_has_one_strip_per_card_and_variant_and_a_new_page_after_three(tmp_path: Path) -> None:
