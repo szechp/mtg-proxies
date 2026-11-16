@@ -16,12 +16,16 @@ Values come from prints on an Epson ET-2820 via the ``EPSON_ET-2820_MTG`` queues
 - ``matte`` (Koala matte sticker paper, media Epson Matte): picked from a 3x3 calibration print.
   Lowering the queue's brightness and raising contrast for deeper black was tried and crushed
   the art.
-- ``glossy`` (glossy sticker paper, media Photo Paper Glossy): warmth 1, picked from a
-  calibration print. Warmth 1.5 with saturation +10 %, estimated from a photo that showed glossy
-  flat and too blue, printed far too yellow (2026-11-11), so glossy is back to the printed value.
-  Tinting every pixel then matched green cards but turned blue frames teal and gold olive, so on
-  glossy the tint only reaches light, low-saturation areas (``light_only``): where cream card
-  stock would show through, not where ink covers it. Not yet test-printed.
+- ``glossy`` (glossy sticker paper, media Photo Paper Glossy): warmth 0.75 on light areas only,
+  saturation +6 %, from the second calibration print (2026-11-16, ``mtg-proxies calibrate``: six
+  modern and six old-frame Card Conjurer renders of owned cards, nine variants each, held against
+  the real cards). Picked per card: G, H, G, G, H, G (modern W U B R G artifact; only white took
+  F) and C, G, C, G, H, B (retro), i.e. the tint on light areas only for 11 of 12, split evenly
+  between warmth 0.5 and 1, and +6 % saturation for 8 of 12. History: warmth 1 on every pixel was
+  picked from the first print (one green card, Scryfall scan); warmth 1.5 with saturation +10 %,
+  estimated from a photo, printed far too yellow (2026-11-11); tinting every pixel turned blue
+  frames teal and gold olive, hence ``light_only``: the tint only reaches light, low-saturation
+  areas, where cream card stock would show through, not where ink covers it.
 
 Emulating the Mac driver's Adobe RGB mode and magenta/yellow sliders was tried too and lost.
 """
@@ -55,7 +59,7 @@ class Paper:
 
 
 PAPERS = {
-    "glossy": Paper(warm=1.0, light_only=True),
+    "glossy": Paper(warm=0.75, saturation=1.06, light_only=True),
     "matte": Paper(warm=1.0, saturation=1.06, gamma=1.12),
 }
 

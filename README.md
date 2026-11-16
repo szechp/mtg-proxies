@@ -507,8 +507,8 @@ and adds no detail the source doesn't have; it only keeps the enlargement step h
 | `--upscale [auto\|all]` | off | Real-ESRGAN upscaling: `auto` (bare flag) = cards Scryfall marks lowres, `all` = every card. |
 | `--upscale-model PATH` | RealESRNet_x4plus | Any ESRGAN-compatible `.pth`; implies `--upscale auto`. |
 | `--upscale-target-width PX` | `745` | Downsample upscaled cards to this width. |
-| `--warm STRENGTH` | from `--media` | Override the cream card-stock tint of `--media` (1 for glossy and matte; lower = less yellow, `0` = no tint). |
-| `--media glossy\|matte\|none` | `glossy` | Prepare the cards for the paper so proxies look like real cards: glossy gets a cream card-stock tint on light, pale areas only (white text boxes, pale frame parts; saturated blues and golds keep their hue); matte gets the tint, +6 % saturation and deeper shadows (print it with the driver's matte media setting, `lp -o MediaType=PMMATT_HIGH`). `none` leaves the images as they are, e.g. when printing from another computer. |
+| `--warm STRENGTH` | from `--media` | Override the cream card-stock tint of `--media` (0.75 for glossy, 1 for matte; lower = less yellow, `0` = no tint). |
+| `--media glossy\|matte\|none` | `glossy` | Prepare the cards for the paper so proxies look like real cards: glossy gets a cream card-stock tint on light, pale areas only (white text boxes, pale frame parts; saturated blues and golds keep their hue) and +6 % saturation; matte gets the tint, +6 % saturation and deeper shadows (print it with the driver's matte media setting, `lp -o MediaType=PMMATT_HIGH`). `none` leaves the images as they are, e.g. when printing from another computer. |
 
 ### calibrate
 
@@ -522,7 +522,7 @@ mtg-proxies calibrate cards.txt calibration.pdf --variant none --variant glossy,
 
 | Flag | Default | What it does |
 |---|---|---|
-| `--variant SPEC` | nine glossy candidates | One column, repeatable: comma-separated `warm=N`, `sat=N`, `gamma=N`, and `light` (tint light, pale areas only) or `all`; may start from a preset (`glossy`, `matte`, `none`). |
+| `--variant SPEC` | the glossy preset and eight neighbours | One column, repeatable: comma-separated `warm=N`, `sat=N`, `gamma=N`, and `light` (tint light, pale areas only) or `all`; may start from a preset (`glossy`, `matte`, `none`). |
 | `--frame STYLE` | `auto` | The Card Conjurer frame of the strips, as in `print --frame`; `scan` uses the plain Scryfall scans instead. |
 | `--art-folder FOLDER` | — | Your own illustrations for the renders, as in `print --art-folder`. |
 | `--rows N` | all cards on one page, up to 6 on A4 | Cards per page; `--rows 3` on A4 keeps the strips full height over more pages, `--rows 12` squeezes twelve cards onto one sheet as 19 mm bands. |

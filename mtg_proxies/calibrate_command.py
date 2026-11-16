@@ -33,19 +33,19 @@ from mtg_proxies.cli_util import die, parse_decklist_spec, warn
 from mtg_proxies.paper import PAPERS, Paper, prepare_rgb
 from mtg_proxies.print_cards import CARD_SIZE_MM, PDF_TARGET_DPI, _resample_to_dpi, _strip_cc_margin
 
-#: The glossy question as of 2026-11: how strong a tint, on light areas only or everywhere, and
-#: does glossy need more saturation or deeper shadows. A is the untouched scan, C the current
-#: ``glossy`` preset, F the value picked from the first (green card only) calibration print.
+#: A check of the ``glossy`` preset (B) against its neighbours: less and more tint (C, D), less
+#: and more saturation (E, F), and the runners-up of the 2026-11-16 print without the extra
+#: saturation (G, H) or with the tint on every pixel (I). A is the untouched render.
 DEFAULT_VARIANTS = (
     "none",
+    "glossy",
+    "glossy,warm=0.5",
+    "glossy,warm=1",
+    "glossy,sat=1",
+    "glossy,sat=1.12",
     "warm=0.5,light",
     "warm=1,light",
-    "warm=1.5,light",
-    "warm=0.5,all",
-    "warm=1,all",
-    "warm=0.5,light,sat=1.06",
-    "warm=1,light,sat=1.06",
-    "warm=1,light,gamma=1.1",
+    "glossy,all",
 )
 
 PAGE_MARGIN_MM = 6.0  # inside what an inkjet without borderless mode can print

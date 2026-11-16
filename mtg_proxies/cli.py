@@ -198,7 +198,7 @@ def _add_print_parser(subparsers: argparse._SubParsersAction) -> None:
         default="glossy",
         help=(
             "prepare the cards for the paper so they look like real cards: glossy (default) gets a"
-            " cream card-stock tint on light, pale areas (saturated colours keep their hue); matte"
+            " cream card-stock tint on light, pale areas (saturated colours keep their hue) and a little more saturation; matte"
             " gets the tint everywhere, a little more saturation and deeper shadows, print"
             " it with the driver's matte media setting. none leaves the images as they are (e.g. when"
             " printing from another computer)."
@@ -210,7 +210,7 @@ def _add_print_parser(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         metavar="STRENGTH",
         help=(
-            "override the cream card-stock tint of --media (1 for both glossy and matte; 0 = no tint)."
+            "override the cream card-stock tint of --media (0.75 for glossy, 1 for matte; 0 = no tint)."
             " E.g. --warm 1"
         ),
     )
@@ -236,7 +236,7 @@ def _add_calibrate_parser(subparsers: argparse._SubParsersAction) -> None:
             "one column of the sheet, repeatable: comma-separated warm=N, sat=N, gamma=N and light"
             " (tint light, pale areas only) or all (tint everything), optionally starting from a"
             " preset (glossy, matte, none). E.g. --variant none --variant glossy,warm=0.5"
-            " --variant warm=1,all,sat=1.1. Default: nine glossy candidates."
+            " --variant warm=1,all,sat=1.1. Default: the glossy preset and eight neighbours."
         ),
     )
     calibrate_parser.add_argument(

@@ -40,11 +40,11 @@ def test_saturation_widens_the_spread_of_a_muted_colour() -> None:
     assert saturated.max() - saturated.min() > plain.max() - plain.min()
 
 
-def test_glossy_is_the_printed_warmth_on_light_areas_only() -> None:
-    """Glossy is warmth 1 from the calibration print; 1.5 with +10 % saturation printed far too yellow."""
+def test_glossy_is_the_printed_preset() -> None:
+    """Glossy is the pick of the second calibration print: warmth 0.75 on light areas, saturation +6 %."""
     from mtg_proxies.paper import PAPERS, Paper
 
-    assert PAPERS["glossy"] == Paper(warm=1.0, light_only=True)
+    assert PAPERS["glossy"] == Paper(warm=0.75, saturation=1.06, light_only=True)
 
 
 def test_light_only_tint_warms_white_but_not_saturated_colours() -> None:

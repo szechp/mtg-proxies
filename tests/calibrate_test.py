@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import re
 from pathlib import Path
 
@@ -14,7 +15,7 @@ def test_parse_variant_reads_values_and_presets() -> None:
 
     assert parse_variant("none") == Paper(warm=0.0)
     assert parse_variant("warm=0.5, light, sat=1.06") == Paper(warm=0.5, saturation=1.06, light_only=True)
-    assert parse_variant("glossy,warm=0.5") == Paper(warm=0.5, light_only=True)
+    assert parse_variant("glossy,warm=0.5") == dataclasses.replace(PAPERS["glossy"], warm=0.5)
     assert parse_variant("matte,all,g=1.2") == Paper(warm=1.0, saturation=PAPERS["matte"].saturation, gamma=1.2)
 
 
