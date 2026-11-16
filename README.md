@@ -512,7 +512,7 @@ and adds no detail the source doesn't have; it only keeps the enlargement step h
 
 ### calibrate
 
-A test sheet for tuning `print --media` to your paper and printer. Give it a decklist of cards you own: every card becomes one row, every variant one labelled strip of that card's left edge at true size (nine variants on A4 = strips a third of a card wide). Up to three cards per page are printed full height; with more, each row is cut to a band around the type line, art above and text box below, so six cards (one per colour and a colourless one) share one A4 sheet. Print it at 100 % with the same driver settings as your proxies, cut the rows out and hold the strips against the real cards.
+A test sheet for tuning `print --media` to your paper and printer. Give it a decklist of cards you own: every card is rendered with Card Conjurer as `print --frame` would (by default in its own printed frame, so it matches the real card; `#cardconjurer` modelines are honoured) and becomes one row, every variant one labelled strip of that card's left edge at true size (nine variants on A4 = strips a third of a card wide). Up to three cards per page are printed full height; with more, each row is cut to a band around the type line, art above and text box below, so six cards (one per colour and a colourless one) share one A4 sheet. Print it at 100 % with the same driver settings as your proxies, cut the rows out and hold the strips against the real cards.
 
 ```bash
 mtg-proxies calibrate calibration/glossy.txt calibration.pdf
@@ -523,6 +523,8 @@ mtg-proxies calibrate cards.txt calibration.pdf --variant none --variant glossy,
 | Flag | Default | What it does |
 |---|---|---|
 | `--variant SPEC` | nine glossy candidates | One column, repeatable: comma-separated `warm=N`, `sat=N`, `gamma=N`, and `light` (tint light, pale areas only) or `all`; may start from a preset (`glossy`, `matte`, `none`). |
+| `--frame STYLE` | `auto` | The Card Conjurer frame of the strips, as in `print --frame`; `scan` uses the plain Scryfall scans instead. |
+| `--art-folder FOLDER` | — | Your own illustrations for the renders, as in `print --art-folder`. |
 | `--rows N` | all cards on one page, up to 6 on A4 | Cards per page; `--rows 3` on A4 keeps the strips full height over more pages, `--rows 12` squeezes twelve cards onto one sheet as 19 mm bands. |
 | `--paper` | `a4` | Paper size, `a4` or `WIDTHxHEIGHT` in inches. |
 

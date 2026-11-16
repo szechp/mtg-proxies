@@ -8,8 +8,13 @@ disappears is the preset.
 Strips are as wide as the page allows for the number of variants (nine on A4: about a third
 of a card). Up to three rows per page are full height; with more cards the rows shrink to a
 band around the type line (art above, text box below) so that up to six cards, one per colour
-and a colourless one, share a single sheet. The images take the same path as ``print``:
-prepared at scan resolution, then upsampled to ``PDF_TARGET_DPI``.
+and a colourless one, share a single sheet.
+
+The cards are what ``print --frame`` would print: Card Conjurer renders, by default in each
+card's own printed frame (``auto``) so the strip matches the real card, with ``#cardconjurer``
+modelines honoured. The paper has to be judged on those, not on Scryfall scans, whose colours
+are the scanner's. ``--frame scan`` takes the scans instead. Either way the strips take the same
+path as ``print``: prepared at source resolution, then upsampled to ``PDF_TARGET_DPI``.
 """
 
 from __future__ import annotations
@@ -17,16 +22,16 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import string
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
-from mtg_proxies.cli_util import die, parse_decklist_spec
+from mtg_proxies.cli_util import die, parse_decklist_spec, warn
 from mtg_proxies.paper import PAPERS, Paper, prepare_rgb
-from mtg_proxies.print_cards import CARD_SIZE_MM, PDF_TARGET_DPI, _resample_to_dpi
+from mtg_proxies.print_cards import CARD_SIZE_MM, PDF_TARGET_DPI, _resample_to_dpi, _strip_cc_margin
 
 #: The glossy question as of 2026-11: how strong a tint, on light areas only or everywhere, and
 #: does glossy need more saturation or deeper shadows. A is the untouched scan, C the current
@@ -121,14 +126,20 @@ def sheet_layout(
     return strip_width, min(float(CARD_SIZE_MM[1]), height(rows)), rows
 
 
-def card_strip(image_path: str | Path, strip_width_mm: float, strip_height_mm: float | None = None) -> np.ndarray:
-    """Return the left ``strip_width_mm`` of a card scan as RGB, corners on white.
+def card_strip(
+    image_path: str | Path, strip_width_mm: float, strip_height_mm: float | None = None, *, bleed: bool = False
+) -> np.ndarray:
+    """Return the left ``strip_width_mm`` of a card image as RGB, corners on white.
 
     A ``strip_height_mm`` below the card's height takes a band of that height around
-    ``BAND_CENTRE`` instead of the full height.
+    ``BAND_CENTRE`` instead of the full height. ``bleed`` marks a Card Conjurer render, whose
+    bleed margin is cut off first so the strip starts at the card's edge like a scan's.
     """
-    with Image.open(image_path) as im:
-        rgba = im.convert("RGBA")
+    if bleed:
+        rgba = _strip_cc_margin(image_path).convert("RGBA")
+    else:
+        with Image.open(image_path) as im:
+            rgba = im.convert("RGBA")
     flat = Image.new("RGB", rgba.size, (255, 255, 255))
     flat.paste(rgba, mask=rgba.getchannel("A"))
     width_px = max(1, round(flat.width * strip_width_mm / float(CARD_SIZE_MM[0])))
@@ -145,6 +156,7 @@ def write_calibration_sheet(
     papersize_mm: np.ndarray = np.array([210.0, 297.0]),
     target_dpi: int | None = PDF_TARGET_DPI,
     rows: int | None = None,
+    bleed_images: Collection[str] = (),
 ) -> None:
     """Write the calibration PDF: one row per image, one labelled strip per variant.
 
@@ -156,6 +168,8 @@ def write_calibration_sheet(
         target_dpi: Upsample strips below this resolution, as ``print`` does; ``None`` embeds
             them at scan resolution.
         rows: Rows per page; default as many as :func:`sheet_layout` picks.
+        bleed_images: The paths among ``images`` that are Card Conjurer renders (they carry a
+            bleed margin that scans do not have).
     """
     from fpdf import FPDF
 
@@ -170,7 +184,7 @@ def write_calibration_sheet(
         if row % rows_per_page == 0:
             pdf.add_page()
         top = PAGE_MARGIN_MM + (row % rows_per_page) * (LABEL_HEIGHT_MM + strip_size[1] + ROW_GAP_MM)
-        strip = card_strip(image, strip_width, strip_height)
+        strip = card_strip(image, strip_width, strip_height, bleed=str(image) in bleed_images)
         for column, paper in enumerate(variants):
             x = left + column * strip_width
             pdf.set_xy(x, top)
@@ -186,7 +200,8 @@ def write_calibration_sheet(
 
 
 def run_calibrate(args: argparse.Namespace) -> None:
-    """Run the ``calibrate`` subcommand: fetch the front scans and write the test sheet."""
+    """Run the ``calibrate`` subcommand: render the cards' fronts and write the test sheet."""
+    from mtg_proxies.print_command import _apply_per_card_modelines
     from mtg_proxies.scans import fetch_scans_scryfall
 
     specs = args.variant or DEFAULT_VARIANTS
@@ -204,13 +219,24 @@ def run_calibrate(args: argparse.Namespace) -> None:
     images = fetch_scans_scryfall(decklist, faces="front")
     if not images:
         die("Error: the decklist has no cards")
+    renders: set[str] = set()
+    if args.frame != "scan":
+        # The same swap ``print --frame`` does, so the sheet shows what will be printed.
+        images = _apply_per_card_modelines(
+            decklist, images, faces="front", bleed_renders=renders, cc_frame=args.frame, cc_art_folder=args.art_folder
+        )
+        for card, image in zip(decklist.cards, images, strict=False):
+            if image not in renders:
+                warn(f"Note: {card['name']} could not be rendered and is on the sheet as its Scryfall scan")
 
     papersize_mm = args.paper * 25.4
     try:
         strip_width, strip_height, rows_per_page = sheet_layout(papersize_mm, len(variants), len(images), args.rows)
     except ValueError as exc:
         die(f"Error: {exc}")
-    write_calibration_sheet(images, variants, args.outfile, papersize_mm=papersize_mm, rows=args.rows)
+    write_calibration_sheet(
+        images, variants, args.outfile, papersize_mm=papersize_mm, rows=args.rows, bleed_images=renders
+    )
 
     pages = -(-len(images) // rows_per_page)
     print(f"Wrote {args.outfile}: {len(images)} cards x {len(variants)} variants, {pages} page(s),")

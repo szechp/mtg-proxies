@@ -64,6 +64,21 @@ def test_a_band_is_cut_around_the_type_line(tmp_path: Path) -> None:
     assert (band[0, 0, 0], band[-1, 0, 0]) == (70, 169)  # 60 % of the height sits in the middle
 
 
+def test_a_render_loses_its_bleed_margin_before_the_strip_is_cut(tmp_path: Path) -> None:
+    from mtg_proxies.calibrate_command import card_strip
+    from mtg_proxies.print_cards import _CC_MARGIN_SCALE
+
+    # A 630x880 card (red) inside Card Conjurer's bleed margin (blue).
+    size = np.round(np.array([630, 880]) * _CC_MARGIN_SCALE).astype(int)
+    render = Image.new("RGB", tuple(size), (0, 0, 255))
+    render.paste(Image.new("RGB", (630, 880), (255, 0, 0)), tuple((size - [630, 880]) // 2))
+    render.save(tmp_path / "render.png")
+
+    strip = card_strip(tmp_path / "render.png", 21.0, bleed=True)
+    assert strip.shape[1] == pytest.approx(210, abs=1)
+    assert (strip[5:-5, 5:] == (255, 0, 0)).all()  # the strip starts at the card's edge
+
+
 def test_sheet_has_one_strip_per_card_and_variant_and_a_new_page_after_three(tmp_path: Path) -> None:
     from mtg_proxies.calibrate_command import card_strip, parse_variant, write_calibration_sheet
 

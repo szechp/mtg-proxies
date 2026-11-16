@@ -240,6 +240,24 @@ def _add_calibrate_parser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     calibrate_parser.add_argument(
+        "--frame",
+        choices=["auto", "mix", "retro-hd", "retro", "8th", "modern", "m15-8th", "borderless", "scan"],
+        default="auto",
+        help=(
+            "what the strips show: Card Conjurer renders in this frame, as print --frame makes them"
+            " (default: auto = each card's own printed frame, so the strip matches the real card; a"
+            " line's own #cardconjurer modeline wins), or scan for the plain Scryfall scans."
+        ),
+    )
+    calibrate_parser.add_argument(
+        "--art-folder",
+        dest="art_folder",
+        type=Path,
+        default=None,
+        metavar="FOLDER",
+        help="your own illustrations for the renders, matched to cards by file name as in print --art-folder",
+    )
+    calibrate_parser.add_argument(
         "--rows",
         type=int,
         default=None,
