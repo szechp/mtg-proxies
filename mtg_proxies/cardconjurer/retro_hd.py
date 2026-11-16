@@ -79,7 +79,17 @@ _BEVEL_THICKNESS = {
 # The full match (gain 0.809, 0.828, 0.727) looked too dark in print; half of it (frame luma ~183,
 # white-text contrast 1.83 against 2.26) was picked from a test print as the lightest that still
 # reads (2026-11-11).
-_FRAME_TINT = {"W": (0.9045, 0.914, 0.8635)}
+#
+# Held against the owner's original 1997-frame cards on the 2026-11-16 calibration print, white
+# was still not brown enough and artifacts printed towards violet where the real cards are a
+# richer, darker brown. The reprints the values above come from are not the originals: Scryfall
+# scans of black-bordered 1996-2003 prints put the white frame at ~(178, 164, 140), hue 36,
+# where the reprints and the tinted template sit at hue 50 (more yellow, less red), and the
+# artifact frame at ~(74, 58, 41) (Bargaining Table MMQ 288: (71, 54, 39)) where the template
+# is (98, 82, 63). Both are moved part of the way ("a little", the owner's words):
+#   W: green down so G/R goes 0.965 -> 0.93 (originals 0.92); luma barely changes.
+#   Artifact: about halfway to the originals, darker and with less blue: -> ~(90, 71, 51).
+_FRAME_TINT = {"W": (0.9045, 0.8805, 0.8635), "Artifact": (0.92, 0.87, 0.81)}
 
 # Per-channel affine tone match (spread scale, then shift the mean) on the frame, per identity:
 # (template mean, target mean, spread scale), in 0-255. The template's gold has the same texture
@@ -827,8 +837,9 @@ def _task_files(task: str, out_dir: Path) -> list[Path]:
 # built from it (``w``: w, saga-w, class-w, adventure-w, tf-w, mdfc-w). Unlisted is version 1.
 #   tf / mdfc 2: notch bevels composited with their blend modes (were solid colour).
 #   w 2: white frame tint halved.
+#   w 3, a 2: white browner, artifact a darker and richer brown (towards the original prints).
 TASK_VERSIONS = {"tf": 2, "mdfc": 2}
-CODE_VERSIONS = {"w": 2}
+CODE_VERSIONS = {"w": 3, "a": 2}
 _STAMP_NAME = "build.json"
 
 
