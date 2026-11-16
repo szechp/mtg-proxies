@@ -413,7 +413,7 @@ Only `print` acts on `#mpcfill`, `#print`, `#upscale` and `#no-upscale`. The `ca
 |---|---|
 | *(no frame flag)* | The deck-wide frame (`print --frame`, or the subcommand's frame flag); without one, the card's own printed frame. |
 | `--8th` / `--modern` / `--m15-8th` / `--retro` / `--borderless` | Force a frame for this card. |
-| `--retro-scaled` / `--8th-scaled` | That frame, grown by 0.75 mm per side for the sticker workflow. Implies the base frame. |
+| `--retro-scaled` / `--8th-scaled` | That frame, grown to overlap a modern card's coloured area by 0.25 mm per side, for the sticker workflow. Implies the base frame. |
 | `--no-crown` | Leave the legend crown off this legendary: the battlement crown on retro, Card Conjurer's crown on 8th (both on by default). |
 | `--retro-hd` | Retro with high-detail frame art from Gavin Bowers' Proxyshop Retro template. Implies `--retro`. |
 | `--set-symbol VALUE` | File path, CC set code (`LTC`), or `customset:An`. |
@@ -428,28 +428,29 @@ Only `print` acts on `#mpcfill`, `#print`, `#upscale` and `#no-upscale`. The `ca
 ## Sticker workflow (scaled frames)
 
 To cover a bulk card with a printed sticker, you print on sticker paper at 100 %, cut out the
-coloured frame and stick it on. At true size the frame only just covers the bulk card's own
-frame, so a millimetre of cutting error shows a sliver of the old card. **Scaling** grows the
-frame inside the image to buy back that tolerance: about 1.65 mm wider in total for Card
-Conjurer renders, and a slightly smaller ~1.3 mm for MPCFill renders, where the larger amount overhung.
-Both values were tuned on printed cards.
+coloured frame and stick it on. A standard modern card's coloured area measures 58.0 × 79.2 mm; a
+retro or 8th frame printed at true size is about a millimetre narrower, so the old frame shows
+beside it. **Scaling** grows the frame inside the image until its coloured area covers the modern
+one plus 0.25 mm on each side: just enough that a hair of misalignment shows nothing. The same
+target applies to every render, Card Conjurer or MPCFill.
 The canvas keeps its size and still prints at 63×88 mm; the black border absorbs the growth.
 
 | What you print | How to scale it |
 |---|---|
 | A whole deck rendered with Card Conjurer | `mtg-proxies cardconjurer deck.txt out/ --retro-scaled` (or `--8th-scaled`) |
 | Single Card Conjurer cards in a `print` run | `#cardconjurer --retro-scaled` / `--8th-scaled` on those lines |
-| Every MPCFill render in a `print` run (`order.xml` fronts and `#mpcfill` lines) | `mtg-proxies print cards.xml out.pdf --scaled` |
+| Every render in a `print` run (Card Conjurer cards from `--frame` / `#cardconjurer`, MPCFill renders from `order.xml` / `#mpcfill`) | nothing: `print` scales by default. `--no-scaled` turns it off. |
 | Single MPCFill cards | `#mpcfill --identifier ID --scaled` on those lines |
 
 - Cards with no black border to grow (borderless, extended art) are left as they are, with a
   note.
-- `print --scaled` scales every MPCFill render it can measure, **modern frames included**. To
-  scale only some cards, convert the order to a decklist and use `--scaled` per line (next
+- **Modern frames are never scaled**: a modern frame already covers a modern card. They are
+  recognised by their thick bottom border, so this holds for MPCFill renders too.
+- To scale only some cards, print with `--no-scaled` and use `--scaled` per line (next
   section).
 - Plain Scryfall scans are never scaled.
 - Scaled files carry a PNG stamp, so re-runs never grow them twice. Cached MPCFill renders stay
-  unscaled; the scaled copy sits next to them as `<name>_ov0.60.png`.
+  unscaled; the scaled copy sits next to them as `<name>_cover0.25.png`.
 
 ## MPC Autofill orders
 
@@ -501,7 +502,7 @@ and adds no detail the source doesn't have; it only keeps the enlargement step h
 | `--faces all\|front\|back` | `all` | Which DFC faces to print. |
 | `--split-pages N` | off | Start a new PDF file every N pages. |
 | `--custom-art FOLDER` | — | Append every `.png` in FOLDER, sorted, after the decklist cards. Expects Card Conjurer / MPCFill renders with bleed. |
-| `--scaled` | off | Grow the frame of every MPCFill render (sticker workflow). |
+| `--scaled` / `--no-scaled` | on | Grow the frame of every render (Card Conjurer and MPCFill) to overlap a modern card's coloured area by 0.25 mm per side, for the sticker workflow. Modern frames, borderless renders and Scryfall scans are not grown. |
 | `--art-folder FOLDER` | — | Your own illustrations, matched to cards by file name (see [above](#proxies-in-old-frames-the-short-version)). |
 | `--frame STYLE` | off | Render the cards with Card Conjurer: `mix` (a frame per card), `auto` (each card's printed frame), `retro-hd`, `retro`, `8th`, `modern`, `m15-8th`, `borderless`. Without it only `#cardconjurer` lines are rendered. Lines with `#mpcfill` / `#print` keep that source. |
 | `--upscale [auto\|all]` | off | Real-ESRGAN upscaling: `auto` (bare flag) = cards Scryfall marks lowres, `all` = every card. |

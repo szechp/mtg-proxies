@@ -13,17 +13,14 @@ from pathlib import Path
 import mtg_proxies.scryfall as scryfall
 from mtg_proxies.cli_util import die, parse_decklist_spec, warn
 from mtg_proxies.decklists.decklist import Card, Decklist
-from mtg_proxies.frame_scale import DEFAULT_OVERLAP_MM
-from mtg_proxies.print_cards import CARD_SIZE_MM
+from mtg_proxies.frame_scale import BLEED_CANVAS_MM, OVERLAP_MM
 
 # Prepended to the output filename of legendary cards rendered by `cardconjurer`.
 LEGENDARY_FILENAME_PREFIX = "legendary_"
 
 
-# ``--<frame>-scaled`` flags, mapped to the frame each one renders in. The 8th and retro
-# frames sit within 0.06 mm of each other once scaled at the same overlap (8th's colour
-# block measures 52.08 x 76.97 mm against retro's 52.14 x 76.67), so one constant
-# (``frame_scale.DEFAULT_OVERLAP_MM``) covers both.
+# ``--<frame>-scaled`` flags, mapped to the frame each one renders in. Both frames are grown
+# to the same printed size: a modern card's coloured area plus ``frame_scale.OVERLAP_MM``.
 _SCALED_FLAG_FRAMES = {"retro_scaled": "retro", "eighth_scaled": "8th"}
 
 
@@ -422,6 +419,7 @@ class CcDeckOptions:
 
     frame: str = "auto"
     scaled: bool = False
+    scale_all: bool = False  # ``print`` (unless ``--no-scaled``): grow every render that is not modern
     retro_hd: bool = False
     no_crown: bool = False
     set_symbol: str | None = None
@@ -434,13 +432,16 @@ class CcDeckOptions:
     art_folder: Path | None = None  # your own illustrations, matched to cards by file name
 
 
-def deck_options_for_frame(frame: str, art_folder: Path | None = None) -> CcDeckOptions:
-    """Build the deck options for a ``print --frame`` value (``retro-hd`` is retro + HD frame art)."""
+def deck_options_for_frame(frame: str, art_folder: Path | None = None, *, scale_all: bool = False) -> CcDeckOptions:
+    """Build the deck options for a ``print --frame`` value (``retro-hd`` is retro + HD frame art).
+
+    ``scale_all`` (``print --scaled``) grows every render's frame for the sticker workflow.
+    """
     if frame in {"retro-hd", "mix"}:
         _require_retro_hd_frames()
     if frame == "retro-hd":
-        return CcDeckOptions(frame="retro", retro_hd=True, art_folder=art_folder)
-    return CcDeckOptions(frame=frame, art_folder=art_folder)
+        return CcDeckOptions(frame="retro", retro_hd=True, art_folder=art_folder, scale_all=scale_all)
+    return CcDeckOptions(frame=frame, art_folder=art_folder, scale_all=scale_all)
 
 
 def _art_key(name: str) -> str:
@@ -1258,27 +1259,28 @@ def render_cardconjurer(
     # been scaled and doing it again would compound every invocation.
     frame_scale_stats = {"scaled": 0, "unmeasurable": 0, "scale": 0.0}
     post_process_cb = None
-    if deck.scaled or any(opts.scaled for opts in options.values()):
+    if deck.scaled or deck.scale_all or any(opts.scaled for opts in options.values()):
         from mtg_proxies import frame_scale
 
-        card_mm = (float(CARD_SIZE_MM[0]), float(CARD_SIZE_MM[1]))
         scaled_names = {
             f"{filename_prefix_by_slot.get(slot_int, '')}{cc_runner.slug(card['name'])}{suffix}.png"
             for slot_int, card in slot_to_card.items()
-            if options[slot_int].scaled or (deck.scaled and (options[slot_int].frame or frame) == frame)
+            if deck.scale_all
+            or options[slot_int].scaled
+            or (deck.scaled and (options[slot_int].frame or frame) == frame)
             for suffix in ("", "_back")
         }
 
         def post_process_cb(png: Path) -> None:
             if png.name not in scaled_names:
                 return
-            applied = frame_scale.enlarge_frame(png, DEFAULT_OVERLAP_MM, card_mm)
+            applied = frame_scale.enlarge_frame(png, OVERLAP_MM, BLEED_CANVAS_MM)
             if applied is None:
                 frame_scale_stats["unmeasurable"] += 1
                 warn(f"Note: frame scaling could not find the frame edge in {png.name} — left unscaled.")
-            else:
+            elif applied > 1.0:  # 1.0: a modern frame, or one that is big enough already
                 frame_scale_stats["scaled"] += 1
-                frame_scale_stats["scale"] = applied
+                frame_scale_stats["scale"] = max(frame_scale_stats["scale"], applied)
 
     summary = cc_runner.render_deck(
         cards,
@@ -1311,7 +1313,7 @@ def render_cardconjurer(
     if frame_scale_stats["scaled"]:
         print(
             f"[cardconjurer] frame scaling: {frame_scale_stats['scaled']} frames grown "
-            f"~{frame_scale_stats['scale']:.3f}x for {DEFAULT_OVERLAP_MM:g} mm overlap per side"
+            f"up to {frame_scale_stats['scale']:.3f}x to overlap a modern card's frame by {OVERLAP_MM:g} mm per side"
         )
     upscaled_note = f" ({art.upscaled} upscaled)" if art.upscaled else ""
     if deck.scryfall:

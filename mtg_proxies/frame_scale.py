@@ -6,28 +6,33 @@ Magic card. The retro (Seventh Edition) frame is the good one to cut, because it
 colour block ends in a hard rectangle with square corners rather than the rounded,
 soft-edged corners of M15 — you can run a straight blade down it.
 
-The problem is tolerance, not size. A retro colour block printed at true card size
-measures about 52.1 x 76.7 mm, which covers a bulk card's own frame by a hair. Cut
-or stick it a millimetre off and a sliver of the old card's frame shows along the
-far edge. What's wanted is deliberate overlap: make the colour block bigger than
-what it has to cover, so a human-scale alignment error still lands fully inside.
+The piece has to cover the coloured area of the card underneath, a standard modern
+(M15) card, and overlap it by a tiny bit so a hair of misalignment shows no old
+frame — but no more than that, or it visibly overhangs. Measured on Scryfall scans
+of ten 2018-2025 cards, a modern card's coloured area is 58.0 x 79.2 mm
+(:data:`MODERN_FRAME_MM`; black border 2.5 mm at the sides and top, 6.3 mm at the
+bottom, where the collector line sits). An unscaled retro-hd colour block prints at
+56.95 x 80.97 mm and an 8th one at 56.6 x 81.3 mm: tall enough, but about a
+millimetre too narrow. So the frame is grown until it measures the modern area plus
+:data:`OVERLAP_MM` on each side on its tighter axis (the width, for every frame so
+far), whatever size it started at. All of this is in real printed millimetres.
 
 The trick is to do it *without* changing what the file is. Scaling the card up on
 the printed sheet would mean bigger cells, fewer cards per sheet, and a special
 case in every downstream step. Instead the image is scaled about its centre and
-cropped back to the original canvas: same pixel dimensions, same 63x88 mm cell,
-same layout, same true-size printing. The frame grows and the black border around
-it gets correspondingly thinner — and the border is the part being cut off anyway.
-
-That thinning is the hard limit. The border can only give up so much before the
-frame reaches the canvas edge and starts getting clipped, which caps the usable
-overlap at roughly 3.8 mm per side — see :func:`scale_for_margin`.
+cropped back to the original canvas: same pixel dimensions, same cell, same layout,
+same true-size printing. The frame grows and the black border around it gets
+correspondingly thinner — and the border is the part being cut off anyway.
 
 Nothing here is specific to where the render came from. Card Conjurer output
-(``cardconjurer --retro-scaled``, ``#cardconjurer --retro-scaled``) and MPCFill
-renders (``print --scaled``, ``#mpcfill --scaled``) both go through it: any card
-with a black border is measured the same way, and one without (borderless,
-extended art) fails :func:`measure_frame_box` and is left alone.
+(``cardconjurer --retro-scaled``, ``#cardconjurer --retro-scaled``) and MPCFill renders
+(``#mpcfill --scaled``) both go through it, and ``print`` grows every render by default
+(``print --no-scaled`` turns that off). Modern frames are the exception, see
+:func:`is_modern_frame`. Otherwise
+any card with a black border is measured the same way, and one without (borderless,
+extended art) fails :func:`measure_frame_box` and is left alone. Callers pass the
+size the canvas prints at; for these bleed renders that is the card plus its bleed
+(:data:`BLEED_CANVAS_MM`), not 63 x 88.
 """
 
 from __future__ import annotations
@@ -41,23 +46,26 @@ from PIL import Image, PngImagePlugin
 
 _log = logging.getLogger(__name__)
 
-#: Overlap per side, in mm, measured against the frame's own size. Note the retro frame
-#: starts ~0.58 mm per side *narrower* than a modern one, so the first ~0.6 mm only buys
-#: parity; what's left over is the actual slack against the card being covered. Settled
-#: by printing and cutting: 1.0 mm overhung noticeably, so this backs off to 0.75 mm —
-#: visible colour 53.7 x 78.9 mm, about 0.8 mm of slack per side over a bulk card's own
-#: frame. The 8th frame sits within 0.06 mm of retro at the same overlap, and MPCFill
-#: renders (after their default bleed crop) land the card on the same geometry as Card
-#: Conjurer's, so one value covers every caller.
-DEFAULT_OVERLAP_MM = 0.75
+#: Coloured area of a standard modern (M15) card in mm, the thing a cut-out frame has to cover.
+#: Median of ten Scryfall scans (M19, M20, FDN, LTR, EOE): borders 2.5 mm left, right and top,
+#: 6.3 mm at the bottom.
+MODERN_FRAME_MM = (58.0, 79.2)
 
-#: Overlap for MPCFill renders (``print --scaled``, ``#mpcfill --scaled``), in the same units.
-#: Judged on paper: 0.75 overhung on MPC renders. The margin is measured against the canvas as
-#: if it printed at card size, but a bleed render's canvas prints ~8.8 % wider
-#: (``print_cards._CC_MARGIN_SCALE``), so each unit here widens the printed frame by ~2.23 mm in
-#: total (0.1 ≈ 0.22 mm): 0.75 → ~1.67 mm, 0.6 → ~1.34 mm. Tried on paper: 0.29 (1 mm narrower
-#: than 0.75) and 0.5 (~0.55 mm narrower) both undershot; 0.6 is one 0.1 step back up.
-MPC_OVERLAP_MM = 0.6
+#: How far the grown frame reaches past :data:`MODERN_FRAME_MM` on each side of its tighter
+#: axis, in printed mm: "just a tiny bit" (the owner, 2026-11-16). History, in today's terms:
+#: the first print-verified Card Conjurer setting came to 0.29 mm on retro (fine) and 0.14 mm
+#: on 8th; the value tuned on paper for MPCFill renders came to roughly 0.13 mm, after one that
+#: came to 0.3-0.4 mm "overhung". Those were defined against each render's own frame size in
+#: canvas units, so the same number meant a different result per source; this one does not.
+OVERLAP_MM = 0.25
+
+#: Size a bleed render's canvas prints at: the 63 x 88 mm card plus Card Conjurer's template
+#: margins (0.044 of the width and 1/35 of the height on each side), which ``print`` places so
+#: the card inside lands on the cell. Card Conjurer and MPCFill renders both carry it.
+BLEED_CANVAS_MM = (63.0 * (1 + 2 * 0.044), 88.0 * (1 + 2 / 35))
+
+#: The card itself: the grown frame must stay inside it, less the reserved border.
+_CARD_MM = (63.0, 88.0)
 
 #: PNG metadata keys recording what was applied, so a re-run over an output directory
 #: is idempotent instead of either compounding or silently skipping. The ``retro-``
@@ -82,8 +90,8 @@ _MIN_INSET = 0.02
 _MAX_INSET = 0.20
 
 #: Black border, in mm, that a scaled card keeps on every side no matter how much
-#: overlap is asked for. On a printed sheet the canvas edge *is* the cell edge, so a
-#: frame taken flush to it would touch the next card with no gap to cut along.
+#: overlap is asked for: a frame taken flush to the card's edge would touch the next
+#: card on the sheet with no black to cut along.
 _MIN_REMAINING_BORDER_MM = 0.5
 
 
@@ -131,73 +139,94 @@ def measure_frame_box(image: Image.Image) -> tuple[int, int, int, int] | None:
     return left, top, right, bottom
 
 
+#: Share of a row that must be lit to count as frame when looking for a modern frame's lower
+#: edge: the collector line under it is thin text, a few percent of a row at most.
+_SOLID_ROW_SHARE = 0.3
+
+#: A frame whose black border is this much thicker at the bottom than at the top, in printed
+#: mm, is a modern (M15) one: 6.3 mm against 2.5 mm there, while retro, 8th and the M15-8th
+#: hybrid are the same at both ends to within 0.1 mm.
+_MODERN_BOTTOM_EXCESS_MM = 2.0
+
+
+def is_modern_frame(image: Image.Image, canvas_size_mm: tuple[float, float]) -> bool:
+    """Tell a modern (M15) frame by its thick bottom border, the strip with the collector line.
+
+    Modern cards are not grown: a modern frame cut out and stuck on a modern card covers it
+    as it is (the owner, 2026-11-16). This reads the picture, not a frame name, so it holds
+    for MPCFill renders and for ``auto`` frames too.
+    """
+    lit = np.asarray(image.convert("RGB"), dtype=np.int16).max(axis=2) > _BORDER_LUMA
+    rows = np.flatnonzero(lit.mean(axis=1) > _SOLID_ROW_SHARE)
+    if rows.size == 0:
+        return False
+    top, bottom = int(rows[0]), lit.shape[0] - 1 - int(rows[-1])
+    return (bottom - top) / lit.shape[0] * canvas_size_mm[1] > _MODERN_BOTTOM_EXCESS_MM
+
+
 def frame_size_mm(
     frame_box: tuple[int, int, int, int],
     canvas: tuple[int, int],
-    card_size_mm: tuple[float, float],
+    canvas_size_mm: tuple[float, float],
 ) -> tuple[float, float]:
-    """Return the frame's printed size in mm, given the canvas prints at card size."""
+    """Return the frame's printed size in mm, given the size the canvas prints at."""
     left, top, right, bottom = frame_box
     canvas_w, canvas_h = canvas
-    card_w, card_h = card_size_mm
-    return (right - left + 1) / canvas_w * card_w, (bottom - top + 1) / canvas_h * card_h
+    width_mm, height_mm = canvas_size_mm
+    return (right - left + 1) / canvas_w * width_mm, (bottom - top + 1) / canvas_h * height_mm
 
 
-def scale_for_margin(
+def scale_to_cover(
     frame_box: tuple[int, int, int, int],
     canvas: tuple[int, int],
-    margin_mm: float,
-    card_size_mm: tuple[float, float],
+    overlap_mm: float,
+    canvas_size_mm: tuple[float, float],
 ) -> float:
-    """Return the scale that grows the frame by at least ``margin_mm`` on every side.
+    """Return the scale at which the frame covers a modern card's coloured area plus the overlap.
 
-    One scale has to satisfy both axes, and gaining ``margin_mm`` costs proportionally
-    more on the shorter side — so the short side sets the factor and the long side
-    overshoots. On a retro card the short side is always the width, whose colour block
-    is proportionally narrower than a card's.
+    One scale drives both axes, so the axis that needs more sets it and the other overshoots
+    (the retro and 8th frames are too narrow and already tall enough: the width sets it).
 
     Args:
         frame_box: ``(left, top, right, bottom)`` from :func:`measure_frame_box`.
         canvas: ``(width, height)`` of the rendered image in pixels.
-        margin_mm: Desired overlap per side, in millimetres.
-        card_size_mm: ``(width, height)`` the canvas prints at.
+        overlap_mm: How far the frame should reach past :data:`MODERN_FRAME_MM` per side.
+        canvas_size_mm: ``(width, height)`` the canvas prints at.
 
     Returns:
-        A scale factor >= 1.0.
+        A scale factor >= 1.0: a frame that is big enough already is never shrunk.
     """
-    return 1.0 + 2 * margin_mm / min(frame_size_mm(frame_box, canvas, card_size_mm))
+    frame = frame_size_mm(frame_box, canvas, canvas_size_mm)
+    return max(1.0, *((target + 2 * overlap_mm) / size for target, size in zip(MODERN_FRAME_MM, frame, strict=True)))
 
 
-def max_margin_mm(
+def largest_scale(
     frame_box: tuple[int, int, int, int],
     canvas: tuple[int, int],
-    card_size_mm: tuple[float, float],
+    canvas_size_mm: tuple[float, float],
     reserve_mm: float = _MIN_REMAINING_BORDER_MM,
 ) -> float:
-    """Return the largest overlap that still leaves ``reserve_mm`` of border all round.
+    """Return the largest scale that still leaves ``reserve_mm`` of border inside the card.
 
-    Scaling eats the black border, and because a single scale drives both axes the
-    border runs out on one of them first — on a retro card that's the height, whose
-    colour block starts closer to the canvas edge. The two axes therefore can't be
-    checked independently: the limit is where the *shared* scale first exhausts
-    whichever axis binds.
-
-    Stopping exactly there would be wrong in a subtler way than clipping. The frame
-    would land flush with the canvas edge, which on a printed sheet is the edge of
-    the cell — so neighbouring cards would run into each other with no black gap to
-    cut along, on the very axis the user is cutting. ``reserve_mm`` keeps a strip of
-    border no matter what is asked for.
+    Scaling eats the black border. The limit is where the *shared* scale first brings the
+    frame to within ``reserve_mm`` of the card's own edge (63 x 88 mm, centred in the canvas)
+    on whichever axis runs out first; past that, neighbouring cards on a sheet would run into
+    each other with no black gap to cut along.
     """
-    frame_w_mm, frame_h_mm = frame_size_mm(frame_box, canvas, card_size_mm)
-    card_w, card_h = card_size_mm
-    largest_scale = min(
-        (card_w - 2 * reserve_mm) / frame_w_mm,
-        (card_h - 2 * reserve_mm) / frame_h_mm,
-    )
-    return max(0.0, (largest_scale - 1.0) * min(frame_w_mm, frame_h_mm) / 2)
+    frame = frame_size_mm(frame_box, canvas, canvas_size_mm)
+    return max(1.0, min((card - 2 * reserve_mm) / size for card, size in zip(_CARD_MM, frame, strict=True)))
 
 
-def enlarge_frame(path: Path, margin_mm: float, card_size_mm: tuple[float, float]) -> float | None:
+def _stamp_value(overlap_mm: float) -> str:
+    """Return the stamp for output grown to a modern card's frame plus ``overlap_mm``.
+
+    The ``cover:`` prefix tells it from the bare number older versions wrote, which meant an
+    overlap against the render's own frame size: such files never match and are redone.
+    """
+    return f"cover:{overlap_mm:g}"
+
+
+def enlarge_frame(path: Path, overlap_mm: float, canvas_size_mm: tuple[float, float]) -> float | None:
     """Grow the frame of the card at ``path`` in place, keeping the canvas identical.
 
     Idempotent. The result is stamped into the PNG's metadata, and a card already
@@ -209,14 +238,17 @@ def enlarge_frame(path: Path, margin_mm: float, card_size_mm: tuple[float, float
 
     Args:
         path: A rendered card PNG. Overwritten when it needs scaling.
-        margin_mm: Desired overlap per side, in millimetres.
-        card_size_mm: ``(width, height)`` the canvas prints at.
+        overlap_mm: How far the frame should reach past a modern card's coloured area
+            (:data:`MODERN_FRAME_MM`) per side, in printed millimetres.
+        canvas_size_mm: ``(width, height)`` the canvas prints at (:data:`BLEED_CANVAS_MM`
+            for Card Conjurer and MPCFill renders).
 
     Returns:
-        The scale in effect on the file, or ``None`` when the frame couldn't be
-        measured or the file already carries a *different* margin (in both cases it
-        is left untouched). A requested margin beyond the geometric ceiling is
-        clamped, and the clamp is logged.
+        The scale in effect on the file (1.0 for a modern frame, which is never grown, and
+        for a frame that was big enough already), or
+        ``None`` when the frame couldn't be measured or the file already carries a
+        *different* overlap (in both cases it is left untouched). A scale that would take
+        the frame to the card's edge is clamped, and the clamp is logged.
     """
     try:
         with Image.open(path) as opened:
@@ -236,7 +268,7 @@ def enlarge_frame(path: Path, margin_mm: float, card_size_mm: tuple[float, float
             # this it would match on margin alone and silently keep serving output
             # with the bevel blacked out.
             matches = (
-                abs(float(stamped_margin) - margin_mm) < 1e-6
+                stamped_margin == _stamp_value(overlap_mm)
                 and abs(float(stamped_trim or 0.0)) < 1e-6
             )
         except ValueError:
@@ -251,7 +283,7 @@ def enlarge_frame(path: Path, margin_mm: float, card_size_mm: tuple[float, float
         if stamped_trim and abs(float(stamped_trim)) > 1e-6:
             reason = f"has {stamped_trim} mm of its bevel blacked out (that behaviour was removed)"
         else:
-            reason = f"was grown for a {stamped_margin} mm overlap, not {margin_mm:g} mm"
+            reason = f"was grown with other settings ({stamped_margin}), not {_stamp_value(overlap_mm)}"
         _log.warning("%s %s; delete it to re-render", path.name, reason)
         return None
 
@@ -259,32 +291,30 @@ def enlarge_frame(path: Path, margin_mm: float, card_size_mm: tuple[float, float
     if box is None:
         return None
 
-    ceiling = max_margin_mm(box, image.size, card_size_mm)
-    if margin_mm > ceiling:
-        _log.info(
-            "%s: %.1f mm overlap would clip the frame; using the %.1f mm maximum",
-            path.name, margin_mm, ceiling,
-        )
-        margin_mm = ceiling
-    if margin_mm <= 0:
-        return None
-
-    scale = scale_for_margin(box, image.size, margin_mm, card_size_mm)
+    # A modern frame keeps its size; it is stamped all the same, so a re-run leaves it alone.
+    modern = is_modern_frame(image, canvas_size_mm)
+    scale = 1.0 if modern else scale_to_cover(box, image.size, overlap_mm, canvas_size_mm)
+    ceiling = largest_scale(box, image.size, canvas_size_mm)
+    if scale > ceiling:
+        _log.info("%s: growing %.3fx would take the frame to the card's edge; using %.3fx", path.name, scale, ceiling)
+        scale = ceiling
     width, height = image.size
-    enlarged = image.resize((round(width * scale), round(height * scale)), Image.LANCZOS)
-    left = (enlarged.width - width) // 2
-    top = (enlarged.height - height) // 2
-    result = enlarged.crop((left, top, left + width, top + height))
+    result = image
+    if scale > 1.0:
+        enlarged = image.resize((round(width * scale), round(height * scale)), Image.LANCZOS)
+        left = (enlarged.width - width) // 2
+        top = (enlarged.height - height) // 2
+        result = enlarged.crop((left, top, left + width, top + height))
 
     stamp = PngImagePlugin.PngInfo()
-    stamp.add_text(_STAMP_MARGIN, f"{margin_mm:g}")
+    stamp.add_text(_STAMP_MARGIN, _stamp_value(overlap_mm))
     stamp.add_text(_STAMP_SCALE, f"{scale:.6f}")
     result.save(path, pnginfo=stamp)
     return scale
 
 
 def enlarge_frame_copy(
-    source: Path, destination: Path, margin_mm: float, card_size_mm: tuple[float, float]
+    source: Path, destination: Path, overlap_mm: float, canvas_size_mm: tuple[float, float]
 ) -> float | None:
     """Write ``source`` to ``destination`` with its frame grown, leaving ``source`` untouched.
 
@@ -300,8 +330,8 @@ def enlarge_frame_copy(
         source: The render to scale. Never modified.
         destination: Where the scaled copy goes. When the frame can't be measured it
             still receives an unscaled copy, so the caller can use it either way.
-        margin_mm: Desired overlap per side, in millimetres.
-        card_size_mm: ``(width, height)`` the canvas prints at.
+        overlap_mm: As for :func:`enlarge_frame`.
+        canvas_size_mm: ``(width, height)`` the canvas prints at.
 
     Returns:
         Same as :func:`enlarge_frame`.
@@ -311,7 +341,7 @@ def enlarge_frame_copy(
             with Image.open(destination) as existing:
                 stamped_margin = existing.info.get(_STAMP_MARGIN)
                 stamped_scale = existing.info.get(_STAMP_SCALE)
-            if stamped_margin is not None and abs(float(stamped_margin) - margin_mm) < 1e-6:
+            if stamped_margin == _stamp_value(overlap_mm):
                 return float(stamped_scale) if stamped_scale is not None else 1.0
         except (OSError, ValueError) as exc:
             _log.debug("frame-scale rebuilding unreadable %s: %s", destination, exc)
@@ -319,6 +349,6 @@ def enlarge_frame_copy(
     destination.parent.mkdir(parents=True, exist_ok=True)
     partial = destination.with_name(f"{destination.stem}.partial{destination.suffix}")
     shutil.copyfile(source, partial)
-    applied = enlarge_frame(partial, margin_mm, card_size_mm)
+    applied = enlarge_frame(partial, overlap_mm, canvas_size_mm)
     partial.replace(destination)
     return applied

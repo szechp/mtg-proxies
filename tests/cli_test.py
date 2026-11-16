@@ -284,12 +284,13 @@ def test_main_print_order_xml_slot_order_dedupe_and_bleed(tmp_path: Path) -> Non
     assert {str(renders["idA"]), str(renders["idB"])} <= bleed_images
 
 
-def test_main_print_order_xml_scaled_grows_bordered_fronts_only(tmp_path: Path) -> None:
-    """`print --scaled`: bordered renders print as grown copies, borderless ones as-is."""
+@pytest.mark.parametrize("flags", [[], ["--scaled"]])
+def test_main_print_order_xml_scaled_grows_bordered_fronts_only(tmp_path: Path, flags: list[str]) -> None:
+    """`print` scales by default: bordered renders print as grown copies, borderless ones as-is."""
     from PIL import Image
 
     from mtg_proxies.cli import main
-    from mtg_proxies.frame_scale import MPC_OVERLAP_MM
+    from mtg_proxies.frame_scale import OVERLAP_MM
 
     xml_file = tmp_path / "cards.xml"
     _write_order_xml(xml_file, [("idA", "0,2", "A.png"), ("idB", "1", "B.png")], quantity=3)
@@ -305,17 +306,28 @@ def test_main_print_order_xml_scaled_grows_bordered_fronts_only(tmp_path: Path) 
         return tmp_path / f"{drive_id_override}.png"
 
     with (
-        patch("sys.argv", ["mtg-proxies", "print", str(xml_file), str(out_file), "--scaled"]),
+        patch("sys.argv", ["mtg-proxies", "print", str(xml_file), str(out_file), *flags]),
         patch("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", side_effect=fake_resolve),
         patch("mtg_proxies.print_command.print_cards_fpdf") as print_cards_fpdf,
     ):
         main()
 
-    scaled_a = str(tmp_path / f"idA_ov{MPC_OVERLAP_MM:.2f}.png")
+    scaled_a = str(tmp_path / f"idA_cover{OVERLAP_MM:.2f}.png")
     images = print_cards_fpdf.call_args.args[0]
     assert images == [scaled_a, str(tmp_path / "idB.png"), scaled_a]
     assert {scaled_a, str(tmp_path / "idB.png")} <= print_cards_fpdf.call_args.kwargs["bleed_images"]
     assert (tmp_path / "idA.png").read_bytes() == original_a
+
+    # --no-scaled: every render prints at its own size.
+    with (
+        patch("sys.argv", ["mtg-proxies", "print", str(xml_file), str(out_file), "--no-scaled"]),
+        patch("mtg_proxies.mpcfill.per_card.resolve_per_card_mpcfill", side_effect=fake_resolve),
+        patch("mtg_proxies.print_command.print_cards_fpdf") as print_cards_fpdf,
+    ):
+        main()
+    assert print_cards_fpdf.call_args.args[0] == [str(tmp_path / "idA.png"), str(tmp_path / "idB.png")] + [
+        str(tmp_path / "idA.png")
+    ]
 
 
 def test_main_print_order_xml_fetch_failure_exits(tmp_path: Path) -> None:

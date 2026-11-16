@@ -9,7 +9,7 @@ import numpy as np
 from mtg_proxies.calibrate_command import run_calibrate
 from mtg_proxies.cardconjurer.engine import CC_DEFAULT_UPSCALE_MODEL, CC_UPSCALE_TARGET_WIDTH, run_cardconjurer
 from mtg_proxies.convert_command import run_convert
-from mtg_proxies.frame_scale import DEFAULT_OVERLAP_MM
+from mtg_proxies.frame_scale import OVERLAP_MM
 from mtg_proxies.print_command import run_print
 from mtg_proxies.tokens import run_tokens
 
@@ -114,15 +114,17 @@ def _add_print_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     print_parser.add_argument(
         "--scaled",
-        action="store_true",
-        default=False,
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help=(
-            "grow the frame of every MPCFill render (order.xml fronts and #mpcfill lines) for the"
-            " sticker workflow, like cardconjurer --retro-scaled but by a smaller amount tuned on"
-            " MPC prints (~1.3 mm wider frame in total). Renders with no black border"
-            " (borderless, extended art) are left as-is. Applies to every frame style, modern"
-            " included; to scale only some cards, use #mpcfill --scaled per line instead."
-            " Scryfall scans and #cardconjurer renders are untouched."
+            f"for the sticker workflow, on by default: grow the frame of every render (Card Conjurer"
+            f" cards from --frame or #cardconjurer lines, MPCFill renders from order.xml or #mpcfill"
+            f" lines) until its coloured area covers a standard modern card's (58.0 x 79.2 mm) plus"
+            f" {OVERLAP_MM:g} mm on each side, so a frame cut out along the edge of its colour hides"
+            " the card it is stuck on by a hair. Modern frames are not grown, nor are renders with"
+            " no black border (borderless, extended art) or Scryfall scans. --no-scaled prints every"
+            " render at its own size; #mpcfill --scaled and #cardconjurer --retro-scaled /"
+            " --8th-scaled then scale single lines."
         ),
     )
     print_parser.add_argument(
@@ -198,8 +200,8 @@ def _add_print_parser(subparsers: argparse._SubParsersAction) -> None:
         default="glossy",
         help=(
             "prepare the cards for the paper so they look like real cards: glossy (default) gets a"
-            " cream card-stock tint on light, pale areas (saturated colours keep their hue) and a little more saturation; matte"
-            " gets the tint everywhere, a little more saturation and deeper shadows, print"
+            " cream card-stock tint on light, pale areas (saturated colours keep their hue) and a little"
+            " more saturation; matte gets the tint everywhere, a little more saturation and deeper shadows, print"
             " it with the driver's matte media setting. none leaves the images as they are (e.g. when"
             " printing from another computer)."
         ),
@@ -463,24 +465,21 @@ def _add_cardconjurer_parser(subparsers: argparse._SubParsersAction) -> None:
     cardconjurer_parser.add_argument(
         "--retro-scaled", dest="retro_scaled", action="store_true", default=False,
         help=(
-            f"grow the retro frame inside the card so it overlaps what it has to cover by"
-            f" {DEFAULT_OVERLAP_MM:g} mm on every side. For the sticker workflow: the"
-            " retro colour block is the good one to cut, because it ends in a hard square"
-            " corner, but at true size it only just covers a bulk card's own frame — a"
-            " millimetre of cutting or sticking error leaves a sliver of the old card"
-            " showing. This buys back that tolerance. The PNG keeps its exact dimensions and"
-            " still prints at true 63x88 mm; the black border absorbs the growth, so nothing"
-            " downstream changes. Implies --retro; conflicts with the other frame flags."
+f"grow the retro frame inside the card until its coloured area covers a standard"
+            f" modern card's (58.0 x 79.2 mm) plus {OVERLAP_MM:g} mm on each side. For the"
+            " sticker workflow: the retro colour block is the good one to cut, because it ends"
+            " in a hard square corner, but at true size it is about a millimetre narrower than"
+            " a modern card's coloured area, so the old frame shows beside it. The PNG keeps"
+            " its exact dimensions and still prints at true size; the black border absorbs the"
+            " growth, so nothing downstream changes. Implies --retro (add --retro-hd for the HD"
+            " frames); conflicts with the other frame flags."
         ),
     )
     cardconjurer_parser.add_argument(
         "--8th-scaled", dest="eighth_scaled", action="store_true", default=False,
         help=(
-            f"the same treatment as --retro-scaled, on the 8th-Edition frame: grow the"
-            f" frame inside the card so it overlaps what it has to cover by"
-            f" {DEFAULT_OVERLAP_MM:g} mm on every side. The 8th and retro colour"
-            " blocks are within 0.06 mm of each other, so both end up the same printed"
-            " size. Implies --8th; conflicts with the other frame flags and with"
+"the same treatment as --retro-scaled, on the 8th-Edition frame; both end up the"
+            " same printed width. Implies --8th; conflicts with the other frame flags and with"
             " --retro-scaled."
         ),
     )

@@ -21,7 +21,7 @@ from mtg_proxies.cardconjurer.engine import (
 )
 from mtg_proxies.cli_util import die, parse_decklist_spec, warn
 from mtg_proxies.decklists.decklist import Card, Decklist
-from mtg_proxies.frame_scale import MPC_OVERLAP_MM
+from mtg_proxies.frame_scale import BLEED_CANVAS_MM, OVERLAP_MM
 from mtg_proxies.mpcfill.cache import default_cache_root
 from mtg_proxies.mpcfill.order_xml import is_order_xml
 from mtg_proxies.print_cards import CARD_SIZE_MM, print_cards_fpdf
@@ -48,16 +48,15 @@ def resolve_upscale_scope(args: argparse.Namespace) -> Literal["auto", "all"] | 
 def _scale_mpc_render(path: str) -> str | None:
     """Return a frame-scaled copy of an MPCFill render, or ``None`` if its frame can't be measured.
 
-    The copy sits next to the cached render under an ``_ov<mm>`` suffix, so the cache
+    The copy sits next to the cached render under a ``_cover<mm>`` suffix, so the cache
     entry itself stays unscaled for slots and decks that don't ask for it. ``None``
     almost always means borderless or extended art: no black border, nothing to grow.
     """
     from mtg_proxies.frame_scale import enlarge_frame_copy
 
     source = Path(path)
-    scaled = source.with_name(f"{source.stem}_ov{MPC_OVERLAP_MM:.2f}.png")
-    card_mm = (float(CARD_SIZE_MM[0]), float(CARD_SIZE_MM[1]))
-    if enlarge_frame_copy(source, scaled, MPC_OVERLAP_MM, card_mm) is None:
+    scaled = source.with_name(f"{source.stem}_cover{OVERLAP_MM:.2f}.png")
+    if enlarge_frame_copy(source, scaled, OVERLAP_MM, BLEED_CANVAS_MM) is None:
         return None
     return str(scaled)
 
@@ -116,8 +115,8 @@ def _fetch_mpc_order_images(order_path: str, bleed_renders: set[str], *, scaled:
             else:
                 resolved[drive_id] = scaled_path
         print(
-            f"[mpc-xml] frame scaling: {len(resolved) - len(unscaled)}/{len(resolved)} grown for"
-            f" {MPC_OVERLAP_MM:g} mm overlap per side",
+            f"[mpc-xml] frame scaling: {len(resolved) - len(unscaled)}/{len(resolved)} grown to overlap a"
+            f" modern card's frame by {OVERLAP_MM:g} mm per side",
             file=sys.stderr,
         )
         if unscaled:
@@ -322,7 +321,12 @@ def _apply_mpcfill_modelines(
 
 
 def _apply_cardconjurer_renders(
-    slots: _ModelineSlots, frame: str | None, mark_bleed_render: Callable[[str], None], art_folder: Path | None = None
+    slots: _ModelineSlots,
+    frame: str | None,
+    mark_bleed_render: Callable[[str], None],
+    art_folder: Path | None = None,
+    *,
+    scale_all: bool = False,
 ) -> dict[int, str]:
     """Swap in a Card Conjurer render for every card ``print`` should render.
 
@@ -347,7 +351,7 @@ def _apply_cardconjurer_renders(
         return {}
     result = render_cardconjurer(
         slots.decklist,
-        deck_options_for_frame(frame or "auto", art_folder),
+        deck_options_for_frame(frame or "auto", art_folder, scale_all=scale_all),
         Path(tempfile.mkdtemp(prefix="mtg-proxies-cc-")),
         only={card_idx + 1 for card_idx in wanted},
     )
@@ -445,7 +449,8 @@ def _apply_per_card_modelines(
     Conjurer render (``#cardconjurer``, or every card under ``cc_frame`` = ``print --frame``), or
     its scan in another language (``#print --language``). A DFC carrying ``#mpcfill`` has no
     back slot at all (see ``_mpcfill_front_only``). ``#mpcfill --scaled`` (or
-    ``global_mpc_scaled``, from ``print --scaled``) swaps in a frame-grown copy of the render;
+    ``global_mpc_scaled``, from ``print --scaled``, which grows the Card Conjurer renders too) swaps
+    in a frame-grown copy of the render;
     one with no measurable frame stays as-is.
 
     Renders are recorded in ``bleed_renders`` and ``skip_upscale``; ``#no-upscale`` records the
@@ -472,7 +477,9 @@ def _apply_per_card_modelines(
     _apply_mpcfill_modelines(
         slots, mark_bleed_render, global_scaled=global_mpc_scaled, cache_root=cache_root, session=session
     )
-    scan_language = _apply_cardconjurer_renders(slots, cc_frame, mark_bleed_render, cc_art_folder)
+    scan_language = _apply_cardconjurer_renders(
+        slots, cc_frame, mark_bleed_render, cc_art_folder, scale_all=global_mpc_scaled
+    )
     _apply_language_modelines(slots, scan_language)
 
     if skip_upscale is not None:
@@ -631,6 +638,8 @@ def run_print(args: argparse.Namespace) -> None:
     # --custom-art (scaled, bleed into the gap), and skip the upscale and the composite.
     bleed_renders: set[str] = set()
     decklist = None
+    # Renders are grown for the sticker workflow unless ``--no-scaled`` (modern frames never are).
+    scaled = args.scaled is not False
 
     if args.decklist and is_order_xml(args.decklist):
         # MPC Autofill order.xml input (auto-detected, no flag): the fronts' Drive ids go
@@ -639,7 +648,7 @@ def run_print(args: argparse.Namespace) -> None:
             if value:
                 warn(f"Note: {flag} is ignored for order.xml input (MPCFill renders are final)")
         upscale_scope = None
-        images = _fetch_mpc_order_images(args.decklist, bleed_renders, scaled=args.scaled)
+        images = _fetch_mpc_order_images(args.decklist, bleed_renders, scaled=scaled)
         print(f"Found {len(images)} cards in MPC order '{args.decklist}'.")
     elif args.decklist:
         # ``print`` is render-only: take whatever the decklist pins, don't second-guess
@@ -662,14 +671,14 @@ def run_print(args: argparse.Namespace) -> None:
             faces=args.faces,
             skip_upscale=skip_upscale,
             bleed_renders=bleed_renders,
-            global_mpc_scaled=args.scaled,
+            global_mpc_scaled=scaled,
             cc_frame=args.frame,
             cc_art_folder=args.art_folder,
         )
-        if args.scaled and not any(card.modeline and "#mpcfill" in card.modeline for card in decklist.cards):
+        if args.scaled and not bleed_renders:  # asked for explicitly, not just the default
             warn(
-                "Note: --scaled only grows MPCFill renders (order.xml input or #mpcfill lines);"
-                " this decklist has none, so nothing is scaled."
+                "Note: --scaled grows renders (MPCFill, or Card Conjurer with --frame / #cardconjurer);"
+                " this decklist has none, so nothing is scaled. Scryfall scans are never scaled."
             )
 
     custom_images = _load_custom_art(args) if args.custom_art else []

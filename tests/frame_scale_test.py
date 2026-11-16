@@ -74,72 +74,80 @@ def test_measure_frame_box_rejects_art_bleeding_to_the_edge() -> None:
     assert measure_frame_box(Image.new("RGB", (400, 560), (200, 180, 120))) is None
 
 
-def test_scale_for_margin_is_driven_by_the_shorter_side() -> None:
-    """Gaining N mm costs proportionally more on the short side, so it sets the factor."""
-    from mtg_proxies.frame_scale import frame_size_mm, scale_for_margin
+def test_scale_to_cover_reaches_the_modern_frame_plus_the_overlap_on_the_tighter_axis() -> None:
+    """The fake frame is too narrow and too short; the axis that needs more sets the one scale."""
+    from mtg_proxies.frame_scale import MODERN_FRAME_MM, frame_size_mm, scale_to_cover
 
     box, canvas = (36, 36, 363, 523), (400, 560)
     width_mm, height_mm = frame_size_mm(box, canvas, CARD_MM)
-    assert width_mm < height_mm
+    scale = scale_to_cover(box, canvas, 0.25, CARD_MM)
 
-    scale = scale_for_margin(box, canvas, 2.0, CARD_MM)
-    assert scale == pytest.approx(1.0 + 4.0 / width_mm)
-    # Requested margin met exactly on the short side, exceeded on the long one.
-    assert (width_mm * scale - width_mm) / 2 == pytest.approx(2.0)
-    assert (height_mm * scale - height_mm) / 2 > 2.0
+    grown = (width_mm * scale, height_mm * scale)
+    overlaps = [(size - target) / 2 for size, target in zip(grown, MODERN_FRAME_MM, strict=True)]
+    assert min(overlaps) == pytest.approx(0.25)
+    assert max(overlaps) > 0.25
 
 
-def test_max_margin_mm_accounts_for_the_shared_scale() -> None:
-    """The ceiling is where one axis runs out of border under the *shared* scale.
+def test_scale_to_cover_never_shrinks_a_frame_that_is_big_enough() -> None:
+    from mtg_proxies.frame_scale import scale_to_cover
 
-    Checking axes independently would report the raw border thickness, which is
-    larger and would let the crop slice the frame's own edge off.
-    """
-    from mtg_proxies.frame_scale import frame_size_mm, max_margin_mm, scale_for_margin
+    # 60 x 84 mm of frame in a 63 x 88 mm canvas: already past a modern card's 58.0 x 79.2.
+    assert scale_to_cover((10, 13, 389, 546), (400, 560), 0.25, CARD_MM) == pytest.approx(1.0)
+
+
+def test_a_retro_hd_render_grows_about_three_percent() -> None:
+    """Real geometry: a 56.95 x 80.97 mm colour block in a bleed canvas ends up 58.5 mm wide."""
+    from mtg_proxies.frame_scale import BLEED_CANVAS_MM, OVERLAP_MM, frame_size_mm, scale_to_cover
+
+    canvas = (2187, 2975)
+    left, top = round((BLEED_CANVAS_MM[0] - 56.95) / 2 / BLEED_CANVAS_MM[0] * 2187), round(
+        (BLEED_CANVAS_MM[1] - 80.97) / 2 / BLEED_CANVAS_MM[1] * 2975
+    )
+    box = (left, top, 2186 - left, 2974 - top)
+    scale = scale_to_cover(box, canvas, OVERLAP_MM, BLEED_CANVAS_MM)
+    width_mm, height_mm = frame_size_mm(box, canvas, BLEED_CANVAS_MM)
+    assert width_mm * scale == pytest.approx(58.0 + 2 * OVERLAP_MM, abs=0.01)
+    assert height_mm * scale < 88.0 - 1.0  # still inside the card with black to spare
+    assert scale == pytest.approx(1.027, abs=0.003)
+
+
+def test_largest_scale_keeps_the_reserved_border_inside_the_card() -> None:
+    from mtg_proxies.frame_scale import _MIN_REMAINING_BORDER_MM, frame_size_mm, largest_scale
 
     box, canvas = (36, 36, 363, 523), (400, 560)
     width_mm, height_mm = frame_size_mm(box, canvas, CARD_MM)
-    ceiling = max_margin_mm(box, canvas, CARD_MM)
-
-    # At the ceiling the binding axis is down to the reserved border strip, not zero:
-    # a frame flush with the canvas edge would touch its neighbour on the sheet.
-    from mtg_proxies.frame_scale import _MIN_REMAINING_BORDER_MM
-
-    scale = scale_for_margin(box, canvas, ceiling, CARD_MM)
+    scale = largest_scale(box, canvas, CARD_MM)
     tightest = min(CARD_MM[0] - width_mm * scale, CARD_MM[1] - height_mm * scale) / 2
     assert tightest == pytest.approx(_MIN_REMAINING_BORDER_MM, abs=1e-6)
-    # And it is strictly tighter than the naive per-axis border thickness.
-    assert ceiling < min((CARD_MM[0] - width_mm) / 2, (CARD_MM[1] - height_mm) / 2)
 
 
 def test_enlarge_frame_keeps_canvas_and_grows_the_frame(tmp_path: Path) -> None:
     """The whole point: same pixel dimensions out, bigger frame, thinner border."""
-    from mtg_proxies.frame_scale import enlarge_frame, frame_size_mm, measure_frame_box
+    from mtg_proxies.frame_scale import MODERN_FRAME_MM, enlarge_frame, frame_size_mm
 
     path = tmp_path / "card.png"
     _fake_card().save(path)
-    before = frame_size_mm(measure_frame_box(Image.open(path)), (400, 560), CARD_MM)
 
-    scale = enlarge_frame(path, 2.0, CARD_MM)
+    scale = enlarge_frame(path, 0.25, CARD_MM)
     assert scale is not None
     assert scale > 1.0
 
     with Image.open(path) as grown:
         assert grown.size == (400, 560)
-        after = frame_size_mm(measure_frame_box(grown), grown.size, CARD_MM)
-    assert after[0] == pytest.approx(before[0] + 4.0, abs=0.3)
-    assert after[1] > before[1]
+        after = frame_size_mm(_ink_extent(grown), grown.size, CARD_MM)
+    # The fake frame is narrow for its height, like a retro one: the width is the tighter axis.
+    assert after[0] == pytest.approx(MODERN_FRAME_MM[0] + 0.5, abs=0.3)
+    assert after[1] > MODERN_FRAME_MM[1] + 0.5
 
 
-def test_enlarge_frame_clamps_a_margin_past_the_ceiling(tmp_path: Path) -> None:
+def test_enlarge_frame_clamps_before_the_card_edge(tmp_path: Path) -> None:
     """An over-large request must clamp, never crop into the frame itself."""
-    from mtg_proxies.frame_scale import enlarge_frame, max_margin_mm, measure_frame_box
+    from mtg_proxies.frame_scale import enlarge_frame
 
     path = tmp_path / "card.png"
     _fake_card().save(path)
-    ceiling = max_margin_mm(measure_frame_box(Image.open(path)), (400, 560), CARD_MM)
 
-    enlarge_frame(path, ceiling * 4, CARD_MM)
+    enlarge_frame(path, 20.0, CARD_MM)
     with Image.open(path) as grown:
         left, top, right, bottom = _ink_extent(grown)
     # Border survives on every side — nothing ran off the canvas, and there is still
@@ -148,6 +156,62 @@ def test_enlarge_frame_clamps_a_margin_past_the_ceiling(tmp_path: Path) -> None:
     assert top >= 1
     assert right <= 398
     assert bottom <= 558
+
+
+def test_enlarge_frame_stamps_a_frame_that_needs_no_growth(tmp_path: Path) -> None:
+    from mtg_proxies.frame_scale import enlarge_frame
+
+    path = tmp_path / "card.png"
+    _fake_card(inset=(10, 13)).save(path)
+    before = _ink_extent(Image.open(path))
+
+    assert enlarge_frame(path, 0.25, CARD_MM) == pytest.approx(1.0)
+    assert _ink_extent(Image.open(path)) == before
+    assert Image.open(path).info["mtg-proxies:retro-scaled-mm"] == "cover:0.25"
+
+
+def _fake_modern_card() -> Image.Image:
+    """Return a modern frame: 16 px of border at the sides and top, 40 px at the bottom with a text line in it."""
+    image = Image.new("RGB", (400, 560), (0, 0, 0))
+    image.paste(Image.new("RGB", (368, 504), (200, 180, 120)), (16, 16))
+    image.paste(Image.new("RGB", (30, 4), (255, 255, 255)), (20, 535))  # collector line
+    return image
+
+
+def test_a_modern_frame_is_recognised_by_its_thick_bottom_border() -> None:
+    from mtg_proxies.frame_scale import is_modern_frame
+
+    assert is_modern_frame(_fake_modern_card(), CARD_MM)
+    assert not is_modern_frame(_fake_card(), CARD_MM)
+
+
+def test_enlarge_frame_leaves_a_modern_frame_at_its_size(tmp_path: Path) -> None:
+    """Modern cards are not grown, but they are stamped so a re-run does not look again."""
+    from mtg_proxies.frame_scale import enlarge_frame
+
+    path = tmp_path / "modern.png"
+    _fake_modern_card().save(path)
+    before = _ink_extent(Image.open(path))
+
+    assert enlarge_frame(path, 0.25, CARD_MM) == pytest.approx(1.0)
+    assert _ink_extent(Image.open(path)) == before
+    assert Image.open(path).info["mtg-proxies:retro-scaled-mm"] == "cover:0.25"
+
+
+def test_enlarge_frame_redoes_nothing_stamped_by_the_old_rule(tmp_path: Path) -> None:
+    """A bare number is the old stamp (overlap against the render's own frame): never a match."""
+    from PIL import PngImagePlugin
+
+    from mtg_proxies.frame_scale import enlarge_frame
+
+    path = tmp_path / "card.png"
+    stamp = PngImagePlugin.PngInfo()
+    stamp.add_text("mtg-proxies:retro-scaled-mm", "0.25")
+    _fake_card().save(path, pnginfo=stamp)
+    before = path.read_bytes()
+
+    assert enlarge_frame(path, 0.25, CARD_MM) is None
+    assert path.read_bytes() == before
 
 
 def test_enlarge_frame_leaves_an_unmeasurable_card_untouched(tmp_path: Path) -> None:
@@ -190,7 +254,7 @@ def test_enlarge_frame_refuses_a_different_margin_on_scaled_output(tmp_path: Pat
     enlarge_frame(path, 1.0, CARD_MM)
     before = path.read_bytes()
 
-    assert enlarge_frame(path, 3.0, CARD_MM) is None
+    assert enlarge_frame(path, 0.5, CARD_MM) is None
     assert path.read_bytes() == before
 
 
@@ -254,7 +318,7 @@ def test_enlarge_frame_copy_rebuilds_a_broken_destination(tmp_path: Path, leftov
     destination.write_bytes(leftover)
 
     assert enlarge_frame_copy(source, destination, 0.75, CARD_MM) is not None
-    assert Image.open(destination).info["mtg-proxies:retro-scaled-mm"] == "0.75"
+    assert Image.open(destination).info["mtg-proxies:retro-scaled-mm"] == "cover:0.75"
     assert not (tmp_path / "render_ov.partial.png").exists()
 
 
