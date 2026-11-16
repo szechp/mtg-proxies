@@ -130,6 +130,7 @@ future-annotations = true
 "cli.py" = ["T20"]
 "cli_util.py" = ["T20"]
 "print_command.py" = ["T20"]
+"calibrate_command.py" = ["T20"]
 "convert_command.py" = ["T20"]
 "engine.py" = ["T20"]
 "tokens.py" = ["T20"]

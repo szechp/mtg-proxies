@@ -1,0 +1,8 @@
+// Cards for `mtg-proxies calibrate`: one per colour plus a grey artifact, all from the
+// bulk (non-foil, modern frame, nearly empty text box so the paper colour is easy to judge).
+1 Yoked Ox (M20) 41
+1 Coral Merfolk (M20) 315
+1 Mind Rot (M21) 115
+1 Shock (M20) 160
+1 Woodland Mystic (M20) 344
+1 Stone Golem (M20) 240

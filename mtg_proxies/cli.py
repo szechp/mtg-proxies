@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
+from mtg_proxies.calibrate_command import run_calibrate
 from mtg_proxies.cardconjurer.engine import CC_DEFAULT_UPSCALE_MODEL, CC_UPSCALE_TARGET_WIDTH, run_cardconjurer
 from mtg_proxies.convert_command import run_convert
 from mtg_proxies.frame_scale import DEFAULT_OVERLAP_MM
@@ -212,6 +213,37 @@ def _add_print_parser(subparsers: argparse._SubParsersAction) -> None:
             "override the cream card-stock tint of --media (1 for both glossy and matte; 0 = no tint)."
             " E.g. --warm 1"
         ),
+    )
+
+
+def _add_calibrate_parser(subparsers: argparse._SubParsersAction) -> None:
+    calibrate_parser = subparsers.add_parser(
+        "calibrate",
+        help="Print a test sheet to pick the paper settings (warmth, saturation, gamma)",
+        description=(
+            "Write a test sheet for tuning print --media: one row per card of the decklist, one"
+            " labelled strip of the card per variant, at true size. Use cards you own, print the"
+            " sheet at 100 %% and hold the strips against the real cards."
+        ),
+    )
+    calibrate_parser.add_argument("decklist", help="path to a decklist of cards you own, or archidekt:{archidekt_id}")
+    calibrate_parser.add_argument("outfile", help="output PDF", type=Path)
+    calibrate_parser.add_argument(
+        "--variant",
+        action="append",
+        metavar="SPEC",
+        help=(
+            "one column of the sheet, repeatable: comma-separated warm=N, sat=N, gamma=N and light"
+            " (tint light, pale areas only) or all (tint everything), optionally starting from a"
+            " preset (glossy, matte, none). E.g. --variant none --variant glossy,warm=0.5"
+            " --variant warm=1,all,sat=1.1. Default: nine glossy candidates."
+        ),
+    )
+    calibrate_parser.add_argument(
+        "--paper",
+        help="paper size, 'a4' or WIDTHxHEIGHT in inches (default: a4)",
+        type=papersize,
+        default="a4",
     )
 
 
@@ -536,6 +568,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # instead of silently running nothing with args.command=None.
     subparsers = parser.add_subparsers(dest="command", required=True)
     _add_print_parser(subparsers)
+    _add_calibrate_parser(subparsers)
     _add_convert_parser(subparsers)
     _add_tokens_parser(subparsers)
     _add_cardconjurer_parser(subparsers)
@@ -549,6 +582,8 @@ def main() -> None:
     match args.command:
         case "print":
             run_print(args)
+        case "calibrate":
+            run_calibrate(args)
         case "convert":
             run_convert(args)
         case "tokens":

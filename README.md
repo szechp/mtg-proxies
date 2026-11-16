@@ -510,6 +510,22 @@ and adds no detail the source doesn't have; it only keeps the enlargement step h
 | `--warm STRENGTH` | from `--media` | Override the cream card-stock tint of `--media` (1 for glossy and matte; lower = less yellow, `0` = no tint). |
 | `--media glossy\|matte\|none` | `glossy` | Prepare the cards for the paper so proxies look like real cards: glossy gets a cream card-stock tint on light, pale areas only (white text boxes, pale frame parts; saturated blues and golds keep their hue); matte gets the tint, +6 % saturation and deeper shadows (print it with the driver's matte media setting, `lp -o MediaType=PMMATT_HIGH`). `none` leaves the images as they are, e.g. when printing from another computer. |
 
+### calibrate
+
+A test sheet for tuning `print --media` to your paper and printer. Give it a decklist of cards you own: every card becomes one row, every variant one labelled strip of that card at true size (nine variants on A4 = strips a third of a card wide, three cards per page). Print it at 100 % with the same driver settings as your proxies, cut the rows out and hold the strips against the real cards.
+
+```bash
+mtg-proxies calibrate calibration/glossy.txt calibration.pdf
+mtg-proxies calibrate cards.txt calibration.pdf --variant none --variant glossy,warm=0.5 --variant warm=1,all,sat=1.1
+```
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--variant SPEC` | nine glossy candidates | One column, repeatable: comma-separated `warm=N`, `sat=N`, `gamma=N`, and `light` (tint light, pale areas only) or `all`; may start from a preset (`glossy`, `matte`, `none`). |
+| `--paper` | `a4` | Paper size, `a4` or `WIDTHxHEIGHT` in inches. |
+
+Labels read like `C  w1 light s1.06`: column C, warmth 1 on light areas only, saturation +6 %. The command also prints the list of columns.
+
 ### convert
 
 `mtg-proxies convert DECKLIST [OUTFILE | -o PATH] [options]` — resolve and pin a print for every
