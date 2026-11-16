@@ -1,0 +1,8 @@
+// Old-frame (1997) cards for `mtg-proxies calibrate`: one per colour plus an artifact, all
+// from the bulk, non-foil. White only exists white-bordered there.
+1 Knight Errant (S00) 7
+1 Stormwatch Eagle (PCY) 50
+1 Strongarm Thug (MMQ) 165
+1 Turf Wound (INV) 177
+1 Titanic Bulvox (SCG) 129
+1 Bargaining Table (MMQ) 288
