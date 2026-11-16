@@ -430,6 +430,99 @@ function unsupportedRequest(scry, requestedFrame, special, { dfcSplit, retroHd }
     return null;
 }
 
+// The MDFC flipside bar holds the other face's name (left) and its cost or type (right). CC sets
+// the right-hand text larger than the name and leaves them to collide when the name is long
+// ("Shatterskull, the Hammer Pass" + "Land"). Give both the name's size, keep a FLIPSIDE_GAP
+// (in units of that size) between them, and shrink both together when the pair is too wide.
+const FLIPSIDE_GAP = 0.8;
+function fitFlipsideBar(name, side) {
+    if (!name || !side || !name.text || !side.text) return;
+    const cardWidth = global.card.width, cardHeight = global.card.height;
+    const measure = (region, px) => {
+        stationMeasureCtx.font = `${Math.round(px)}px ${region.font || 'mplantin'}`;
+        const symbols = (region.text.match(/\{[^}]*\}/g) || []).length;
+        const plain = region.text.replace(/\{[^}]*\}/g, '');
+        return stationMeasureCtx.measureText(plain).width + symbols * 0.86 * px;
+    };
+    let px = name.size * cardHeight;
+    const avail = name.width * cardWidth;
+    const total = (p) => measure(name, p) + measure(side, p) + FLIPSIDE_GAP * p;
+    if (total(px) > avail) px *= avail / total(px);
+    name.size = side.size = px / cardHeight;
+    name.width = (avail - measure(side, px) - FLIPSIDE_GAP * px) / cardWidth;
+}
+
+// Contrast detection for M15-8th cards. Card Conjurer colours these lines per face and frame
+// (black on back faces, white on dark frames, an outline on land frames), which leaves white text
+// on light frames and black text on dark bars (Emeria's Call's artist line, black names on a blue
+// flipside bar, white titles on land backs). Instead, measure the frame canvas behind each line
+// and use black on light backgrounds, white on dark; the flipside cost keeps its grey shades.
+function backgroundLuminance(region) {
+    const canvas = global.frameCanvas;
+    if (!canvas || !region || region.width == null) return null;
+    const x = Math.max(0, Math.round(global.scaleX(region.x || 0)));
+    const y = Math.max(0, Math.round(global.scaleY(region.y || 0)));
+    const w = Math.min(canvas.width - x, Math.round(global.scaleWidth(region.width)));
+    const h = Math.min(canvas.height - y, Math.round(global.scaleHeight(region.height || region.size || 0.03)));
+    if (w < 2 || h < 2) return null;
+    const px = canvas.getContext('2d').getImageData(x, y, w, h).data;
+    // Mean relative luminance (sRGB linearised), then whichever of black and white has the higher
+    // WCAG contrast ratio against it: black when L > ~0.18.
+    const lin = (c) => { c /= 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+    let sum = 0, n = 0;
+    for (let i = 0; i < px.length; i += 16) {  // every 4th pixel is plenty
+        if (px[i + 3] < 128) continue;
+        sum += 0.2126 * lin(px[i]) + 0.7152 * lin(px[i + 1]) + 0.0722 * lin(px[i + 2]);
+        n++;
+    }
+    return n ? sum / n : null;
+}
+// Black beats white on this background (WCAG contrast ratio).
+const prefersBlack = (lum) => (lum + 0.05) / 0.05 > 1.05 / (lum + 0.05);
+// White text's contrast ratio against a background below which the bottom lines get an outline.
+const WHITE_MIN_CONTRAST = 4.5;
+function applyContrastColours() {
+    let changed = false;
+    const strip = (region) => {
+        delete region.conditionalColor;
+        if (typeof region.text === 'string') region.text = region.text.replace(/^\{conditionalcolor:[^}]*\}/, '');
+    };
+    // Title, type line, flipside name and the other face's cost / type: black or white, whichever
+    // reads better (the cost / type takes the name's colour: no grey works on a mid-grey bar).
+    let flipsideColour = null;
+    for (const key of ['title', 'type', 'flipsideType', 'flipSideReminder']) {
+        const region = global.card.text?.[key];
+        if (!region?.text) continue;
+        let colour;
+        if (key === 'flipSideReminder' && flipsideColour) colour = flipsideColour;
+        else {
+            const lum = backgroundLuminance(region);
+            if (lum === null) continue;
+            colour = prefersBlack(lum) ? 'black' : 'white';
+        }
+        if (key === 'flipsideType') flipsideColour = colour;
+        strip(region);
+        region.outlineWidth = 0;
+        region.color = colour;
+        changed = true;
+    }
+    // Artist / collector lines stay white (the frame's standard); where white is too weak against
+    // the frame behind them, they get Card Conjurer's standard black outline.
+    for (const key of ['top', 'wizards']) {
+        const region = global.card.bottomInfo?.[key];
+        if (!region?.text) continue;
+        const lum = backgroundLuminance(region);
+        if (lum === null) continue;
+        strip(region);
+        region.color = 'white';
+        const weak = 1.05 / (lum + 0.05) < WHITE_MIN_CONTRAST;
+        region.outlineWidth = weak ? 0.003 : 0;
+        if (weak) region.outlineColor = 'black';
+        changed = true;
+    }
+    return changed;
+}
+
 // Battlement legend crown for retro (Seventh) legendaries. Seventh predates crowns, so the
 // art is ours: mtg_proxies/cardconjurer/retro_crown.py generates one layer per Seventh frame
 // image (transparent except the crown band above the stock top edge) plus a crown version of
@@ -587,6 +680,73 @@ const RETRO_HD_ROOT = process.env.CC_RETRO_HD || path.join(os.homedir(), '.cache
 const SEVENTH_FRAME_SRC = /^\/img\/frames\/seventh\/regular\/([A-Za-z]+)\.png$/;
 let retroHdFrames = null;
 let retroHdAdventure = false;  // the card being built is a two-panel --retro-hd adventure
+let squareCorners = false;  // the card being built is M15-8th: square its frame's inner corners
+// Card Conjurer's M15-8th frame art (img/frames/custom/m15-eighth/) carries an 80px black border
+// whose inner corners are rounded (~38px radius) the modern way; 8th frames are square. Corners
+// are squared in a cached copy: black pixels inside each corner square take the frame texture
+// SQUARE_CORNER px further along the side (same column, moving away from the corner).
+const SQUARE_BORDER = 80, SQUARE_CORNER = 56;
+const MISSING_BORDER_DONOR = {
+    '/img/frames/custom/m15-eighth/mdfc/front/regular/wl.png': '/img/frames/custom/m15-eighth/mdfc/front/regular/l.png',
+};
+const _squareFrames = new Map();
+function squareCornerFrame(src) {
+    if (!/^\/img\/frames\/custom\/m15-eighth\/.*\.png$/.test(src)) return null;
+    if (_squareFrames.has(src)) return _squareFrames.get(src);
+    const file = path.join(CC_ROOT, src.slice(1));
+    let out = null;
+    try {
+        const img = new (canvasPkg.Image)();
+        img.src = fs.readFileSync(file);
+        const w = img.width, h = img.height;
+        const canvas = createCanvas(w, h), ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const data = ctx.getImageData(0, 0, w, h), px = data.data;
+        const b = Math.round(SQUARE_BORDER * w / 2010), r = Math.round(SQUARE_CORNER * w / 2010);
+        const dark = (i) => px[i + 3] > 200 && px[i] + px[i + 1] + px[i + 2] < 40;
+        let changed = false;
+        // CC asset defect: the white-land MDFC front (mdfc/front/regular/wl.png) is missing the
+        // bottom of its rock border (black from ~2/3 down). Its colourless land sibling has the
+        // same border: take its pixels wherever wl is black and it is not.
+        const donorSrc = MISSING_BORDER_DONOR[src];
+        if (donorSrc) {
+            const donor = new (canvasPkg.Image)();
+            donor.src = fs.readFileSync(path.join(CC_ROOT, donorSrc.slice(1)));
+            const dctx = createCanvas(w, h).getContext('2d');
+            dctx.drawImage(donor, 0, 0, w, h);
+            const dp = dctx.getImageData(0, 0, w, h).data;
+            for (let i = 0; i < px.length; i += 4) {
+                if (dark(i) && dp[i] + dp[i + 1] + dp[i + 2] >= 40) {
+                    px[i] = dp[i]; px[i + 1] = dp[i + 1]; px[i + 2] = dp[i + 2]; px[i + 3] = dp[i + 3];
+                    changed = true;
+                }
+            }
+        }
+        // Each corner square, the pixel at its border corner (dark when the corner is rounded),
+        // and the direction to take texture from (away from the corner, vertically).
+        for (const [x0, y0, cx, cy, dy] of [[b, b, b, b, 1], [w - b - r, b, w - b - 1, b, 1],
+                                             [b, h - b - r, b, h - b - 1, -1],
+                                             [w - b - r, h - b - r, w - b - 1, h - b - 1, -1]]) {
+            if (!dark((cy * w + cx) * 4)) continue;  // no rounded border corner here
+            for (let y = y0; y < y0 + r; y++) {
+                for (let x = x0; x < x0 + r; x++) {
+                    const i = (y * w + x) * 4;
+                    if (!dark(i)) continue;
+                    const j = ((y + dy * r) * w + x) * 4;
+                    px[i] = px[j]; px[i + 1] = px[j + 1]; px[i + 2] = px[j + 2]; px[i + 3] = px[j + 3];
+                    changed = true;
+                }
+            }
+        }
+        if (changed) {
+            ctx.putImageData(data, 0, 0);
+            out = path.join(require('os').tmpdir(), 'mtgp-square-' + src.slice(1).replace(/\//g, '_'));
+            fs.writeFileSync(out, canvas.toBuffer('image/png'));
+        }
+    } catch (e) { console.warn('[square-corners]', src, e.message); }
+    _squareFrames.set(src, out);
+    return out;
+}
 let retroHdVariant = null;  // 'tf' / 'mdfc': a --retro-hd double-faced face (retro_hd.py frames/<variant>/)
 
 // --retro-hd text layout, taken from the template's own text layers rather than packSeventh's
@@ -696,6 +856,10 @@ function resolveSrc(src) {
     if (!src) return null;
     const hd = retroHdFrame(src);
     if (hd) return hd;
+    if (squareCorners) {
+        const square = squareCornerFrame(src);
+        if (square) return square;
+    }
     if (src.startsWith('data:'))                    return src;
     if (src.startsWith('http://') || src.startsWith('https://')) return src;
     if (src.startsWith('file://'))                  return src.slice(7);
@@ -2498,6 +2662,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
     retroHdFrames = hd ? path.join(RETRO_HD_ROOT, 'frames') : null;
     retroHdAdventure = hd && !!scry._adventure;
     retroHdVariant = hd && scry._dfc ? scry._dfc.variant : null;
+    squareCorners = frame === 'm15-8th';
     try {
         return await buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, frame, setSymbolPath,
                                         fontSizeDelta, dfcFace, frameNameSuffix, specialLayout, legendary, crown,
@@ -2507,6 +2672,7 @@ async function renderFace({ packFile, processed, faceIdx, scry, outName, frame, 
         retroHdFrames = null;
         retroHdAdventure = false;
         retroHdVariant = null;
+        squareCorners = false;
     }
 }
 
@@ -3108,7 +3274,7 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
 
         // De-overlap the DFC name/mana and flipside type/reminder bands (helpers hoisted above).
         reserveRight(global.card.text.title, global.card.text.mana);
-        reserveRight(global.card.text.flipsideType, global.card.text.flipSideReminder);
+        fitFlipsideBar(global.card.text.flipsideType, global.card.text.flipSideReminder);
     } else if (frame === 'borderless' && scry.layout !== 'flip') {
         // Promo borderless (packPromoRegular-1 / packIkoShort): self-contained per-color frame
         // art with a smaller text box and no autoFrame config — pick frame + P/T by name, like
@@ -3462,9 +3628,12 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     // pack8th in renderCard.
     //
     // Border cover first, crown second: addFrame unshifts, so the later layer sits on top.
-    if (legendary && !dfcFace && frame === '8th'
+    // Transform faces on 8th (pack8thTransformFront/Back) take the pack's transform crowns.
+    const eighthTransformFace = dfcFace && scry.layout === 'transform';
+    if (legendary && (!dfcFace || eighthTransformFace) && frame === '8th'
         && wantsEighthLegendCrown(pristineFace.type_line || scry.type_line)) {
         await addFrameByName(['Legend Crown Border Cover']);
+        const kind = eighthTransformFace ? ' Transform Legend Crown' : ' Legend Crown';
         // A two-colour card's crown follows its pinlines, like a printed two-colour legend:
         // the left colour's crown, then the right colour's through the right-half mask (the
         // plain gold crown sat on green / blue pinlines on Galadriel of Lothlórien).
@@ -3473,12 +3642,12 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
             pristineFace.colors || scry.colors || [], pristineFace.mana_cost || '',
             pristineFace.type_line || scry.type_line || '', pristineFace.power || '');
         const left = crownName[props.pinline], right = crownName[props.pinlineRight];
-        if (left && right) {
+        if (left && right && !eighthTransformFace) {
             await addFrameByName([left + ' Legend Crown']);
             await addFrameByName([right + ' Legend Crown'], [{ name: 'Right Half', src: '/img/frames/maskRightHalf.png' }]);
         } else {
-            const crown = getFrameNameForFace(pristineFace).replace(' Frame', ' Legend Crown');
-            await addFrameByName([crown, 'Artifact Legend Crown', 'Colorless Legend Crown']);
+            const crown = getFrameNameForFace(pristineFace).replace(' Frame', kind);
+            await addFrameByName([crown, 'Artifact' + kind, 'Colorless' + kind]);
         }
     }
 
@@ -3995,6 +4164,12 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
     await renderBottomInfo();
     deferRedraws = false;  // the one real redraw -- see installRedrawDeferral
     global.drawFrames();
+    // M15-8th: pick each line's text colour from the frame actually drawn behind it.
+    if (frame === 'm15-8th' && scry.layout !== 'token' && applyContrastColours()) {
+        await global.drawText();
+        await renderBottomInfo();
+        global.drawFrames();
+    }
 
     // stationEdited() (versionStation.js) always overwrites card.station.squares[2]
     // .height with its own "stretch to the max allowed height above the bottom margin"
@@ -4162,13 +4337,20 @@ async function renderCard(scry, slug, { frame = '8th', setSymbolPath = null, fon
     // packs. Returns { out, outBack } instead of a single path.
     const splitPacks = !special && dfcSplit ? packsForDfcSplit(scry.layout, frame) : null;
     if (splitPacks) {
+        // 8th transform faces that are legendary load CC's 8th crown pack alongside (the face's
+        // pack last, so its frame version is the live one).
+        const withCrown = (pack, index) => (legendary && frame === '8th' && scry.layout === 'transform'
+            && wantsEighthLegendCrown(scry.card_faces?.[index]?.type_line))
+            ? ['pack8thLegendCrowns.js', ...[pack].flat()] : pack;
         const out = await renderFace({
-            packFile: splitPacks.front, processed, faceIdx: 0, scry, outName: slug,
+            packFile: withCrown(splitPacks.front, 0), processed, faceIdx: 0, scry, outName: slug,
             frame, setSymbolPath, fontSizeDelta, dfcFace: 'front', frameNameSuffix: splitPacks.suffixes[0],
+            legendary,
         });
         const outBack = await renderFace({
-            packFile: splitPacks.back, processed, faceIdx: 1, scry, outName: slug + '_back',
+            packFile: withCrown(splitPacks.back, 1), processed, faceIdx: 1, scry, outName: slug + '_back',
             frame, setSymbolPath, fontSizeDelta, dfcFace: 'back', frameNameSuffix: splitPacks.suffixes[1],
+            legendary,
         });
         return { out, outBack };
     }

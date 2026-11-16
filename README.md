@@ -575,7 +575,7 @@ Every card renders `--retro-hd`, except: gold cards and non-basic lands that mak
 two or more colours get `--8th`; double-faced cards stay `--retro-hd` (gold transform cards `--8th`,
 transform planeswalkers `--retro`, modal double-faced planeswalkers `--modern`); flip, reversible and Station cards `--modern`;
 adventures and prepare cards stay `--retro-hd` even when gold; battles keep their Scryfall scan. A line
-with a modeline of its own is left as it is.adventures and prepare cards stay `--retro-hd` even when gold; battles get `--skip` (Scryfall scan).
+with a modeline of its own is left as it is.
 Lines that already have a modeline are left as they are, and each card is pinned to the printing
 the rule was decided on.
 
