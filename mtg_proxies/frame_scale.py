@@ -57,7 +57,8 @@ MODERN_FRAME_MM = (58.0, 79.2)
 #: on 8th; the value tuned on paper for MPCFill renders came to roughly 0.13 mm, after one that
 #: came to 0.3-0.4 mm "overhung". Those were defined against each render's own frame size in
 #: canvas units, so the same number meant a different result per source; this one does not.
-OVERLAP_MM = 0.25
+#: 0.25 was the first value under this rule; the owner took it back "a tad" to 0.2 before printing.
+OVERLAP_MM = 0.2
 
 #: Size a bleed render's canvas prints at: the 63 x 88 mm card plus Card Conjurer's template
 #: margins (0.044 of the width and 1/35 of the height on each side), which ``print`` places so
