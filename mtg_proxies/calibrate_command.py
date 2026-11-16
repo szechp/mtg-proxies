@@ -1,14 +1,15 @@
 """The ``calibrate`` subcommand: a test sheet for picking a paper preset (``paper.py``).
 
-Every card of the decklist gets one row, every variant one column. A column is a full-height
-strip of the card's left edge (border, frame, title, art, type line, text box) at true print
-size, prepared with that variant's warmth, saturation and gamma, and labelled with the values.
-Cut a row out and lay the strips on the real card: the one that disappears is the preset.
+Every card of the decklist gets one row, every variant one column. A column is a strip of the
+card's left edge at true print size, prepared with that variant's warmth, saturation and gamma,
+and labelled with the values. Cut a row out and lay the strips on the real card: the one that
+disappears is the preset.
 
-Strips are as wide as the page allows for the number of variants (nine variants on A4 give
-strips about a third of a card wide, three cards per page), so one sheet answers for several
-colours at once. The images take the same path as ``print``: prepared at scan resolution,
-then upsampled to ``PDF_TARGET_DPI``.
+Strips are as wide as the page allows for the number of variants (nine on A4: about a third
+of a card). Up to three rows per page are full height; with more cards the rows shrink to a
+band around the type line (art above, text box below) so that up to six cards, one per colour
+and a colourless one, share a single sheet. The images take the same path as ``print``:
+prepared at scan resolution, then upsampled to ``PDF_TARGET_DPI``.
 """
 
 from __future__ import annotations
@@ -46,6 +47,12 @@ PAGE_MARGIN_MM = 6.0  # inside what an inkjet without borderless mode can print
 LABEL_HEIGHT_MM = 4.0
 ROW_GAP_MM = 1.5
 LABEL_FONT_PT = 6.5
+#: Shortest band a row is squeezed to before a second page starts: about 26 mm of art and
+#: 13 mm of text box around the type line, which is six rows on A4.
+MIN_BAND_MM = 40.0
+#: Where a band shorter than the card is centred, as a fraction of the card's height: just
+#: above the type line of the modern frames, so it shows art and text box alike.
+BAND_CENTRE = 0.54
 
 _KEYS = {"warm": "warm", "w": "warm", "sat": "saturation", "s": "saturation", "gamma": "gamma", "g": "gamma"}
 
@@ -85,31 +92,49 @@ def variant_label(paper: Paper) -> str:
     return " ".join(parts) or "plain"
 
 
-def sheet_layout(papersize_mm: np.ndarray, n_variants: int) -> tuple[float, int]:
-    """Return ``(strip width in mm, rows per page)`` for ``n_variants`` columns on the paper.
+def sheet_layout(
+    papersize_mm: np.ndarray, n_variants: int, n_cards: int, rows: int | None = None
+) -> tuple[float, float, int]:
+    """Return ``(strip width, strip height, rows per page)`` in mm for the sheet.
 
-    Strips share the printable width evenly and are never wider than a card.
+    Strips share the printable width evenly and are never wider than a card. Without ``rows``,
+    all cards go on one page as long as the rows stay at least ``MIN_BAND_MM`` tall; beyond
+    that the page takes as many rows of that height as fit.
 
     Raises:
-        ValueError: If not even one row fits on the paper.
+        ValueError: If not even one row fits on the paper, or ``rows`` is not positive.
     """
+    if rows is not None and rows < 1:
+        raise ValueError(f"rows must be positive (got {rows})")
     usable = np.asarray(papersize_mm, dtype=float) - 2 * PAGE_MARGIN_MM
     strip_width = min(float(CARD_SIZE_MM[0]), float(usable[0]) / n_variants)
-    row_height = LABEL_HEIGHT_MM + float(CARD_SIZE_MM[1])
-    rows = int((usable[1] + ROW_GAP_MM) // (row_height + ROW_GAP_MM))
-    if rows < 1:
-        raise ValueError(f"Paper size too small: {papersize_mm}")
-    return strip_width, rows
+
+    def height(n_rows: int) -> float:
+        return (float(usable[1]) + ROW_GAP_MM) / n_rows - ROW_GAP_MM - LABEL_HEIGHT_MM
+
+    if rows is None:
+        most = int((usable[1] + ROW_GAP_MM) // (MIN_BAND_MM + LABEL_HEIGHT_MM + ROW_GAP_MM))
+        rows = min(max(n_cards, 1), max(most, 1))
+    if height(rows) <= 0:
+        raise ValueError(f"Paper size too small for {rows} row(s): {papersize_mm}")
+    return strip_width, min(float(CARD_SIZE_MM[1]), height(rows)), rows
 
 
-def card_strip(image_path: str | Path, strip_width_mm: float) -> np.ndarray:
-    """Return the left ``strip_width_mm`` of a card scan as RGB, full height, corners on white."""
+def card_strip(image_path: str | Path, strip_width_mm: float, strip_height_mm: float | None = None) -> np.ndarray:
+    """Return the left ``strip_width_mm`` of a card scan as RGB, corners on white.
+
+    A ``strip_height_mm`` below the card's height takes a band of that height around
+    ``BAND_CENTRE`` instead of the full height.
+    """
     with Image.open(image_path) as im:
         rgba = im.convert("RGBA")
     flat = Image.new("RGB", rgba.size, (255, 255, 255))
     flat.paste(rgba, mask=rgba.getchannel("A"))
     width_px = max(1, round(flat.width * strip_width_mm / float(CARD_SIZE_MM[0])))
-    return np.asarray(flat.crop((0, 0, width_px, flat.height)))
+    fraction = 1.0 if strip_height_mm is None else min(1.0, strip_height_mm / float(CARD_SIZE_MM[1]))
+    height_px = max(1, round(flat.height * fraction))
+    top_px = round(min(max(BAND_CENTRE * flat.height - height_px / 2, 0), flat.height - height_px))
+    return np.asarray(flat.crop((0, top_px, width_px, top_px + height_px)))
 
 
 def write_calibration_sheet(
@@ -118,6 +143,7 @@ def write_calibration_sheet(
     filepath: str | Path,
     papersize_mm: np.ndarray = np.array([210.0, 297.0]),
     target_dpi: int | None = PDF_TARGET_DPI,
+    rows: int | None = None,
 ) -> None:
     """Write the calibration PDF: one row per image, one labelled strip per variant.
 
@@ -128,11 +154,12 @@ def write_calibration_sheet(
         papersize_mm: Paper size in mm.
         target_dpi: Upsample strips below this resolution, as ``print`` does; ``None`` embeds
             them at scan resolution.
+        rows: Rows per page; default as many as :func:`sheet_layout` picks.
     """
     from fpdf import FPDF
 
-    strip_width, rows_per_page = sheet_layout(papersize_mm, len(variants))
-    strip_size = np.array([strip_width, float(CARD_SIZE_MM[1])])
+    strip_width, strip_height, rows_per_page = sheet_layout(papersize_mm, len(variants), len(images), rows)
+    strip_size = np.array([strip_width, strip_height])
     left = (float(papersize_mm[0]) - strip_width * len(variants)) / 2
 
     pdf = FPDF(orientation="P", unit="mm", format=(float(papersize_mm[0]), float(papersize_mm[1])))
@@ -142,7 +169,7 @@ def write_calibration_sheet(
         if row % rows_per_page == 0:
             pdf.add_page()
         top = PAGE_MARGIN_MM + (row % rows_per_page) * (LABEL_HEIGHT_MM + strip_size[1] + ROW_GAP_MM)
-        strip = card_strip(image, strip_width)
+        strip = card_strip(image, strip_width, strip_height)
         for column, paper in enumerate(variants):
             x = left + column * strip_width
             pdf.set_xy(x, top)
@@ -179,13 +206,14 @@ def run_calibrate(args: argparse.Namespace) -> None:
 
     papersize_mm = args.paper * 25.4
     try:
-        strip_width, rows_per_page = sheet_layout(papersize_mm, len(variants))
+        strip_width, strip_height, rows_per_page = sheet_layout(papersize_mm, len(variants), len(images), args.rows)
     except ValueError as exc:
         die(f"Error: {exc}")
-    write_calibration_sheet(images, variants, args.outfile, papersize_mm=papersize_mm)
+    write_calibration_sheet(images, variants, args.outfile, papersize_mm=papersize_mm, rows=args.rows)
 
     pages = -(-len(images) // rows_per_page)
     print(f"Wrote {args.outfile}: {len(images)} cards x {len(variants)} variants, {pages} page(s),")
-    print(f"strips {strip_width:.1f} mm wide ({strip_width / CARD_SIZE_MM[0]:.0%} of a card). Print at 100 % scale.")
+    part = "full height" if strip_height >= CARD_SIZE_MM[1] else "a band around the type line"
+    print(f"strips {strip_width:.1f} x {strip_height:.1f} mm ({part}), true size. Print at 100 % scale.")
     for letter, spec, paper in zip(string.ascii_uppercase, specs, variants, strict=False):
         print(f"  {letter}  {variant_label(paper):<22} --variant {spec}")

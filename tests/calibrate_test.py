@@ -37,13 +37,30 @@ def test_default_variants_parse_and_have_distinct_labels() -> None:
     assert PAPERS["glossy"] in variants  # the current preset is always on the sheet
 
 
-def test_nine_variants_on_a4_give_three_rows_of_third_card_strips() -> None:
-    from mtg_proxies.calibrate_command import sheet_layout
+def test_up_to_three_cards_on_a4_are_full_height_and_six_share_one_page_as_bands() -> None:
+    from mtg_proxies.calibrate_command import MIN_BAND_MM, sheet_layout
 
-    strip_width, rows = sheet_layout(np.array([210.0, 297.0]), 9)
-    assert rows == 3
-    assert 21.0 < strip_width < 23.0
-    assert sheet_layout(np.array([210.0, 297.0]), 2)[0] == pytest.approx(63.0)  # never wider than a card
+    a4 = np.array([210.0, 297.0])
+    width, height, rows = sheet_layout(a4, 9, n_cards=3)
+    assert (rows, height) == (3, pytest.approx(88.0))
+    assert 21.0 < width < 23.0
+    assert sheet_layout(a4, 2, n_cards=1)[0] == pytest.approx(63.0)  # never wider than a card
+
+    _, height, rows = sheet_layout(a4, 9, n_cards=6)
+    assert rows == 6
+    assert MIN_BAND_MM <= height < 44.0
+    assert sheet_layout(a4, 9, n_cards=20)[2] == 6  # more cards: more pages, not thinner bands
+    assert sheet_layout(a4, 9, n_cards=6, rows=3)[1:] == (pytest.approx(88.0), 3)
+
+
+def test_a_band_is_cut_around_the_type_line(tmp_path: Path) -> None:
+    from mtg_proxies.calibrate_command import card_strip
+
+    rows = np.repeat(np.arange(200, dtype=np.uint8)[:, None, None], 3, axis=2).repeat(63, axis=1)
+    Image.fromarray(rows).save(tmp_path / "rows.png")
+    band = card_strip(tmp_path / "rows.png", 21.0, 44.0)
+    assert band.shape == (100, 21, 3)
+    assert (band[0, 0, 0], band[-1, 0, 0]) == (58, 157)  # 54 % of the height sits in the middle
 
 
 def test_sheet_has_one_strip_per_card_and_variant_and_a_new_page_after_three(tmp_path: Path) -> None:
@@ -57,7 +74,7 @@ def test_sheet_has_one_strip_per_card_and_variant_and_a_new_page_after_three(tmp
 
     out = tmp_path / "sheet.pdf"
     variants = [parse_variant(spec) for spec in ("none", "warm=1,all")]
-    write_calibration_sheet(scans, variants, out, target_dpi=None)
+    write_calibration_sheet(scans, variants, out, target_dpi=None, rows=3)
     pdf = out.read_bytes()
     assert len(re.findall(rb"/Type /Page\b", pdf)) == 2
     assert len(re.findall(rb"/Subtype /Image\b", pdf)) == len(scans) * len(variants)

@@ -512,7 +512,7 @@ and adds no detail the source doesn't have; it only keeps the enlargement step h
 
 ### calibrate
 
-A test sheet for tuning `print --media` to your paper and printer. Give it a decklist of cards you own: every card becomes one row, every variant one labelled strip of that card at true size (nine variants on A4 = strips a third of a card wide, three cards per page). Print it at 100 % with the same driver settings as your proxies, cut the rows out and hold the strips against the real cards.
+A test sheet for tuning `print --media` to your paper and printer. Give it a decklist of cards you own: every card becomes one row, every variant one labelled strip of that card's left edge at true size (nine variants on A4 = strips a third of a card wide). Up to three cards per page are printed full height; with more, each row is cut to a band around the type line, art above and text box below, so six cards (one per colour and a colourless one) share one A4 sheet. Print it at 100 % with the same driver settings as your proxies, cut the rows out and hold the strips against the real cards.
 
 ```bash
 mtg-proxies calibrate calibration/glossy.txt calibration.pdf
@@ -522,6 +522,7 @@ mtg-proxies calibrate cards.txt calibration.pdf --variant none --variant glossy,
 | Flag | Default | What it does |
 |---|---|---|
 | `--variant SPEC` | nine glossy candidates | One column, repeatable: comma-separated `warm=N`, `sat=N`, `gamma=N`, and `light` (tint light, pale areas only) or `all`; may start from a preset (`glossy`, `matte`, `none`). |
+| `--rows N` | all cards on one page, up to 6 on A4 | Cards per page; `--rows 3` on A4 keeps the strips full height over more pages. |
 | `--paper` | `a4` | Paper size, `a4` or `WIDTHxHEIGHT` in inches. |
 
 Labels read like `C  w1 light s1.06`: column C, warmth 1 on light areas only, saturation +6 %. The command also prints the list of columns.

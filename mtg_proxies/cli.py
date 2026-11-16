@@ -240,6 +240,16 @@ def _add_calibrate_parser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     calibrate_parser.add_argument(
+        "--rows",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "cards per page (default: all on one page, up to 6 on A4). Up to 3 on A4 are printed"
+            " full height; more are cut to a band around the type line, art above and text box below."
+        ),
+    )
+    calibrate_parser.add_argument(
         "--paper",
         help="paper size, 'a4' or WIDTHxHEIGHT in inches (default: a4)",
         type=papersize,
