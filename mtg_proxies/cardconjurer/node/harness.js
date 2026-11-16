@@ -479,8 +479,6 @@ function backgroundLuminance(region) {
 }
 // Black beats white on this background (WCAG contrast ratio).
 const prefersBlack = (lum) => (lum + 0.05) / 0.05 > 1.05 / (lum + 0.05);
-// White text's contrast ratio against a background below which the bottom lines get an outline.
-const WHITE_MIN_CONTRAST = 4.5;
 function applyContrastColours() {
     let changed = false;
     const strip = (region) => {
@@ -506,18 +504,16 @@ function applyContrastColours() {
         region.color = colour;
         changed = true;
     }
-    // Artist / collector lines stay white (the frame's standard); where white is too weak against
-    // the frame behind them, they get Card Conjurer's standard black outline.
+    // Artist / collector lines: black on light frames, white on dark ones, no outline. White
+    // with a black outline on light marble was tried and looked out of place on 8th-style cards.
     for (const key of ['top', 'wizards']) {
         const region = global.card.bottomInfo?.[key];
         if (!region?.text) continue;
         const lum = backgroundLuminance(region);
         if (lum === null) continue;
         strip(region);
-        region.color = 'white';
-        const weak = 1.05 / (lum + 0.05) < WHITE_MIN_CONTRAST;
-        region.outlineWidth = weak ? 0.003 : 0;
-        if (weak) region.outlineColor = 'black';
+        region.color = prefersBlack(lum) ? 'black' : 'white';
+        region.outlineWidth = 0;
         changed = true;
     }
     return changed;
