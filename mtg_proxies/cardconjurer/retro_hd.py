@@ -88,8 +88,9 @@ _BEVEL_THICKNESS = {
 # artifact frame at ~(74, 58, 41) (Bargaining Table MMQ 288: (71, 54, 39)) where the template
 # is (98, 82, 63). Both are moved part of the way ("a little", the owner's words):
 #   W: green down so G/R goes 0.965 -> 0.93 (originals 0.92); luma barely changes.
-#   Artifact: about halfway to the originals, darker and with less blue: -> ~(90, 71, 51).
-_FRAME_TINT = {"W": (0.9045, 0.8805, 0.8635), "Artifact": (0.92, 0.87, 0.81)}
+#   Artifact: most of the way to the originals, darker and with less blue: -> ~(88, 67, 47).
+#     The first step, (0.92, 0.87, 0.81) -> ~(90, 71, 51), was "a little bit more brown" short.
+_FRAME_TINT = {"W": (0.9045, 0.8805, 0.8635), "Artifact": (0.90, 0.82, 0.74)}
 
 # Per-channel affine tone match (spread scale, then shift the mean) on the frame, per identity:
 # (template mean, target mean, spread scale), in 0-255. The template's gold has the same texture
@@ -838,8 +839,9 @@ def _task_files(task: str, out_dir: Path) -> list[Path]:
 #   tf / mdfc 2: notch bevels composited with their blend modes (were solid colour).
 #   w 2: white frame tint halved.
 #   w 3, a 2: white browner, artifact a darker and richer brown (towards the original prints).
+#   a 3: artifact browner again.
 TASK_VERSIONS = {"tf": 2, "mdfc": 2}
-CODE_VERSIONS = {"w": 3, "a": 2}
+CODE_VERSIONS = {"w": 3, "a": 3}
 _STAMP_NAME = "build.json"
 
 
