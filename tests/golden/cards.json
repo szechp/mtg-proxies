@@ -1635,7 +1635,7 @@
     "lang": "en",
     "layout": "adventure",
     "mana_cost": "{1}{U}{U} // {1}{U}",
-    "mtgo_id": 148849,
+    "mtgo_id": 148847,
     "multiverse_ids": [],
     "name": "Brazen Borrower // Petty Theft",
     "nonfoil": true,
@@ -2713,6 +2713,7 @@
     "released_at": "2022-06-10",
     "reprint": true,
     "reserved": false,
+    "resource_id": "45B9E704A13A9EB46F1885179293D5F0EC6BFD842CF23DFA5081432E38906A0C",
     "rulings_uri": "https://api.scryfall.com/cards/ae5f9fb1-5a55-4db3-98a1-2628e3598c18/rulings",
     "scryfall_set_uri": "https://scryfall.com/sets/clb?utm_source=api",
     "scryfall_uri": "https://scryfall.com/card/clb/187/lightning-bolt?utm_source=api",
@@ -3099,6 +3100,7 @@
     "released_at": "2022-06-10",
     "reprint": true,
     "reserved": false,
+    "resource_id": "45B9E704A13A9EB46F1885179293D5F0EC6BFD842CF23DFA5081432E38906A0C",
     "rulings_uri": "https://api.scryfall.com/cards/ae5f9fb1-5a55-4db3-98a1-2628e3598c18/rulings",
     "scryfall_set_uri": "https://scryfall.com/sets/clb?utm_source=api",
     "scryfall_uri": "https://scryfall.com/card/clb/187/lightning-bolt?utm_source=api",
@@ -4397,7 +4399,7 @@
     "lang": "en",
     "layout": "adventure",
     "mana_cost": "{1}{U}{U} // {1}{U}",
-    "mtgo_id": 148849,
+    "mtgo_id": 148847,
     "multiverse_ids": [],
     "name": "Brazen Borrower // Petty Theft",
     "nonfoil": true,
@@ -4818,6 +4820,527 @@
     "toughness": "2",
     "type_line": "Legendary Creature — Phyrexian Zombie Elf",
     "uri": "https://api.scryfall.com/cards/b4427e73-8c60-490d-8ae3-53e872a5163e",
+    "variation": false
+   },
+   "modeline": "#cardconjurer --retro-hd"
+  },
+  {
+   "card": {
+    "all_parts": [
+     {
+      "component": "token",
+      "id": "761c7c31-c6c5-44e2-a845-f590542b6eda",
+      "name": "Elf",
+      "object": "related_card",
+      "type_line": "Token Creature — Elf",
+      "uri": "https://api.scryfall.com/cards/761c7c31-c6c5-44e2-a845-f590542b6eda"
+     },
+     {
+      "component": "combo_piece",
+      "id": "a84cd965-fe5f-42e5-9775-d0285fe84308",
+      "name": "Thranduil, Sindarin Liege // Silvan Rally",
+      "object": "related_card",
+      "type_line": "Legendary Creature — Elf Noble // Sorcery — Adventure",
+      "uri": "https://api.scryfall.com/cards/a84cd965-fe5f-42e5-9775-d0285fe84308"
+     }
+    ],
+    "arena_id": 103546,
+    "artist": "Justyna Dura",
+    "artist_ids": [
+     "d2340aef-8ca9-4e0d-864c-6a4e8d5e350a"
+    ],
+    "booster": false,
+    "border_color": "black",
+    "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+    "card_faces": [
+     {
+      "artist": "Justyna Dura",
+      "artist_id": "d2340aef-8ca9-4e0d-864c-6a4e8d5e350a",
+      "illustration_id": "00e37d8b-b1a5-4a83-a200-9cf983fcb547",
+      "mana_cost": "{2}{G/U}{G/U}",
+      "name": "Thranduil, Sindarin Liege",
+      "object": "card_face",
+      "oracle_text": "Other Elves you control get +1/+1.\nLandfall — Whenever a land you control enters, create a 1/1 green Elf creature token.",
+      "power": "2",
+      "toughness": "3",
+      "type_line": "Legendary Creature — Elf Noble"
+     },
+     {
+      "artist": "Justyna Dura",
+      "artist_id": "d2340aef-8ca9-4e0d-864c-6a4e8d5e350a",
+      "mana_cost": "{1}{G/U}{G/U}",
+      "name": "Silvan Rally",
+      "object": "card_face",
+      "oracle_text": "Mill four cards, then put up to two land cards from among them into your hand. (Then exile this card. You may cast the creature later from exile.)",
+      "type_line": "Sorcery — Adventure"
+     }
+    ],
+    "cardmarket_id": 900444,
+    "cmc": 4.0,
+    "collector_number": "166",
+    "color_identity": [
+     "G",
+     "U"
+    ],
+    "colors": [
+     "G",
+     "U"
+    ],
+    "digital": false,
+    "foil": true,
+    "frame": "2015",
+    "frame_effects": [
+     "legendary"
+    ],
+    "full_art": false,
+    "game_changer": false,
+    "highres_image": true,
+    "id": "481870ee-d1f7-421b-86e1-570ea933bbbc",
+    "illustration_id": "00e37d8b-b1a5-4a83-a200-9cf983fcb547",
+    "image_status": "highres_scan",
+    "image_updated_at": "2026-07-30T11:59:07Z",
+    "image_uris": {
+     "art": "https://cards.scryfall.io/art/front/4/8/481870ee-d1f7-421b-86e1-570ea933bbbc.webp?1785412747",
+     "art_crop": "https://cards.scryfall.io/art_crop/front/4/8/481870ee-d1f7-421b-86e1-570ea933bbbc.jpg?1785412747",
+     "border_crop": "https://cards.scryfall.io/border_crop/front/4/8/481870ee-d1f7-421b-86e1-570ea933bbbc.jpg?1785412747",
+     "crop": "https://cards.scryfall.io/crop/front/4/8/481870ee-d1f7-421b-86e1-570ea933bbbc.webp?1785412747",
+     "display": "https://cards.scryfall.io/display/front/4/8/481870ee-d1f7-421b-86e1-570ea933bbbc.webp?1785412747",
+     "grid": "https://cards.scryfall.io/grid/front/4/8/481870ee-d1f7-421b-86e1-570ea933bbbc.webp?1785412747",
+     "jpeg": "https://cards.scryfall.io/normal/front/4/8/481870ee-d1f7-421b-86e1-570ea933bbbc.jpg?1785412747",
+     "large": "https://cards.scryfall.io/large/front/4/8/481870ee-d1f7-421b-86e1-570ea933bbbc.jpg?1785412747",
+     "normal": "https://cards.scryfall.io/normal/front/4/8/481870ee-d1f7-421b-86e1-570ea933bbbc.jpg?1785412747",
+     "png": "https://cards.scryfall.io/png/front/4/8/481870ee-d1f7-421b-86e1-570ea933bbbc.png?1785412747",
+     "small": "https://cards.scryfall.io/small/front/4/8/481870ee-d1f7-421b-86e1-570ea933bbbc.jpg?1785412747",
+     "thumb": "https://cards.scryfall.io/thumb/front/4/8/481870ee-d1f7-421b-86e1-570ea933bbbc.webp?1785412747"
+    },
+    "keywords": [
+     "Mill",
+     "Landfall"
+    ],
+    "lang": "en",
+    "layout": "adventure",
+    "mana_cost": "{2}{G/U}{G/U} // {1}{G/U}{G/U}",
+    "mtgo_id": 154270,
+    "multiverse_ids": [],
+    "name": "Thranduil, Sindarin Liege // Silvan Rally",
+    "nonfoil": true,
+    "object": "card",
+    "oracle_id": "f6771d32-395e-4832-b33d-cbc12dff1516",
+    "oversized": false,
+    "power": "2",
+    "preview": {
+     "previewed_at": "2026-07-29",
+     "source": "Wizards of the Coast",
+     "source_uri": "https://www.instagram.com/p/DbYgeLIDAbC/?img_index=1"
+    },
+    "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Af6771d32-395e-4832-b33d-cbc12dff1516&unique=prints",
+    "promo": false,
+    "promo_types": [
+     "universesbeyond"
+    ],
+    "rarity": "uncommon",
+    "released_at": "2026-08-14",
+    "reprint": false,
+    "reserved": false,
+    "resource_id": "FDE62BA367A19E448707FAC8654F64AFE922CA987C28F45C47E54F73371621AC",
+    "rulings_uri": "https://api.scryfall.com/cards/481870ee-d1f7-421b-86e1-570ea933bbbc/rulings",
+    "scryfall_set_uri": "https://scryfall.com/sets/hob?utm_source=api",
+    "scryfall_uri": "https://scryfall.com/card/hob/166/thranduil-sindarin-liege-silvan-rally?utm_source=api",
+    "set": "hob",
+    "set_id": "59218c23-cb7a-4fde-9cff-3f2f71af1308",
+    "set_name": "The Hobbit",
+    "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Ahob&unique=prints",
+    "set_type": "expansion",
+    "set_uri": "https://api.scryfall.com/sets/59218c23-cb7a-4fde-9cff-3f2f71af1308",
+    "story_spotlight": false,
+    "tcgplayer_id": 709076,
+    "textless": false,
+    "toughness": "3",
+    "type_line": "Legendary Creature — Elf Noble // Sorcery — Adventure",
+    "uri": "https://api.scryfall.com/cards/481870ee-d1f7-421b-86e1-570ea933bbbc",
+    "variation": false
+   },
+   "modeline": "#cardconjurer --retro-hd"
+  },
+  {
+   "card": {
+    "artist": "Rebecca Guay",
+    "artist_ids": [
+     "f8f662fa-d597-46a3-afb2-91d6e13243e2"
+    ],
+    "booster": true,
+    "border_color": "black",
+    "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+    "cardmarket_id": 11538,
+    "cmc": 3.0,
+    "collector_number": "165",
+    "color_identity": [
+     "B"
+    ],
+    "colors": [
+     "B"
+    ],
+    "digital": false,
+    "flavor_text": "\"No, I insist—let *me* carry all that heavy jewelry.\"",
+    "foil": true,
+    "frame": "1997",
+    "full_art": false,
+    "game_changer": false,
+    "highres_image": true,
+    "id": "20aa9108-470c-484d-908a-c31cf6935765",
+    "illustration_id": "28a86939-7191-4b4a-b2a5-3c5b55449986",
+    "image_status": "highres_scan",
+    "image_updated_at": "2026-07-13T12:32:26Z",
+    "image_uris": {
+     "art": "https://cards.scryfall.io/art/front/2/0/20aa9108-470c-484d-908a-c31cf6935765.webp?1783945946",
+     "art_crop": "https://cards.scryfall.io/art_crop/front/2/0/20aa9108-470c-484d-908a-c31cf6935765.jpg?1783945946",
+     "border_crop": "https://cards.scryfall.io/border_crop/front/2/0/20aa9108-470c-484d-908a-c31cf6935765.jpg?1783945946",
+     "crop": "https://cards.scryfall.io/crop/front/2/0/20aa9108-470c-484d-908a-c31cf6935765.webp?1783945946",
+     "display": "https://cards.scryfall.io/display/front/2/0/20aa9108-470c-484d-908a-c31cf6935765.webp?1783945946",
+     "grid": "https://cards.scryfall.io/grid/front/2/0/20aa9108-470c-484d-908a-c31cf6935765.webp?1783945946",
+     "jpeg": "https://cards.scryfall.io/normal/front/2/0/20aa9108-470c-484d-908a-c31cf6935765.jpg?1783945946",
+     "large": "https://cards.scryfall.io/large/front/2/0/20aa9108-470c-484d-908a-c31cf6935765.jpg?1783945946",
+     "normal": "https://cards.scryfall.io/normal/front/2/0/20aa9108-470c-484d-908a-c31cf6935765.jpg?1783945946",
+     "png": "https://cards.scryfall.io/png/front/2/0/20aa9108-470c-484d-908a-c31cf6935765.png?1783945946",
+     "small": "https://cards.scryfall.io/small/front/2/0/20aa9108-470c-484d-908a-c31cf6935765.jpg?1783945946",
+     "thumb": "https://cards.scryfall.io/thumb/front/2/0/20aa9108-470c-484d-908a-c31cf6935765.webp?1783945946"
+    },
+    "keywords": [],
+    "lang": "en",
+    "layout": "normal",
+    "mana_cost": "{2}{B}",
+    "mtgo_foil_id": 13294,
+    "mtgo_id": 13293,
+    "multiverse_ids": [
+     19689
+    ],
+    "name": "Strongarm Thug",
+    "nonfoil": true,
+    "object": "card",
+    "oracle_id": "a4d46c1b-7742-4ac8-9794-b669ee4d2cc1",
+    "oracle_text": "When this creature enters, you may return target Mercenary card from your graveyard to your hand.",
+    "oversized": false,
+    "power": "1",
+    "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3Aa4d46c1b-7742-4ac8-9794-b669ee4d2cc1&unique=prints",
+    "promo": false,
+    "rarity": "uncommon",
+    "released_at": "1999-10-04",
+    "reprint": false,
+    "reserved": false,
+    "rulings_uri": "https://api.scryfall.com/cards/20aa9108-470c-484d-908a-c31cf6935765/rulings",
+    "scryfall_set_uri": "https://scryfall.com/sets/mmq?utm_source=api",
+    "scryfall_uri": "https://scryfall.com/card/mmq/165/strongarm-thug?utm_source=api",
+    "set": "mmq",
+    "set_id": "385e11a4-492b-4d07-b4a6-a1409ef829b8",
+    "set_name": "Mercadian Masques",
+    "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Ammq&unique=prints",
+    "set_type": "expansion",
+    "set_uri": "https://api.scryfall.com/sets/385e11a4-492b-4d07-b4a6-a1409ef829b8",
+    "story_spotlight": false,
+    "tcgplayer_id": 6721,
+    "textless": false,
+    "toughness": "1",
+    "type_line": "Creature — Human Mercenary",
+    "uri": "https://api.scryfall.com/cards/20aa9108-470c-484d-908a-c31cf6935765",
+    "variation": false
+   },
+   "modeline": "#cardconjurer --retro-hd"
+  },
+  {
+   "card": {
+    "artist": "Bastien L. Deharme",
+    "artist_ids": [
+     "798f63ec-41ad-474e-9708-df08193345c6"
+    ],
+    "booster": false,
+    "border_color": "black",
+    "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+    "cardmarket_id": 805941,
+    "cmc": 2.0,
+    "collector_number": "371",
+    "color_identity": [
+     "B"
+    ],
+    "colors": [
+     "B"
+    ],
+    "digital": false,
+    "flavor_text": "\"The ravings of the mad are laced with eldritch knowledge.\"",
+    "foil": true,
+    "frame": "1997",
+    "full_art": false,
+    "game_changer": false,
+    "highres_image": true,
+    "id": "84c54ecc-7050-434c-8cbc-fb59d63c5d69",
+    "illustration_id": "19ca30c0-7db2-47aa-bb80-3e12d84b46ca",
+    "image_status": "highres_scan",
+    "image_updated_at": "2026-07-13T02:00:17Z",
+    "image_uris": {
+     "art": "https://cards.scryfall.io/art/front/8/4/84c54ecc-7050-434c-8cbc-fb59d63c5d69.webp?1783908017",
+     "art_crop": "https://cards.scryfall.io/art_crop/front/8/4/84c54ecc-7050-434c-8cbc-fb59d63c5d69.jpg?1783908017",
+     "border_crop": "https://cards.scryfall.io/border_crop/front/8/4/84c54ecc-7050-434c-8cbc-fb59d63c5d69.jpg?1783908017",
+     "crop": "https://cards.scryfall.io/crop/front/8/4/84c54ecc-7050-434c-8cbc-fb59d63c5d69.webp?1783908017",
+     "display": "https://cards.scryfall.io/display/front/8/4/84c54ecc-7050-434c-8cbc-fb59d63c5d69.webp?1783908017",
+     "grid": "https://cards.scryfall.io/grid/front/8/4/84c54ecc-7050-434c-8cbc-fb59d63c5d69.webp?1783908017",
+     "jpeg": "https://cards.scryfall.io/normal/front/8/4/84c54ecc-7050-434c-8cbc-fb59d63c5d69.jpg?1783908017",
+     "large": "https://cards.scryfall.io/large/front/8/4/84c54ecc-7050-434c-8cbc-fb59d63c5d69.jpg?1783908017",
+     "normal": "https://cards.scryfall.io/normal/front/8/4/84c54ecc-7050-434c-8cbc-fb59d63c5d69.jpg?1783908017",
+     "png": "https://cards.scryfall.io/png/front/8/4/84c54ecc-7050-434c-8cbc-fb59d63c5d69.png?1783908017",
+     "small": "https://cards.scryfall.io/small/front/8/4/84c54ecc-7050-434c-8cbc-fb59d63c5d69.jpg?1783908017",
+     "thumb": "https://cards.scryfall.io/thumb/front/8/4/84c54ecc-7050-434c-8cbc-fb59d63c5d69.webp?1783908017"
+    },
+    "keywords": [
+     "Madness"
+    ],
+    "lang": "en",
+    "layout": "normal",
+    "mana_cost": "{1}{B}",
+    "mtgo_id": 135028,
+    "multiverse_ids": [
+     688205
+    ],
+    "name": "Asylum Visitor",
+    "nonfoil": true,
+    "object": "card",
+    "oracle_id": "870deab4-8570-40e9-aeda-ac3726cebb84",
+    "oracle_text": "At the beginning of each player's upkeep, if that player has no cards in hand, you draw a card and you lose 1 life.\nMadness {1}{B} (If you discard this card, discard it into exile. When you do, cast it for its madness cost or put it into your graveyard.)",
+    "oversized": false,
+    "power": "3",
+    "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A870deab4-8570-40e9-aeda-ac3726cebb84&unique=prints",
+    "promo": false,
+    "rarity": "uncommon",
+    "released_at": "2025-01-24",
+    "reprint": true,
+    "reserved": false,
+    "rulings_uri": "https://api.scryfall.com/cards/84c54ecc-7050-434c-8cbc-fb59d63c5d69/rulings",
+    "scryfall_set_uri": "https://scryfall.com/sets/inr?utm_source=api",
+    "scryfall_uri": "https://scryfall.com/card/inr/371/asylum-visitor?utm_source=api",
+    "set": "inr",
+    "set_id": "b9618c8c-9f31-4b42-9798-2991893c27bf",
+    "set_name": "Innistrad Remastered",
+    "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Ainr&unique=prints",
+    "set_type": "masters",
+    "set_uri": "https://api.scryfall.com/sets/b9618c8c-9f31-4b42-9798-2991893c27bf",
+    "story_spotlight": false,
+    "tcgplayer_id": 609875,
+    "textless": false,
+    "toughness": "1",
+    "type_line": "Creature — Vampire Wizard",
+    "uri": "https://api.scryfall.com/cards/84c54ecc-7050-434c-8cbc-fb59d63c5d69",
+    "variation": false
+   },
+   "modeline": "#cardconjurer --retro-hd"
+  },
+  {
+   "card": {
+    "all_parts": [
+     {
+      "component": "combo_piece",
+      "id": "b9b6ec63-7df4-450e-b849-920121fe245c",
+      "name": "Nazgûl",
+      "object": "related_card",
+      "type_line": "Creature — Wraith Knight",
+      "uri": "https://api.scryfall.com/cards/b9b6ec63-7df4-450e-b849-920121fe245c"
+     },
+     {
+      "component": "combo_piece",
+      "id": "7215460e-8c06-47d0-94e5-d1832d0218af",
+      "name": "The Ring // The Ring Tempts You",
+      "object": "related_card",
+      "type_line": "Emblem // Card",
+      "uri": "https://api.scryfall.com/cards/7215460e-8c06-47d0-94e5-d1832d0218af"
+     }
+    ],
+    "arena_id": 84792,
+    "artist": "Igor Krstic",
+    "artist_ids": [
+     "44cdd332-50f6-4cab-b606-c4565fc5efeb"
+    ],
+    "booster": true,
+    "border_color": "black",
+    "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+    "cardmarket_id": 715907,
+    "cmc": 3.0,
+    "collector_number": "100",
+    "color_identity": [
+     "B"
+    ],
+    "colors": [
+     "B"
+    ],
+    "digital": false,
+    "foil": true,
+    "frame": "2015",
+    "full_art": false,
+    "game_changer": false,
+    "highres_image": false,
+    "id": "833936c6-9381-4c0b-a81c-4a938be95040",
+    "illustration_id": "2dcd00ec-331a-47fd-afe4-569d74bdadca",
+    "image_status": "lowres",
+    "image_updated_at": "2026-07-13T04:18:18Z",
+    "image_uris": {
+     "art": "https://cards.scryfall.io/art/front/8/3/833936c6-9381-4c0b-a81c-4a938be95040.webp?1783916298",
+     "art_crop": "https://cards.scryfall.io/art_crop/front/8/3/833936c6-9381-4c0b-a81c-4a938be95040.jpg?1783916298",
+     "border_crop": "https://cards.scryfall.io/border_crop/front/8/3/833936c6-9381-4c0b-a81c-4a938be95040.jpg?1783916298",
+     "crop": "https://cards.scryfall.io/crop/front/8/3/833936c6-9381-4c0b-a81c-4a938be95040.webp?1783916298",
+     "display": "https://cards.scryfall.io/display/front/8/3/833936c6-9381-4c0b-a81c-4a938be95040.webp?1783916298",
+     "grid": "https://cards.scryfall.io/grid/front/8/3/833936c6-9381-4c0b-a81c-4a938be95040.webp?1783916298",
+     "jpeg": "https://cards.scryfall.io/normal/front/8/3/833936c6-9381-4c0b-a81c-4a938be95040.jpg?1783916298",
+     "large": "https://cards.scryfall.io/large/front/8/3/833936c6-9381-4c0b-a81c-4a938be95040.jpg?1783916298",
+     "normal": "https://cards.scryfall.io/normal/front/8/3/833936c6-9381-4c0b-a81c-4a938be95040.jpg?1783916298",
+     "png": "https://cards.scryfall.io/png/front/8/3/833936c6-9381-4c0b-a81c-4a938be95040.png?1783916298",
+     "small": "https://cards.scryfall.io/small/front/8/3/833936c6-9381-4c0b-a81c-4a938be95040.jpg?1783916298",
+     "thumb": "https://cards.scryfall.io/thumb/front/8/3/833936c6-9381-4c0b-a81c-4a938be95040.webp?1783916298"
+    },
+    "keywords": [
+     "Deathtouch"
+    ],
+    "lang": "en",
+    "layout": "normal",
+    "mana_cost": "{2}{B}",
+    "mtgo_id": 112110,
+    "multiverse_ids": [
+     616930
+    ],
+    "name": "Nazgûl",
+    "nonfoil": true,
+    "object": "card",
+    "oracle_id": "48a62778-7c11-486f-a0e1-020c283a7ef9",
+    "oracle_text": "Deathtouch\nWhen this creature enters, the Ring tempts you.\nWhenever the Ring tempts you, put a +1/+1 counter on each Wraith you control.\nA deck can have up to nine cards named Nazgûl.",
+    "oversized": false,
+    "power": "1",
+    "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A48a62778-7c11-486f-a0e1-020c283a7ef9&unique=prints",
+    "promo": false,
+    "promo_types": [
+     "universesbeyond"
+    ],
+    "rarity": "uncommon",
+    "released_at": "2023-06-23",
+    "reprint": false,
+    "reserved": false,
+    "rulings_uri": "https://api.scryfall.com/cards/833936c6-9381-4c0b-a81c-4a938be95040/rulings",
+    "scryfall_set_uri": "https://scryfall.com/sets/ltr?utm_source=api",
+    "scryfall_uri": "https://scryfall.com/card/ltr/100/nazg%C3%BBl?utm_source=api",
+    "security_stamp": "triangle",
+    "set": "ltr",
+    "set_id": "08078706-ac5d-439b-8f01-894d38751367",
+    "set_name": "The Lord of the Rings: Tales of Middle-earth",
+    "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Altr&unique=prints",
+    "set_type": "draft_innovation",
+    "set_uri": "https://api.scryfall.com/sets/08078706-ac5d-439b-8f01-894d38751367",
+    "story_spotlight": false,
+    "tcgplayer_id": 498363,
+    "textless": false,
+    "toughness": "2",
+    "type_line": "Creature — Wraith Knight",
+    "uri": "https://api.scryfall.com/cards/833936c6-9381-4c0b-a81c-4a938be95040",
+    "variation": false
+   },
+   "modeline": "#cardconjurer --retro-hd"
+  },
+  {
+   "card": {
+    "all_parts": [
+     {
+      "component": "combo_piece",
+      "id": "b9b6ec63-7df4-450e-b849-920121fe245c",
+      "name": "Nazgûl",
+      "object": "related_card",
+      "type_line": "Creature — Wraith Knight",
+      "uri": "https://api.scryfall.com/cards/b9b6ec63-7df4-450e-b849-920121fe245c"
+     },
+     {
+      "component": "combo_piece",
+      "id": "7215460e-8c06-47d0-94e5-d1832d0218af",
+      "name": "The Ring // The Ring Tempts You",
+      "object": "related_card",
+      "type_line": "Emblem // Card",
+      "uri": "https://api.scryfall.com/cards/7215460e-8c06-47d0-94e5-d1832d0218af"
+     }
+    ],
+    "arena_id": 87603,
+    "artist": "Antonio José Manzanedo",
+    "artist_ids": [
+     "74986d28-0001-4a78-827c-e490b325d0e3"
+    ],
+    "booster": true,
+    "border_color": "black",
+    "card_back_id": "0aeebaf5-8c7d-4636-9e82-8c27447861f7",
+    "cardmarket_id": 715914,
+    "cmc": 3.0,
+    "collector_number": "338",
+    "color_identity": [
+     "B"
+    ],
+    "colors": [
+     "B"
+    ],
+    "digital": false,
+    "foil": true,
+    "frame": "2015",
+    "full_art": false,
+    "game_changer": false,
+    "highres_image": true,
+    "id": "bf96c268-c86b-4d5e-bf04-200c427e5fa5",
+    "illustration_id": "35a3c71e-9e9e-4e76-bb11-4c6dd55dc932",
+    "image_status": "highres_scan",
+    "image_updated_at": "2026-07-13T04:16:35Z",
+    "image_uris": {
+     "art": "https://cards.scryfall.io/art/front/b/f/bf96c268-c86b-4d5e-bf04-200c427e5fa5.webp?1783916195",
+     "art_crop": "https://cards.scryfall.io/art_crop/front/b/f/bf96c268-c86b-4d5e-bf04-200c427e5fa5.jpg?1783916195",
+     "border_crop": "https://cards.scryfall.io/border_crop/front/b/f/bf96c268-c86b-4d5e-bf04-200c427e5fa5.jpg?1783916195",
+     "crop": "https://cards.scryfall.io/crop/front/b/f/bf96c268-c86b-4d5e-bf04-200c427e5fa5.webp?1783916195",
+     "display": "https://cards.scryfall.io/display/front/b/f/bf96c268-c86b-4d5e-bf04-200c427e5fa5.webp?1783916195",
+     "grid": "https://cards.scryfall.io/grid/front/b/f/bf96c268-c86b-4d5e-bf04-200c427e5fa5.webp?1783916195",
+     "jpeg": "https://cards.scryfall.io/normal/front/b/f/bf96c268-c86b-4d5e-bf04-200c427e5fa5.jpg?1783916195",
+     "large": "https://cards.scryfall.io/large/front/b/f/bf96c268-c86b-4d5e-bf04-200c427e5fa5.jpg?1783916195",
+     "normal": "https://cards.scryfall.io/normal/front/b/f/bf96c268-c86b-4d5e-bf04-200c427e5fa5.jpg?1783916195",
+     "png": "https://cards.scryfall.io/png/front/b/f/bf96c268-c86b-4d5e-bf04-200c427e5fa5.png?1783916195",
+     "small": "https://cards.scryfall.io/small/front/b/f/bf96c268-c86b-4d5e-bf04-200c427e5fa5.jpg?1783916195",
+     "thumb": "https://cards.scryfall.io/thumb/front/b/f/bf96c268-c86b-4d5e-bf04-200c427e5fa5.webp?1783916195"
+    },
+    "keywords": [
+     "Deathtouch"
+    ],
+    "lang": "en",
+    "layout": "normal",
+    "mana_cost": "{2}{B}",
+    "mtgo_id": 111692,
+    "multiverse_ids": [
+     619394
+    ],
+    "name": "Nazgûl",
+    "nonfoil": true,
+    "object": "card",
+    "oracle_id": "48a62778-7c11-486f-a0e1-020c283a7ef9",
+    "oracle_text": "Deathtouch\nWhen this creature enters, the Ring tempts you.\nWhenever the Ring tempts you, put a +1/+1 counter on each Wraith you control.\nA deck can have up to nine cards named Nazgûl.",
+    "oversized": false,
+    "power": "1",
+    "prints_search_uri": "https://api.scryfall.com/cards/search?order=released&q=oracleid%3A48a62778-7c11-486f-a0e1-020c283a7ef9&unique=prints",
+    "promo": false,
+    "promo_types": [
+     "universesbeyond"
+    ],
+    "rarity": "uncommon",
+    "released_at": "2023-06-23",
+    "reprint": false,
+    "reserved": false,
+    "rulings_uri": "https://api.scryfall.com/cards/bf96c268-c86b-4d5e-bf04-200c427e5fa5/rulings",
+    "scryfall_set_uri": "https://scryfall.com/sets/ltr?utm_source=api",
+    "scryfall_uri": "https://scryfall.com/card/ltr/338/nazg%C3%BBl?utm_source=api",
+    "security_stamp": "triangle",
+    "set": "ltr",
+    "set_id": "08078706-ac5d-439b-8f01-894d38751367",
+    "set_name": "The Lord of the Rings: Tales of Middle-earth",
+    "set_search_uri": "https://api.scryfall.com/cards/search?order=set&q=e%3Altr&unique=prints",
+    "set_type": "draft_innovation",
+    "set_uri": "https://api.scryfall.com/sets/08078706-ac5d-439b-8f01-894d38751367",
+    "story_spotlight": false,
+    "tcgplayer_id": 498361,
+    "textless": false,
+    "toughness": "2",
+    "type_line": "Creature — Wraith Knight",
+    "uri": "https://api.scryfall.com/cards/bf96c268-c86b-4d5e-bf04-200c427e5fa5",
     "variation": false
    },
    "modeline": "#cardconjurer --retro-hd"

@@ -25,6 +25,11 @@
 1 Delver of Secrets #cardconjurer --retro-hd
 1 Emeria's Call #cardconjurer --retro-hd
 1 Belbe, Corrupted Observer #cardconjurer --retro-hd
+1 Thranduil, Sindarin Liege // Silvan Rally #cardconjurer --retro-hd
+1 Strongarm Thug #cardconjurer --retro-hd
+1 Asylum Visitor #cardconjurer --retro-hd
+card/ltr/100/nazgûl #cardconjurer --retro-hd
+card/ltr/338/nazgûl #cardconjurer --retro-hd
 
 ## retro
 1 Serra Angel #cardconjurer --retro
