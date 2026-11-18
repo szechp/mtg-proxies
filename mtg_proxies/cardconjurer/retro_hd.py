@@ -90,7 +90,16 @@ _BEVEL_THICKNESS = {
 #   W: green down so G/R goes 0.965 -> 0.93 (originals 0.92); luma barely changes.
 #   Artifact: most of the way to the originals, darker and with less blue: -> ~(88, 67, 47).
 #     The first step, (0.92, 0.87, 0.81) -> ~(90, 71, 51), was "a little bit more brown" short.
-_FRAME_TINT = {"W": (0.9045, 0.8805, 0.8635), "Artifact": (0.90, 0.82, 0.74)}
+#
+# Artifact, third step (2026-11-18): the print came out darker and greyer than the original in the same
+# photo (frame strips (85, 82, 81), saturation 0.05, against (129, 105, 96), saturation 0.25). Gain of
+# the previous step x sqrt(original / printed) = (0.90, 0.82, 0.74) x (1.23, 1.13, 1.08): half the
+# measured ratio, since printer and paper are not linear.
+#
+# Red: the calibration print still showed the template's red a little deeper than the original
+# 1997-frame red (a lighter, pinker terracotta). Half of the step a phone photo suggested
+# (gain ~1.22 / 1.20 / 1.50), as the print said "slightly", not "far".
+_FRAME_TINT = {"W": (0.9045, 0.8805, 0.8635), "Artifact": (1.107, 0.927, 0.799), "R": (1.11, 1.10, 1.25)}
 
 # Per-channel affine tone match (spread scale, then shift the mean) on the frame, per identity:
 # (template mean, target mean, spread scale), in 0-255. The template's gold has the same texture
@@ -98,6 +107,20 @@ _FRAME_TINT = {"W": (0.9045, 0.8805, 0.8635), "Artifact": (0.90, 0.82, 0.74)}
 # highlights and a touch more saturation: measured template (144, 124, 74), sd (55, 57, 50) vs
 # reprint (137, 121, 77), sd (52, 53, 45).
 _FRAME_TONE = {"Gold": ((144, 124, 74), (137, 121, 77), (0.940, 0.928, 0.896))}
+
+# The black frame. The template's texture sat too high in the shadows (10th percentile luma 19
+# against 9 on WotC's own retro black, INR 371 Asylum Visitor; mean (42, 36, 25) against
+# (37.6, 30.5, 20.1)) and its bevel lines were a light green-grey (~(136, 138, 126)) where the
+# print's are darker and warmer (~(112, 107, 100)), so it printed washed out. The texture gets a
+# tone match before the bevels (_TEXTURE_TONE), the bevel fills a per-channel gain (_BEVEL_GAIN,
+# light and dark groups alike).
+# Then retargeted to the owner's own Strongarm Thug (phone photo, 2026-11-18): with the phone's
+# black floor (~(25, 29, 31), the border) taken off, the frame ring sits ~8 above black
+# (~(15, 15, 14), p90 ~30) and neutral, not brown. The texture is lifted a little from that
+# (mean ~(20, 20, 19)) because the photo's mottling reads clearer; the brightest pinline is ~(55, 55, 55)
+# (78 first, and it still irked the owner). The owner approved this look: do not revert it.
+_TEXTURE_TONE = {"B": ((42, 36.4, 25.2), (21, 22, 21), (0.7, 0.8, 1.0))}
+_BEVEL_GAIN = {"B": (0.40, 0.40, 0.42)}
 
 _IRREGULAR_TEXTBOX = {"B", "G"}  # Proxyshop default: ragged black / green textboxes, no textbox bevels
 
@@ -320,13 +343,18 @@ def compose_variant(t: _Template, code: str, size: str = SIZE, dfc: str | None =
     tex = t.rgba(t.find("Card Frame", "Frame Texture", identity))
     if (replacement := _texture_override(identity, tex)) is not None:
         tex = replacement
+    if (tone := _TEXTURE_TONE.get(identity)) is not None:
+        src_mean, dst_mean, scale = (np.asarray(v, np.float32) for v in tone)
+        tex = tex.copy()
+        tex[..., :3] = np.clip((tex[..., :3] - src_mean / 255) * scale + dst_mean / 255, 0, 1)
     _over(out, tex[..., :3], tex[..., 3] * frame_mask)
 
     # Outer and art bevels: colour fills through the size's light / dark bevel masks.
     for group in ("Light", "Dark"):
         fill = t.find("Card Frame", "Bevels", group, identity)
         mask = t.mask_of(t.find("Card Frame", "Bevels", "Masks", f"{SIZE} {group}"))
-        _blend(out, t.fill_color(fill), mask * frame_mask * (fill.opacity / 255), fill.blend_mode.name)
+        color = t.fill_color(fill) * np.asarray(_BEVEL_GAIN.get(identity, (1, 1, 1)), np.float32)
+        _blend(out, color, mask * frame_mask * (fill.opacity / 255), fill.blend_mode.name)
 
     _tone_frame(out, identity)
 
@@ -840,8 +868,13 @@ def _task_files(task: str, out_dir: Path) -> list[Path]:
 #   w 2: white frame tint halved.
 #   w 3, a 2: white browner, artifact a darker and richer brown (towards the original prints).
 #   a 3: artifact browner again.
+#   a 4: artifact lighter and warmer (the print was too dark and grey).
+#   b 2: black frame texture darker in the shadows, bevel lines darker and warmer.
+#   b 3: texture a further 5% darker, bevel lines 10%.
+#   r 4: red frame a little lighter and pinker, half of a first photo-based step.
+#   b 4-6: retargeted to a photo of the owner's card: much blacker, neutral.
 TASK_VERSIONS = {"tf": 2, "mdfc": 2}
-CODE_VERSIONS = {"w": 3, "a": 3}
+CODE_VERSIONS = {"w": 3, "a": 4, "b": 6, "r": 4}
 _STAMP_NAME = "build.json"
 
 
