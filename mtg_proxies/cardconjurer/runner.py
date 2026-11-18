@@ -75,6 +75,21 @@ def slug(name: str) -> str:
     return re.sub(r"^_+|_+$", "", re.sub(r"[^a-z0-9]+", "_", name.lower()))
 
 
+def file_slugs(names: list[str]) -> list[str]:
+    """One output-file slug per card: :func:`slug` of its name, ``_2``, ``_3``... on repeats.
+
+    Several cards can share a name (four different Nazg\u00fbl prints), and they would otherwise
+    overwrite one another's ``<slug>.png`` -- every slot then printed the last one rendered.
+    """
+    seen: dict[str, int] = {}
+    out: list[str] = []
+    for name in names:
+        base = slug(name)
+        seen[base] = seen.get(base, 0) + 1
+        out.append(base if seen[base] == 1 else f"{base}_{seen[base]}")
+    return out
+
+
 # A ``run_harness`` callable receives:
 #   - the list of job dicts (one per non-skipped card; basic fields only)
 #   - an optional ``prepare_each(slot_int) -> dict`` callable; if non-None, the
@@ -99,6 +114,7 @@ def build_job(
     dfc_split: bool = False,
     no_crown: bool = False,
     retro_hd: bool = False,
+    file_slug: str | None = None,
 ) -> dict[str, Any]:
     """Build one ND-JSON job dict for the node harness.
 
@@ -131,6 +147,8 @@ def build_job(
     (see ``retro_crown.py``) and CC's crown on 8th, both drawn by default. No-op on the other
     frames.
 
+    ``file_slug`` names the output PNG when it differs from the name's own slug (a repeated card).
+
     ``retro_hd`` swaps the retro frame art for the high-detail frames built by
     ``retro_hd.py``. No-op on the other frames.
     """
@@ -153,6 +171,8 @@ def build_job(
         job["no_crown"] = True
     if retro_hd:
         job["retro_hd"] = True
+    if file_slug and file_slug != slug(name):
+        job["file_slug"] = file_slug
     return job
 
 
@@ -379,14 +399,15 @@ def render_deck(
     # when both faces are on disk — a front-only leftover re-renders the card.
     jobs: list[dict[str, Any]] = []
     pre_existing: list[dict[str, Any]] = []
+    slugs = file_slugs([spec[1] for spec in cards])
     for i, spec in enumerate(cards):
         name = spec[1]
         slot_int = i + 1
         slot_str = f"{slot_int:04d}"
         split = slot_int in dfc_split_slots
         prefix = filename_prefix_by_slot.get(slot_int, "")
-        expected = outdir / f"{prefix}{slug(name)}.png"
-        expected_back = outdir / f"{prefix}{slug(name)}_back.png"
+        expected = outdir / f"{prefix}{slugs[i]}.png"
+        expected_back = outdir / f"{prefix}{slugs[i]}_back.png"
         if _cached(expected) and (not split or _cached(expected_back)):
             resp: dict[str, Any] = {
                 "slot": slot_str,
@@ -399,7 +420,9 @@ def render_deck(
                 resp["out_back"] = str(expected_back)
             pre_existing.append(resp)
             continue
-        jobs.append(build_job(slot=slot_int, name=name, frame=frame, upscale=upscale, dfc_split=split))
+        jobs.append(
+            build_job(slot=slot_int, name=name, frame=frame, upscale=upscale, dfc_split=split, file_slug=slugs[i])
+        )
 
     if jobs:
         # Support both the simple (jobs,) signature and the new (jobs, prepare) one.

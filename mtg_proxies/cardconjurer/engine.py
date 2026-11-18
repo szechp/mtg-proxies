@@ -1262,9 +1262,11 @@ def render_cardconjurer(
     if deck.scaled or deck.scale_all or any(opts.scaled for opts in options.values()):
         from mtg_proxies import frame_scale
 
+        ordered = sorted(slot_to_card)
+        slug_by_slot = dict(zip(ordered, cc_runner.file_slugs([slot_to_card[s]["name"] for s in ordered]), strict=True))
         scaled_names = {
-            f"{filename_prefix_by_slot.get(slot_int, '')}{cc_runner.slug(card['name'])}{suffix}.png"
-            for slot_int, card in slot_to_card.items()
+            f"{filename_prefix_by_slot.get(slot_int, '')}{slug_by_slot[slot_int]}{suffix}.png"
+            for slot_int in slot_to_card
             if deck.scale_all
             or options[slot_int].scaled
             or (deck.scaled and (options[slot_int].frame or frame) == frame)

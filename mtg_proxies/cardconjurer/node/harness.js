@@ -760,6 +760,34 @@ function squareCornerFrame(src) {
     _squareFrames.set(src, out);
     return out;
 }
+// The 8th-edition red frame (img/frames/8th/r.png): the owner's calibration print showed it a little
+// dark and less yellow than their 8th-edition Shock (speckles more orange-yellow). Half of the step a
+// phone photo suggested (gain 1.04 / 1.03 / 0.92). Applied to opaque, non-black pixels only, so the
+// border and outlines stay black; served from a tmp copy named by the gain.
+const EIGHTH_TONE = { '/img/frames/8th/r.png': [1.02, 1.015, 0.96] };
+const _toneFrames = new Map();
+function eighthToneFrame(src) {
+    const gain = EIGHTH_TONE[src];
+    if (!gain) return null;
+    if (_toneFrames.has(src)) return _toneFrames.get(src);
+    let out = null;
+    try {
+        const img = new (canvasPkg.Image)();
+        img.src = fs.readFileSync(path.join(CC_ROOT, src.slice(1)));
+        const canvas = createCanvas(img.width, img.height), ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const data = ctx.getImageData(0, 0, img.width, img.height), px = data.data;
+        for (let i = 0; i < px.length; i += 4) {
+            if (px[i + 3] === 0 || px[i] + px[i + 1] + px[i + 2] < 40) continue;
+            for (let c = 0; c < 3; c++) px[i + c] = Math.min(255, Math.round(px[i + c] * gain[c]));
+        }
+        ctx.putImageData(data, 0, 0);
+        out = path.join(require('os').tmpdir(), `mtgp-tone-${gain.join('_')}-` + src.slice(1).replace(/\//g, '_'));
+        fs.writeFileSync(out, canvas.toBuffer('image/png'));
+    } catch (e) { console.warn('[8th-tone]', src, e.message); }
+    _toneFrames.set(src, out);
+    return out;
+}
 let retroHdVariant = null;  // 'tf' / 'mdfc': a --retro-hd double-faced face (retro_hd.py frames/<variant>/)
 
 // --retro-hd text layout, taken from the template's own text layers rather than packSeventh's
@@ -869,6 +897,8 @@ function resolveSrc(src) {
     if (!src) return null;
     const hd = retroHdFrame(src);
     if (hd) return hd;
+    const toned = eighthToneFrame(src);
+    if (toned) return toned;
     if (squareCorners) {
         const square = squareCornerFrame(src);
         if (square) return square;
@@ -3675,6 +3705,15 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
                 // middle. The unmasked first layer covers autoFrameUnified's gold base.
                 await addRetroLayer(RETRO_COLOR_FRAME[first], null);
                 await addRetroLayer(RETRO_COLOR_FRAME[second], null, [RETRO_RIGHT_HALF]);
+                if (scry._adventure) {
+                    // The right half mask is a wide fade, which leaves the first colour's pale
+                    // textbox in the creature's box next to the divider. The adventure's halves
+                    // are split by a hard line, so lay the second colour over the creature's whole
+                    // textbox (203,1675)-(1807,2504 incl. outline) on its side of the divider (x 1008).
+                    const [x0, x1] = scry._adventure.side === 'right' ? [203, 1008] : [1008, 1807];
+                    const box = { x: x0, y: 1668, width: x1 - x0 + 4, height: 2510 - 1668 };
+                    await addRetroLayer(RETRO_COLOR_FRAME[second], null, [{ name: 'Adventure Creature Half', src: rectMaskDataUri(box) }]);
+                }
             } else {
                 // Requires both colours: stays gold, with the two colours showing only in
                 // the textbox, using the muted land-frame art. The pinline stays stock
@@ -4238,8 +4277,14 @@ async function buildAndSaveFace({ packFile, processed, faceIdx, scry, outName, f
 function flattenAdventureForRetroHd(scry) {
     const [main, spell] = scry.card_faces || [];
     if (!main || !spell) return scry;
+    const side = scry.layout === 'prepare' ? 'right' : 'left';
     const colors = ['W', 'U', 'B', 'R', 'G'].filter((c) => (spell.mana_cost || '').includes(c));
-    const code = colors.length === 1 ? colors[0].toLowerCase() : (colors.length > 1 ? 'm' : 'c');
+    // A hybrid spell ({G/U}) is not gold: like a hybrid creature, whose frame splits down the card's
+    // middle (RETRO_HYBRID_PAIR), it takes the colour of the half it sits in, which the divider
+    // between the panels continues. Colours in WUBRG order, the first on the left.
+    const hybrid = colors.length === 2 && RETRO_HYBRID_PAIR.test(spell.mana_cost || '');
+    const code = hybrid ? colors[side === 'right' ? 1 : 0].toLowerCase()
+        : colors.length === 1 ? colors[0].toLowerCase() : (colors.length > 1 ? 'm' : 'c');
     const flat = { ...scry, layout: 'normal' };
     delete flat.card_faces;
     Object.assign(flat, {
@@ -4248,7 +4293,7 @@ function flattenAdventureForRetroHd(scry) {
         _adventure: { name: spell.name, mana_cost: spell.mana_cost, type_line: spell.type_line,
                       oracle_text: spell.oracle_text, code,
                       // Adventures put the spell on the left; prepare cards, like the real ones, on the right.
-                      side: scry.layout === 'prepare' ? 'right' : 'left' },
+                      side },
     });
     if (!flat.image_uris && main.image_uris) flat.image_uris = main.image_uris;
     return flat;
@@ -4569,7 +4614,8 @@ async function runOneJob(job) {
         if (frame === 'borderless' && isDfc) frame = 'modern';
         const setSymbolPath = job.set_symbol_path || null;
         const fontSizeDelta = (job.font_size != null) ? parseInt(job.font_size) : 0;
-        const slug = slugify(job.name);
+        // `file_slug` keeps same-named cards (four different Nazgul prints) in separate files.
+        const slug = job.file_slug || slugify(job.name);
         // The 8th legend crown is on by default, like retro's battlement crown; --no-crown
         // turns both off.
         const legendary = !job.no_crown;
