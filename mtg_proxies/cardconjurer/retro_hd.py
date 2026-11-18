@@ -97,7 +97,18 @@ _FRAME_TINT = {"W": (0.9045, 0.8805, 0.8635), "Artifact": (0.90, 0.82, 0.74)}
 # as WotC's 1997-frame reprints (e.g. INR 428 Edgar Markov) and almost the same mean, but brighter
 # highlights and a touch more saturation: measured template (144, 124, 74), sd (55, 57, 50) vs
 # reprint (137, 121, 77), sd (52, 53, 45).
-_FRAME_TONE = {"Gold": ((144, 124, 74), (137, 121, 77), (0.940, 0.928, 0.896))}
+#
+# The black frame printed far lighter than the owner's original black cards (2026-11-18: "blacks
+# super elevated, the pinline grey"). Measured on the composite against Scryfall scans of nine
+# black-bordered 1999-2003 black cards (rows 20-50 % of the height, left frame): its texture is
+# (33, 24, 15), median, against the originals' (20, 22, 20), and its art / outer bevels, a flat
+# fill, are (136, 138, 126) against (92, 91, 90). The tone takes the texture's median to the
+# originals' and scales the spread so the bevel lands on theirs; the texture's highlights then
+# match too (p90 ~(46, 47, 41) against ~(48, 52, 47)), and the warm cast is gone.
+_FRAME_TONE = {
+    "Gold": ((144, 124, 74), (137, 121, 77), (0.940, 0.928, 0.896)),
+    "B": ((33, 24, 15), (20, 22, 20), (0.70, 0.605, 0.63)),
+}
 
 _IRREGULAR_TEXTBOX = {"B", "G"}  # Proxyshop default: ragged black / green textboxes, no textbox bevels
 
@@ -840,8 +851,9 @@ def _task_files(task: str, out_dir: Path) -> list[Path]:
 #   w 2: white frame tint halved.
 #   w 3, a 2: white browner, artifact a darker and richer brown (towards the original prints).
 #   a 3: artifact browner again.
+#   b 2: black frame darker and neutral, bevels from light grey to the originals' dark grey.
 TASK_VERSIONS = {"tf": 2, "mdfc": 2}
-CODE_VERSIONS = {"w": 3, "a": 3}
+CODE_VERSIONS = {"w": 3, "a": 3, "b": 2}
 _STAMP_NAME = "build.json"
 
 
