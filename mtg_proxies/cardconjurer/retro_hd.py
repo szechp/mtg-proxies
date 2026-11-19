@@ -119,7 +119,10 @@ _FRAME_TONE = {"Gold": ((144, 124, 74), (137, 121, 77), (0.940, 0.928, 0.896))}
 # (~(15, 15, 14), p90 ~30) and neutral, not brown. The texture is lifted a little from that
 # (mean ~(20, 20, 19)) because the photo's mottling reads clearer; the brightest pinline is ~(55, 55, 55)
 # (78 first, and it still irked the owner). The owner approved this look: do not revert it.
-_TEXTURE_TONE = {"B": ((42, 36.4, 25.2), (21, 22, 21), (0.7, 0.8, 1.0))}
+# 2026-11-19: the owner saw a very slight blue tint in the base black: blue contrast 1.0 -> 0.85 and
+# the blue mean 21 -> 19.5; the highlights still ran cool (p90 (38, 47, 41)), so the contrast scales are
+# now (0.80, 0.64, 0.74), p90 ~(40, 41, 38). Then 10 % lighter on request: mean (23, 23.5, 21.5), scales x1.1.
+_TEXTURE_TONE = {"B": ((42, 36.4, 25.2), (23, 23.5, 21.5), (0.88, 0.70, 0.81))}
 _BEVEL_GAIN = {"B": (0.40, 0.40, 0.42)}
 
 _IRREGULAR_TEXTBOX = {"B", "G"}  # Proxyshop default: ragged black / green textboxes, no textbox bevels
@@ -873,8 +876,10 @@ def _task_files(task: str, out_dir: Path) -> list[Path]:
 #   b 3: texture a further 5% darker, bevel lines 10%.
 #   r 4: red frame a little lighter and pinker, half of a first photo-based step.
 #   b 4-6: retargeted to a photo of the owner's card: much blacker, neutral.
+#   b 7-8: slightly less blue in the base black, highlights neutral.
+#   b 9: base black texture 10 % lighter (mean and contrast x1.1), at the owner's request.
 TASK_VERSIONS = {"tf": 2, "mdfc": 2}
-CODE_VERSIONS = {"w": 3, "a": 4, "b": 6, "r": 4}
+CODE_VERSIONS = {"w": 3, "a": 4, "b": 9, "r": 4}
 _STAMP_NAME = "build.json"
 
 

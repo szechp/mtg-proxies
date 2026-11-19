@@ -41,10 +41,10 @@ def test_saturation_widens_the_spread_of_a_muted_colour() -> None:
 
 
 def test_glossy_is_the_printed_preset() -> None:
-    """Glossy is the pick of the second calibration print: warmth 0.75 on light areas, saturation +6 %."""
+    """Glossy is the pick of the second calibration print: warmth 0.75 on light areas, saturation +6 %, plus the first-guess shadow lift."""
     from mtg_proxies.paper import PAPERS, Paper
 
-    assert PAPERS["glossy"] == Paper(warm=0.75, saturation=1.06, light_only=True)
+    assert PAPERS["glossy"] == Paper(warm=0.75, saturation=1.06, light_only=True, shadow_lift=(3.0, 3.0, 0.0))
 
 
 def test_light_only_tint_warms_white_but_not_saturated_colours() -> None:
@@ -76,3 +76,14 @@ def test_prepare_images_keeps_alpha_and_names_cache_by_values(tmp_path: Path) ->
     assert result[0, 0, 3] == 0
     assert result[1, 1, 3] == 200
     assert result[1, 1, 2] < result[1, 1, 1]  # blue pulled down: warmer
+
+
+def test_shadow_lift_warms_black_and_leaves_light_pixels_alone() -> None:
+    import numpy as np
+
+    from mtg_proxies.paper import Paper, prepare_rgb
+
+    paper = Paper(warm=0.0, shadow_lift=(5.0, 3.0, 0.0))
+    out = prepare_rgb(np.array([[[0, 0, 0], [200, 120, 60]]], np.uint8), paper)
+    assert out[0, 0].tolist() == [5, 3, 0]
+    assert out[0, 1].tolist() == [200, 120, 60]

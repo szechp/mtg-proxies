@@ -27,6 +27,13 @@ Values come from prints on an Epson ET-2820 via the ``EPSON_ET-2820_MTG`` queues
   frames teal and gold olive, hence ``light_only``: the tint only reaches light, low-saturation
   areas, where cream card stock would show through, not where ink covers it.
 
+- ``shadow_lift`` (glossy): the Linux driver's black comes out slightly blue (the owner's photo of a
+  glossy print, 2026-11-19: the black outside the card and the base black read bluish) and CUPS
+  has no colour setting to change it, so the image carries the opposite: a few levels of red and
+  green added to near-black pixels, fading out by 15 % brightness. (3, 3, 0): a deliberately small
+  offset for a very slight blue, no calibration run (5, 3, 0 was the first guess); change it in
+  ``PAPERS`` if the black still reads blue or turns brown.
+
 Emulating the Mac driver's Adobe RGB mode and magenta/yellow sliders was tried too and lost.
 """
 
@@ -49,17 +56,19 @@ class Paper:
     """How to prepare images for one paper: warmth (0 = none, 1 = :data:`WARM`), saturation, gamma.
 
     ``light_only`` tints only light, pale pixels (white text boxes, pale frame parts) and leaves
-    saturated colours alone, instead of tinting every pixel.
+    saturated colours alone, instead of tinting every pixel. ``shadow_lift`` adds that many levels
+    (R, G, B) to black, fading out over the darkest 15 % of brightness.
     """
 
     warm: float
     saturation: float = 1.0
     gamma: float = 1.0
     light_only: bool = False
+    shadow_lift: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 
 PAPERS = {
-    "glossy": Paper(warm=0.75, saturation=1.06, light_only=True),
+    "glossy": Paper(warm=0.75, saturation=1.06, light_only=True, shadow_lift=(3.0, 3.0, 0.0)),
     "matte": Paper(warm=1.0, saturation=1.06, gamma=1.12),
 }
 
@@ -80,6 +89,9 @@ def prepare_rgb(rgb: np.ndarray, paper: Paper) -> np.ndarray:
     if paper.light_only:
         tint = tint * _paper_showing(out)[..., None]
     out = out.astype(np.float32) * (1.0 - tint)
+    if any(paper.shadow_lift):
+        dark = 1.0 - _smoothstep(0.0, 0.15, out.max(axis=-1) / 255.0)
+        out = out + dark[..., None] * np.asarray(paper.shadow_lift, dtype=np.float32)
     return np.round(np.clip(out, 0.0, 255.0)).astype(np.uint8)
 
 
@@ -107,6 +119,8 @@ def prepare_images(paths: Sequence[str | Path], paper: Paper) -> list[str]:
         holds the values, so changing a preset never reuses an old cache file.
     """
     suffix = f"_paper_w{paper.warm:g}_s{paper.saturation:g}_g{paper.gamma:g}" + ("_light" if paper.light_only else "")
+    if any(paper.shadow_lift):
+        suffix += "_sl" + "_".join(f"{v:g}" for v in paper.shadow_lift)
     out_paths: list[str] = []
     done: dict[str, str] = {}
     for path in tqdm(paths, desc="Preparing for the paper"):
